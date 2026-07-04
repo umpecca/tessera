@@ -23,6 +23,7 @@ type Workspace struct {
 
 type Pane struct {
 	ID         string `json:"id"`
+	Kind       string `json:"kind"`
 	Title      string `json:"title"`
 	BufferText string `json:"bufferText"`
 	Cwd        string `json:"cwd"`
@@ -75,7 +76,7 @@ WHERE id = ?`, id).Scan(&ws.ID, &ws.Name, &ws.ActivePaneID, &layoutText)
 	ws.Layout = json.RawMessage(layoutText)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, title, buffer_text, cwd, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, cwd, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ?
 ORDER BY position ASC, created_at ASC`, id)
@@ -86,8 +87,11 @@ ORDER BY position ASC, created_at ASC`, id)
 
 	for rows.Next() {
 		var pane Pane
-		if err := rows.Scan(&pane.ID, &pane.Title, &pane.BufferText, &pane.Cwd, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
+		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.Cwd, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
 			return nil, fmt.Errorf("scan pane: %w", err)
+		}
+		if pane.Kind == "" {
+			pane.Kind = "worksheet"
 		}
 		ws.Panes = append(ws.Panes, pane)
 	}
@@ -98,6 +102,28 @@ ORDER BY position ASC, created_at ASC`, id)
 		ws.Panes = []Pane{}
 	}
 	return &ws, nil
+}
+
+func (s *Store) LoadPane(ctx context.Context, workspaceID, paneID string) (*Pane, error) {
+	if workspaceID == "" {
+		workspaceID = DefaultWorkspaceID
+	}
+	if paneID == "" {
+		return nil, errors.New("pane id is required")
+	}
+	var pane Pane
+	err := s.db.QueryRowContext(ctx, `
+SELECT id, kind, title, buffer_text, cwd, x, y, width, height, z_index, position
+FROM panes
+WHERE workspace_id = ? AND id = ?`, workspaceID, paneID).Scan(
+		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.Cwd, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
+	if err != nil {
+		return nil, err
+	}
+	if pane.Kind == "" {
+		pane.Kind = "worksheet"
+	}
+	return &pane, nil
 }
 
 func (s *Store) SaveWorkspace(ctx context.Context, ws *Workspace) error {
@@ -145,6 +171,9 @@ ON CONFLICT(id) DO UPDATE SET
 		if pane.Title == "" {
 			pane.Title = fmt.Sprintf("Pane %d", i+1)
 		}
+		if pane.Kind == "" {
+			pane.Kind = "worksheet"
+		}
 		if pane.Width < 1 {
 			pane.Width = 360
 		}
@@ -155,9 +184,10 @@ ON CONFLICT(id) DO UPDATE SET
 		seen[pane.ID] = true
 
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO panes (id, workspace_id, title, buffer_text, cwd, x, y, width, height, z_index, position, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO panes (id, workspace_id, kind, title, buffer_text, cwd, x, y, width, height, z_index, position, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
+  kind = excluded.kind,
   title = excluded.title,
   buffer_text = excluded.buffer_text,
   cwd = excluded.cwd,
@@ -168,7 +198,7 @@ ON CONFLICT(id) DO UPDATE SET
   z_index = excluded.z_index,
   position = excluded.position,
   updated_at = excluded.updated_at`,
-			pane.ID, ws.ID, pane.Title, pane.BufferText, pane.Cwd, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now); err != nil {
+			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.Cwd, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now); err != nil {
 			return fmt.Errorf("upsert pane %s: %w", pane.ID, err)
 		}
 	}
@@ -202,6 +232,48 @@ ON CONFLICT(id) DO UPDATE SET
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit workspace: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpdatePaneBufferAndCwd(ctx context.Context, workspaceID, paneID, bufferText, cwd string) error {
+	if workspaceID == "" {
+		workspaceID = DefaultWorkspaceID
+	}
+	if paneID == "" {
+		return errors.New("pane id is required")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE panes
+SET buffer_text = ?, cwd = ?, updated_at = ?
+WHERE workspace_id = ? AND id = ?`, bufferText, cwd, nowText(), workspaceID, paneID)
+	if err != nil {
+		return fmt.Errorf("update pane transcript: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) PreservePaneBuffers(ctx context.Context, ws *Workspace, paneIDs map[string]bool) error {
+	if ws == nil || len(paneIDs) == 0 {
+		return nil
+	}
+	workspaceID := ws.ID
+	if workspaceID == "" {
+		workspaceID = DefaultWorkspaceID
+	}
+	for i := range ws.Panes {
+		if !paneIDs[ws.Panes[i].ID] {
+			continue
+		}
+		pane, err := s.LoadPane(ctx, workspaceID, ws.Panes[i].ID)
+		if err != nil {
+			return fmt.Errorf("preserve running pane %s: %w", ws.Panes[i].ID, err)
+		}
+		ws.Panes[i].BufferText = pane.BufferText
+		ws.Panes[i].Cwd = pane.Cwd
 	}
 	return nil
 }

@@ -33,7 +33,7 @@ go run ./cmd/tessera -addr 127.0.0.1:7331 -db .\tessera.sqlite3 -web .\web
 - Type directly inside a rectangle to use it as a CodeMirror-backed text workspace.
 - Click or arrow into empty editor space to materialize free-cursor whitespace.
 - Press `Ctrl+Enter`/`Cmd+Enter`, or right-click the editor and choose Run, to run the selected text or current line through the Go shell and insert output below it.
-- Transcript insertion is plain text: commands remain editable, stdout and stderr insert directly below with no prompt prefix, and `[exit N]` appears only when there is no command output or the exit code is nonzero.
+- Transcript insertion is plain text: commands remain editable, stdout and stderr insert below at the command's indentation with no prompt prefix, and `[exit N]` appears only when there is no command output or the exit code is nonzero.
 - Each pane has a small `cwd` status field; click it to browse for a directory, and commands such as `cd ..` update it after execution.
 - Right-click inside a rectangle's editor to copy, cut, or paste selected text.
 - Clicking a rectangle brings it above overlapping rectangles.

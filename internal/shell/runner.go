@@ -1,7 +1,6 @@
 package shell
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -92,29 +91,19 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) <-chan Event {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			scanLines(stdout, func(line string) {
-				if strings.HasPrefix(line, cwdMarker) {
-					mu.Lock()
-					cwdAfter = strings.TrimSpace(strings.TrimPrefix(line, cwdMarker))
-					mu.Unlock()
-					return
-				}
-				if strings.HasPrefix(line, exitMarker) {
-					if parsed, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, exitMarker))); err == nil {
-						mu.Lock()
-						markerExitCode = parsed
-						mu.Unlock()
-					}
-					return
-				}
-				send(ctx, events, Event{Type: "stdout", RunID: req.RunID, Text: line + "\n"})
+			streamStdout(ctx, events, req.RunID, stdout, func(nextCwd string) {
+				mu.Lock()
+				cwdAfter = nextCwd
+				mu.Unlock()
+			}, func(exitCode int) {
+				mu.Lock()
+				markerExitCode = exitCode
+				mu.Unlock()
 			})
 		}()
 		go func() {
 			defer wg.Done()
-			scanLines(stderr, func(line string) {
-				send(ctx, events, Event{Type: "stderr", RunID: req.RunID, Text: line + "\n"})
-			})
+			streamRawOutput(ctx, events, req.RunID, "stderr", stderr)
 		}()
 
 		waitErr := cmd.Wait()
@@ -153,11 +142,87 @@ func commandForPlatform(ctx context.Context, command string) *exec.Cmd {
 	return exec.CommandContext(ctx, "/bin/sh", "-c", script)
 }
 
-func scanLines(reader io.Reader, onLine func(string)) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		onLine(scanner.Text())
+func streamStdout(ctx context.Context, events chan<- Event, runID string, reader io.Reader, setCwd func(string), setExitCode func(int)) {
+	buf := make([]byte, 4096)
+	pending := ""
+
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			pending += string(buf[:n])
+			pending = flushStdoutPending(ctx, events, runID, pending, false, setCwd, setExitCode)
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				send(ctx, events, Event{Type: "error", RunID: runID, Error: err.Error()})
+			}
+			break
+		}
+	}
+
+	flushStdoutPending(ctx, events, runID, pending, true, setCwd, setExitCode)
+}
+
+func flushStdoutPending(ctx context.Context, events chan<- Event, runID, pending string, final bool, setCwd func(string), setExitCode func(int)) string {
+	for {
+		newline := strings.IndexByte(pending, '\n')
+		if newline < 0 {
+			break
+		}
+		line := pending[:newline+1]
+		pending = pending[newline+1:]
+		handleStdoutLine(ctx, events, runID, line, setCwd, setExitCode)
+	}
+
+	if pending == "" {
+		return ""
+	}
+	if final {
+		handleStdoutLine(ctx, events, runID, pending, setCwd, setExitCode)
+		return ""
+	}
+	if possibleMarkerText(pending) {
+		return pending
+	}
+	send(ctx, events, Event{Type: "stdout", RunID: runID, Text: pending})
+	return ""
+}
+
+func handleStdoutLine(ctx context.Context, events chan<- Event, runID, text string, setCwd func(string), setExitCode func(int)) {
+	line := strings.TrimRight(text, "\r\n")
+	if strings.HasPrefix(line, cwdMarker) {
+		setCwd(strings.TrimSpace(strings.TrimPrefix(line, cwdMarker)))
+		return
+	}
+	if strings.HasPrefix(line, exitMarker) {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, exitMarker))); err == nil {
+			setExitCode(parsed)
+		}
+		return
+	}
+	send(ctx, events, Event{Type: "stdout", RunID: runID, Text: text})
+}
+
+func possibleMarkerText(text string) bool {
+	return strings.HasPrefix(cwdMarker, text) ||
+		strings.HasPrefix(exitMarker, text) ||
+		strings.HasPrefix(text, cwdMarker) ||
+		strings.HasPrefix(text, exitMarker)
+}
+
+func streamRawOutput(ctx context.Context, events chan<- Event, runID, eventType string, reader io.Reader) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			send(ctx, events, Event{Type: eventType, RunID: runID, Text: string(buf[:n])})
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				send(ctx, events, Event{Type: "error", RunID: runID, Error: err.Error()})
+			}
+			return
+		}
 	}
 }
 

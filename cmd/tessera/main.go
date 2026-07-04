@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"tessera/internal/app"
+	"tessera/internal/runs"
 	"tessera/internal/shell"
 	"tessera/internal/store"
+	"tessera/internal/terminal"
 )
 
 func main() {
@@ -31,10 +33,18 @@ func main() {
 	}
 	defer st.Close()
 
+	runner := &shell.Runner{}
+	runManager := runs.NewManager(st, runner)
+	defer runManager.Close()
+	terminalManager := terminal.NewManager()
+	defer terminalManager.Close()
+
 	application := &app.App{
-		Store:  st,
-		Runner: &shell.Runner{},
-		WebDir: *webDir,
+		Store:     st,
+		Runner:    runner,
+		Runs:      runManager,
+		Terminals: terminalManager,
+		WebDir:    *webDir,
 	}
 
 	server := &http.Server{

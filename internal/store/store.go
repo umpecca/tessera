@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE TABLE IF NOT EXISTS panes (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'worksheet',
   title TEXT NOT NULL DEFAULT 'Pane',
   buffer_text TEXT NOT NULL DEFAULT '',
   cwd TEXT NOT NULL DEFAULT '',
@@ -113,6 +114,7 @@ func (s *Store) ensurePaneGeometryColumns(ctx context.Context) error {
 		return err
 	}
 	additions := map[string]string{
+		"kind":    "ALTER TABLE panes ADD COLUMN kind TEXT NOT NULL DEFAULT 'worksheet'",
 		"x":       "ALTER TABLE panes ADD COLUMN x INTEGER NOT NULL DEFAULT 80",
 		"y":       "ALTER TABLE panes ADD COLUMN y INTEGER NOT NULL DEFAULT 80",
 		"width":   "ALTER TABLE panes ADD COLUMN width INTEGER NOT NULL DEFAULT 360",

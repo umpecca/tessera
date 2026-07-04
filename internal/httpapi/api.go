@@ -4,20 +4,27 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"tessera/internal/runs"
 	"tessera/internal/shell"
 	"tessera/internal/store"
+	"tessera/internal/terminal"
 )
 
 type API struct {
-	Store  *store.Store
-	Runner *shell.Runner
-	WebDir string
+	Store     *store.Store
+	Runner    *shell.Runner
+	Runs      *runs.Manager
+	Terminals *terminal.Manager
+	WebDir    string
 }
 
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", a.health)
 	mux.HandleFunc("/api/workspace/default", a.defaultWorkspace)
 	mux.HandleFunc("/api/run", a.runCommand)
+	mux.HandleFunc("/api/runs", a.listRuns)
+	mux.HandleFunc("/api/runs/", a.runEvents)
+	mux.HandleFunc("/api/terminal", a.terminalSession)
 	mux.HandleFunc("/api/directories", a.listDirectories)
 	mux.HandleFunc("/", a.staticFiles())
 }

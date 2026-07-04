@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build:web": "esbuild web/codemirror-entry.js --bundle --format=esm --minify --outfile=web/vendor/codemirror.js"
+    "build:web": "esbuild web/codemirror-entry.js --bundle --format=esm --minify --outfile=web/vendor/codemirror.js && esbuild web/terminal-entry.js --bundle --format=esm --minify --outfile=web/vendor/terminal.js"
   },
   "dependencies": {
-    "codemirror": "^6.0.2"
+    "codemirror": "^6.0.2",
+    "ghostty-web": "^0.4.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

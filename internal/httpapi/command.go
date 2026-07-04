@@ -5,20 +5,26 @@ import (
 	"net/http"
 	"strings"
 
-	"tessera/internal/shell"
+	"tessera/internal/runs"
 	"tessera/internal/store"
 )
 
 type runCommandRequest struct {
-	WorkspaceID string `json:"workspaceId"`
-	PaneID      string `json:"paneId"`
-	Command     string `json:"command"`
-	Cwd         string `json:"cwd"`
+	WorkspaceID  string `json:"workspaceId"`
+	PaneID       string `json:"paneId"`
+	Command      string `json:"command"`
+	Cwd          string `json:"cwd"`
+	InsertPos    int    `json:"insertPos"`
+	OutputPrefix string `json:"outputPrefix"`
 }
 
 func (a *API) runCommand(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if a.Runs == nil {
+		writeError(w, http.StatusInternalServerError, "run manager is not available")
 		return
 	}
 
@@ -40,12 +46,66 @@ func (a *API) runCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runID := store.NewID("run")
-	if err := a.Store.StartCommandRun(r.Context(), runID, req.WorkspaceID, req.PaneID, req.Command, req.Cwd); err != nil {
+	events, unsubscribe, _, err := a.Runs.Start(runs.StartRequest{
+		WorkspaceID:  req.WorkspaceID,
+		PaneID:       req.PaneID,
+		Command:      req.Command,
+		Cwd:          req.Cwd,
+		InsertPos:    req.InsertPos,
+		OutputPrefix: req.OutputPrefix,
+	})
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	defer unsubscribe()
 
+	streamRunEvents(w, r, events)
+}
+
+func (a *API) listRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	if a.Runs == nil {
+		writeError(w, http.StatusInternalServerError, "run manager is not available")
+		return
+	}
+	workspaceID := r.URL.Query().Get("workspaceId")
+	if workspaceID == "" {
+		workspaceID = store.DefaultWorkspaceID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": a.Runs.ActiveRuns(workspaceID)})
+}
+
+func (a *API) runEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	if a.Runs == nil {
+		writeError(w, http.StatusInternalServerError, "run manager is not available")
+		return
+	}
+	runID := strings.TrimPrefix(r.URL.Path, "/api/runs/")
+	runID = strings.TrimSuffix(runID, "/events")
+	runID = strings.Trim(runID, "/")
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, "run id is required")
+		return
+	}
+	events, unsubscribe, ok := a.Runs.Subscribe(runID, true)
+	if !ok {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	defer unsubscribe()
+
+	streamRunEvents(w, r, events)
+}
+
+func streamRunEvents(w http.ResponseWriter, r *http.Request, events <-chan runs.Event) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming is not supported")
@@ -54,20 +114,22 @@ func (a *API) runCommand(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
 	encoder := json.NewEncoder(w)
-	for event := range a.Runner.Run(r.Context(), shell.RunRequest{
-		RunID:   runID,
-		Command: req.Command,
-		Cwd:     req.Cwd,
-	}) {
-		if err := encoder.Encode(event); err != nil {
+	for {
+		select {
+		case <-r.Context().Done():
 			return
-		}
-		flusher.Flush()
-		if event.Type == "exit" && event.Code != nil {
-			_ = a.Store.FinishCommandRun(r.Context(), runID, event.Cwd, *event.Code)
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			if err := encoder.Encode(event); err != nil {
+				return
+			}
+			flusher.Flush()
 		}
 	}
 }

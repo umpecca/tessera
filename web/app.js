@@ -1,4 +1,11 @@
-import { basicSetup, EditorSelection, EditorView, Prec, keymap } from "./vendor/codemirror.js";
+import {
+  basicSetup,
+  EditorSelection,
+  EditorView,
+  Prec,
+  Transaction,
+  keymap,
+} from "./vendor/codemirror.js?v=run-fixes-4";
 
 const board = document.querySelector("#board");
 const tabHeight = 24;
@@ -9,6 +16,8 @@ let interaction = null;
 let nextZIndex = 1;
 let contextMenuRect = null;
 let editorMenuRect = null;
+let workspaceMenuPoint = null;
+let windowTypeRect = null;
 let directoryBrowserRect = null;
 let directoryBrowserPath = "";
 let editorClipboardText = "";
@@ -16,6 +25,9 @@ let workspaceID = "default";
 let isLoadingWorkspace = false;
 let saveTimer = null;
 let saveRevision = 0;
+const runStreamControllers = new Map();
+let ghosttyModulePromise = null;
+const terminalTextEncoder = new TextEncoder();
 
 const tesseraEditorTheme = EditorView.theme({
   "&": {
@@ -52,6 +64,10 @@ const tesseraEditorTheme = EditorView.theme({
   },
 });
 
+const commandSpinnerFrames = ["\u25f0", "\u25f3", "\u25f2", "\u25f1"];
+const commandSpinnerIntervalMs = 120;
+
+
 const freeCursorExtension = Prec.highest([
   keymap.of([
     { key: "ArrowUp", run: (view) => moveFreeCursorVertically(view, -1), preventDefault: true },
@@ -75,12 +91,31 @@ editorMenu.className = "dock-menu editor-menu";
 editorMenu.hidden = true;
 document.body.appendChild(editorMenu);
 
+const workspaceMenu = document.createElement("div");
+workspaceMenu.className = "dock-menu workspace-menu";
+workspaceMenu.hidden = true;
+document.body.appendChild(workspaceMenu);
+
+const windowTypeMenu = document.createElement("div");
+windowTypeMenu.className = "dock-menu window-type-menu";
+windowTypeMenu.hidden = true;
+document.body.appendChild(windowTypeMenu);
+
 const directoryBrowser = document.createElement("div");
 directoryBrowser.className = "directory-browser";
 directoryBrowser.hidden = true;
 document.body.appendChild(directoryBrowser);
 
+const workspaceStatus = document.createElement("div");
+workspaceStatus.className = "workspace-status";
+workspaceStatus.setAttribute("role", "status");
+workspaceStatus.setAttribute("aria-live", "polite");
+workspaceStatus.dataset.state = "idle";
+workspaceStatus.textContent = "Loading...";
+document.body.appendChild(workspaceStatus);
+
 board.addEventListener("pointerdown", startDrawing);
+board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
 document.addEventListener("keydown", hideMenusOnEscape);
 document.addEventListener("keydown", handlePaneKeyboardShortcuts);
@@ -96,9 +131,13 @@ function startDrawing(event) {
     return;
   }
   event.preventDefault();
+  hideAllMenus();
 
   const point = boardPoint(event);
-  const rect = createRectangle(point.x, point.y, 1, 1);
+  const rect = createRectangle(point.x, point.y, 1, 1, {
+    kind: "pending",
+    cwd: activeRect?.cwd || "",
+  });
   setActivePane(rect, { raise: true });
 
   interaction = {
@@ -192,11 +231,16 @@ function finishInteraction(event) {
     return;
   }
 
-  if (interaction.type === "draw" && (interaction.rect.width < 6 || interaction.rect.height < 6)) {
-    destroyRectangle(interaction.rect);
-  }
-
+  const finishedInteraction = interaction;
   interaction = null;
+
+  if (finishedInteraction.type === "draw") {
+    if (finishedInteraction.rect.width < 6 || finishedInteraction.rect.height < 6) {
+      destroyRectangle(finishedInteraction.rect);
+      return;
+    }
+    showWindowTypeMenu(finishedInteraction.rect, event.clientX, event.clientY);
+  }
 }
 
 function createRectangle(x, y, width, height, options = {}) {
@@ -212,20 +256,26 @@ function createRectangle(x, y, width, height, options = {}) {
 
   const rect = {
     id: options.id || newPaneID(),
+    kind: options.kind || "worksheet",
     x,
     y,
     width,
     height,
     element,
     zIndex: options.zIndex || 0,
-    title: options.title || "",
-    text: options.text || "",
+    title: options.title || (options.kind === "terminal" ? "Terminal" : ""),
+    text: options.kind === "terminal" ? "" : (options.text || ""),
     cwd: options.cwd || "",
     running: false,
+    runID: "",
+    commandSpinner: null,
+    terminal: null,
+    terminalContainer: null,
     isFull: false,
     restoreBox: null,
   };
   element.dataset.paneId = rect.id;
+  element.dataset.paneKind = rect.kind;
   const tab = document.createElement("div");
   tab.className = "window-tab";
 
@@ -284,13 +334,18 @@ function createRectangle(x, y, width, height, options = {}) {
 
   const body = document.createElement("div");
   body.className = "window-body";
-  body.setAttribute("aria-label", "Workspace text");
+  body.setAttribute("aria-label", rect.kind === "terminal" ? "Terminal" : rect.kind === "pending" ? "New window" : "Workspace text");
   body.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     setActivePane(rect, { raise: true });
+    if (rect.kind === "terminal") {
+      rect.terminal?.term?.focus();
+    }
   });
   body.addEventListener("focusin", () => setActivePane(rect, { raise: true }));
-  body.addEventListener("contextmenu", (event) => openEditorMenu(event, rect));
+  if (rect.kind === "worksheet") {
+    body.addEventListener("contextmenu", (event) => openEditorMenu(event, rect));
+  }
 
   tab.appendChild(grip);
   tab.appendChild(title);
@@ -302,25 +357,46 @@ function createRectangle(x, y, width, height, options = {}) {
   rect.cwdInput = cwdInput;
   setPaneCwd(rect, rect.cwd, { silent: true });
 
-  rect.editor = new EditorView({
-    doc: rect.text,
-    extensions: [
-      basicSetup,
-      tesseraEditorTheme,
-      freeCursorExtension,
-      Prec.highest(keymap.of([
-        { key: "Mod-Enter", run: () => runPaneCommand(rect), preventDefault: true },
-        { key: "Ctrl-Enter", run: () => runPaneCommand(rect), preventDefault: true },
-      ])),
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          rect.text = update.state.doc.toString();
-          scheduleWorkspaceSave();
-        }
-      }),
-    ],
-    parent: body,
-  });
+  if (rect.kind === "terminal") {
+    body.classList.add("is-terminal");
+    const terminalContainer = document.createElement("div");
+    terminalContainer.className = "terminal-container";
+    body.appendChild(terminalContainer);
+    rect.terminalContainer = terminalContainer;
+    void startTerminal(rect);
+  } else if (rect.kind === "worksheet") {
+    rect.editor = new EditorView({
+      doc: rect.text,
+      extensions: [
+        basicSetup,
+        tesseraEditorTheme,
+        freeCursorExtension,
+        Prec.highest(keymap.of([
+          { key: "Mod-Enter", run: () => runPaneCommand(rect), preventDefault: true },
+          { key: "Ctrl-Enter", run: () => runPaneCommand(rect), preventDefault: true },
+        ])),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            const isSpinnerChange = update.transactions.every((transaction) => (
+              transaction.annotation(Transaction.userEvent) === "input.tesseraSpinner"
+            ));
+            if (!isSpinnerChange) {
+              rect.commandSpinner?.map(update.changes);
+            }
+            rect.text = rect.commandSpinner
+              ? rect.commandSpinner.textWithoutSpinner(update.state.doc.toString())
+              : update.state.doc.toString();
+            if (!rect.running) {
+              scheduleWorkspaceSave();
+            }
+          }
+        }),
+      ],
+      parent: body,
+    });
+  } else {
+    body.classList.add("is-pending");
+  }
 
   for (const handle of ["nw", "ne", "se", "sw"]) {
     const node = document.createElement("div");
@@ -355,7 +431,11 @@ function setActivePane(rect, options = {}) {
     rect.element.style.zIndex = String(rect.zIndex);
   }
   if (options.focusEditor) {
-    rect.editor?.focus();
+    if (rect.kind === "terminal") {
+      rect.terminal?.term?.focus();
+    } else {
+      rect.editor?.focus();
+    }
   } else if (options.focusElement) {
     rect.element.focus({ preventScroll: true });
   }
@@ -540,11 +620,13 @@ function setRectangle(rect, next) {
   if (rect.editor) {
     rect.editor.requestMeasure();
   }
+  requestTerminalFit(rect);
   scheduleWorkspaceSave();
 }
 
 async function loadWorkspace() {
   isLoadingWorkspace = true;
+  setWorkspaceStatus("loading", "Loading...");
   try {
     const response = await fetch("/api/workspace/default");
     if (!response.ok) {
@@ -558,6 +640,7 @@ async function loadWorkspace() {
     for (const pane of workspace.panes || []) {
       const rect = createRectangle(pane.x ?? 80, pane.y ?? tabHeight + 56, pane.width || 360, pane.height || 240, {
         id: pane.id,
+        kind: pane.kind || "worksheet",
         title: pane.title,
         text: pane.bufferText,
         cwd: pane.cwd,
@@ -571,15 +654,20 @@ async function loadWorkspace() {
     if (activeLoadedRect) {
       setActivePane(activeLoadedRect, { raise: false });
     }
+    await syncRunningCommands();
+    setWorkspaceStatus("saved", "Saved", "Workspace loaded");
   } catch (error) {
     console.warn(error);
+    setWorkspaceStatus("error", "Load failed", error.message || "Workspace load failed");
   } finally {
     isLoadingWorkspace = false;
   }
 }
 
 function clearRectanglesForLoad() {
+  stopRunStreams();
   for (const rect of rectangles.splice(0)) {
+    disposeTerminal(rect);
     rect.editor?.destroy();
     rect.element.remove();
   }
@@ -589,14 +677,15 @@ function clearRectanglesForLoad() {
   interaction = null;
   contextMenuRect = null;
   editorMenuRect = null;
-  nextZIndex = 1;
   hideAllMenus();
+  nextZIndex = 1;
 }
 
 function scheduleWorkspaceSave() {
   if (isLoadingWorkspace) {
     return;
   }
+  setWorkspaceStatus("saving", "Saving...");
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(saveWorkspace, 250);
 }
@@ -612,10 +701,15 @@ async function flushWorkspaceSave() {
 
 async function saveWorkspace() {
   const revision = ++saveRevision;
-  const panes = rectangles.map((rect, index) => ({
+  window.clearTimeout(saveTimer);
+  saveTimer = null;
+  setWorkspaceStatus("saving", "Saving...");
+  const savedRectangles = rectangles.filter((rect) => rect.kind !== "pending");
+  const panes = savedRectangles.map((rect, index) => ({
     id: rect.id,
     title: rect.title,
-    bufferText: rect.text,
+    kind: rect.kind,
+    bufferText: rect.kind === "terminal" ? "" : rect.text,
     cwd: rect.cwd || "",
     x: rect.x,
     y: rect.y,
@@ -632,7 +726,7 @@ async function saveWorkspace() {
       body: JSON.stringify({
         id: workspaceID,
         name: "Default",
-        activePaneId: activePaneID,
+        activePaneId: savedRectangles.some((rect) => rect.id === activePaneID) ? activePaneID : "",
         layout: { panes: panes.map((pane) => pane.id) },
         panes,
       }),
@@ -640,11 +734,223 @@ async function saveWorkspace() {
     if (!response.ok) {
       throw new Error(`save workspace failed: ${response.status}`);
     }
+    if (revision === saveRevision && saveTimer === null) {
+      setWorkspaceStatus("saved", "Saved");
+    }
   } catch (error) {
-    if (revision === saveRevision) {
+    if (revision === saveRevision && saveTimer === null) {
       console.warn(error);
+      setWorkspaceStatus("error", "Save failed", error.message || "Workspace save failed");
     }
   }
+}
+
+function setWorkspaceStatus(state, text, title = "") {
+  workspaceStatus.dataset.state = state;
+  workspaceStatus.textContent = text;
+  workspaceStatus.title = title || text;
+}
+
+async function syncRunningCommands() {
+  try {
+    const response = await fetch(`/api/runs?workspaceId=${encodeURIComponent(workspaceID)}`);
+    if (!response.ok) {
+      throw new Error(`load runs failed: ${response.status}`);
+    }
+    const data = await response.json();
+    for (const run of data.runs || []) {
+      const rect = rectangles.find((candidate) => candidate.id === run.paneId);
+      if (!rect || runStreamControllers.has(run.runId)) {
+        continue;
+      }
+      markPaneRunning(rect, run.runId);
+      subscribeToRun(rect, run.runId);
+    }
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+function subscribeToRun(rect, runID) {
+  const controller = new AbortController();
+  runStreamControllers.set(runID, controller);
+  void (async () => {
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(runID)}/events`, {
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`subscribe run failed: ${response.status}`);
+      }
+      await readRunEventStream(response, (event) => applyRunEvent(rect, event));
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        console.warn(error);
+      }
+    } finally {
+      runStreamControllers.delete(runID);
+      if (!controller.signal.aborted && rect.runID === runID) {
+        clearPaneRunning(rect);
+      }
+    }
+  })();
+}
+
+function stopRunStreams() {
+  for (const controller of runStreamControllers.values()) {
+    controller.abort();
+  }
+  runStreamControllers.clear();
+}
+
+function loadGhosttyModule() {
+  if (!ghosttyModulePromise) {
+    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-1").then(async (module) => {
+      await module.init();
+      return module;
+    });
+  }
+  return ghosttyModulePromise;
+}
+
+async function startTerminal(rect) {
+  if (!rect?.terminalContainer || rect.terminal) {
+    return;
+  }
+
+  rect.terminalContainer.textContent = "Starting terminal...";
+  try {
+    const { FitAddon, Terminal } = await loadGhosttyModule();
+    if (!rect.terminalContainer || rect.kind !== "terminal") {
+      return;
+    }
+
+    rect.terminalContainer.replaceChildren();
+    const term = new Terminal({
+      cols: 80,
+      rows: 24,
+      fontSize: 14,
+      fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
+      cursorBlink: true,
+      theme: {
+        background: "#10141c",
+        foreground: "#e5e1d5",
+        cursor: "#f4df45",
+        selectionBackground: "#284461",
+      },
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(rect.terminalContainer);
+    fit.fit();
+    fit.observeResize();
+
+    const socket = new WebSocket(terminalWebSocketURL(rect, term.cols, term.rows));
+    socket.binaryType = "arraybuffer";
+    const dataDisposable = term.onData((data) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(terminalTextEncoder.encode(data));
+      }
+    });
+    const resizeDisposable = term.onResize(({ cols, rows }) => {
+      sendTerminalResize(socket, cols, rows);
+    });
+
+    socket.addEventListener("open", () => {
+      setPaneCwd(rect, rect.cwd, { silent: true });
+      sendTerminalResize(socket, term.cols, term.rows);
+      term.focus();
+    });
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data === "string") {
+        term.write(event.data);
+        return;
+      }
+      term.write(new Uint8Array(event.data));
+    });
+    socket.addEventListener("close", () => {
+      if (rect.terminal?.socket === socket) {
+        term.write("\r\n[tessera terminal disconnected]\r\n");
+      }
+    });
+    socket.addEventListener("error", () => {
+      term.write("\r\n[tessera terminal connection error]\r\n");
+    });
+
+    rect.terminal = { term, fit, socket, dataDisposable, resizeDisposable };
+    requestTerminalFit(rect);
+  } catch (error) {
+    console.warn(error);
+    if (rect.terminalContainer) {
+      rect.terminalContainer.textContent = error.message || "Terminal failed to start";
+    }
+  }
+}
+
+function terminalWebSocketURL(rect, cols, rows) {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const params = new URLSearchParams({
+    paneId: rect.id,
+    cwd: rect.cwd || "",
+    cols: String(cols || 80),
+    rows: String(rows || 24),
+  });
+  return `${protocol}//${window.location.host}/api/terminal?${params.toString()}`;
+}
+
+function sendTerminalResize(socket, cols, rows) {
+  if (socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  socket.send(JSON.stringify({
+    type: "resize",
+    cols,
+    rows,
+  }));
+}
+
+function requestTerminalFit(rect) {
+  if (!rect?.terminal?.fit) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    if (!rect.terminal?.fit) {
+      return;
+    }
+    rect.terminal.fit.fit();
+    sendTerminalResize(rect.terminal.socket, rect.terminal.term.cols, rect.terminal.term.rows);
+  });
+}
+
+function disposeTerminal(rect, options = {}) {
+  if (!rect?.terminal) {
+    if (options.closeServer && rect?.kind === "terminal") {
+      closeServerTerminal(rect);
+    }
+    return;
+  }
+  const terminalState = rect.terminal;
+  rect.terminal = null;
+  if (options.closeServer) {
+    closeServerTerminal(rect);
+  }
+  terminalState.dataDisposable?.dispose?.();
+  terminalState.resizeDisposable?.dispose?.();
+  terminalState.fit?.dispose?.();
+  terminalState.term?.dispose?.();
+  if (terminalState.socket?.readyState === WebSocket.OPEN || terminalState.socket?.readyState === WebSocket.CONNECTING) {
+    terminalState.socket.close();
+  }
+}
+
+function closeServerTerminal(rect) {
+  if (!rect?.id) {
+    return;
+  }
+  fetch(`/api/terminal?paneId=${encodeURIComponent(rect.id)}`, {
+    method: "DELETE",
+    keepalive: true,
+  }).catch((error) => console.warn(error));
 }
 
 function newPaneID() {
@@ -769,8 +1075,15 @@ function moveCursorToMaterializedColumn(view, lineNumber, column, userEvent) {
 function openDockMenu(event, rect) {
   event.preventDefault();
   event.stopPropagation();
+  if (rect.kind === "pending") {
+    hideWindowTypeMenu({ finalizeDefault: false });
+    finalizePendingRectangle(rect, "worksheet");
+    return;
+  }
   setActivePane(rect, { raise: true });
   hideEditorMenu();
+  hideWorkspaceMenu();
+  hideWindowTypeMenu();
   contextMenuRect = rect;
   renderDockMenu(rect);
   showMenuAt(dockMenu, event.clientX, event.clientY);
@@ -781,9 +1094,24 @@ function openEditorMenu(event, rect) {
   event.stopPropagation();
   setActivePane(rect, { raise: true });
   hideDockMenu();
+  hideWorkspaceMenu();
+  hideWindowTypeMenu();
   editorMenuRect = rect;
   renderEditorMenu(rect);
   showMenuAt(editorMenu, event.clientX, event.clientY);
+}
+
+function openWorkspaceMenu(event) {
+  if (event.target !== board) {
+    return;
+  }
+  event.preventDefault();
+  workspaceMenuPoint = boardPoint(event);
+  hideDockMenu();
+  hideEditorMenu();
+  hideWindowTypeMenu();
+  renderWorkspaceMenu();
+  showMenuAt(workspaceMenu, event.clientX, event.clientY);
 }
 
 function renderDockMenu(rect) {
@@ -812,6 +1140,120 @@ function renderDockMenu(rect) {
   }
 }
 
+function renderWorkspaceMenu() {
+  workspaceMenu.replaceChildren();
+
+  const terminalButton = document.createElement("button");
+  terminalButton.type = "button";
+  terminalButton.textContent = "New Terminal";
+  terminalButton.className = "is-command";
+  terminalButton.addEventListener("click", () => {
+    const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
+    hideWorkspaceMenu();
+    createTerminalPane(point.x, point.y);
+  });
+  workspaceMenu.appendChild(terminalButton);
+
+  const panes = rectangles.filter((rect) => rect.kind !== "pending").sort((a, b) => b.zIndex - a.zIndex);
+  if (panes.length === 0) {
+    const empty = document.createElement("button");
+    empty.type = "button";
+    empty.textContent = "No windows";
+    empty.disabled = true;
+    workspaceMenu.appendChild(empty);
+    return;
+  }
+
+  for (const rect of panes) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = workspaceMenuLabel(rect);
+    button.title = rect.cwd ? `${button.textContent} (${rect.cwd})` : button.textContent;
+    if (rect.id === activePaneID) {
+      button.className = "is-active";
+    }
+    button.addEventListener("click", () => {
+      hideWorkspaceMenu();
+      setActivePane(rect, { raise: true, focusEditor: true });
+    });
+    workspaceMenu.appendChild(button);
+  }
+}
+
+function showWindowTypeMenu(rect, clientX, clientY) {
+  if (!rect || rect.kind !== "pending" || !rectangles.includes(rect)) {
+    return;
+  }
+  hideDockMenu();
+  hideEditorMenu();
+  hideWorkspaceMenu();
+  hideDirectoryBrowser();
+  windowTypeRect = rect;
+  renderWindowTypeMenu();
+  showMenuAt(windowTypeMenu, clientX, clientY);
+}
+
+function renderWindowTypeMenu() {
+  windowTypeMenu.replaceChildren();
+  const actions = [
+    ["worksheet", "Worksheet"],
+    ["terminal", "Terminal"],
+  ];
+  for (const [kind, label] of actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      const rect = windowTypeRect;
+      hideWindowTypeMenu({ finalizeDefault: false });
+      finalizePendingRectangle(rect, kind);
+    });
+    windowTypeMenu.appendChild(button);
+  }
+}
+
+function finalizePendingRectangle(rect, kind) {
+  if (!rect || rect.kind !== "pending" || !rectangles.includes(rect)) {
+    return;
+  }
+  const paneKind = kind === "terminal" ? "terminal" : "worksheet";
+  const box = rectangleBox(rect);
+  const paneID = rect.id;
+  const zIndex = rect.zIndex;
+  const cwd = rect.cwd || "";
+  destroyRectangle(rect);
+  const nextRect = createRectangle(box.x, box.y, box.width, box.height, {
+    id: paneID,
+    kind: paneKind,
+    title: paneKind === "terminal" ? "Terminal" : "",
+    cwd,
+    zIndex,
+  });
+  setActivePane(nextRect, { raise: true, focusEditor: true });
+  scheduleWorkspaceSave();
+}
+
+function workspaceMenuLabel(rect) {
+  const index = rectangles.indexOf(rect);
+  const name = rect.title.trim() || `Window ${index + 1}`;
+  const kindSuffix = rect.kind === "terminal" ? " [terminal]" : "";
+  const activePrefix = rect.id === activePaneID ? "> " : "";
+  const runningSuffix = rect.running ? " !" : "";
+  return `${activePrefix}${name}${kindSuffix}${runningSuffix}`;
+}
+
+function createTerminalPane(x, y) {
+  const rect = createRectangle(x, Math.max(y, tabHeight), 640, 360, {
+    kind: "terminal",
+    title: "Terminal",
+    cwd: activeRect?.cwd || "",
+  });
+  clampIntoBoard(rect);
+  setRectangle(rect, rect);
+  setActivePane(rect, { raise: true, focusEditor: true });
+  scheduleWorkspaceSave();
+}
+
 function renderEditorMenu(rect) {
   editorMenu.replaceChildren();
   const actions = [
@@ -837,9 +1279,10 @@ function renderEditorMenu(rect) {
     } else {
       button.disabled = !canPaste;
     }
-    button.addEventListener("click", async () => {
-      await applyEditorMenuAction(action, editorMenuRect);
+    button.addEventListener("click", () => {
+      const actionRect = editorMenuRect;
       hideEditorMenu();
+      void applyEditorMenuAction(action, actionRect);
     });
     editorMenu.appendChild(button);
   }
@@ -852,7 +1295,7 @@ function applyDockAction(action, rect) {
   setActivePane(rect, { raise: true });
 
   if (action === "destroy") {
-    destroyRectangle(rect);
+    destroyRectangle(rect, { closeServerTerminal: true });
     return;
   }
 
@@ -903,7 +1346,6 @@ async function applyEditorMenuAction(action, rect) {
 
   if (action === "run") {
     await runPaneCommand(rect);
-    rect.editor.focus();
     return;
   }
 
@@ -948,10 +1390,13 @@ function commandTargetForEditor(editor) {
     if (command.trim() === "") {
       return null;
     }
+    const commandStart = firstNonWhitespacePosition(state.doc, from, to);
+    const commandStartLine = state.doc.lineAt(commandStart);
     const lastSelectedPos = Math.max(from, to - 1);
     return {
       command,
       insertPos: state.doc.lineAt(lastSelectedPos).to,
+      outputPrefix: commandStartLine.text.slice(0, commandStart - commandStartLine.from),
     };
   }
 
@@ -960,10 +1405,21 @@ function commandTargetForEditor(editor) {
   if (command.trim() === "") {
     return null;
   }
+  const commandStartColumn = line.text.search(/\S/);
   return {
     command,
     insertPos: line.to,
+    outputPrefix: commandStartColumn > 0 ? line.text.slice(0, commandStartColumn) : "",
   };
+}
+
+function firstNonWhitespacePosition(doc, from, to) {
+  for (let pos = from; pos < to; pos += 1) {
+    if (/\S/.test(doc.sliceString(pos, pos + 1))) {
+      return pos;
+    }
+  }
+  return from;
 }
 
 async function runPaneCommand(rect) {
@@ -976,16 +1432,19 @@ async function runPaneCommand(rect) {
     return true;
   }
 
+  await flushWorkspaceSave();
   setActivePane(rect, { raise: true });
-  rect.running = true;
-  rect.element.dataset.running = "true";
+  markPaneRunning(rect, "");
 
   const editor = rect.editor;
-  const transcript = createTranscriptInserter(editor, target.insertPos);
-  transcript.startOutputBelowCommand();
+  const spinner = createCommandTextSpinner(editor, target.insertPos);
+  rect.commandSpinner = spinner;
+  spinner.start();
+  const transcript = createTranscriptInserter(editor, spinner.after(), target.outputPrefix);
+  let streamStarted = false;
+  let sawExit = false;
 
   try {
-    await flushWorkspaceSave();
     const response = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -994,55 +1453,205 @@ async function runPaneCommand(rect) {
         paneId: rect.id,
         command: target.command,
         cwd: rect.cwd || "",
+        insertPos: target.insertPos,
+        outputPrefix: target.outputPrefix,
       }),
     });
 
     if (!response.ok) {
       const message = await response.text();
       transcript.appendHostMessage(`tessera: run failed ${response.status}${message ? ` ${message}` : ""}`);
+      sawExit = true;
       return true;
     }
 
+    streamStarted = true;
     await readRunEventStream(response, (event) => {
-      if (event.type === "start" && event.cwd) {
-        setPaneCwd(rect, event.cwd);
-      }
-      if (event.type === "stdout" || event.type === "stderr") {
-        transcript.appendCommandOutput(event.text || "");
-      }
-      if (event.type === "error") {
-        transcript.appendHostMessage(event.error || "run error");
-      }
-      if (event.type === "exit") {
-        if (event.cwd) {
-          setPaneCwd(rect, event.cwd);
-        }
-        const exitCode = typeof event.code === "number" ? event.code : 0;
-        transcript.finish(exitCode);
-      }
+      applyRunEvent(rect, event);
+      sawExit = sawExit || event.type === "exit";
     });
   } catch (error) {
-    transcript.appendHostMessage(error.message || "run failed");
+    if (!streamStarted) {
+      transcript.appendHostMessage(error.message || "run failed");
+      sawExit = true;
+    } else {
+      console.warn(error);
+    }
   } finally {
-    rect.running = false;
-    delete rect.element.dataset.running;
+    try {
+      spinner.stop();
+    } finally {
+      if (rect.commandSpinner === spinner) {
+        rect.commandSpinner = null;
+      }
+    }
     rect.text = editor.state.doc.toString();
-    scheduleWorkspaceSave();
-    editor.focus();
+    if (sawExit || !streamStarted) {
+      clearPaneRunning(rect);
+      if (!streamStarted) {
+        scheduleWorkspaceSave();
+      }
+    } else {
+      void syncRunningCommands();
+    }
   }
 
   return true;
 }
 
-function createTranscriptInserter(editor, insertPos) {
+function markPaneRunning(rect, runID) {
+  rect.running = true;
+  rect.runID = runID || rect.runID || "";
+  rect.element.dataset.running = "true";
+}
+
+function clearPaneRunning(rect) {
+  rect.running = false;
+  rect.runID = "";
+  delete rect.element.dataset.running;
+}
+
+function applyRunEvent(rect, event) {
+  if (!rect?.editor || !event) {
+    return;
+  }
+  if (event.runId) {
+    markPaneRunning(rect, event.runId);
+  }
+  if (event.type === "snapshot") {
+    replacePaneTextFromHost(rect, event.bufferText || "");
+    if (event.cwd) {
+      setPaneCwd(rect, event.cwd, { silent: true });
+    }
+    return;
+  }
+  if (event.type === "start" && event.cwd) {
+    setPaneCwd(rect, event.cwd, { silent: true });
+    return;
+  }
+  if (event.type === "insert") {
+    insertPaneTextFromHost(rect, event.from || 0, event.text || "");
+    return;
+  }
+  if (event.type === "error") {
+    console.warn(event.error || "run error");
+    return;
+  }
+  if (event.type === "exit") {
+    if (event.cwd) {
+      setPaneCwd(rect, event.cwd, { silent: true });
+    }
+    clearPaneRunning(rect);
+  }
+}
+
+function replacePaneTextFromHost(rect, text) {
+  const editor = rect.editor;
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: text },
+    userEvent: "input.tesseraHostSnapshot",
+  });
+  rect.text = text;
+}
+
+function insertPaneTextFromHost(rect, from, text) {
+  if (!text) {
+    return;
+  }
+  const editor = rect.editor;
+  const insertAt = rect.commandSpinner
+    ? rect.commandSpinner.displayPosition(from)
+    : from;
+  const safeInsertAt = Math.max(0, Math.min(insertAt, editor.state.doc.length));
+  const transaction = {
+    changes: { from: safeInsertAt, insert: text },
+    userEvent: "input.tesseraRunOutput",
+  };
+  if (editor.hasFocus) {
+    transaction.selection = EditorSelection.cursor(safeInsertAt + text.length);
+    transaction.scrollIntoView = true;
+  }
+  editor.dispatch(transaction);
+  rect.text = rect.commandSpinner
+    ? rect.commandSpinner.textWithoutSpinner(editor.state.doc.toString())
+    : editor.state.doc.toString();
+}
+
+function createCommandTextSpinner(editor, position) {
+  let currentPosition = position;
+  let currentText = "";
+  let frameIndex = 0;
+  let timer = null;
+
+  const dispatchSpinnerText = (nextText) => {
+    const previousLength = currentText.length;
+    const from = Math.min(currentPosition, editor.state.doc.length);
+    const to = Math.min(from + previousLength, editor.state.doc.length);
+    currentPosition = from;
+    currentText = nextText;
+    editor.dispatch({
+      changes: { from, to, insert: nextText },
+      userEvent: "input.tesseraSpinner",
+    });
+  };
+
+  return {
+    start() {
+      dispatchSpinnerText(` ${commandSpinnerFrames[frameIndex]}`);
+      timer = window.setInterval(() => {
+        frameIndex = (frameIndex + 1) % commandSpinnerFrames.length;
+        dispatchSpinnerText(` ${commandSpinnerFrames[frameIndex]}`);
+      }, commandSpinnerIntervalMs);
+    },
+    after() {
+      return currentPosition + currentText.length;
+    },
+    displayPosition(position) {
+      if (currentText && position >= currentPosition) {
+        return position + currentText.length;
+      }
+      return position;
+    },
+    map(changes) {
+      currentPosition = changes.mapPos(currentPosition, -1);
+    },
+    stop() {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+      if (currentText) {
+        const previousLength = currentText.length;
+        const from = Math.min(currentPosition, editor.state.doc.length);
+        const to = Math.min(from + previousLength, editor.state.doc.length);
+        currentPosition = from;
+        currentText = "";
+        editor.dispatch({
+          changes: { from, to, insert: "" },
+          userEvent: "input.tesseraSpinner",
+        });
+      }
+    },
+    textWithoutSpinner(text) {
+      if (!currentText) {
+        return text;
+      }
+      return text.slice(0, currentPosition) + text.slice(currentPosition + currentText.length);
+    },
+  };
+}
+
+function createTranscriptInserter(editor, insertPos, outputPrefix = "") {
   let cursor = insertPos;
   let commandOutputChars = 0;
   let lastInsertedChar = "\n";
 
-  const insert = (text, countsAsCommandOutput) => {
+  const insert = (text, commandOutputCharCount = 0) => {
     if (!text) {
       return;
     }
+    text = text.replace(/\r\n?/g, "\n");
+    cursor = Math.min(cursor, editor.state.doc.length);
     editor.dispatch({
       changes: { from: cursor, insert: text },
       selection: EditorSelection.cursor(cursor + text.length),
@@ -1051,26 +1660,48 @@ function createTranscriptInserter(editor, insertPos) {
     });
     cursor += text.length;
     lastInsertedChar = text[text.length - 1];
-    if (countsAsCommandOutput) {
-      commandOutputChars += text.length;
+    commandOutputChars += commandOutputCharCount;
+  };
+
+  const textAtOutputColumn = (text) => {
+    if (!outputPrefix) {
+      return text;
     }
+
+    let prefixed = "";
+    let atLineStart = lastInsertedChar === "\n";
+    for (const char of text) {
+      if (atLineStart && char !== "\n") {
+        prefixed += outputPrefix;
+        atLineStart = false;
+      }
+      prefixed += char;
+      if (char === "\n") {
+        atLineStart = true;
+      }
+    }
+    return prefixed;
   };
 
   return {
     startOutputBelowCommand() {
-      insert("\n", false);
+      insert("\n");
     },
     appendCommandOutput(text) {
-      insert(text, true);
+      insert(textAtOutputColumn(text), text.length);
     },
     appendHostMessage(message) {
-      const prefix = lastInsertedChar === "\n" ? "" : "\n";
-      insert(`${prefix}[${message}]\n`, false);
+      if (lastInsertedChar !== "\n") {
+        insert("\n");
+      }
+      insert(textAtOutputColumn(`[${message}]\n`));
     },
     finish(exitCode) {
       if (commandOutputChars === 0 || exitCode !== 0) {
-        const prefix = lastInsertedChar === "\n" ? "" : "\n";
-        insert(`${prefix}[exit ${exitCode}]\n`, false);
+        if (lastInsertedChar !== "\n") {
+          insert("\n");
+        }
+        insert(textAtOutputColumn(`[exit ${exitCode}]\n`));
       }
     },
   };
@@ -1187,7 +1818,7 @@ function pasteTextWithHiddenField() {
   return text;
 }
 
-function destroyRectangle(rect) {
+function destroyRectangle(rect, options = {}) {
   const index = rectangles.indexOf(rect);
   const wasActive = activePaneID === rect.id;
   if (index >= 0) {
@@ -1202,11 +1833,16 @@ function destroyRectangle(rect) {
   if (editorMenuRect === rect) {
     editorMenuRect = null;
   }
+  if (windowTypeRect === rect) {
+    windowTypeRect = null;
+    windowTypeMenu.hidden = true;
+  }
   if (wasActive) {
     activeRect = null;
     activePaneID = "";
     delete board.dataset.activePaneId;
   }
+  disposeTerminal(rect, { closeServer: options.closeServerTerminal });
   rect.editor?.destroy();
   rect.editor = null;
   rect.element.remove();
@@ -1274,6 +1910,12 @@ function hideMenusWhenOutside(event) {
   if (!editorMenu.hidden && !editorMenu.contains(event.target)) {
     hideEditorMenu();
   }
+  if (!workspaceMenu.hidden && !workspaceMenu.contains(event.target)) {
+    hideWorkspaceMenu();
+  }
+  if (!windowTypeMenu.hidden && !windowTypeMenu.contains(event.target)) {
+    hideWindowTypeMenu();
+  }
   if (!directoryBrowser.hidden && !directoryBrowser.contains(event.target)) {
     hideDirectoryBrowser();
   }
@@ -1288,6 +1930,8 @@ function hideMenusOnEscape(event) {
 function hideAllMenus() {
   hideDockMenu();
   hideEditorMenu();
+  hideWorkspaceMenu();
+  hideWindowTypeMenu();
   hideDirectoryBrowser();
 }
 
@@ -1299,6 +1943,23 @@ function hideDockMenu() {
 function hideEditorMenu() {
   editorMenu.hidden = true;
   editorMenuRect = null;
+}
+
+function hideWorkspaceMenu() {
+  workspaceMenu.hidden = true;
+  workspaceMenuPoint = null;
+}
+
+function hideWindowTypeMenu(options = {}) {
+  const rect = windowTypeRect;
+  windowTypeMenu.hidden = true;
+  windowTypeRect = null;
+  if (options.finalizeDefault === false) {
+    return;
+  }
+  if (rect && rect.kind === "pending" && rectangles.includes(rect)) {
+    finalizePendingRectangle(rect, "worksheet");
+  }
 }
 
 function hideDirectoryBrowser() {

@@ -29,6 +29,47 @@ input {
   touch-action: none;
 }
 
+.workspace-status {
+  position: fixed;
+  right: 8px;
+  bottom: 7px;
+  z-index: 90000;
+  min-width: 64px;
+  max-width: min(260px, calc(100vw - 16px));
+  height: 22px;
+  overflow: hidden;
+  border: 1px solid #8f8f8f;
+  padding: 1px 8px;
+  background: #ddd9cf;
+  box-shadow:
+    inset 1px 1px 0 #ffffff,
+    inset -1px -1px 0 #b9b7b0;
+  color: #4f4b43;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.workspace-status[data-state="saving"],
+.workspace-status[data-state="loading"] {
+  color: #1f1f1b;
+}
+
+.workspace-status[data-state="error"] {
+  border-color: #9a3a32;
+  background: #f2d7d4;
+  box-shadow:
+    inset 1px 1px 0 #fff7f6,
+    inset -1px -1px 0 #c99791;
+  color: #7b2525;
+}
+
 .rectangle {
   position: absolute;
   top: 0;
@@ -65,6 +106,7 @@ input {
   box-shadow:
     inset 1px 1px 0 #ffffff,
     inset -1px 0 0 #b9b7b0;
+  color: #1f1f1b;
   cursor: move;
   z-index: 1;
 }
@@ -93,6 +135,32 @@ input {
 
 .rectangle.is-selected .window-tab,
 .rectangle[data-active-pane="true"] .window-tab {
+  border-color: #06182d;
+  background: #0b2a4d;
+  box-shadow:
+    inset 1px 1px 0 #3f6389,
+    inset -1px 0 0 #041426;
+}
+
+.rectangle.is-selected .window-tab::before,
+.rectangle.is-selected .window-tab::after,
+.rectangle[data-active-pane="true"] .window-tab::before,
+.rectangle[data-active-pane="true"] .window-tab::after {
+  border-color: #071d36;
+  background: #eef5ff;
+}
+
+.rectangle.is-selected .window-title,
+.rectangle[data-active-pane="true"] .window-title {
+  color: #ffffff;
+}
+
+.rectangle.is-selected .window-title:focus,
+.rectangle[data-active-pane="true"] .window-title:focus {
+  outline-color: rgba(255, 255, 255, 0.78);
+}
+
+.rectangle[data-running="true"] .window-tab {
   border-color: #7d7118;
   background: #f4df45;
   box-shadow:
@@ -100,14 +168,41 @@ input {
     inset -1px 0 0 #bda72b;
 }
 
-.rectangle[data-running="true"] .window-tab {
-  background: repeating-linear-gradient(
-    90deg,
-    #f4df45 0,
-    #f4df45 12px,
-    #ead444 12px,
-    #ead444 24px
-  );
+.rectangle[data-running="true"] .window-tab::before,
+.rectangle[data-running="true"] .window-tab::after {
+  border-color: #77705b;
+  background: #f8f6ef;
+}
+
+.rectangle[data-running="true"] .window-title {
+  color: #1f1f1b;
+  padding-right: 28px;
+}
+
+.rectangle[data-running="true"] .window-title:focus {
+  outline-color: rgba(31, 31, 27, 0.55);
+}
+
+.rectangle[data-running="true"]::after {
+  content: "!";
+  position: absolute;
+  top: -20px;
+  right: 7px;
+  width: 13px;
+  height: 13px;
+  border: 1px solid #7d7118;
+  background: #fff8a4;
+  box-shadow:
+    inset 1px 1px 0 #ffffff,
+    0 1px 0 rgba(0, 0, 0, 0.16);
+  color: #1f1f1b;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 12px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 5;
 }
 
 .window-grip {
@@ -165,6 +260,32 @@ input {
 
 .window-body .cm-focused {
   outline: none;
+}
+
+.window-body.is-terminal {
+  inset: 0 0 20px 0;
+  background: #10141c;
+  cursor: text;
+}
+
+.window-body.is-pending {
+  cursor: default;
+}
+
+.terminal-container {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 8px;
+  background: #10141c;
+  color: #e5e1d5;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 13px;
+  user-select: text;
+}
+
+.terminal-container canvas {
+  display: block;
 }
 
 .window-title::selection {
@@ -298,6 +419,29 @@ input {
 .dock-menu button:focus {
   outline: 0;
   background: #f4df45;
+}
+
+.dock-menu button.is-active {
+  font-weight: 700;
+}
+
+.dock-menu button.is-command {
+  font-weight: 700;
+}
+
+.workspace-menu {
+  min-width: 180px;
+  max-width: min(320px, calc(100vw - 12px));
+}
+
+.window-type-menu {
+  min-width: 136px;
+}
+
+.workspace-menu button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dock-menu button:disabled {

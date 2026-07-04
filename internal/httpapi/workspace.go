@@ -25,6 +25,13 @@ func (a *API) defaultWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ws.ID = store.DefaultWorkspaceID
+		if a.Runs != nil {
+			activePaneIDs := a.Runs.ActivePaneIDs(ws.ID)
+			if err := a.Store.PreservePaneBuffers(r.Context(), &ws, activePaneIDs); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
 		if err := a.Store.SaveWorkspace(r.Context(), &ws); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

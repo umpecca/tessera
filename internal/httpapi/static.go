@@ -19,6 +19,7 @@ func (a *API) staticFiles() http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
+		w.Header().Set("Cache-Control", "no-cache")
 
 		requestPath := strings.TrimPrefix(filepath.Clean(r.URL.Path), string(filepath.Separator))
 		if requestPath == "." || requestPath == "" {

@@ -56,6 +56,43 @@ func TestRunnerStreamsOutputAndTracksCwd(t *testing.T) {
 	}
 }
 
+func TestRunnerEmitsOutputBeforeCommandExit(t *testing.T) {
+	command := "printf 'first\\n'\nsleep 2\nprintf 'second\\n'"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output first\nStart-Sleep -Seconds 2\nWrite-Output second"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	runner := &Runner{}
+	events := runner.Run(ctx, RunRequest{
+		RunID:   "run-stream-test",
+		Command: command,
+		Cwd:     t.TempDir(),
+	})
+
+	deadline := time.After(1500 * time.Millisecond)
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				t.Fatal("runner exited before streaming first output")
+			}
+			if event.Type == "exit" {
+				t.Fatal("runner exited before streaming first output")
+			}
+			if event.Type == "stdout" && strings.Contains(event.Text, "first") {
+				for range events {
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("first output did not stream before the command finished sleeping")
+		}
+	}
+}
+
 func samePath(a, b string) bool {
 	aInfo, aErr := os.Stat(a)
 	bInfo, bErr := os.Stat(b)

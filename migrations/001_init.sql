@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE TABLE IF NOT EXISTS panes (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'worksheet',
   title TEXT NOT NULL DEFAULT 'Pane',
   buffer_text TEXT NOT NULL DEFAULT '',
   cwd TEXT NOT NULL DEFAULT '',
