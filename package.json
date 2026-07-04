@@ -1,0 +1,14 @@
+{
+  "name": "tessera",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:web": "esbuild web/codemirror-entry.js --bundle --format=esm --minify --outfile=web/vendor/codemirror.js"
+  },
+  "dependencies": {
+    "codemirror": "^6.0.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
