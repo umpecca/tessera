@@ -1,6 +1,7 @@
 package app
 
 import (
+	"io/fs"
 	"net/http"
 
 	"tessera/internal/httpapi"
@@ -8,6 +9,7 @@ import (
 	"tessera/internal/shell"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
+	"tessera/web"
 )
 
 type App struct {
@@ -15,7 +17,7 @@ type App struct {
 	Runner    *shell.Runner
 	Runs      *runs.Manager
 	Terminals *terminal.Manager
-	WebDir    string
+	WebFS     fs.FS
 }
 
 func (a *App) Handler() http.Handler {
@@ -27,12 +29,16 @@ func (a *App) Handler() http.Handler {
 	if terminalManager == nil {
 		terminalManager = terminal.NewManager()
 	}
+	webFS := a.WebFS
+	if webFS == nil {
+		webFS = web.Files
+	}
 	api := &httpapi.API{
 		Store:     a.Store,
 		Runner:    a.Runner,
 		Runs:      runManager,
 		Terminals: terminalManager,
-		WebDir:    a.WebDir,
+		WebFS:     webFS,
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 
 	"tessera/internal/runs"
@@ -15,7 +16,7 @@ type API struct {
 	Runner    *shell.Runner
 	Runs      *runs.Manager
 	Terminals *terminal.Manager
-	WebDir    string
+	WebFS     fs.FS
 }
 
 func (a *API) Register(mux *http.ServeMux) {

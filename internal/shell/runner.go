@@ -125,21 +125,24 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) <-chan Event {
 }
 
 func commandForPlatform(ctx context.Context, command string) *exec.Cmd {
+	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		script := command + "\n" +
 			"$__tesseraExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }\n" +
 			"Write-Output \"" + cwdMarker + "$((Get-Location).ProviderPath)\"\n" +
 			"Write-Output \"" + exitMarker + "$__tesseraExitCode\"\n" +
 			"exit $__tesseraExitCode\n"
-		return exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		cmd = exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	} else {
+		script := command + "\n" +
+			"__tessera_exit_code=$?\n" +
+			"printf '" + cwdMarker + "%s\\n' \"$PWD\"\n" +
+			"printf '" + exitMarker + "%s\\n' \"$__tessera_exit_code\"\n" +
+			"exit \"$__tessera_exit_code\"\n"
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", script)
 	}
-
-	script := command + "\n" +
-		"__tessera_exit_code=$?\n" +
-		"printf '" + cwdMarker + "%s\\n' \"$PWD\"\n" +
-		"printf '" + exitMarker + "%s\\n' \"$__tessera_exit_code\"\n" +
-		"exit \"$__tessera_exit_code\"\n"
-	return exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	hideConsoleWindow(cmd)
+	return cmd
 }
 
 func streamStdout(ctx context.Context, events chan<- Event, runID string, reader io.Reader, setCwd func(string), setExitCode func(int)) {

@@ -1,18 +1,15 @@
 package httpapi
 
 import (
+	"io/fs"
 	"net/http"
-	"os"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
 func (a *API) staticFiles() http.HandlerFunc {
-	webDir := a.WebDir
-	if webDir == "" {
-		webDir = "web"
-	}
-	fileServer := http.FileServer(http.Dir(webDir))
+	webFS := a.WebFS
+	fileServer := http.FileServer(http.FS(webFS))
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -21,16 +18,15 @@ func (a *API) staticFiles() http.HandlerFunc {
 		}
 		w.Header().Set("Cache-Control", "no-cache")
 
-		requestPath := strings.TrimPrefix(filepath.Clean(r.URL.Path), string(filepath.Separator))
-		if requestPath == "." || requestPath == "" {
-			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
+		requestPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if requestPath == "" || requestPath == "." {
+			http.ServeFileFS(w, r, webFS, "index.html")
 			return
 		}
 
-		fullPath := filepath.Join(webDir, requestPath)
-		info, err := os.Stat(fullPath)
+		info, err := fs.Stat(webFS, requestPath)
 		if err != nil || info.IsDir() {
-			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
+			http.ServeFileFS(w, r, webFS, "index.html")
 			return
 		}
 		fileServer.ServeHTTP(w, r)
