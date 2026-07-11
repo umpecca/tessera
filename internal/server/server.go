@@ -17,6 +17,7 @@ import (
 	"tessera/internal/shell"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
+	"tessera/internal/update"
 	"tessera/web"
 )
 
@@ -30,6 +31,8 @@ type Options struct {
 	// Users, when non-empty, enables multi-user mode: the SPA shows a user
 	// selection screen and each user gets a separate workspace.
 	Users []string
+	// Updater, when set, enables the /api/update self-update endpoint.
+	Updater *update.Updater
 }
 
 type Server struct {
@@ -65,6 +68,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Terminals: terminalManager,
 		WebFS:     webFS,
 		Users:     opts.Users,
+		Updater:   opts.Updater,
 	}
 
 	ln, err := net.Listen("tcp", opts.Addr)

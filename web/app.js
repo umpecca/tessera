@@ -100,6 +100,15 @@ const themes = {
       selectionBackground: "#0f4d27",
     },
   },
+  "dark-professional": {
+    label: "Dark Professional",
+    terminal: {
+      background: "#10131a",
+      foreground: "#d6dce4",
+      cursor: "#8fb4dd",
+      selectionBackground: "#33506e",
+    },
+  },
 };
 let defaultTheme = defaultThemeID;
 let themeID = defaultThemeID;
@@ -107,7 +116,7 @@ let themeID = defaultThemeID;
 const tesseraEditorTheme = EditorView.theme({
   "&": {
     height: "100%",
-    background: "transparent",
+    background: "var(--editor-bg, transparent)",
     color: "var(--editor-text)",
   },
   ".cm-scroller": {
@@ -151,7 +160,7 @@ const tesseraEditorTheme = EditorView.theme({
     outline: "none",
   },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "var(--selection-bg)",
+    backgroundColor: "var(--editor-selection-bg, var(--selection-bg))",
   },
 });
 
@@ -692,6 +701,16 @@ sessionActionModal.addEventListener("pointerdown", (event) => {
   }
 });
 document.body.appendChild(sessionActionModal);
+
+const serverUpdateModal = document.createElement("div");
+serverUpdateModal.className = "settings-modal server-update-modal";
+serverUpdateModal.hidden = true;
+serverUpdateModal.addEventListener("pointerdown", (event) => {
+  if (event.target === serverUpdateModal && serverUpdateModal.dataset.closable === "true") {
+    hideServerUpdateModal();
+  }
+});
+document.body.appendChild(serverUpdateModal);
 
 const commandPalette = document.createElement("div");
 commandPalette.className = "command-palette";
@@ -2492,7 +2511,7 @@ async function loadWorkspace() {
       || rectangles.find((rect) => rect.id === workspace.activePaneId && !rect.minimized)
       || null;
     if (activeLoadedRect) {
-      setActivePane(activeLoadedRect, { raise: false });
+      setActivePane(activeLoadedRect, { raise: false, focusEditor: true });
     }
     await syncRunningCommands();
     updateDeskbar();
@@ -2887,6 +2906,11 @@ async function startTerminal(rect) {
     term.open(rect.terminalContainer);
     fit.fit();
     fit.observeResize();
+    // ghostty focuses itself inside open(); hand focus back to the active
+    // pane, or a session load's last-opened terminal ends up with the input.
+    if (activeRect && activeRect !== rect) {
+      setActivePane(activeRect, { focusEditor: true });
+    }
 
     const socket = new WebSocket(terminalWebSocketURL(rect, term.cols, term.rows));
     socket.binaryType = "arraybuffer";
@@ -2901,7 +2925,12 @@ async function startTerminal(rect) {
     socket.addEventListener("open", () => {
       setPaneCwd(rect, rect.cwd, { silent: true });
       sendTerminalResize(socket, term.cols, term.rows);
-      term.focus();
+      // Only the active pane's terminal may take focus when it comes up;
+      // otherwise whichever terminal connects last steals it (e.g. when a
+      // session load starts several terminals at once).
+      if (activeRect === rect) {
+        term.focus();
+      }
     });
     socket.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
@@ -4276,6 +4305,117 @@ function handleWindowListKeyboard(event) {
   }
 }
 
+// Shows the server-update status modal with a message. Closable steps get a
+// Close button and backdrop dismissal; in-flight steps (download, restart)
+// keep the modal locked so the flow isn't abandoned half-way.
+function showUpdateStatus(message, { closable = false, busy = false } = {}) {
+  serverUpdateModal.replaceChildren();
+  serverUpdateModal.dataset.closable = String(closable);
+
+  const panel = document.createElement("section");
+  panel.className = "settings-panel server-update-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "server-update-title");
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "server-update-title";
+  title.textContent = "Update Server";
+  titleBar.appendChild(title);
+
+  const content = document.createElement("div");
+  content.className = "settings-content server-update-content";
+  const status = document.createElement("p");
+  status.className = "server-update-status";
+  if (busy) {
+    status.classList.add("is-busy");
+  }
+  status.textContent = message;
+  content.appendChild(status);
+
+  if (closable) {
+    const actions = document.createElement("div");
+    actions.className = "rename-window-actions";
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "settings-background-button";
+    closeButton.textContent = "Close";
+    closeButton.addEventListener("click", hideServerUpdateModal);
+    actions.appendChild(closeButton);
+    content.appendChild(actions);
+    window.requestAnimationFrame(() => closeButton.focus());
+  }
+
+  panel.append(titleBar, content);
+  serverUpdateModal.appendChild(panel);
+  serverUpdateModal.hidden = false;
+}
+
+function hideServerUpdateModal() {
+  serverUpdateModal.hidden = true;
+  serverUpdateModal.replaceChildren();
+}
+
+// Checks GitHub for a newer release via the server, applies it, and waits for
+// the restarted server to come back before reloading the page.
+async function runServerUpdate() {
+  showUpdateStatus("Checking for updates...", { busy: true });
+  let check;
+  try {
+    const response = await fetch("/api/update");
+    const body = await response.json();
+    if (!response.ok) {
+      showUpdateStatus(`Update check failed: ${body.error || response.status}`, { closable: true });
+      return;
+    }
+    check = body;
+  } catch (error) {
+    showUpdateStatus(`Update check failed: ${error.message}`, { closable: true });
+    return;
+  }
+  if (!check.updateAvailable) {
+    showUpdateStatus(`Tessera is up to date (${check.currentVersion}).`, { closable: true });
+    return;
+  }
+
+  showUpdateStatus(`Updating ${check.currentVersion} → ${check.latestVersion} — downloading...`, { busy: true });
+  try {
+    const response = await fetch("/api/update", { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      showUpdateStatus(`Update failed: ${body.error || response.status}`, { closable: true });
+      return;
+    }
+    if (body.status !== "restarting") {
+      showUpdateStatus(`Tessera is up to date (${body.currentVersion}).`, { closable: true });
+      return;
+    }
+  } catch (error) {
+    showUpdateStatus(`Update failed: ${error.message}`, { closable: true });
+    return;
+  }
+
+  showUpdateStatus("Restarting server...", { busy: true });
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const response = await fetch("/api/health", { signal: AbortSignal.timeout(2000), cache: "no-store" });
+      if (response.ok) {
+        const health = await response.json();
+        showUpdateStatus(`Updated to ${health.version || check.latestVersion} — reloading...`, { busy: true });
+        setTimeout(() => window.location.reload(), 800);
+        return;
+      }
+    } catch {
+      // Server still restarting; keep polling.
+    }
+  }
+  showUpdateStatus("The server did not come back within a minute. Reload the page manually once it is up.", { closable: true });
+}
+
 // Every action the workspace menu offers, flattened into searchable commands,
 // plus jump-to-window entries (which also restore minimized panes).
 function buildPaletteCommands() {
@@ -4348,6 +4488,7 @@ function buildPaletteCommands() {
     commands.push({ id: "destroy-window", label: "Destroy Window", hint: "Ctrl+Backspace", run: () => destroyActivePane() });
   }
   commands.push({ id: "settings", label: "Settings...", hint: "workspace", run: () => openSettingsModal() });
+  commands.push({ id: "update-server", label: "Update Server", hint: "server", run: () => void runServerUpdate() });
   if (multiUser) {
     for (const name of userRoster) {
       if (name !== currentUser) {
@@ -4389,6 +4530,7 @@ const paletteShortcutCodes = {
   "dock-bottom": "DB",
   "destroy-window": "DD",
   "settings": "ST",
+  "update-server": "UP",
 };
 
 // Stamps each command with its fixed code (or none, for dynamic entries).
@@ -4753,7 +4895,7 @@ function applyDockAction(action, rect) {
     return;
   }
 
-  setActivePane(rect, { raise: true });
+  setActivePane(rect, { raise: true, focusEditor: true });
 
   if (action === "restore") {
     if (rect.restoreBox) {

@@ -12,7 +12,11 @@ import (
 	"time"
 
 	"tessera/internal/server"
+	"tessera/internal/update"
 )
+
+// updateRepo is the GitHub repository the self-updater checks for releases.
+const updateRepo = "bently0602/tessera"
 
 func main() {
 	log.SetFlags(0)
@@ -25,11 +29,19 @@ func main() {
 
 	users := parseUsers(*usersFlag)
 
+	updater, err := update.New(updateRepo)
+	if err != nil {
+		log.Printf("self-update unavailable: %v", err)
+	} else {
+		updater.CleanupOld()
+	}
+
 	srv, err := server.Start(context.Background(), server.Options{
-		Addr:   *addr,
-		DBPath: *dbPath,
-		WebDir: *webDir,
-		Users:  users,
+		Addr:    *addr,
+		DBPath:  *dbPath,
+		WebDir:  *webDir,
+		Users:   users,
+		Updater: updater,
 	})
 	if err != nil {
 		log.Fatalf("start server: %v", err)
@@ -44,8 +56,17 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
+	restart := false
+	var restartCh <-chan struct{}
+	if updater != nil {
+		restartCh = updater.RestartRequested()
+	}
+
 	select {
 	case <-stop:
+	case <-restartCh:
+		restart = true
+		log.Printf("restarting for update")
 	case err := <-srv.ServeErr():
 		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server failed: %v", err)
@@ -56,6 +77,12 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown: %v", err)
+	}
+
+	if restart {
+		if err := updater.SpawnReplacement(); err != nil {
+			log.Fatalf("spawn updated executable: %v", err)
+		}
 	}
 }
 

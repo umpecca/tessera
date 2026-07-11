@@ -12,6 +12,8 @@ import (
 	"tessera/internal/shell"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
+	"tessera/internal/update"
+	"tessera/internal/version"
 )
 
 type API struct {
@@ -23,6 +25,9 @@ type API struct {
 	// Users is the roster for multi-user mode. When empty, Tessera runs in
 	// single-user mode with just the default workspace.
 	Users []string
+	// Updater enables the self-update endpoint; nil (e.g. the desktop build)
+	// makes /api/update report the feature as unavailable.
+	Updater *update.Updater
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -37,6 +42,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/directories", a.listDirectories)
 	mux.HandleFunc("/api/file", a.fileContents)
 	mux.HandleFunc("/api/files", a.fileOperations)
+	mux.HandleFunc("/api/update", a.selfUpdate)
 	mux.HandleFunc("/", a.staticFiles())
 }
 
@@ -45,7 +51,7 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version.Version})
 }
 
 // users reports whether multi-user mode is enabled and, if so, the roster the

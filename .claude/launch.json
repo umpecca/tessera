@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tessera",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "./cmd/tessera", "-addr", "127.0.0.1:7332", "-web", "./web", "-db", "./tessera-preview.sqlite3", "-users", "alice,bob,carol"],
+      "port": 7332,
+      "autoPort": true
+    },
+    {
+      "name": "tessera-alt",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "./cmd/tessera", "-addr", "127.0.0.1:7444", "-web", "./web", "-db", "./tessera-preview.sqlite3", "-users", "alice,bob,carol"],
+      "port": 7444,
+      "autoPort": false
+    }
+  ]
+}

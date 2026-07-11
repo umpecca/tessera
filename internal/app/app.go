@@ -9,6 +9,7 @@ import (
 	"tessera/internal/shell"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
+	"tessera/internal/update"
 	"tessera/web"
 )
 
@@ -20,6 +21,8 @@ type App struct {
 	WebFS     fs.FS
 	// Users is the optional multi-user roster, passed through to the API.
 	Users []string
+	// Updater optionally enables the self-update endpoint.
+	Updater *update.Updater
 }
 
 func (a *App) Handler() http.Handler {
@@ -42,6 +45,7 @@ func (a *App) Handler() http.Handler {
 		Terminals: terminalManager,
 		WebFS:     webFS,
 		Users:     a.Users,
+		Updater:   a.Updater,
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)
