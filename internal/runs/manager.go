@@ -61,6 +61,9 @@ type Run struct {
 	outputPrefix       string
 	commandOutputChars int
 	lastInsertedChar   string
+	ctx                context.Context
+	cancel             context.CancelFunc
+	done               chan struct{}
 	subscribers        map[chan Event]struct{}
 	mu                 sync.Mutex
 }
@@ -129,8 +132,10 @@ func (m *Manager) Start(req StartRequest) (<-chan Event, func(), string, error) 
 		cursor:           req.InsertPos,
 		outputPrefix:     req.OutputPrefix,
 		lastInsertedChar: "\n",
+		done:             make(chan struct{}),
 		subscribers:      map[chan Event]struct{}{},
 	}
+	run.ctx, run.cancel = context.WithCancel(m.ctx)
 
 	ch, unsubscribe := run.subscribe(false)
 	m.mu.Lock()
@@ -192,32 +197,61 @@ func (m *Manager) Subscribe(runID string, includeSnapshot bool) (<-chan Event, f
 	return ch, unsubscribe, true
 }
 
-func (m *Manager) run(run *Run) {
-	run.insert(m.ctx, "\n", 0, m.store)
+func (m *Manager) StopWorkspace(ctx context.Context, workspaceID string) error {
+	if m == nil {
+		return nil
+	}
+	if workspaceID == "" {
+		workspaceID = store.DefaultWorkspaceID
+	}
+	m.mu.Lock()
+	runs := make([]*Run, 0)
+	for _, run := range m.runs {
+		if run.workspaceID == workspaceID {
+			runs = append(runs, run)
+		}
+	}
+	m.mu.Unlock()
+	for _, run := range runs {
+		run.cancel()
+	}
+	for _, run := range runs {
+		select {
+		case <-run.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
 
-	for event := range m.runner.Run(m.ctx, shell.RunRequest{
+func (m *Manager) run(run *Run) {
+	defer close(run.done)
+	run.insert(run.ctx, "\n", 0, m.store)
+
+	for event := range m.runner.Run(run.ctx, shell.RunRequest{
 		RunID:   run.id,
 		Command: run.command,
 		Cwd:     run.cwd,
 	}) {
 		switch event.Type {
 		case "start":
-			run.setCwd(m.ctx, event.Cwd, m.store)
+			run.setCwd(run.ctx, event.Cwd, m.store)
 			run.broadcast(Event{Type: "start", RunID: run.id, WorkspaceID: run.workspaceID, PaneID: run.paneID, Cwd: event.Cwd})
 		case "stdout", "stderr":
-			run.appendCommandOutput(m.ctx, event.Text, m.store)
+			run.appendCommandOutput(run.ctx, event.Text, m.store)
 		case "error":
-			run.appendHostMessage(m.ctx, event.Error, m.store)
+			run.appendHostMessage(run.ctx, event.Error, m.store)
 		case "exit":
 			code := 0
 			if event.Code != nil {
 				code = *event.Code
 			}
 			if event.Cwd != "" {
-				run.setCwd(m.ctx, event.Cwd, m.store)
+				run.setCwd(run.ctx, event.Cwd, m.store)
 			}
-			run.finishTranscript(m.ctx, code, m.store)
-			_ = m.store.FinishCommandRun(m.ctx, run.id, event.Cwd, code)
+			run.finishTranscript(run.ctx, code, m.store)
+			_ = m.store.FinishCommandRun(run.ctx, run.id, event.Cwd, code)
 			run.broadcast(Event{Type: "exit", RunID: run.id, WorkspaceID: run.workspaceID, PaneID: run.paneID, Cwd: event.Cwd, Code: &code})
 		}
 	}

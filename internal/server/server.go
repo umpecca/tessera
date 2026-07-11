@@ -27,6 +27,9 @@ type Options struct {
 	// WebDir, when set, serves the SPA from this directory instead of the
 	// embedded assets.
 	WebDir string
+	// Users, when non-empty, enables multi-user mode: the SPA shows a user
+	// selection screen and each user gets a separate workspace.
+	Users []string
 }
 
 type Server struct {
@@ -61,6 +64,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Runs:      runManager,
 		Terminals: terminalManager,
 		WebFS:     webFS,
+		Users:     opts.Users,
 	}
 
 	ln, err := net.Listen("tcp", opts.Addr)

@@ -45,6 +45,10 @@ func (a *API) runCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "paneId is required")
 		return
 	}
+	if !a.workspaceAllowed(r.Context(), req.WorkspaceID) {
+		writeError(w, http.StatusNotFound, "unknown session")
+		return
+	}
 
 	events, unsubscribe, _, err := a.Runs.Start(runs.StartRequest{
 		WorkspaceID:  req.WorkspaceID,
@@ -75,6 +79,10 @@ func (a *API) listRuns(w http.ResponseWriter, r *http.Request) {
 	workspaceID := r.URL.Query().Get("workspaceId")
 	if workspaceID == "" {
 		workspaceID = store.DefaultWorkspaceID
+	}
+	if !a.workspaceAllowed(r.Context(), workspaceID) {
+		writeError(w, http.StatusNotFound, "unknown session")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": a.Runs.ActiveRuns(workspaceID)})
 }

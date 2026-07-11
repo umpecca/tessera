@@ -88,3 +88,54 @@ func TestManagerPersistsOutputAfterSubscriberLeaves(t *testing.T) {
 		t.Fatalf("buffer = %q, want command output", buffer)
 	}
 }
+
+func TestStopWorkspaceDoesNotCancelOtherWorkspace(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	command := "sleep 5"
+	if runtime.GOOS == "windows" {
+		command = "Start-Sleep -Seconds 5"
+	}
+	for _, workspaceID := range []string{"one", "two"} {
+		workspace := &store.Workspace{
+			ID: workspaceID, OwnerID: "alice", Name: workspaceID,
+			Layout: json.RawMessage(`{"panes":["pane-` + workspaceID + `"]}`),
+			Panes:  []store.Pane{{ID: "pane-" + workspaceID, Title: workspaceID, BufferText: command, Cwd: t.TempDir(), Width: 320, Height: 200}},
+		}
+		if err := st.SaveWorkspace(ctx, workspace); err != nil {
+			t.Fatalf("save workspace %s: %v", workspaceID, err)
+		}
+	}
+
+	manager := NewManager(st, &shell.Runner{})
+	defer manager.Close()
+	for _, workspaceID := range []string{"one", "two"} {
+		_, unsubscribe, _, err := manager.Start(StartRequest{
+			WorkspaceID: workspaceID, PaneID: "pane-" + workspaceID, Command: command, Cwd: t.TempDir(), InsertPos: len(command),
+		})
+		if err != nil {
+			t.Fatalf("start workspace %s: %v", workspaceID, err)
+		}
+		unsubscribe()
+	}
+
+	stopCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	if err := manager.StopWorkspace(stopCtx, "one"); err != nil {
+		t.Fatalf("stop workspace one: %v", err)
+	}
+	if got := len(manager.ActiveRuns("one")); got != 0 {
+		t.Fatalf("workspace one active runs = %d", got)
+	}
+	if got := len(manager.ActiveRuns("two")); got != 1 {
+		t.Fatalf("workspace two active runs = %d, want 1", got)
+	}
+	if err := manager.StopWorkspace(stopCtx, "two"); err != nil {
+		t.Fatalf("stop workspace two: %v", err)
+	}
+}

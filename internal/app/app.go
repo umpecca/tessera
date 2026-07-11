@@ -18,6 +18,8 @@ type App struct {
 	Runs      *runs.Manager
 	Terminals *terminal.Manager
 	WebFS     fs.FS
+	// Users is the optional multi-user roster, passed through to the API.
+	Users []string
 }
 
 func (a *App) Handler() http.Handler {
@@ -39,6 +41,7 @@ func (a *App) Handler() http.Handler {
 		Runs:      runManager,
 		Terminals: terminalManager,
 		WebFS:     webFS,
+		Users:     a.Users,
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)

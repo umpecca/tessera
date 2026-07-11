@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">
+  <title>Tessera low-color icon</title>
+  <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" stroke="#4f5f6a" stroke-width="1"/>
+  <path fill="#6f7f8b" d="M4 4h3.5v3H6.25V8.25H4V4Zm4.5 0H12v3.5H9.75V6.25H8.5V4ZM4 9.25h3.5V12H4V9.25Zm6 0H12V12H8.5v-1.25H10V9.25Z"/>
+  <path fill="#245f6e" d="M7.5 7h1.75v3.75H7.5V7Z"/>
+</svg>

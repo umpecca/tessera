@@ -1,5 +1,333 @@
+/* Fira Code: the monospace face used by the editor, terminal, and app
+ * chrome. Served locally from /assets so the app works offline (no CDN).
+ * These are the full (non-subset) faces so Fira Code's programming
+ * ligatures survive. It ships no italic; the browser synthesizes an
+ * oblique when a highlight style asks for italic. */
+@font-face {
+  font-family: "Fira Code";
+  src: url("/assets/FiraCode-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fira Code";
+  src: url("/assets/FiraCode-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+/*
+@font-face {
+  font-family: "Tessera Swiss";
+  src: url("/assets/Swiss721Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+*/
+
+/*@font-face {
+  font-family: "Tessera Swiss";
+  src: url("/assets/Swiss721Black.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}*/
+
 * {
   box-sizing: border-box;
+}
+
+/*
+ * Theme: Next Tessera (default).
+ * Every color in the UI flows through these variables; a theme is a
+ * [data-theme="..."] block on :root that overrides them.
+ */
+:root {
+  --tessera-font: "Fira Code", monospace;
+
+  /*"Tessera Swiss", Arial, Helvetica, sans-serif;*/
+
+  /* Surfaces */
+  --board-bg: #fbfaf6;
+  --pane-bg: #f4f2ec;
+  --chrome-bg: #ddd9cf;
+  --input-bg: #fbfaf6;
+
+  /* Bevels and borders */
+  --bevel-hi: #ffffff;
+  --bevel-lo: #b9b7b0;
+  --border-strong: #8f8f8f;
+  --border-panel: #7d7a72;
+  --bevel-panel-lo: #aaa79e;
+  --divider: #c4c0b8;
+
+  /* Text */
+  --text: #1f1f1b;
+  --text-muted: #4f4b43;
+  --text-faint: #68645b;
+  --text-disabled: #8d897e;
+
+  /* Accent (selected / active pane) */
+  --accent-border: #2f5f6a;
+  --accent-bevel-hi: #6f9aa6;
+  --accent-bevel-lo: #1f4651;
+  --accent-strong-bg: #0b2a4d;
+  --accent-strong-text: #ffffff;
+  --selection-bg: rgba(36, 95, 110, 0.24);
+  --dock-preview-fill: rgba(47, 95, 106, 0.18);
+  --dock-preview-inner: rgba(255, 255, 255, 0.45);
+
+  /* Highlight (menu hover, dialog title strip) */
+  --highlight-bg: #f4df45;
+  --highlight-bevel-hi: #fff8a4;
+
+  /* Window tab grip */
+  --grip-bg: #b8b8b8;
+  --grip-border: #737373;
+  --grip-active-border: #071d36;
+  --grip-bevel-hi: #e4e4e4;
+  --grip-bevel-lo: #7f7f7f;
+
+  /* Title-bar minimize/maximize buttons (Win 3.11 look) */
+  --control-border: #1f1f1b;
+  --control-face: #cfcfcf;
+  --control-bevel-hi: #ffffff;
+  --control-bevel-lo: #7f7f7f;
+  --control-glyph: #1f1f1b;
+
+  /* Running indicator */
+  --running-border: #7d7118;
+  --running-bg: #c0b64b;
+  --running-bevel-hi: #f5ea80;
+  --running-bevel-lo: #827924;
+
+  /* Danger */
+  --danger-text: #7b2525;
+  --danger-border: #9a3a32;
+  --danger-bg: #f2d7d4;
+  --danger-bevel-hi: #fff7f6;
+  --danger-bevel-lo: #c99791;
+
+  /* Terminal pane (canvas colors are set at terminal start in app.js) */
+  --terminal-bg: #000000;
+  --terminal-text: #e5e1d5;
+
+  /* Worksheet editor */
+  --editor-text: #1f1f1b;
+  --editor-caret: #1f1f1b;
+  --editor-gutter-bg: rgba(235, 232, 222, 0.72);
+  --editor-gutter-text: #68645b;
+  --editor-gutter-border: #c4c0b8;
+  --editor-active-line: rgba(255, 255, 255, 0.34);
+  --editor-active-line-gutter: rgba(255, 255, 255, 0.5);
+
+  /* Focus, rename, overlays, shadows */
+  --focus-outline: rgba(31, 31, 27, 0.55);
+  --focus-outline-strong: rgba(31, 31, 27, 0.82);
+  --accent-focus-outline: rgba(255, 255, 255, 0.78);
+  --accent-focus-outline-strong: rgba(255, 255, 255, 0.86);
+  --rename-bg: rgba(255, 255, 255, 0.2);
+  --rename-bevel: rgba(255, 255, 255, 0.6);
+  --accent-rename-border: rgba(255, 255, 255, 0.72);
+  --accent-rename-bg: rgba(255, 255, 255, 0.12);
+  --overlay-backdrop: rgba(31, 31, 27, 0.22);
+  --menu-shadow: rgba(31, 31, 27, 0.2);
+  --panel-shadow: rgba(31, 31, 27, 0.22);
+
+  /* Decorations */
+  --board-overlay: none;
+  --icon-filter: none;
+  --pane-active-glow: 0 0 0 rgba(0, 0, 0, 0);
+}
+
+/*
+ * Theme: Studio. Crisp cool grays, ink text, slate-blue accent, faint
+ * drafting grid on the board, soft elevation shadow on the active pane.
+ */
+:root[data-theme="studio"] {
+  --board-bg: #eef1f4;
+  --pane-bg: #ffffff;
+  --chrome-bg: #e3e7ec;
+  --input-bg: #ffffff;
+
+  --bevel-hi: #ffffff;
+  --bevel-lo: #c9d0d8;
+  --border-strong: #9aa4b0;
+  --border-panel: #8792a0;
+  --bevel-panel-lo: #c2cad3;
+  --divider: #d5dbe2;
+
+  --text: #1c2733;
+  --text-muted: #46525f;
+  --text-faint: #67737f;
+  --text-disabled: #9aa4ae;
+
+  --accent-border: #35597f;
+  --accent-bevel-hi: #7d9cbb;
+  --accent-bevel-lo: #23405e;
+  --accent-strong-bg: #24466b;
+  --accent-strong-text: #f4f8fc;
+  --selection-bg: rgba(53, 89, 127, 0.18);
+  --dock-preview-fill: rgba(53, 89, 127, 0.12);
+  --dock-preview-inner: rgba(255, 255, 255, 0.5);
+
+  --highlight-bg: #d7e3f0;
+  --highlight-bevel-hi: #eaf2fa;
+
+  --grip-bg: #cfd6dd;
+  --grip-border: #9aa4b0;
+  --grip-active-border: #1d3a57;
+  --grip-bevel-hi: #e8edf2;
+  --grip-bevel-lo: #aeb7c0;
+
+  --control-border: #1c2733;
+  --control-face: #dfe4e9;
+  --control-bevel-hi: #ffffff;
+  --control-bevel-lo: #9aa4b0;
+  --control-glyph: #1c2733;
+
+  --running-border: #a87b1e;
+  --running-bg: #e3b64e;
+  --running-bevel-hi: #f7dfa0;
+  --running-bevel-lo: #8f6a1a;
+
+  --danger-text: #a02c2c;
+  --danger-border: #b04848;
+  --danger-bg: #f7dfdf;
+  --danger-bevel-hi: #fdf2f2;
+  --danger-bevel-lo: #d8a8a8;
+
+  --terminal-bg: #000000;
+  --terminal-text: #d8dee6;
+
+  --editor-text: #1c2733;
+  --editor-caret: #24466b;
+  --editor-gutter-bg: rgba(227, 231, 236, 0.72);
+  --editor-gutter-text: #67737f;
+  --editor-gutter-border: #d5dbe2;
+  --editor-active-line: rgba(53, 89, 127, 0.06);
+  --editor-active-line-gutter: rgba(53, 89, 127, 0.1);
+
+  --focus-outline: rgba(28, 39, 51, 0.5);
+  --focus-outline-strong: rgba(28, 39, 51, 0.8);
+  --accent-focus-outline: rgba(244, 248, 252, 0.78);
+  --accent-focus-outline-strong: rgba(244, 248, 252, 0.88);
+  --rename-bg: rgba(255, 255, 255, 0.55);
+  --rename-bevel: rgba(255, 255, 255, 0.85);
+  --accent-rename-border: rgba(244, 248, 252, 0.7);
+  --accent-rename-bg: rgba(255, 255, 255, 0.14);
+  --overlay-backdrop: rgba(28, 39, 51, 0.3);
+  --menu-shadow: rgba(28, 39, 51, 0.14);
+  --panel-shadow: rgba(28, 39, 51, 0.16);
+
+  --board-overlay:
+    repeating-linear-gradient(
+      0deg,
+      rgba(53, 89, 127, 0.05) 0,
+      rgba(53, 89, 127, 0.05) 1px,
+      transparent 1px,
+      transparent 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(53, 89, 127, 0.05) 0,
+      rgba(53, 89, 127, 0.05) 1px,
+      transparent 1px,
+      transparent 24px
+    );
+  --pane-active-glow: 0 0 18px rgba(28, 39, 51, 0.28);
+}
+
+/* Theme: Hacker. Green phosphor on black, faint scanlines, soft glow. */
+:root[data-theme="hacker"] {
+  --board-bg: #030907;
+  --pane-bg: #05130b;
+  --chrome-bg: #06180d;
+  --input-bg: #02120a;
+
+  --bevel-hi: #1d5c35;
+  --bevel-lo: #021007;
+  --border-strong: #1f7a41;
+  --border-panel: #2aa457;
+  --bevel-panel-lo: #04220f;
+  --divider: #14522c;
+
+  --text: #45ff88;
+  --text-muted: #2fbf63;
+  --text-faint: #26994f;
+  --text-disabled: #1b6b38;
+
+  --accent-border: #59ffa1;
+  --accent-bevel-hi: #8dffbe;
+  --accent-bevel-lo: #0d4a26;
+  --accent-strong-bg: #0f3d22;
+  --accent-strong-text: #a8ffcd;
+  --selection-bg: rgba(0, 255, 102, 0.25);
+  --dock-preview-fill: rgba(0, 255, 102, 0.14);
+  --dock-preview-inner: rgba(141, 255, 190, 0.4);
+
+  --highlight-bg: #0f4d27;
+  --highlight-bevel-hi: #1d7a41;
+
+  --grip-bg: #0b3018;
+  --grip-border: #1f7a41;
+  --grip-active-border: #0d4a26;
+  --grip-bevel-hi: #2aa457;
+  --grip-bevel-lo: #04220f;
+
+  --control-border: #021007;
+  --control-face: #0b3018;
+  --control-bevel-hi: #2aa457;
+  --control-bevel-lo: #021007;
+  --control-glyph: #45ff88;
+
+  --running-border: #1fdd66;
+  --running-bg: #12b04b;
+  --running-bevel-hi: #66ffa5;
+  --running-bevel-lo: #0a5c28;
+
+  --danger-text: #ff6161;
+  --danger-border: #b03030;
+  --danger-bg: #2b0808;
+  --danger-bevel-hi: #4d1414;
+  --danger-bevel-lo: #1a0404;
+
+  --terminal-bg: #000000;
+  --terminal-text: #38ff79;
+
+  --editor-text: #45ff88;
+  --editor-caret: #59ffa1;
+  --editor-gutter-bg: rgba(4, 34, 17, 0.72);
+  --editor-gutter-text: #26994f;
+  --editor-gutter-border: #14522c;
+  --editor-active-line: rgba(0, 255, 102, 0.07);
+  --editor-active-line-gutter: rgba(0, 255, 102, 0.12);
+
+  --focus-outline: rgba(69, 255, 136, 0.55);
+  --focus-outline-strong: rgba(69, 255, 136, 0.85);
+  --accent-focus-outline: rgba(168, 255, 205, 0.78);
+  --accent-focus-outline-strong: rgba(168, 255, 205, 0.9);
+  --rename-bg: rgba(0, 255, 102, 0.08);
+  --rename-bevel: rgba(0, 255, 102, 0.28);
+  --accent-rename-border: rgba(168, 255, 205, 0.7);
+  --accent-rename-bg: rgba(0, 255, 102, 0.1);
+  --overlay-backdrop: rgba(0, 20, 8, 0.6);
+  --menu-shadow: rgba(0, 0, 0, 0.5);
+  --panel-shadow: rgba(0, 0, 0, 0.55);
+
+  --board-overlay: repeating-linear-gradient(
+    0deg,
+    rgba(0, 255, 102, 0.04) 0,
+    rgba(0, 255, 102, 0.04) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  --icon-filter: sepia(1) saturate(4) hue-rotate(75deg) brightness(1.5);
+  --pane-active-glow: 0 0 14px rgba(0, 255, 102, 0.22);
 }
 
 html,
@@ -7,12 +335,19 @@ body {
   width: 100%;
   height: 100%;
   margin: 0;
+  /* Keep the installed app from rubber-band scrolling or zooming as a whole. */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
-  background: #fbfaf6;
+  background: var(--board-bg);
+  font-family: var(--tessera-font);
   overflow: hidden;
   user-select: none;
+  /* No grey flash or magnifier callout on taps of the workspace chrome. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 input {
@@ -23,29 +358,50 @@ input {
   position: relative;
   width: 100vw;
   height: 100vh;
+  /* Dynamic viewport unit tracks the visible area on iPad Safari (with its
+     collapsing toolbars); the vh line above is the fallback. */
+  height: 100dvh;
   overflow: hidden;
-  background: #fbfaf6;
+  /* Two layers: the theme overlay (scanlines/grid) sits on top of the optional
+     per-user background image, which can use the workspace's Fill, Fit,
+     Stretch, or Center display setting. */
+  background-color: var(--board-bg);
+  background-image: var(--board-overlay), var(--board-user-image, none);
+  background-repeat: repeat, no-repeat;
+  background-position: center, center;
+  background-size: auto, var(--board-user-size, cover);
   cursor: crosshair;
   touch-action: none;
+  -webkit-touch-callout: none;
+}
+
+/* Draggable chrome must claim the gesture so a touch-drag moves/resizes the
+   pane instead of scrolling the page, and must not raise the iOS callout. */
+.window-tab,
+.window-grip,
+.resize-handle,
+.resize-edge {
+  touch-action: none;
+  -webkit-touch-callout: none;
 }
 
 .workspace-status {
   position: fixed;
-  right: 8px;
-  bottom: 7px;
+  right: calc(8px + env(safe-area-inset-right));
+  bottom: calc(7px + env(safe-area-inset-bottom));
   z-index: 90000;
   min-width: 64px;
   max-width: min(260px, calc(100vw - 16px));
   height: 22px;
   overflow: hidden;
-  border: 1px solid #8f8f8f;
+  border: 1px solid var(--border-strong);
   padding: 1px 8px;
-  background: #ddd9cf;
+  background: var(--chrome-bg);
   box-shadow:
-    inset 1px 1px 0 #ffffff,
-    inset -1px -1px 0 #b9b7b0;
-  color: #4f4b43;
-  font-family: "Segoe UI", system-ui, sans-serif;
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo);
+  color: var(--text-muted);
+  font-family: var(--tessera-font);
   font-size: 11px;
   font-weight: 600;
   line-height: 18px;
@@ -56,18 +412,22 @@ input {
   user-select: none;
 }
 
+.workspace-status[hidden] {
+  display: none;
+}
+
 .workspace-status[data-state="saving"],
 .workspace-status[data-state="loading"] {
-  color: #1f1f1b;
+  color: var(--text);
 }
 
 .workspace-status[data-state="error"] {
-  border-color: #9a3a32;
-  background: #f2d7d4;
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
   box-shadow:
-    inset 1px 1px 0 #fff7f6,
-    inset -1px -1px 0 #c99791;
-  color: #7b2525;
+    inset 1px 1px 0 var(--danger-bevel-hi),
+    inset -1px -1px 0 var(--danger-bevel-lo);
+  color: var(--danger-text);
 }
 
 .rectangle {
@@ -76,22 +436,52 @@ input {
   left: 0;
   min-width: 1px;
   min-height: 1px;
-  border: 2px solid #8f8f8f;
-  background: #f4f2ec;
-  box-shadow:
-    inset 1px 1px 0 #ffffff,
-    inset -1px -1px 0 #b9b7b0;
-  cursor: move;
+  border: 2px solid var(--border-strong);
+  background: var(--pane-bg);
+  /*box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo);
+    */
+  cursor: default;
   touch-action: none;
 }
 
 .rectangle.is-selected,
 .rectangle[data-active-pane="true"] {
-  border-color: #6f6f6f;
+  /*border-color: var(--accent-border);*/
+  /*
   box-shadow:
-    inset 1px 1px 0 #ffffff,
-    inset -1px -1px 0 #aaa79e,
-    0 0 0 1px rgba(47, 95, 106, 0.18);
+    inset 1px 1px 0 var(--accent-bevel-hi),
+    inset -1px -1px 0 var(--accent-bevel-lo),
+    var(--pane-active-glow);
+  */
+}
+
+.rectangle[data-pane-kind="pending"] {
+  border: 1px dashed var(--accent-border);
+  background: transparent;
+  box-shadow: none;
+  cursor: crosshair;
+}
+
+.rectangle[data-pane-kind="pending"] .window-tab,
+.rectangle[data-pane-kind="pending"] .window-body,
+.rectangle[data-pane-kind="pending"] .window-status,
+.rectangle[data-pane-kind="pending"] .resize-handle,
+.rectangle[data-pane-kind="pending"] .resize-edge {
+  display: none;
+}
+
+/* A full pane becomes the app surface: remove its window chrome entirely.
+   Alt+F10 and the command palette still restore it. */
+.rectangle.is-full {
+  border: 0;
+}
+
+.rectangle.is-full .window-tab,
+.rectangle.is-full .resize-handle,
+.rectangle.is-full .resize-edge {
+  display: none;
 }
 
 .window-tab {
@@ -100,119 +490,198 @@ input {
   left: -2px;
   width: calc(100% + 4px);
   height: 24px;
-  border: 2px solid #8f8f8f;
-  border-bottom: 0;
-  background: #ddd9cf;
+  border-top: 2px solid var(--border-strong);
+  border-left: 2px solid var(--border-strong);
+  border-right: 2px solid var(--border-strong);
+  background: var(--chrome-bg);
+  /*
   box-shadow:
-    inset 1px 1px 0 #ffffff,
-    inset -1px 0 0 #b9b7b0;
-  color: #1f1f1b;
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px 0 0 var(--bevel-lo);
+  */
+  color: var(--text);
   cursor: move;
-  z-index: 1;
+  z-index: 6;
 }
 
-.window-tab::before,
-.window-tab::after {
+.window-tab::before {
   content: "";
+  box-sizing: border-box;
   position: absolute;
-  top: 5px;
-  width: 8px;
-  height: 8px;
-  border: 1px solid #777;
-  background: #f8f6ef;
-  box-shadow: inset 1px 1px 0 #ffffff;
+  top: 0;
+  left: 0;
+  width: 43px;
+  height: 100%;
+  border-right: 1px solid var(--grip-border);
+  background: var(--grip-bg);
+  /*box-shadow:
+    inset 1px 1px 0 var(--grip-bevel-hi),
+    inset 0 -1px 0 var(--grip-bevel-lo);
+  */
   pointer-events: none;
   z-index: 4;
 }
 
-.window-tab::before {
-  left: 8px;
+.window-tab::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 13px;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  background-image: url("/assets/tessera-lowcolor-icon.svg?v=control-icons-contrast-1");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 16px 16px;
+  image-rendering: pixelated;
+  filter: var(--icon-filter);
+  pointer-events: none;
+  z-index: 5;
 }
 
-.window-tab::after {
-  left: 22px;
+.rectangle[data-pane-kind="terminal"] .window-tab::after {
+  background-image: url("/assets/tessera-terminal-icon.svg?v=control-icons-contrast-1");
 }
 
 .rectangle.is-selected .window-tab,
 .rectangle[data-active-pane="true"] .window-tab {
-  border-color: #06182d;
-  background: #0b2a4d;
-  box-shadow:
-    inset 1px 1px 0 #3f6389,
-    inset -1px 0 0 #041426;
+  /*border-color: var(--accent-border);*/
+  background: var(--accent-strong-bg);
+  /*box-shadow:
+    inset 1px 1px 0 var(--accent-bevel-hi),
+    inset -1px 0 0 var(--accent-bevel-lo),
+    var(--pane-active-glow);*/
 }
 
 .rectangle.is-selected .window-tab::before,
-.rectangle.is-selected .window-tab::after,
-.rectangle[data-active-pane="true"] .window-tab::before,
-.rectangle[data-active-pane="true"] .window-tab::after {
-  border-color: #071d36;
-  background: #eef5ff;
+.rectangle[data-active-pane="true"] .window-tab::before {
+  border-color: var(--grip-active-border);
+  background: var(--grip-bg);
 }
 
 .rectangle.is-selected .window-title,
 .rectangle[data-active-pane="true"] .window-title {
-  color: #ffffff;
+  color: var(--accent-strong-text);
 }
 
 .rectangle.is-selected .window-title:focus,
 .rectangle[data-active-pane="true"] .window-title:focus {
-  outline-color: rgba(255, 255, 255, 0.78);
+  outline-color: var(--accent-focus-outline);
 }
 
-.rectangle[data-running="true"] .window-tab {
-  border-color: #7d7118;
-  background: #f4df45;
+.rectangle[data-running="true"] .window-tab::before {
+  border-color: var(--running-border);
+  background: var(--running-bg);
   box-shadow:
-    inset 1px 1px 0 #fff8a4,
-    inset -1px 0 0 #bda72b;
+    inset 1px 1px 0 var(--running-bevel-hi),
+    inset 0 -1px 0 var(--running-bevel-lo);
+  animation: tessera-running-pulse 1s ease-in-out infinite;
 }
 
-.rectangle[data-running="true"] .window-tab::before,
-.rectangle[data-running="true"] .window-tab::after {
-  border-color: #77705b;
-  background: #f8f6ef;
-}
-
-.rectangle[data-running="true"] .window-title {
-  color: #1f1f1b;
-  padding-right: 28px;
-}
-
-.rectangle[data-running="true"] .window-title:focus {
-  outline-color: rgba(31, 31, 27, 0.55);
-}
-
-.rectangle[data-running="true"]::after {
-  content: "!";
-  position: absolute;
-  top: -20px;
-  right: 7px;
-  width: 13px;
-  height: 13px;
-  border: 1px solid #7d7118;
-  background: #fff8a4;
-  box-shadow:
-    inset 1px 1px 0 #ffffff,
-    0 1px 0 rgba(0, 0, 0, 0.16);
-  color: #1f1f1b;
-  font-family: "Segoe UI", system-ui, sans-serif;
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 12px;
-  text-align: center;
-  pointer-events: none;
-  z-index: 5;
+@keyframes tessera-running-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .window-grip {
   position: absolute;
   top: 0;
   left: 0;
-  width: 38px;
+  width: 47px;
   height: 100%;
-  cursor: move;
+  cursor: default;
   z-index: 3;
+}
+
+/* Windows 3.11-style minimize/maximize buttons: full-height silver squares
+   flush with the title bar's right edge, hard dark outlines, strong
+   light/shadow bevels, and solid triangle glyphs. */
+.window-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  height: 100%;
+  z-index: 7;
+}
+
+.window-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--grip-border); /*var(--control-border);*/
+  background: var(--control-face);
+  /*box-shadow:
+    inset 1px 1px 0 var(--control-bevel-hi),
+    inset -1px -1px 0 var(--control-bevel-lo);*/
+  cursor: default;
+}
+
+.window-control:focus {
+  outline: 0;
+}
+
+.window-control:active {
+  box-shadow:
+    inset -1px -1px 0 var(--control-bevel-hi),
+    inset 1px 1px 0 var(--control-bevel-lo);
+}
+
+.window-control[hidden] {
+  display: none;
+}
+
+/* Solid triangle glyphs, drawn with borders so they stay crisp and dense like
+   the originals: wide 2:1 triangles sitting a hair below center, as in the
+   Win 3.11 bitmaps. */
+.window-control::before,
+.window-control::after {
+  content: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  /*transform: translateY(1px);*/
+}
+
+.window-control[data-glyph="down"]::before {
+  content: "";
+  border-top: 5px solid var(--control-glyph);
+}
+
+.window-control[data-glyph="up"]::before {
+  content: "";
+  border-bottom: 5px solid var(--control-glyph);
+}
+
+/* Maximized state: the Win 3.11 restore glyph is a two-headed arrow. */
+.window-control[data-glyph="restore"]::before {
+  content: "";
+  border-bottom: 4px solid var(--control-glyph);
+  margin-bottom: 2px;
+}
+
+.window-control[data-glyph="restore"]::after {
+  content: "";
+  border-top: 4px solid var(--control-glyph);
+}
+
+/* A minimized pane leaves the canvas completely. Visibility instead of
+   display keeps a live terminal's dimensions intact while it is minimized. */
+.rectangle.is-minimized {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .window-title {
@@ -222,10 +691,10 @@ input {
   height: 100%;
   border: 0;
   outline: 0;
-  padding: 2px 8px 2px 42px;
+  padding: 2px 46px 2px 51px;
   background: transparent;
-  color: #1f1f1b;
-  font-family: "Segoe UI", system-ui, sans-serif;
+  color: var(--text);
+  font-family: var(--tessera-font);
   font-size: 13px;
   font-weight: 600;
   line-height: 20px;
@@ -234,9 +703,42 @@ input {
   z-index: 1;
 }
 
+.window-title[readonly] {
+  cursor: move;
+  user-select: none;
+}
+
 .window-title:focus {
-  outline: 1px dotted rgba(31, 31, 27, 0.55);
+  outline: 1px dotted var(--focus-outline);
   outline-offset: -4px;
+}
+
+.window-title.is-renaming {
+  left: 48px;
+  width: calc(100% - 50px - 42px);
+  height: calc(100% - 4px);
+  margin: 2px 2px 2px 0;
+  border: 1px solid var(--focus-outline);
+  padding: 0 5px;
+  background: var(--rename-bg);
+  box-shadow: inset 1px 1px 0 var(--rename-bevel);
+}
+
+.window-title.is-renaming:focus {
+  outline: 1px dotted var(--focus-outline-strong);
+  outline-offset: -3px;
+}
+
+.rectangle.is-selected .window-title.is-renaming,
+.rectangle[data-active-pane="true"] .window-title.is-renaming {
+  border-color: var(--accent-rename-border);
+  background: var(--accent-rename-bg);
+  color: var(--accent-strong-text);
+}
+
+.rectangle.is-selected .window-title.is-renaming:focus,
+.rectangle[data-active-pane="true"] .window-title.is-renaming:focus {
+  outline-color: var(--accent-focus-outline-strong);
 }
 
 .window-body {
@@ -247,6 +749,7 @@ input {
   background: transparent;
   cursor: text;
   user-select: text;
+  border-top: var(--grip-border) solid 1px;
 }
 
 .window-body .cm-editor {
@@ -262,14 +765,256 @@ input {
   outline: none;
 }
 
+.window-body .cm-lineNumbers .cm-gutterElement {
+  cursor: default;
+}
+
 .window-body.is-terminal {
   inset: 0 0 20px 0;
-  background: #10141c;
+  background: var(--terminal-bg);
+  border-top: var(--terminal-bg) solid 1px;
   cursor: text;
+}
+
+/* Terminal panes hide the status bar (font size / cwd) so the terminal
+   surface gets the full pane height; reclaim the 20px it would have left. */
+.rectangle[data-pane-kind="terminal"] .window-status {
+  display: none;
+}
+
+.rectangle[data-pane-kind="terminal"] .window-body.is-terminal {
+  inset: 0;
 }
 
 .window-body.is-pending {
   cursor: default;
+}
+
+.window-body.is-file-browser {
+  cursor: default;
+  user-select: none;
+}
+
+.pane-file-browser {
+  display: grid;
+  grid-template-rows: 30px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  background: var(--pane-bg);
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 12px;
+}
+
+.pane-file-browser-toolbar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid var(--divider);
+  background: var(--chrome-bg);
+}
+
+.pane-file-browser-tool {
+  flex: 0 0 auto;
+  height: 24px;
+  margin-left: 4px;
+  border: 1px solid var(--border-strong);
+  padding: 0 7px;
+  background: var(--chrome-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo);
+  color: var(--text);
+  font: inherit;
+  cursor: default;
+}
+
+.pane-file-browser-tool:disabled {
+  color: var(--text-disabled);
+}
+
+.pane-file-browser-tool:not(:disabled):hover,
+.pane-file-browser-tool:not(:disabled):focus {
+  border-color: var(--accent-border);
+  outline: 0;
+}
+
+.pane-file-browser-path {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin: 0 5px;
+  overflow: hidden;
+  border: 1px solid var(--divider);
+  padding: 2px 6px;
+  background: var(--pane-bg);
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-file-browser-main {
+  display: grid;
+  /* The sidebar holds to its stored width (set per-pane via
+     --file-browser-sidebar-width) instead of scaling with the pane, and only
+     gives way — via min() — once the pane gets too narrow to fit it. */
+  grid-template-columns: min(var(--file-browser-sidebar-width, 200px), calc(100% - 140px)) 5px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-file-browser-sidebar {
+  min-width: 0;
+  overflow: auto;
+  background: var(--chrome-bg);
+}
+
+.pane-file-browser-resize-handle {
+  position: relative;
+  width: 5px;
+  min-height: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-file-browser-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: var(--divider);
+}
+
+.pane-file-browser-resize-handle:hover::after,
+.pane-file-browser-resize-handle.is-dragging::after {
+  left: 1px;
+  width: 3px;
+  background: var(--focus-outline);
+}
+
+.pane-file-browser-sidebar-heading {
+  padding: 8px 8px 3px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.pane-file-browser-location {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border: 0;
+  padding: 4px 8px 4px 12px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  line-height: 18px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.pane-file-browser-location:hover,
+.pane-file-browser-location:focus,
+.pane-file-browser-location.is-current {
+  background: var(--highlight-bg);
+  outline: 0;
+}
+
+.pane-file-browser-location.is-current {
+  font-weight: 700;
+}
+
+.pane-file-browser-content {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--pane-bg);
+}
+
+.pane-file-browser-columns,
+.pane-file-browser-entry {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) 78px;
+  min-width: 0;
+}
+
+.pane-file-browser-columns {
+  border-bottom: 1px solid var(--divider);
+  background: var(--chrome-bg);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.pane-file-browser-columns span {
+  padding: 4px 7px;
+}
+
+.pane-file-browser-columns span + span {
+  border-left: 1px solid var(--divider);
+}
+
+.pane-file-browser-list {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.pane-file-browser-entry {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--divider);
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  line-height: 21px;
+  text-align: left;
+  cursor: default;
+}
+
+.pane-file-browser-entry:hover,
+.pane-file-browser-entry:focus,
+.pane-file-browser-entry.is-selected {
+  background: var(--selection-bg);
+  outline: 0;
+}
+
+.pane-file-browser-entry[data-kind="directory"] .pane-file-browser-name {
+  font-weight: 700;
+}
+
+.pane-file-browser-entry[data-openable="true"] .pane-file-browser-name {
+  color: var(--accent-border);
+}
+
+.pane-file-browser-name,
+.pane-file-browser-type {
+  overflow: hidden;
+  padding: 2px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-file-browser-type {
+  border-left: 1px solid var(--divider);
+  color: var(--text-faint);
+}
+
+.pane-file-browser-message {
+  padding: 14px;
+  color: var(--text-faint);
+}
+
+.pane-file-browser-message.is-error {
+  color: var(--danger-text);
 }
 
 .terminal-container {
@@ -277,9 +1022,9 @@ input {
   height: 100%;
   overflow: hidden;
   padding: 8px;
-  background: #10141c;
-  color: #e5e1d5;
-  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  background: var(--terminal-bg);
+  color: var(--terminal-text);
+  font-family: var(--tessera-font);
   font-size: 13px;
   user-select: text;
 }
@@ -289,7 +1034,7 @@ input {
 }
 
 .window-title::selection {
-  background: rgba(36, 95, 110, 0.24);
+  background: var(--selection-bg);
 }
 
 .window-status {
@@ -300,21 +1045,90 @@ input {
   display: flex;
   align-items: center;
   height: 20px;
-  border-top: 1px solid #c4c0b8;
-  background: #ddd9cf;
-  color: #4f4b43;
-  font-family: "Segoe UI", system-ui, sans-serif;
+  border-top: 1px solid var(--divider);
+  background: var(--chrome-bg);
+  color: var(--text-muted);
+  font-family: var(--tessera-font);
   font-size: 11px;
   line-height: 18px;
   user-select: text;
-  z-index: 1;
+  z-index: 5;
 }
 
 .window-status-label {
   flex: 0 0 auto;
   padding: 0 5px 0 7px;
-  color: #68645b;
+  color: var(--text-faint);
   font-weight: 600;
+}
+
+.window-editor-mode {
+  flex: 0 0 auto;
+  align-self: center;
+  height: 16px;
+  min-width: 52px;
+  margin-left: 5px;
+  border: 1px solid var(--divider);
+  padding: 0 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  line-height: 14px;
+  cursor: pointer;
+}
+
+.window-editor-mode:hover,
+.window-editor-mode:focus {
+  border-color: var(--focus-outline);
+  color: var(--text);
+  outline: none;
+}
+
+.rectangle.is-selected .window-editor-mode,
+.rectangle[data-active-pane="true"] .window-editor-mode {
+  border-color: var(--accent-border);
+  color: var(--accent-border);
+}
+
+.window-font-size {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 100%;
+  margin-left: 5px;
+  border-left: 1px solid var(--divider);
+}
+
+.window-font-size-button {
+  width: 23px;
+  height: 16px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 14px;
+  cursor: pointer;
+}
+
+.window-font-size-button:hover,
+.window-font-size-button:focus {
+  outline: none;
+  background: var(--highlight-bg);
+  color: var(--text);
+}
+
+.window-font-size-button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.window-font-size-value {
+  min-width: 27px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 .window-cwd {
@@ -325,7 +1139,7 @@ input {
   outline: 0;
   padding: 1px 6px 1px 0;
   background: transparent;
-  color: #1f1f1b;
+  color: var(--text);
   font: inherit;
   cursor: pointer;
   user-select: text;
@@ -336,37 +1150,32 @@ input {
 }
 
 .window-cwd::placeholder {
-  color: #8d897e;
+  color: var(--text-disabled);
 }
 
 .window-cwd:focus {
-  outline: 1px dotted rgba(31, 31, 27, 0.48);
+  outline: 1px dotted var(--focus-outline);
   outline-offset: -3px;
 }
 
 .resize-handle {
   position: absolute;
-  display: none;
-  width: 10px;
-  height: 10px;
-  border: 1px solid #144f47;
-  background: #fbfaf6;
-  z-index: 2;
-}
-
-.rectangle.is-selected .resize-handle,
-.rectangle[data-active-pane="true"] .resize-handle {
   display: block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  z-index: 20;
 }
 
 .handle-nw {
-  top: -6px;
+  top: -30px;
   left: -6px;
   cursor: nwse-resize;
 }
 
 .handle-ne {
-  top: -6px;
+  top: -30px;
   right: -6px;
   cursor: nesw-resize;
 }
@@ -383,17 +1192,70 @@ input {
   cursor: nesw-resize;
 }
 
+.resize-edge {
+  position: absolute;
+  z-index: 15;
+  background: transparent;
+}
+
+.resize-edge-n {
+  top: -30px;
+  left: 12px;
+  right: 12px;
+  height: 12px;
+  cursor: ns-resize;
+}
+
+.resize-edge-e {
+  top: 12px;
+  bottom: 12px;
+  right: -6px;
+  width: 12px;
+  cursor: ew-resize;
+}
+
+.resize-edge-w {
+  top: 12px;
+  bottom: 12px;
+  left: -6px;
+  width: 12px;
+  cursor: ew-resize;
+}
+
+.resize-edge-s {
+  right: 12px;
+  bottom: -6px;
+  left: 12px;
+  height: 12px;
+  cursor: ns-resize;
+}
+
+.dock-preview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 50000;
+  border: 2px solid var(--accent-border);
+  background: var(--dock-preview-fill);
+  box-shadow: inset 0 0 0 1px var(--dock-preview-inner);
+  pointer-events: none;
+}
+
+.dock-preview[hidden] {
+  display: none;
+}
+
 .dock-menu {
   position: fixed;
   z-index: 100000;
   min-width: 126px;
   padding: 3px;
-  border: 2px solid #7d7a72;
-  background: #ddd9cf;
+  border: 2px solid var(--border-panel);
+  background: var(--chrome-bg);
   box-shadow:
-    inset 1px 1px 0 #ffffff,
-    inset -1px -1px 0 #aaa79e,
-    2px 2px 0 rgba(31, 31, 27, 0.2);
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-panel-lo),
+    2px 2px 0 var(--menu-shadow);
 }
 
 .dock-menu[hidden] {
@@ -407,8 +1269,8 @@ input {
   border: 0;
   padding: 2px 8px;
   background: transparent;
-  color: #1f1f1b;
-  font-family: "Segoe UI", system-ui, sans-serif;
+  color: var(--text);
+  font-family: var(--tessera-font);
   font-size: 13px;
   line-height: 18px;
   text-align: left;
@@ -418,7 +1280,7 @@ input {
 .dock-menu button:hover,
 .dock-menu button:focus {
   outline: 0;
-  background: #f4df45;
+  background: var(--highlight-bg);
 }
 
 .dock-menu button.is-active {
@@ -427,6 +1289,12 @@ input {
 
 .dock-menu button.is-command {
   font-weight: 700;
+}
+
+.dock-menu-separator {
+  height: 1px;
+  margin: 3px 1px;
+  background: var(--divider);
 }
 
 .workspace-menu {
@@ -444,8 +1312,35 @@ input {
   white-space: nowrap;
 }
 
+.workspace-menu-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: stretch;
+}
+
+.workspace-menu-row .workspace-menu-name,
+.workspace-menu-row .workspace-menu-destroy {
+  min-width: 0;
+}
+
+.workspace-menu-row .workspace-menu-destroy {
+  padding-right: 0;
+  padding-left: 0;
+  text-align: center;
+  font-weight: 700;
+}
+
+.workspace-menu-row.is-active .workspace-menu-name {
+  background: var(--accent-strong-bg);
+  color: var(--accent-strong-text);
+}
+
+.workspace-menu-row.is-active .workspace-menu-destroy {
+  background: transparent;
+}
+
 .dock-menu button:disabled {
-  color: #8d897e;
+  color: var(--text-disabled);
 }
 
 .dock-menu button:disabled:hover,
@@ -454,7 +1349,7 @@ input {
 }
 
 .dock-menu button.is-danger {
-  color: #7b2525;
+  color: var(--danger-text);
 }
 
 .directory-browser {
@@ -464,7 +1359,7 @@ input {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(31, 31, 27, 0.22);
+  background: var(--overlay-backdrop);
 }
 
 .directory-browser[hidden] {
@@ -476,22 +1371,22 @@ input {
   max-height: min(520px, calc(100vh - 48px));
   display: grid;
   grid-template-rows: auto auto auto minmax(120px, 1fr) auto;
-  border: 2px solid #7d7a72;
-  background: #ddd9cf;
+  border: 2px solid var(--border-panel);
+  background: var(--chrome-bg);
   box-shadow:
-    inset 1px 1px 0 #ffffff,
-    inset -1px -1px 0 #aaa79e,
-    3px 3px 0 rgba(31, 31, 27, 0.22);
-  color: #1f1f1b;
-  font-family: "Segoe UI", system-ui, sans-serif;
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-panel-lo),
+    3px 3px 0 var(--panel-shadow);
+  color: var(--text);
+  font-family: var(--tessera-font);
 }
 
 .directory-browser-title {
   height: 24px;
   padding: 2px 8px;
-  border-bottom: 1px solid #b9b7b0;
-  background: #f4df45;
-  box-shadow: inset 1px 1px 0 #fff8a4;
+  border-bottom: 1px solid var(--bevel-lo);
+  background: var(--highlight-bg);
+  box-shadow: inset 1px 1px 0 var(--highlight-bevel-hi);
   font-size: 13px;
   font-weight: 700;
   line-height: 20px;
@@ -501,9 +1396,9 @@ input {
   min-height: 28px;
   padding: 6px 8px;
   overflow: hidden;
-  border-bottom: 1px solid #c4c0b8;
-  background: #f4f2ec;
-  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  border-bottom: 1px solid var(--divider);
+  background: var(--pane-bg);
+  font-family: var(--tessera-font);
   font-size: 12px;
   line-height: 16px;
   text-overflow: ellipsis;
@@ -516,12 +1411,12 @@ input {
   flex-wrap: wrap;
   gap: 4px;
   padding: 5px;
-  border-bottom: 1px solid #c4c0b8;
+  border-bottom: 1px solid var(--divider);
 }
 
 .directory-browser-actions {
   justify-content: flex-end;
-  border-top: 1px solid #c4c0b8;
+  border-top: 1px solid var(--divider);
   border-bottom: 0;
 }
 
@@ -529,19 +1424,43 @@ input {
   min-height: 120px;
   overflow: auto;
   padding: 4px;
-  background: #f4f2ec;
+  background: var(--pane-bg);
+}
+
+.directory-browser-file-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  padding: 5px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--pane-bg);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.directory-browser-file-input {
+  min-width: 0;
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  padding: 2px 5px;
+  background: var(--input-bg);
+  color: var(--text);
+  box-shadow: inset 1px 1px 0 var(--bevel-hi);
+  font-family: var(--tessera-font);
+  font-size: 12px;
 }
 
 .directory-browser button {
   min-height: 24px;
-  border: 1px solid #8f8f8f;
+  border: 1px solid var(--border-strong);
   padding: 2px 8px;
-  background: #ddd9cf;
-  color: #1f1f1b;
+  background: var(--chrome-bg);
+  color: var(--text);
   box-shadow:
-    inset 1px 1px 0 #ffffff,
-    inset -1px -1px 0 #b9b7b0;
-  font-family: "Segoe UI", system-ui, sans-serif;
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo);
+  font-family: var(--tessera-font);
   font-size: 12px;
   line-height: 18px;
   cursor: default;
@@ -550,7 +1469,7 @@ input {
 .directory-browser button:hover,
 .directory-browser button:focus {
   outline: 0;
-  background: #f4df45;
+  background: var(--highlight-bg);
 }
 
 .directory-browser-entry {
@@ -563,12 +1482,787 @@ input {
   white-space: nowrap;
 }
 
+.directory-browser-entry.is-directory {
+  font-weight: 700;
+}
+
 .directory-browser-message {
   padding: 8px;
-  color: #68645b;
+  color: var(--text-faint);
   font-size: 12px;
 }
 
 .directory-browser-message.is-error {
-  color: #7b2525;
+  color: var(--danger-text);
+}
+
+.user-select {
+  position: fixed;
+  inset: 0;
+  z-index: 100002;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--board-bg);
+  background-image: var(--board-overlay);
+}
+
+.user-select[hidden] {
+  display: none;
+}
+
+.user-select-panel {
+  width: min(360px, calc(100vw - 48px));
+  display: grid;
+  gap: 0;
+  border: 2px solid var(--border-panel);
+  background: var(--chrome-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-panel-lo),
+    3px 3px 0 var(--panel-shadow),
+    var(--pane-active-glow);
+  color: var(--text);
+  font-family: var(--tessera-font);
+}
+
+.user-select-title {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--bevel-lo);
+  background: var(--highlight-bg);
+  box-shadow: inset 1px 1px 0 var(--highlight-bevel-hi);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 22px;
+}
+
+.user-select-hint {
+  padding: 8px 12px 4px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.user-select-list {
+  display: grid;
+  gap: 6px;
+  padding: 8px 12px 14px;
+}
+
+.user-select-entry {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border-strong);
+  padding: 4px 10px;
+  background: var(--pane-bg);
+  color: var(--text);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo);
+  font-family: var(--tessera-font);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: left;
+  cursor: default;
+}
+
+.user-select-entry:hover,
+.user-select-entry:focus {
+  outline: 0;
+  border-color: var(--accent-border);
+  background: var(--highlight-bg);
+}
+
+/* A compact BeOS-like Deskbar control. The count badge only appears when a
+   minimized pane needs recovery, so the corner normally stays quiet. */
+.deskbar-button {
+  position: fixed;
+  right: calc(10px + env(safe-area-inset-right));
+  bottom: calc(50px + env(safe-area-inset-bottom));
+  z-index: 95000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 2px solid var(--border-panel);
+  background: var(--chrome-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-panel-lo),
+    2px 2px 0 var(--menu-shadow);
+  color: var(--text);
+  font-family: var(--tessera-font);
+  line-height: 1;
+  cursor: default;
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+}
+
+.deskbar-button[hidden] {
+  display: none;
+}
+
+.deskbar-button::before {
+  content: "";
+  width: 16px;
+  height: 13px;
+  border: 2px solid currentColor;
+  box-sizing: border-box;
+  background: linear-gradient(to bottom, currentColor 0 3px, transparent 3px);
+}
+
+.deskbar-button[data-minimized-count]:not([data-minimized-count="0"])::after {
+  content: attr(data-minimized-count);
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  min-width: 15px;
+  height: 15px;
+  border: 1px solid var(--border-panel);
+  border-radius: 8px;
+  padding: 0 2px;
+  background: var(--accent-strong-bg);
+  color: var(--accent-strong-text);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.deskbar-button:active {
+  background: var(--highlight-bg);
+}
+
+.deskbar-button[aria-expanded="true"] {
+  background: var(--highlight-bg);
+  box-shadow:
+    inset -1px -1px 0 var(--bevel-hi),
+    inset 1px 1px 0 var(--bevel-panel-lo),
+    2px 2px 0 var(--menu-shadow);
+}
+
+/* The Deskbar is a live window list, opening above its corner control. */
+.deskbar-panel {
+  right: calc(10px + env(safe-area-inset-right));
+  bottom: calc(48px + env(safe-area-inset-bottom));
+  left: auto;
+  width: 232px;
+  max-height: calc(100vh - 64px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  overflow-y: auto;
+}
+
+.deskbar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -3px -3px 3px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-panel);
+  background: var(--accent-strong-bg);
+  box-shadow: inset 1px 1px 0 var(--accent-bevel-hi);
+  color: var(--accent-strong-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.deskbar-title::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--grip-border);
+  background: var(--grip-bg);
+  box-shadow: inset 1px 1px 0 var(--grip-bevel-hi);
+}
+
+.deskbar-user {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--accent-strong-text);
+  font-weight: 400;
+  opacity: 0.8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-menu button.has-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dock-menu .menu-hint {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.workspace-menu-row.is-minimized .workspace-menu-name {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.deskbar-panel .workspace-menu-row.is-running .workspace-menu-name::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 6px 1px 0;
+  border-radius: 50%;
+  background: var(--running-bg);
+  box-shadow: 0 0 0 1px var(--running-border);
+}
+
+.deskbar-settings {
+  font-weight: 700;
+}
+
+.settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100002;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--overlay-backdrop);
+}
+
+.settings-modal[hidden] {
+  display: none;
+}
+
+.settings-panel {
+  width: min(460px, calc(100vw - 48px));
+  border: 2px solid var(--border-panel);
+  background: var(--chrome-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-panel-lo),
+    3px 3px 0 var(--panel-shadow);
+  color: var(--text);
+  font-family: var(--tessera-font);
+}
+
+.settings-title {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 4px 2px 8px;
+  border-bottom: 1px solid var(--bevel-lo);
+  background: var(--highlight-bg);
+  box-shadow: inset 1px 1px 0 var(--highlight-bevel-hi);
+}
+
+.settings-title h2 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-close {
+  width: 22px;
+  height: 20px;
+  margin-left: auto;
+  border: 1px solid var(--border-strong);
+  padding: 0;
+  background: var(--pane-bg);
+  color: var(--text);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.settings-close:hover,
+.settings-close:focus {
+  outline: 1px dotted var(--focus-outline);
+  outline-offset: -3px;
+  background: var(--highlight-bg);
+}
+
+.settings-content {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-section h3 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 38px;
+  padding: 7px 8px;
+  border: 1px solid var(--divider);
+  background: var(--pane-bg);
+}
+
+.settings-row-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-row-label strong {
+  font-size: 12px;
+}
+
+.settings-row-label span {
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.settings-font-control {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo);
+}
+
+.settings-font-control button {
+  width: 34px;
+  height: 26px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.settings-font-control button:hover,
+.settings-font-control button:focus {
+  outline: none;
+  background: var(--highlight-bg);
+}
+
+.settings-font-control button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.settings-font-control output {
+  min-width: 42px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.settings-theme-select {
+  min-width: 128px;
+  height: 26px;
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  padding: 1px 22px 1px 7px;
+  background: var(--pane-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.settings-theme-select:focus {
+  outline: 1px dotted var(--focus-outline);
+  outline-offset: -3px;
+}
+
+.settings-background-control {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.settings-background-button {
+  height: 26px;
+  border: 1px solid var(--border-strong);
+  padding: 0 10px;
+  background: var(--pane-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-background-button:hover,
+.settings-background-button:focus {
+  outline: 1px dotted var(--focus-outline);
+  outline-offset: -3px;
+  background: var(--highlight-bg);
+}
+
+.rename-window-panel {
+  width: min(360px, calc(100vw - 48px));
+}
+
+.rename-window-content {
+  gap: 8px;
+}
+
+.rename-window-content label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.rename-window-input {
+  width: 100%;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  padding: 2px 7px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.rename-window-input:focus {
+  outline: 1px dotted var(--focus-outline);
+  outline-offset: -3px;
+}
+
+.rename-window-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.sessions-panel {
+  width: min(560px, calc(100vw - 48px));
+  outline: none;
+}
+
+.sessions-title .settings-background-button,
+.settings-title > .settings-background-button {
+  height: 22px;
+  margin-left: 10px;
+  font-size: 11px;
+}
+
+.sessions-list {
+  display: grid;
+  max-height: min(420px, 60vh);
+  gap: 4px;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.sessions-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px auto auto;
+  align-items: center;
+  min-height: 38px;
+  border: 1px solid var(--divider);
+  background: var(--pane-bg);
+}
+
+.sessions-row.is-selected {
+  outline: 1px dotted var(--focus-outline);
+  outline-offset: -3px;
+}
+
+.sessions-row.is-current {
+  border-color: var(--border-strong);
+  background: var(--highlight-bg);
+}
+
+.sessions-name,
+.sessions-action {
+  height: 100%;
+  min-height: 36px;
+  border: 0;
+  padding: 5px 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.sessions-name {
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessions-action {
+  border-left: 1px solid var(--divider);
+  font-size: 11px;
+}
+
+.sessions-name:hover,
+.sessions-name:focus,
+.sessions-action:hover,
+.sessions-action:focus {
+  outline: 1px dotted var(--focus-outline);
+  outline-offset: -3px;
+  background: var(--highlight-bg);
+}
+
+.sessions-action.is-danger,
+.settings-background-button.is-danger {
+  color: var(--danger-text);
+}
+
+.sessions-action:disabled {
+  color: var(--text-disabled);
+}
+
+.sessions-state {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.session-action-content label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.session-action-error {
+  min-height: 15px;
+  color: var(--danger-text);
+  font-size: 11px;
+}
+
+.session-action-modal p {
+  margin: 14px;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.session-action-modal .rename-window-actions {
+  margin: 0 14px 14px;
+}
+
+@media (max-width: 560px) {
+  .sessions-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .sessions-state {
+    display: none;
+  }
+}
+
+@media (pointer: coarse) {
+  /* Bigger grab targets for resizing panes with a fingertip. The corner
+     handles and edge strips keep their centers on the pane border. */
+  .resize-handle {
+    width: 24px;
+    height: 24px;
+  }
+
+  .handle-nw {
+    top: -36px;
+    left: -12px;
+  }
+
+  .handle-ne {
+    top: -36px;
+    right: -12px;
+  }
+
+  .handle-se {
+    right: -12px;
+    bottom: -12px;
+  }
+
+  .handle-sw {
+    bottom: -12px;
+    left: -12px;
+  }
+
+  .resize-edge-n {
+    top: -36px;
+    height: 22px;
+  }
+
+  .resize-edge-e {
+    right: -11px;
+    width: 22px;
+  }
+
+  .resize-edge-w {
+    left: -11px;
+    width: 22px;
+  }
+
+  .resize-edge-s {
+    bottom: -11px;
+    height: 22px;
+  }
+}
+
+/* Command palette: keyboard-first fuzzy access to every workspace action.
+   Sits above the directory browser and menus; the user-select overlay blocks
+   it (no workspace is loaded there). */
+/* The floating launcher is otherwise UA-styled; at minimum keep its glyph in
+ * the app font (buttons don't inherit body's font-family by default). */
+.palette-fab {
+  font-family: var(--tessera-font);
+}
+
+.command-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 100003;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: max(48px, 12vh) 16px 16px;
+  background: var(--overlay-backdrop);
+}
+
+.command-palette[hidden] {
+  display: none;
+}
+
+.command-palette-panel {
+  width: min(480px, 100%);
+  border: 2px solid var(--border-panel);
+  background: var(--chrome-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-panel-lo),
+    3px 3px 0 var(--panel-shadow);
+  font-family: var(--tessera-font);
+}
+
+.window-list-title {
+  height: 32px;
+  border-bottom: 1px solid var(--divider);
+  padding: 7px 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.window-list-item.is-selected {
+  background: var(--accent-strong-bg);
+  color: var(--accent-strong-text);
+}
+
+.command-palette-input {
+  width: 100%;
+  height: 32px;
+  border: 0;
+  border-bottom: 1px solid var(--divider);
+  outline: 0;
+  padding: 4px 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 14px;
+}
+
+.command-palette-input::placeholder {
+  color: var(--text-disabled);
+}
+
+.command-palette-list {
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  padding: 3px;
+}
+
+.command-palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 26px;
+  border: 0;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 13px;
+  text-align: left;
+  cursor: default;
+}
+
+.command-palette-item span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-palette-item.is-selected {
+  background: var(--accent-strong-bg);
+  color: var(--accent-strong-text);
+}
+
+.command-palette-item-meta {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.command-palette-code {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-strong);
+  padding: 0 4px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 15px;
+}
+
+.command-palette-item.is-selected .command-palette-code {
+  border-color: var(--accent-strong-text);
+  color: var(--accent-strong-text);
+}
+
+.command-palette-hint {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.command-palette-item.is-selected .command-palette-hint {
+  color: var(--accent-strong-text);
+  opacity: 0.75;
+}
+
+.command-palette-empty {
+  padding: 10px;
+  color: var(--text-faint);
+  font-size: 12px;
 }

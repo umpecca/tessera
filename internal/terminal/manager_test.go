@@ -43,3 +43,19 @@ func TestManagedSessionFinishClosesSubscribers(t *testing.T) {
 		t.Fatal("subscriber channel is still open after finish")
 	}
 }
+
+func TestTerminateWorkspaceOnlyClosesMatchingSessions(t *testing.T) {
+	manager := NewManager()
+	one := &ManagedSession{manager: manager, workspaceID: "one", paneID: "pane", subscribers: map[chan []byte]struct{}{}}
+	two := &ManagedSession{manager: manager, workspaceID: "two", paneID: "pane", subscribers: map[chan []byte]struct{}{}}
+	manager.sessions[sessionKey("one", "pane")] = one
+	manager.sessions[sessionKey("two", "pane")] = two
+
+	manager.TerminateWorkspace("one")
+	if !one.isClosed() {
+		t.Fatal("matching session was not closed")
+	}
+	if two.isClosed() {
+		t.Fatal("other workspace session was closed")
+	}
+}

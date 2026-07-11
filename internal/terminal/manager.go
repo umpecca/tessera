@@ -17,6 +17,7 @@ type Manager struct {
 
 type ManagedSession struct {
 	manager         *Manager
+	workspaceID     string
 	paneID          string
 	session         *Session
 	subscribers     map[chan []byte]struct{}
@@ -34,18 +35,22 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) Attach(paneID, cwd string, cols, rows int) (*ManagedSession, []byte, <-chan []byte, func(), error) {
+func (m *Manager) Attach(workspaceID, paneID, cwd string, cols, rows int) (*ManagedSession, []byte, <-chan []byte, func(), error) {
 	if m == nil {
 		return nil, nil, nil, nil, errors.New("terminal manager is not available")
 	}
 	if paneID == "" {
 		return nil, nil, nil, nil, errors.New("paneId is required")
 	}
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	key := sessionKey(workspaceID, paneID)
 
 	m.mu.Lock()
-	existing := m.sessions[paneID]
+	existing := m.sessions[key]
 	if existing != nil && existing.isClosed() {
-		delete(m.sessions, paneID)
+		delete(m.sessions, key)
 		existing = nil
 	}
 	m.mu.Unlock()
@@ -61,6 +66,7 @@ func (m *Manager) Attach(paneID, cwd string, cols, rows int) (*ManagedSession, [
 	}
 	managed := &ManagedSession{
 		manager:         m,
+		workspaceID:     workspaceID,
 		paneID:          paneID,
 		session:         session,
 		subscribers:     map[chan []byte]struct{}{},
@@ -68,9 +74,9 @@ func (m *Manager) Attach(paneID, cwd string, cols, rows int) (*ManagedSession, [
 	}
 
 	m.mu.Lock()
-	existing = m.sessions[paneID]
+	existing = m.sessions[key]
 	if existing != nil && existing.isClosed() {
-		delete(m.sessions, paneID)
+		delete(m.sessions, key)
 		existing = nil
 	}
 	if existing != nil {
@@ -80,7 +86,7 @@ func (m *Manager) Attach(paneID, cwd string, cols, rows int) (*ManagedSession, [
 		_ = existing.Resize(cols, rows)
 		return existing, replay, ch, unsubscribe, nil
 	}
-	m.sessions[paneID] = managed
+	m.sessions[key] = managed
 	m.mu.Unlock()
 
 	replay, ch, unsubscribe := managed.subscribe()
@@ -88,14 +94,37 @@ func (m *Manager) Attach(paneID, cwd string, cols, rows int) (*ManagedSession, [
 	return managed, replay, ch, unsubscribe, nil
 }
 
-func (m *Manager) Terminate(paneID string) {
+func (m *Manager) Terminate(workspaceID, paneID string) {
 	if m == nil || paneID == "" {
 		return
 	}
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
 	m.mu.Lock()
-	session := m.sessions[paneID]
+	session := m.sessions[sessionKey(workspaceID, paneID)]
 	m.mu.Unlock()
 	if session != nil {
+		session.Close()
+	}
+}
+
+func (m *Manager) TerminateWorkspace(workspaceID string) {
+	if m == nil {
+		return
+	}
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	m.mu.Lock()
+	sessions := make([]*ManagedSession, 0)
+	for _, session := range m.sessions {
+		if session.workspaceID == workspaceID {
+			sessions = append(sessions, session)
+		}
+	}
+	m.mu.Unlock()
+	for _, session := range sessions {
 		session.Close()
 	}
 }
@@ -115,11 +144,12 @@ func (m *Manager) Close() {
 	}
 }
 
-func (m *Manager) remove(paneID string, session *ManagedSession) {
+func (m *Manager) remove(workspaceID, paneID string, session *ManagedSession) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.sessions[paneID] == session {
-		delete(m.sessions, paneID)
+	key := sessionKey(workspaceID, paneID)
+	if m.sessions[key] == session {
+		delete(m.sessions, key)
 	}
 }
 
@@ -237,8 +267,12 @@ func (s *ManagedSession) finish() {
 	}
 	s.mu.Unlock()
 	if s.manager != nil {
-		s.manager.remove(s.paneID, s)
+		s.manager.remove(s.workspaceID, s.paneID, s)
 	}
+}
+
+func sessionKey(workspaceID, paneID string) string {
+	return workspaceID + "\x00" + paneID
 }
 
 func (s *ManagedSession) isClosed() bool {

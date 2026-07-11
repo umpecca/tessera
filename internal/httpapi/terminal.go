@@ -37,8 +37,16 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	paneID := r.URL.Query().Get("paneId")
+	workspaceID := r.URL.Query().Get("workspaceId")
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
 	if paneID == "" {
 		writeError(w, http.StatusBadRequest, "paneId is required")
+		return
+	}
+	if !a.workspaceAllowed(r.Context(), workspaceID) {
+		writeError(w, http.StatusNotFound, "unknown session")
 		return
 	}
 	cols := queryInt(r, "cols", 80)
@@ -53,7 +61,7 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	session, replay, events, unsubscribe, err := a.Terminals.Attach(paneID, r.URL.Query().Get("cwd"), cols, rows)
+	session, replay, events, unsubscribe, err := a.Terminals.Attach(workspaceID, paneID, r.URL.Query().Get("cwd"), cols, rows)
 	if err != nil {
 		_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\n[tessera terminal failed: "+err.Error()+"]\r\n"))
 		return
@@ -104,7 +112,7 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 			if message.Type == "resize" {
 				_ = session.Resize(message.Cols, message.Rows)
 			} else if message.Type == "close" {
-				a.Terminals.Terminate(paneID)
+				a.Terminals.Terminate(workspaceID, paneID)
 				return
 			}
 		}
@@ -123,11 +131,19 @@ func (a *API) deleteTerminalSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	paneID := r.URL.Query().Get("paneId")
+	workspaceID := r.URL.Query().Get("workspaceId")
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
 	if paneID == "" {
 		writeError(w, http.StatusBadRequest, "paneId is required")
 		return
 	}
-	a.Terminals.Terminate(paneID)
+	if !a.workspaceAllowed(r.Context(), workspaceID) {
+		writeError(w, http.StatusNotFound, "unknown session")
+		return
+	}
+	a.Terminals.Terminate(workspaceID, paneID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

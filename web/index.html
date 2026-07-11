@@ -2,12 +2,25 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
     <title>Tessera</title>
-    <link rel="stylesheet" href="/styles.css?v=terminal-reconnect-1">
+
+    <!-- Installable web app (home screen / standalone). -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="application-name" content="Tessera">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10141c">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Tessera">
+    <link rel="apple-touch-icon" href="/assets/icon-180.png">
+    <link rel="icon" type="image/png" href="/assets/icon-192.png">
+
+    <link rel="stylesheet" href="/styles.css?v=named-sessions-1">
   </head>
   <body>
     <main id="board" class="board" aria-label="Tessera workspace"></main>
-    <script type="module" src="/app.js?v=terminal-reconnect-1"></script>
+    <script type="module" src="/app.js?v=named-sessions-1"></script>
   </body>
 </html>

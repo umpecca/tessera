@@ -10,15 +10,17 @@ import (
 )
 
 type directoryListResponse struct {
-	Path    string           `json:"path"`
-	Parent  string           `json:"parent"`
-	Roots   []directoryEntry `json:"roots"`
-	Entries []directoryEntry `json:"entries"`
+	Path      string           `json:"path"`
+	Parent    string           `json:"parent"`
+	Locations []directoryEntry `json:"locations"`
+	Roots     []directoryEntry `json:"roots"`
+	Entries   []directoryEntry `json:"entries"`
 }
 
 type directoryEntry struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 func (a *API) listDirectories(w http.ResponseWriter, r *http.Request) {
@@ -59,26 +61,36 @@ func (a *API) listDirectories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	includeFiles := r.URL.Query().Get("files") == "1"
 	entries := make([]directoryEntry, 0, len(children))
 	for _, child := range children {
-		if !child.IsDir() {
+		if !child.IsDir() && !includeFiles {
 			continue
 		}
 		name := child.Name()
+		kind := "file"
+		if child.IsDir() {
+			kind = "directory"
+		}
 		entries = append(entries, directoryEntry{
 			Name: name,
 			Path: filepath.Join(path, name),
+			Kind: kind,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Kind != entries[j].Kind {
+			return entries[i].Kind == "directory"
+		}
 		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
 
 	writeJSON(w, http.StatusOK, directoryListResponse{
-		Path:    path,
-		Parent:  parentDirectory(path),
-		Roots:   directoryRoots(),
-		Entries: entries,
+		Path:      path,
+		Parent:    parentDirectory(path),
+		Locations: directoryLocations(),
+		Roots:     directoryRoots(),
+		Entries:   entries,
 	})
 }
 
@@ -92,15 +104,47 @@ func parentDirectory(path string) string {
 
 func directoryRoots() []directoryEntry {
 	if runtime.GOOS != "windows" {
-		return []directoryEntry{{Name: "/", Path: string(filepath.Separator)}}
+		return []directoryEntry{{Name: "/", Path: string(filepath.Separator), Kind: "directory"}}
 	}
 
 	var roots []directoryEntry
 	for drive := 'A'; drive <= 'Z'; drive++ {
 		path := string(drive) + `:\`
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
-			roots = append(roots, directoryEntry{Name: path, Path: path})
+			roots = append(roots, directoryEntry{Name: path, Path: path, Kind: "directory"})
 		}
 	}
 	return roots
+}
+
+func directoryLocations() []directoryEntry {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return directoryLocationsFromHome(home)
+}
+
+func directoryLocationsFromHome(home string) []directoryEntry {
+	candidates := []struct {
+		name string
+		path string
+	}{
+		{name: "Home", path: home},
+		{name: "Desktop", path: filepath.Join(home, "Desktop")},
+		{name: "Documents", path: filepath.Join(home, "Documents")},
+		{name: "Downloads", path: filepath.Join(home, "Downloads")},
+	}
+
+	locations := make([]directoryEntry, 0, len(candidates))
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate.path); err == nil && info.IsDir() {
+			locations = append(locations, directoryEntry{
+				Name: candidate.name,
+				Path: candidate.path,
+				Kind: "directory",
+			})
+		}
+	}
+	return locations
 }

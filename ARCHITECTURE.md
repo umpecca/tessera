@@ -17,27 +17,38 @@ Constraints and assumptions:
 ```text
 tessera/
   cmd/tessera/
-    main.go                 # process entrypoint, flags, server startup
+    main.go                 # web-server entrypoint (console binary)
+  cmd/tessera-desktop/
+    main.go                 # Wails desktop entrypoint (GUI binary)
+    wails.json              # Wails build configuration
+  internal/server/
+    server.go               # shared bootstrap: store, managers, listener, shutdown
   internal/app/
     app.go                  # dependency wiring and HTTP route registration
   internal/httpapi/
+    api.go                  # route registration and JSON helpers
     workspace.go            # workspace load/save endpoints
-    command.go              # command run and streaming endpoint
-    static.go               # embedded SPA/static handler
+    command.go              # command run and streaming endpoints
+    directories.go          # directory browser endpoint
+    terminal.go             # WebSocket terminal endpoint
+    static.go               # embedded SPA/static handler (fs.FS)
   internal/store/
     store.go                # SQLite open, migration, shared helpers
     workspace.go            # workspace, pane, and buffer persistence
+  internal/runs/
+    manager.go              # run lifecycle, event fan-out, persistence
   internal/shell/
     runner.go               # per-pane shell command execution
-    stream.go               # stdout/stderr event formatting
+  internal/terminal/
+    manager.go, session*.go # pty terminal sessions (ConPTY on Windows)
   web/
+    embed.go                # go:embed of the SPA files served at the web root
     index.html
-    app.js                  # SPA bootstrap and event wiring
-    api.js                  # fetch helpers and streaming reader
-    state.js                # workspace state and save scheduling
-    layout.js               # split pane rendering and focus tracking
-    worksheet.js            # editable buffer behavior and run target selection
+    app.js                  # SPA: board, panes, editors, API wiring
     styles.css
+    codemirror-entry.js     # esbuild input for vendor/codemirror.js
+    terminal-entry.js       # esbuild input for vendor/terminal.js
+    vendor/                 # committed esbuild bundles (CodeMirror, ghostty)
   migrations/
     001_init.sql            # SQLite schema
   README.md

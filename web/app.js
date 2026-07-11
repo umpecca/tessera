@@ -1,6 +1,7 @@
 import {
   basicSetup,
   EditorSelection,
+  EditorState,
   EditorView,
   Prec,
   Transaction,
@@ -13,60 +14,563 @@ const rectangles = [];
 let activeRect = null;
 let activePaneID = "";
 let interaction = null;
+// "Cascade Arrange" snapshots every visible pane's box before its first tile;
+// "Back Arrange" restores it. Repeating Cascade Arrange preserves that snapshot.
+// Any geometry change outside of arranging (move, resize, dock, maximize, a
+// new window) drops the snapshot via setRectangle.
+let arrangeOutSnapshot = null;
+let isArrangingWindows = false;
 let nextZIndex = 1;
 let contextMenuRect = null;
 let editorMenuRect = null;
+let terminalMenuRect = null;
 let workspaceMenuPoint = null;
 let windowTypeRect = null;
 let directoryBrowserRect = null;
 let directoryBrowserPath = "";
+let fileBrowserRect = null;
+let fileBrowserMode = "";
+let fileBrowserPath = "";
+let fileBrowserFilePath = "";
+let paneFileClipboard = null;
 let editorClipboardText = "";
 let workspaceID = "default";
+let multiUser = false;
+let userRoster = [];
+let currentUser = null;
+let sessions = [];
+let currentSessionID = "";
+let currentSessionName = "";
+let sessionSelection = 0;
+let sessionNavigationPending = false;
+let workspaceHasBackground = false;
+let workspaceBackgroundVersion = "";
+let workspaceBackgroundMode = "fill";
 let isLoadingWorkspace = false;
 let saveTimer = null;
+let workspaceStatusHideTimer = null;
 let saveRevision = 0;
+let userSettingsSaveTimer = null;
+let worksheetLineDrag = null;
 const runStreamControllers = new Map();
 let ghosttyModulePromise = null;
 const terminalTextEncoder = new TextEncoder();
+// The editor and terminal must render in a monospace face for column
+// alignment; keep this in sync with --tessera-font in styles.css. xterm
+// measures glyphs on a canvas and cannot resolve a CSS var(), so this has
+// to be a concrete font-family string rather than "var(--tessera-font)".
+const tesseraMonoFontFamily = '"Fira Code", monospace';
+const fallbackPaneFontSize = 14;
+const minimumPaneFontSize = 10;
+const maximumPaneFontSize = 24;
+const defaultFileBrowserSidebarWidth = 200;
+const minimumFileBrowserSidebarWidth = 110;
+const maximumFileBrowserSidebarWidth = 480;
+let fileBrowserSidebarResizeDrag = null;
+let defaultPaneFontSize = fallbackPaneFontSize;
+
+// Terminal canvas colors cannot use CSS variables, so each theme carries its
+// own set. Everything else themes through styles.css.
+const defaultThemeID = "next-tessera";
+const themes = {
+  "next-tessera": {
+    label: "Next Tessera",
+    terminal: {
+      background: "#000000",
+      foreground: "#e5e1d5",
+      cursor: "#f4df45",
+      selectionBackground: "#284461",
+    },
+  },
+  studio: {
+    label: "Studio",
+    terminal: {
+      background: "#000000",
+      foreground: "#d8dee6",
+      cursor: "#7fb2e6",
+      selectionBackground: "#3a5578",
+    },
+  },
+  hacker: {
+    label: "Hacker",
+    terminal: {
+      background: "#000000",
+      foreground: "#e5e1d5",
+      cursor: "#59ffa1",
+      selectionBackground: "#0f4d27",
+    },
+  },
+};
+let defaultTheme = defaultThemeID;
+let themeID = defaultThemeID;
 
 const tesseraEditorTheme = EditorView.theme({
   "&": {
     height: "100%",
     background: "transparent",
-    color: "#1f1f1b",
+    color: "var(--editor-text)",
   },
   ".cm-scroller": {
-    fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
-    fontSize: "14px",
+    fontFamily: tesseraMonoFontFamily,
+    fontSize: "var(--pane-editor-font-size, 14px)",
     lineHeight: "1.42",
   },
   ".cm-content": {
     minHeight: "100%",
     padding: "10px 12px",
-    caretColor: "#1f1f1b",
+    caretColor: "var(--editor-caret)",
+  },
+  ".cm-cursor, .cm-dropCursor": {
+    borderLeftColor: "var(--editor-caret)",
   },
   ".cm-gutters": {
-    backgroundColor: "rgba(235, 232, 222, 0.72)",
-    color: "#68645b",
-    borderRight: "1px solid #c4c0b8",
+    width: "40px",
+    minWidth: "40px",
+    backgroundColor: "var(--editor-gutter-bg)",
+    color: "var(--editor-gutter-text)",
+    borderRight: "1px solid var(--editor-gutter-border)",
+  },
+  ".cm-lineNumbers": {
+    width: "39px",
+    minWidth: "39px",
+  },
+  ".cm-lineNumbers .cm-gutterElement": {
+    boxSizing: "border-box",
+    width: "39px",
+    minWidth: "39px",
+    padding: "0 6px 0 0",
+    textAlign: "right",
   },
   ".cm-activeLine": {
-    backgroundColor: "rgba(255, 255, 255, 0.34)",
+    backgroundColor: "var(--editor-active-line)",
   },
   ".cm-activeLineGutter": {
-    backgroundColor: "rgba(255, 255, 255, 0.5)",
+    backgroundColor: "var(--editor-active-line-gutter)",
   },
   "&.cm-focused": {
     outline: "none",
   },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "rgba(36, 95, 110, 0.24)",
+    backgroundColor: "var(--selection-bg)",
   },
 });
+
+function setDefaultTheme(id) {
+  defaultTheme = themes[id] ? id : defaultThemeID;
+  scheduleUserSettingsSave();
+}
+
+function setDefaultPaneFontSize(fontSize) {
+  defaultPaneFontSize = normalizePaneFontSize(fontSize);
+  scheduleUserSettingsSave();
+}
+
+function applyTheme(id, { save = true } = {}) {
+  themeID = themes[id] ? id : defaultThemeID;
+  document.documentElement.dataset.theme = themeID;
+  if (save) {
+    scheduleUserSettingsSave();
+  }
+}
+
+const userStorageKey = "tessera-user";
+
+function readStoredUser() {
+  try {
+    return localStorage.getItem(userStorageKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function persistUser(name) {
+  try {
+    if (name) {
+      localStorage.setItem(userStorageKey, name);
+    } else {
+      localStorage.removeItem(userStorageKey);
+    }
+  } catch {
+    // localStorage unavailable; selection still applies for this session
+  }
+}
+
+function sessionRoute(userID, sessionID) {
+  return `/users/${encodeURIComponent(userID)}/sessions/${encodeURIComponent(sessionID)}`;
+}
+
+function parseSessionRoute(pathname = window.location.pathname) {
+  const match = pathname.match(/^\/users\/([^/]+)\/sessions\/([^/]+)\/?$/);
+  if (!match) {
+    return null;
+  }
+  try {
+    return { userID: decodeURIComponent(match[1]), sessionID: decodeURIComponent(match[2]) };
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedUser(name) {
+  return multiUser ? userRoster.includes(name) : name === "default";
+}
+
+function userAPIPath(resource) {
+  return `/api/users/${encodeURIComponent(currentUser || "default")}/${resource}`;
+}
+
+// startApp decides between single-user and multi-user startup. A failed or
+// disabled /api/users falls back to the single default workspace so the app
+// still loads.
+async function startApp() {
+  try {
+    const response = await fetch("/api/users");
+    if (response.ok) {
+      const config = await response.json();
+      multiUser = Boolean(config.enabled) && Array.isArray(config.users) && config.users.length > 0;
+      userRoster = multiUser ? config.users : [];
+    }
+  } catch (error) {
+    console.warn(error);
+  }
+
+  const routed = parseSessionRoute();
+  if (routed && isAllowedUser(routed.userID)) {
+    await selectUser(routed.userID, { sessionID: routed.sessionID, historyMode: "replace" });
+    return;
+  }
+
+  if (!multiUser) {
+    await selectUser("default", { historyMode: "replace" });
+    return;
+  }
+
+  const stored = readStoredUser();
+  if (stored && userRoster.includes(stored)) {
+    await selectUser(stored, { historyMode: "replace" });
+  } else {
+    showUserSelect();
+  }
+}
+
+async function selectUser(name, options = {}) {
+  if (!isAllowedUser(name)) {
+    return;
+  }
+  currentUser = name;
+  persistUser(name);
+  hideUserSelect();
+  await Promise.all([refreshSessions(), loadUserSettings()]);
+  const requested = sessions.find((session) => session.id === options.sessionID);
+  const target = requested || sessions[0];
+  if (!target) {
+    setWorkspaceStatus("error", "No sessions");
+    return;
+  }
+  await switchSession(target, { skipSave: true, historyMode: options.historyMode || "replace" });
+}
+
+async function switchUser() {
+  await flushAllPersistence();
+  currentUser = null;
+  currentSessionID = "";
+  currentSessionName = "";
+  sessions = [];
+  persistUser("");
+  clearRectanglesForLoad();
+  window.history.pushState({}, "", "/");
+  setWorkspaceStatus("idle", "Select user");
+  showUserSelect();
+}
+
+// Direct switch to a named user (from the command palette), skipping the
+// selection screen.
+async function jumpToUser(name) {
+  if (!userRoster.includes(name) || name === currentUser) {
+    return;
+  }
+  await flushAllPersistence();
+  await selectUser(name, { historyMode: "push" });
+}
+
+async function refreshSessions() {
+  const response = await fetch(userAPIPath("sessions"));
+  if (!response.ok) {
+    throw new Error(`load sessions failed: ${response.status}`);
+  }
+  const payload = await response.json();
+  sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  return sessions;
+}
+
+async function loadUserSettings() {
+  const response = await fetch(userAPIPath("settings"));
+  if (!response.ok) {
+    throw new Error(`load user settings failed: ${response.status}`);
+  }
+  const settings = await response.json();
+  defaultPaneFontSize = normalizePaneFontSize(settings.defaultPaneFontSize);
+  defaultTheme = themes[settings.defaultTheme] ? settings.defaultTheme : defaultThemeID;
+  applyTheme(settings.themeId || defaultTheme, { save: false });
+}
+
+async function switchSession(session, options = {}) {
+  if (!session || sessionNavigationPending) {
+    return;
+  }
+  if (session.id === currentSessionID) {
+    if (options.historyMode === "replace") {
+      window.history.replaceState({}, "", sessionRoute(currentUser || "default", session.id));
+    }
+    hideSessionsModal();
+    return;
+  }
+  sessionNavigationPending = true;
+  try {
+    if (!options.skipSave && currentSessionID) {
+      await flushWorkspaceSave();
+    }
+    const activated = await fetch(`${userAPIPath("sessions")}/${encodeURIComponent(session.id)}/activate`, { method: "POST" });
+    if (!activated.ok) {
+      throw new Error(`activate session failed: ${activated.status}`);
+    }
+    currentSessionID = session.id;
+    currentSessionName = session.name;
+    workspaceID = session.id;
+    const route = sessionRoute(currentUser || "default", session.id);
+    if (options.historyMode === "replace") {
+      window.history.replaceState({}, "", route);
+    } else if (options.historyMode !== "none") {
+      window.history.pushState({}, "", route);
+    }
+    await loadWorkspace();
+    await refreshSessions();
+    hideSessionsModal();
+  } finally {
+    sessionNavigationPending = false;
+  }
+}
+
+async function handleSessionHistoryNavigation() {
+  if (sessionNavigationPending) {
+    window.setTimeout(() => void handleSessionHistoryNavigation(), 25);
+    return;
+  }
+  const routed = parseSessionRoute();
+  if (!routed || !isAllowedUser(routed.userID)) {
+    return;
+  }
+  if (routed.userID !== currentUser) {
+    await flushAllPersistence();
+    await selectUser(routed.userID, { sessionID: routed.sessionID, historyMode: "none" });
+    return;
+  }
+  await refreshSessions();
+  const target = sessions.find((session) => session.id === routed.sessionID) || sessions[0];
+  if (target) {
+    await switchSession(target, { historyMode: target.id === routed.sessionID ? "none" : "replace" });
+  }
+}
+
+function showUserSelect() {
+  renderUserSelect();
+  userSelect.hidden = false;
+}
+
+function hideUserSelect() {
+  userSelect.hidden = true;
+}
+
+function renderUserSelect() {
+  userSelect.replaceChildren();
+
+  const panel = document.createElement("div");
+  panel.className = "user-select-panel";
+
+  const title = document.createElement("div");
+  title.className = "user-select-title";
+  title.textContent = "Select a user";
+  panel.appendChild(title);
+
+  const hint = document.createElement("div");
+  hint.className = "user-select-hint";
+  hint.textContent = "Each user has separate named desktop sessions.";
+  panel.appendChild(hint);
+
+  const list = document.createElement("div");
+  list.className = "user-select-list";
+  for (const name of userRoster) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "user-select-entry";
+    button.textContent = name;
+    button.addEventListener("click", () => selectUser(name));
+    list.appendChild(button);
+  }
+  panel.appendChild(list);
+
+  userSelect.appendChild(panel);
+}
+
+const maxBackgroundBytes = 10 * 1024 * 1024;
+const targetBackgroundBytes = Math.floor(maxBackgroundBytes * 0.9);
+const maxBackgroundDimension = 3840;
+const backgroundDisplayModes = {
+  fill: { label: "Fill", size: "cover" },
+  fit: { label: "Fit", size: "contain" },
+  stretch: { label: "Stretch", size: "100% 100%" },
+  center: { label: "Center", size: "auto" },
+};
+
+function normalizeBackgroundDisplayMode(mode) {
+  return backgroundDisplayModes[mode] ? mode : "fill";
+}
+
+function backgroundURL(version) {
+  const base = `/api/workspace/${encodeURIComponent(workspaceID)}/background`;
+  return version ? `${base}?v=${encodeURIComponent(version)}` : base;
+}
+
+// applyWorkspaceBackground sets or clears the board's background image layer.
+// The image renders beneath the theme's overlay (see .board in styles.css).
+function applyWorkspaceBackground(has, version, mode = workspaceBackgroundMode) {
+  workspaceHasBackground = Boolean(has);
+  workspaceBackgroundVersion = version || "";
+  workspaceBackgroundMode = normalizeBackgroundDisplayMode(mode);
+  if (workspaceHasBackground) {
+    board.style.setProperty("--board-user-image", `url("${backgroundURL(workspaceBackgroundVersion)}")`);
+    board.style.setProperty("--board-user-size", backgroundDisplayModes[workspaceBackgroundMode].size);
+  } else {
+    board.style.removeProperty("--board-user-image");
+    board.style.removeProperty("--board-user-size");
+  }
+  // The background controls live in the Settings modal; if it's open when a
+  // set/clear finishes, refresh it so the button labels stay in sync.
+  if (!settingsModal.hidden) {
+    renderSettingsModal();
+  }
+}
+
+function handleBackgroundFileChange(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  if (file) {
+    void uploadBackground(file);
+  }
+}
+
+function canvasJPEG(canvas, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("could not encode image"));
+      }
+    }, "image/jpeg", quality);
+  });
+}
+
+async function compressBackgroundImage(file) {
+  const source = await createImageBitmap(file);
+  try {
+    let scale = Math.min(1, maxBackgroundDimension / Math.max(source.width, source.height));
+    let quality = 0.88;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const width = Math.max(1, Math.round(source.width * scale));
+      const height = Math.max(1, Math.round(source.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) {
+        throw new Error("could not prepare image canvas");
+      }
+      context.fillStyle = "#000000";
+      context.fillRect(0, 0, width, height);
+      context.drawImage(source, 0, 0, width, height);
+      const jpeg = await canvasJPEG(canvas, quality);
+      if (jpeg.size <= targetBackgroundBytes) {
+        return jpeg;
+      }
+      if (quality > 0.5) {
+        quality -= 0.1;
+      } else {
+        scale *= 0.75;
+        quality = 0.85;
+      }
+    }
+  } finally {
+    source.close();
+  }
+  throw new Error("could not compress image below the upload limit");
+}
+
+async function uploadBackground(file) {
+  if (!file.type.startsWith("image/")) {
+    setWorkspaceStatus("error", "Not an image", "Background must be an image file");
+    return;
+  }
+  try {
+    setWorkspaceStatus("saving", "Preparing image...");
+    const jpeg = await compressBackgroundImage(file);
+    if (jpeg.size > maxBackgroundBytes) {
+      throw new Error("compressed image is still too large");
+    }
+    setWorkspaceStatus("saving", "Saving...");
+    const response = await fetch(backgroundURL(""), {
+      method: "PUT",
+      headers: { "Content-Type": "image/jpeg" },
+      body: jpeg,
+    });
+    if (!response.ok) {
+      throw new Error(`set background failed: ${response.status}`);
+    }
+    const data = await response.json().catch(() => ({}));
+    applyWorkspaceBackground(true, data.version || String(Date.now()), workspaceBackgroundMode);
+    setWorkspaceStatus("saved", "Saved", "Background updated");
+  } catch (error) {
+    console.warn(error);
+    setWorkspaceStatus("error", "Save failed", error.message || "Background save failed");
+  }
+}
+
+async function clearBackground() {
+  setWorkspaceStatus("saving", "Saving...");
+  try {
+    const response = await fetch(backgroundURL(""), { method: "DELETE" });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`clear background failed: ${response.status}`);
+    }
+    applyWorkspaceBackground(false, "", workspaceBackgroundMode);
+    setWorkspaceStatus("saved", "Saved", "Background cleared");
+  } catch (error) {
+    console.warn(error);
+    setWorkspaceStatus("error", "Clear failed", error.message || "Background clear failed");
+  }
+}
 
 const commandSpinnerFrames = ["\u25f0", "\u25f3", "\u25f2", "\u25f1"];
 const commandSpinnerIntervalMs = 120;
 
+const worksheetFilenameWordChars = EditorState.languageData.of(() => [{
+  wordChars: ".-_",
+}]);
+
+const defaultWorksheetEditorMode = "free";
+const normalWorksheetEditorMode = "normal";
+const fileBrowserPaneKind = "file-browser";
+const textEditorPaneKind = "text-editor";
+const textEditorFileExtensions = new Set([
+  ".txt", ".md", ".markdown", ".log", ".csv", ".tsv",
+  ".json", ".jsonc", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
+  ".html", ".htm", ".css", ".scss", ".sass", ".less",
+  ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+  ".go", ".py", ".rb", ".php", ".java", ".kt", ".kts",
+  ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".cs", ".rs",
+  ".sql", ".graphql", ".gql", ".vue", ".svelte", ".astro",
+  ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".psd1", ".bat", ".cmd",
+]);
 
 const freeCursorExtension = Prec.highest([
   keymap.of([
@@ -91,6 +595,11 @@ editorMenu.className = "dock-menu editor-menu";
 editorMenu.hidden = true;
 document.body.appendChild(editorMenu);
 
+const terminalMenu = document.createElement("div");
+terminalMenu.className = "dock-menu terminal-menu";
+terminalMenu.hidden = true;
+document.body.appendChild(terminalMenu);
+
 const workspaceMenu = document.createElement("div");
 workspaceMenu.className = "dock-menu workspace-menu";
 workspaceMenu.hidden = true;
@@ -106,6 +615,161 @@ directoryBrowser.className = "directory-browser";
 directoryBrowser.hidden = true;
 document.body.appendChild(directoryBrowser);
 
+const userSelect = document.createElement("div");
+userSelect.className = "user-select";
+userSelect.hidden = true;
+document.body.appendChild(userSelect);
+
+const backgroundFileInput = document.createElement("input");
+backgroundFileInput.type = "file";
+backgroundFileInput.accept = "image/*";
+backgroundFileInput.hidden = true;
+backgroundFileInput.addEventListener("change", handleBackgroundFileChange);
+document.body.appendChild(backgroundFileInput);
+
+// The Deskbar is a compact, always-reachable recovery point for minimized
+// panes. The command palette stays separate as the keyboard-first action UI.
+const deskbarButton = document.createElement("button");
+deskbarButton.type = "button";
+deskbarButton.className = "deskbar-button";
+deskbarButton.title = "Windows";
+deskbarButton.setAttribute("aria-label", "Window list");
+deskbarButton.setAttribute("aria-haspopup", "true");
+deskbarButton.setAttribute("aria-expanded", "false");
+deskbarButton.dataset.minimizedCount = "0";
+deskbarButton.addEventListener("click", () => toggleDeskbar());
+deskbarButton.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+    return;
+  }
+  event.preventDefault();
+  openDeskbar({ focusWindow: event.key === "ArrowDown" ? 0 : -1 });
+});
+document.body.appendChild(deskbarButton);
+
+const deskbarPanel = document.createElement("div");
+deskbarPanel.className = "dock-menu deskbar-panel";
+deskbarPanel.hidden = true;
+deskbarPanel.addEventListener("keydown", handleDeskbarKeyboard);
+document.body.appendChild(deskbarPanel);
+
+const settingsModal = document.createElement("div");
+settingsModal.className = "settings-modal";
+settingsModal.hidden = true;
+settingsModal.addEventListener("pointerdown", (event) => {
+  if (event.target === settingsModal) {
+    hideSettingsModal();
+  }
+});
+document.body.appendChild(settingsModal);
+
+const renameWindowModal = document.createElement("div");
+renameWindowModal.className = "settings-modal rename-window-modal";
+renameWindowModal.hidden = true;
+renameWindowModal.addEventListener("pointerdown", (event) => {
+  if (event.target === renameWindowModal) {
+    hideRenameWindowModal();
+  }
+});
+document.body.appendChild(renameWindowModal);
+
+const sessionsModal = document.createElement("div");
+sessionsModal.className = "settings-modal sessions-modal";
+sessionsModal.hidden = true;
+sessionsModal.addEventListener("pointerdown", (event) => {
+  if (event.target === sessionsModal) {
+    hideSessionsModal();
+  }
+});
+document.body.appendChild(sessionsModal);
+
+const sessionActionModal = document.createElement("div");
+sessionActionModal.className = "settings-modal session-action-modal";
+sessionActionModal.hidden = true;
+sessionActionModal.addEventListener("pointerdown", (event) => {
+  if (event.target === sessionActionModal) {
+    hideSessionActionModal();
+  }
+});
+document.body.appendChild(sessionActionModal);
+
+const commandPalette = document.createElement("div");
+commandPalette.className = "command-palette";
+commandPalette.hidden = true;
+const commandPalettePanel = document.createElement("div");
+commandPalettePanel.className = "command-palette-panel";
+const commandPaletteInput = document.createElement("input");
+commandPaletteInput.className = "command-palette-input";
+commandPaletteInput.type = "text";
+commandPaletteInput.placeholder = "Type a command or window name...";
+commandPaletteInput.spellcheck = false;
+commandPaletteInput.setAttribute("aria-label", "Command palette");
+const commandPaletteList = document.createElement("div");
+commandPaletteList.className = "command-palette-list";
+commandPalettePanel.appendChild(commandPaletteInput);
+commandPalettePanel.appendChild(commandPaletteList);
+commandPalette.appendChild(commandPalettePanel);
+document.body.appendChild(commandPalette);
+
+commandPalette.addEventListener("pointerdown", (event) => {
+  if (event.target === commandPalette) {
+    hideCommandPalette();
+  }
+});
+commandPaletteInput.addEventListener("input", () => renderPaletteResults());
+commandPaletteInput.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    movePaletteSelection(event.key === "ArrowDown" ? 1 : -1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    const commands = buildPaletteCommands();
+    assignPaletteShortcutCodes(commands);
+    const codeMatch = findPaletteCodeMatch(commandPaletteInput.value, commands);
+    if (codeMatch) {
+      runPaletteCommand(codeMatch);
+    } else {
+      runPaletteSelection();
+    }
+  }
+});
+
+// A small floating launcher for the command palette — the persistent,
+// touch-reachable entry point (tapping it focuses the input, which raises the
+// on-screen keyboard). Bottom-right, clear of each window's title-bar controls
+// (grip at top-left, minimize/maximize at top-right).
+const windowList = document.createElement("div");
+windowList.className = "command-palette window-list";
+windowList.hidden = true;
+const windowListPanel = document.createElement("div");
+windowListPanel.className = "command-palette-panel window-list-panel";
+windowListPanel.tabIndex = 0;
+windowListPanel.setAttribute("aria-label", "Window list");
+const windowListTitle = document.createElement("div");
+windowListTitle.className = "window-list-title";
+windowListTitle.textContent = "Window List";
+const windowListItems = document.createElement("div");
+windowListItems.className = "command-palette-list window-list-items";
+windowListPanel.append(windowListTitle, windowListItems);
+windowList.appendChild(windowListPanel);
+document.body.appendChild(windowList);
+
+windowList.addEventListener("pointerdown", (event) => {
+  if (event.target === windowList) {
+    hideWindowList();
+  }
+});
+windowListPanel.addEventListener("keydown", handleWindowListKeyboard);
+
+const paletteLauncher = document.createElement("button");
+paletteLauncher.type = "button";
+paletteLauncher.className = "palette-fab";
+paletteLauncher.textContent = "≡";
+paletteLauncher.title = "Commands (Ctrl+K)";
+paletteLauncher.setAttribute("aria-label", "Open command palette");
+paletteLauncher.addEventListener("click", () => openCommandPalette());
+document.body.appendChild(paletteLauncher);
+
 const workspaceStatus = document.createElement("div");
 workspaceStatus.className = "workspace-status";
 workspaceStatus.setAttribute("role", "status");
@@ -118,13 +782,15 @@ board.addEventListener("pointerdown", startDrawing);
 board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
 document.addEventListener("keydown", hideMenusOnEscape);
-document.addEventListener("keydown", handlePaneKeyboardShortcuts);
+document.addEventListener("keydown", handlePaneKeyboardShortcuts, { capture: true });
 window.addEventListener("pointermove", continueInteraction);
 window.addEventListener("pointerup", finishInteraction);
 window.addEventListener("pointercancel", finishInteraction);
 window.addEventListener("resize", hideAllMenus);
+window.addEventListener("popstate", () => void handleSessionHistoryNavigation());
 
-loadWorkspace();
+applyTheme(themeID, { save: false });
+startApp();
 
 function startDrawing(event) {
   if (event.button !== 0 || event.target !== board) {
@@ -134,11 +800,16 @@ function startDrawing(event) {
   hideAllMenus();
 
   const point = boardPoint(event);
+  const cwd = activeRect?.cwd || "";
+  if (activeRect || activePaneID) {
+    clearActivePane();
+  }
   const rect = createRectangle(point.x, point.y, 1, 1, {
     kind: "pending",
-    cwd: activeRect?.cwd || "",
+    cwd,
+    zIndex: nextZIndex,
   });
-  setActivePane(rect, { raise: true });
+  nextZIndex += 1;
 
   interaction = {
     type: "draw",
@@ -156,7 +827,7 @@ function startMoving(event, rect) {
   }
   event.preventDefault();
   event.stopPropagation();
-  clearFullState(rect);
+  hideFloatingMenus();
   setActivePane(rect, { raise: true });
 
   const point = boardPoint(event);
@@ -177,6 +848,7 @@ function startResizing(event, rect, handle) {
   }
   event.preventDefault();
   event.stopPropagation();
+  hideFloatingMenus();
   clearFullState(rect);
   setActivePane(rect, { raise: true });
 
@@ -209,6 +881,9 @@ function continueInteraction(event) {
   if (interaction.type === "move") {
     const dx = point.x - interaction.startX;
     const dy = point.y - interaction.startY;
+    if (interaction.rect.isFull && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+      clearFullState(interaction.rect);
+    }
     const next = {
       ...interaction.original,
       x: interaction.original.x + dx,
@@ -236,11 +911,13 @@ function finishInteraction(event) {
 
   if (finishedInteraction.type === "draw") {
     if (finishedInteraction.rect.width < 6 || finishedInteraction.rect.height < 6) {
-      destroyRectangle(finishedInteraction.rect);
+      destroyRectangle(finishedInteraction.rect, { selectNext: false });
       return;
     }
     showWindowTypeMenu(finishedInteraction.rect, event.clientX, event.clientY);
+    return;
   }
+
 }
 
 function createRectangle(x, y, width, height, options = {}) {
@@ -263,69 +940,241 @@ function createRectangle(x, y, width, height, options = {}) {
     height,
     element,
     zIndex: options.zIndex || 0,
-    title: options.title || (options.kind === "terminal" ? "Terminal" : ""),
+    title: options.title || defaultPaneTitle(options.kind || "worksheet"),
     text: options.kind === "terminal" ? "" : (options.text || ""),
+    editorMode: normalizeWorksheetEditorMode(options.editorMode),
+    fontSize: normalizePaneFontSize(options.fontSize),
     cwd: options.cwd || "",
+    lastExportPath: options.lastExportPath || "",
+    fileBrowserSidebarWidth: normalizeFileBrowserSidebarWidth(options.fileBrowserSidebarWidth),
     running: false,
     runID: "",
     commandSpinner: null,
     terminal: null,
     terminalContainer: null,
-    isFull: false,
-    restoreBox: null,
+    body: null,
+    titleInput: null,
+    editorModeButton: null,
+    fontSizeValue: null,
+    fontSizeDecreaseButton: null,
+    fontSizeIncreaseButton: null,
+    filePathInput: null,
+    fileBrowserView: null,
+    fileBrowserRequestID: 0,
+    isFull: Boolean(options.isFull),
+    minimized: Boolean(options.minimized),
+    restoreBox: options.restoreBox || null,
+    minButton: null,
+    maxButton: null,
   };
   element.dataset.paneId = rect.id;
   element.dataset.paneKind = rect.kind;
+  element.style.setProperty("--pane-editor-font-size", `${rect.fontSize}px`);
+  element.style.setProperty("--file-browser-sidebar-width", `${rect.fileBrowserSidebarWidth}px`);
+  element.classList.toggle("is-full", rect.isFull);
+  element.classList.toggle("is-minimized", rect.minimized);
+  if (rect.minimized) {
+    element.setAttribute("aria-hidden", "true");
+  }
+
+  function toggleFromTitleBar(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    hideFloatingMenus();
+    toggleMinimize(rect);
+  }
+
   const tab = document.createElement("div");
   tab.className = "window-tab";
+  tab.addEventListener("pointerdown", (event) => {
+    if (event.target === title && !title.readOnly) {
+      return;
+    }
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    startMoving(event, rect);
+  });
+  tab.addEventListener("dblclick", (event) => {
+    if (controls.contains(event.target)) {
+      return;
+    }
+    if (event.target === title && !title.readOnly) {
+      return;
+    }
+    toggleFromTitleBar(event);
+  }, { capture: true });
 
   const grip = document.createElement("div");
   grip.className = "window-grip";
-  grip.addEventListener("pointerdown", (event) => startMoving(event, rect));
+  grip.addEventListener("pointerdown", (event) => {
+    if (event.button === 0) {
+      // Keep the menu below the grip so a second click still lands on the
+      // title bar and can complete a double-click.
+      openDockMenu(event, rect, tabHeight);
+    }
+  });
   grip.addEventListener("contextmenu", (event) => openDockMenu(event, rect));
 
   const title = document.createElement("input");
   title.className = "window-title";
   title.type = "text";
   title.value = rect.title;
+  title.readOnly = true;
   title.spellcheck = false;
   title.setAttribute("aria-label", "Window title");
+  rect.titleInput = title;
   title.addEventListener("pointerdown", (event) => {
+    if (!title.readOnly) {
+      event.stopPropagation();
+      hideFloatingMenus();
+      setActivePane(rect, { raise: true });
+    }
+  });
+  title.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
     event.stopPropagation();
-    setActivePane(rect, { raise: true });
+    startTitleRename(rect, title);
+  });
+  title.addEventListener("blur", () => {
+    title.readOnly = true;
+    title.classList.remove("is-renaming");
+  });
+  title.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      title.blur();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      title.value = rect.title;
+      title.blur();
+    }
   });
   title.addEventListener("input", () => {
     rect.title = title.value;
+    updateDeskbar();
     scheduleWorkspaceSave();
   });
+
+  const controls = document.createElement("div");
+  controls.className = "window-controls";
+  const minButton = document.createElement("button");
+  minButton.type = "button";
+  minButton.className = "window-control window-control-min";
+  const maxButton = document.createElement("button");
+  maxButton.type = "button";
+  maxButton.className = "window-control window-control-max";
+  rect.minButton = minButton;
+  rect.maxButton = maxButton;
+  for (const [button, run] of [[minButton, () => toggleMinimize(rect)], [maxButton, () => toggleFullRestore(rect)]]) {
+    // Keep clicks on the buttons from starting a tab drag or triggering the
+    // tab's double-click (maximize) handler.
+    button.addEventListener("pointerdown", (event) => event.stopPropagation());
+    button.addEventListener("dblclick", (event) => event.stopPropagation());
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      run();
+    });
+  }
+  controls.appendChild(minButton);
+  controls.appendChild(maxButton);
 
   const status = document.createElement("div");
   status.className = "window-status";
 
+  const modeButton = document.createElement("button");
+  modeButton.className = "window-editor-mode";
+  modeButton.type = "button";
+  modeButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleWorksheetEditorMode(rect);
+  });
+
+  const fontSizeControl = document.createElement("div");
+  fontSizeControl.className = "window-font-size";
+  fontSizeControl.setAttribute("aria-label", "Font size");
+  const fontSizeDecreaseButton = document.createElement("button");
+  fontSizeDecreaseButton.className = "window-font-size-button";
+  fontSizeDecreaseButton.type = "button";
+  fontSizeDecreaseButton.textContent = "A−";
+  fontSizeDecreaseButton.title = "Decrease font size";
+  fontSizeDecreaseButton.setAttribute("aria-label", "Decrease font size");
+  const fontSizeValue = document.createElement("output");
+  fontSizeValue.className = "window-font-size-value";
+  const fontSizeIncreaseButton = document.createElement("button");
+  fontSizeIncreaseButton.className = "window-font-size-button";
+  fontSizeIncreaseButton.type = "button";
+  fontSizeIncreaseButton.textContent = "A+";
+  fontSizeIncreaseButton.title = "Increase font size";
+  fontSizeIncreaseButton.setAttribute("aria-label", "Increase font size");
+  for (const [button, delta] of [[fontSizeDecreaseButton, -1], [fontSizeIncreaseButton, 1]]) {
+    button.addEventListener("pointerdown", (event) => event.stopPropagation());
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setPaneFontSize(rect, rect.fontSize + delta);
+    });
+  }
+  fontSizeControl.append(fontSizeDecreaseButton, fontSizeValue, fontSizeIncreaseButton);
+  rect.fontSizeValue = fontSizeValue;
+  rect.fontSizeDecreaseButton = fontSizeDecreaseButton;
+  rect.fontSizeIncreaseButton = fontSizeIncreaseButton;
+
   const cwdLabel = document.createElement("span");
   cwdLabel.className = "window-status-label";
-  cwdLabel.textContent = "cwd";
+  cwdLabel.textContent = rect.kind === fileBrowserPaneKind
+    ? "path"
+    : rect.kind === textEditorPaneKind
+      ? "file"
+      : "cwd";
 
   const cwdInput = document.createElement("input");
   cwdInput.className = "window-cwd";
   cwdInput.type = "text";
-  cwdInput.value = rect.cwd;
-  cwdInput.placeholder = "host default";
+  cwdInput.value = rect.kind === textEditorPaneKind ? rect.lastExportPath : rect.cwd;
+  cwdInput.placeholder = rect.kind === fileBrowserPaneKind
+    ? "loading..."
+    : rect.kind === textEditorPaneKind
+      ? "untitled"
+      : "host default";
   cwdInput.readOnly = true;
   cwdInput.spellcheck = false;
-  cwdInput.setAttribute("aria-label", "Pane working directory");
+  cwdInput.setAttribute("aria-label", rect.kind === fileBrowserPaneKind
+    ? "Current folder"
+    : rect.kind === textEditorPaneKind
+      ? "Editor file"
+      : "Pane working directory");
   cwdInput.addEventListener("pointerdown", (event) => {
+    if (rect.kind === fileBrowserPaneKind) {
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
+    hideFloatingMenus();
     setActivePane(rect, { raise: true });
-    openDirectoryBrowser(rect, rect.cwd);
+    if (rect.kind === textEditorPaneKind) {
+      void openEditorFileBrowser(rect, "import");
+    } else {
+      openDirectoryBrowser(rect, rect.cwd);
+    }
   });
   cwdInput.addEventListener("keydown", (event) => {
+    if (rect.kind === fileBrowserPaneKind) {
+      return;
+    }
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       event.stopPropagation();
       setActivePane(rect, { raise: true });
-      openDirectoryBrowser(rect, rect.cwd);
+      if (rect.kind === textEditorPaneKind) {
+        void openEditorFileBrowser(rect, "import");
+      } else {
+        openDirectoryBrowser(rect, rect.cwd);
+      }
     }
   });
   cwdInput.addEventListener("input", () => {
@@ -334,7 +1183,19 @@ function createRectangle(x, y, width, height, options = {}) {
 
   const body = document.createElement("div");
   body.className = "window-body";
-  body.setAttribute("aria-label", rect.kind === "terminal" ? "Terminal" : rect.kind === "pending" ? "New window" : "Workspace text");
+  rect.body = body;
+  body.setAttribute("aria-label", rect.kind === "terminal"
+    ? "Terminal"
+    : rect.kind === fileBrowserPaneKind
+      ? "File browser"
+      : rect.kind === textEditorPaneKind
+        ? "Text editor"
+      : rect.kind === "pending"
+        ? "New window"
+        : "Workspace text");
+  body.addEventListener("pointerdown", () => {
+    hideFloatingMenus();
+  }, { capture: true });
   body.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     setActivePane(rect, { raise: true });
@@ -343,18 +1204,33 @@ function createRectangle(x, y, width, height, options = {}) {
     }
   });
   body.addEventListener("focusin", () => setActivePane(rect, { raise: true }));
-  if (rect.kind === "worksheet") {
+  if (rect.kind === "worksheet" || rect.kind === textEditorPaneKind) {
     body.addEventListener("contextmenu", (event) => openEditorMenu(event, rect));
   }
 
   tab.appendChild(grip);
   tab.appendChild(title);
+  tab.appendChild(controls);
+  updateWindowControls(rect);
+  if (rect.kind === "worksheet") {
+    rect.editorModeButton = modeButton;
+    status.appendChild(modeButton);
+    updateWorksheetEditorModeUI(rect);
+  }
+  if (rect.kind === "terminal" || rect.kind === "worksheet" || rect.kind === textEditorPaneKind) {
+    status.appendChild(fontSizeControl);
+    updatePaneFontSizeUI(rect);
+  }
   status.appendChild(cwdLabel);
   status.appendChild(cwdInput);
   element.appendChild(tab);
   element.appendChild(body);
   element.appendChild(status);
-  rect.cwdInput = cwdInput;
+  if (rect.kind === textEditorPaneKind) {
+    rect.filePathInput = cwdInput;
+  } else {
+    rect.cwdInput = cwdInput;
+  }
   setPaneCwd(rect, rect.cwd, { silent: true });
 
   if (rect.kind === "terminal") {
@@ -365,42 +1241,28 @@ function createRectangle(x, y, width, height, options = {}) {
     rect.terminalContainer = terminalContainer;
     void startTerminal(rect);
   } else if (rect.kind === "worksheet") {
-    rect.editor = new EditorView({
-      doc: rect.text,
-      extensions: [
-        basicSetup,
-        tesseraEditorTheme,
-        freeCursorExtension,
-        Prec.highest(keymap.of([
-          { key: "Mod-Enter", run: () => runPaneCommand(rect), preventDefault: true },
-          { key: "Ctrl-Enter", run: () => runPaneCommand(rect), preventDefault: true },
-        ])),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
-            const isSpinnerChange = update.transactions.every((transaction) => (
-              transaction.annotation(Transaction.userEvent) === "input.tesseraSpinner"
-            ));
-            if (!isSpinnerChange) {
-              rect.commandSpinner?.map(update.changes);
-            }
-            rect.text = rect.commandSpinner
-              ? rect.commandSpinner.textWithoutSpinner(update.state.doc.toString())
-              : update.state.doc.toString();
-            if (!rect.running) {
-              scheduleWorkspaceSave();
-            }
-          }
-        }),
-      ],
-      parent: body,
-    });
+    mountWorksheetEditor(rect);
+  } else if (rect.kind === fileBrowserPaneKind) {
+    mountPaneFileBrowser(rect);
+  } else if (rect.kind === textEditorPaneKind) {
+    mountTextEditor(rect);
   } else {
     body.classList.add("is-pending");
   }
 
-  for (const handle of ["nw", "ne", "se", "sw"]) {
+  const resizeTargets = [
+    ["nw", "corner"],
+    ["ne", "corner"],
+    ["se", "corner"],
+    ["sw", "corner"],
+    ["n", "edge"],
+    ["e", "edge"],
+    ["w", "edge"],
+    ["s", "edge"],
+  ];
+  for (const [handle, kind] of resizeTargets) {
     const node = document.createElement("div");
-    node.className = `resize-handle handle-${handle}`;
+    node.className = kind === "edge" ? `resize-edge resize-edge-${handle}` : `resize-handle handle-${handle}`;
     node.addEventListener("pointerdown", (event) => startResizing(event, rect, handle));
     element.appendChild(node);
   }
@@ -408,9 +1270,665 @@ function createRectangle(x, y, width, height, options = {}) {
   rectangles.push(rect);
   board.appendChild(element);
   setRectangle(rect, rect);
+  if (rect.isFull) {
+    // A pane loaded already-maximized fills whatever board it's on now,
+    // not the literal size it was saved at (which may be from a different
+    // screen entirely).
+    applyFullGeometry(rect);
+  }
   rect.element.style.zIndex = String(rect.zIndex);
   nextZIndex = Math.max(nextZIndex, rect.zIndex + 1);
+  updateDeskbar();
   return rect;
+}
+
+function mountPaneFileBrowser(rect) {
+  const body = rect.body;
+  body.classList.add("is-file-browser");
+
+  const shell = document.createElement("div");
+  shell.className = "pane-file-browser";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "pane-file-browser-toolbar";
+
+  const upButton = document.createElement("button");
+  upButton.type = "button";
+  upButton.className = "pane-file-browser-tool";
+  upButton.textContent = "Up";
+  upButton.title = "Open parent folder";
+  upButton.setAttribute("aria-label", "Open parent folder");
+  upButton.addEventListener("click", () => {
+    const parent = rect.fileBrowserView?.data?.parent;
+    if (parent) {
+      void navigatePaneFileBrowser(rect, parent);
+    }
+  });
+
+  const refreshButton = document.createElement("button");
+  refreshButton.type = "button";
+  refreshButton.className = "pane-file-browser-tool";
+  refreshButton.textContent = "Refresh";
+  refreshButton.title = "Refresh folder";
+  refreshButton.addEventListener("click", () => {
+    void navigatePaneFileBrowser(rect, rect.fileBrowserView?.data?.path || rect.cwd || "");
+  });
+
+  const copyButton = paneFileBrowserTool("Copy", "Copy selected item", () => {
+    queuePaneFileOperation(rect, "copy");
+  });
+  const pasteButton = paneFileBrowserTool("Paste", "Paste queued item into this folder", () => {
+    void pastePaneFileOperation(rect);
+  });
+  const moveButton = paneFileBrowserTool("Move", "Move selected item, then paste it into another folder", () => {
+    queuePaneFileOperation(rect, "move");
+  });
+  const deleteButton = paneFileBrowserTool("Delete", "Delete selected item", () => {
+    void deletePaneFileSelection(rect);
+  });
+
+  const path = document.createElement("div");
+  path.className = "pane-file-browser-path";
+
+  toolbar.appendChild(upButton);
+  toolbar.appendChild(refreshButton);
+  toolbar.appendChild(copyButton);
+  toolbar.appendChild(pasteButton);
+  toolbar.appendChild(moveButton);
+  toolbar.appendChild(deleteButton);
+  toolbar.appendChild(path);
+
+  const main = document.createElement("div");
+  main.className = "pane-file-browser-main";
+  const sidebar = document.createElement("nav");
+  sidebar.className = "pane-file-browser-sidebar";
+  sidebar.setAttribute("aria-label", "File locations");
+  const sidebarResizeHandle = document.createElement("div");
+  sidebarResizeHandle.className = "pane-file-browser-resize-handle";
+  sidebarResizeHandle.setAttribute("role", "separator");
+  sidebarResizeHandle.setAttribute("aria-orientation", "vertical");
+  sidebarResizeHandle.setAttribute("aria-label", "Resize file locations panel");
+  sidebarResizeHandle.addEventListener("pointerdown", (event) => {
+    startFileBrowserSidebarResize(event, rect, sidebarResizeHandle);
+  });
+  const content = document.createElement("section");
+  content.className = "pane-file-browser-content";
+  content.setAttribute("aria-label", "Folder contents");
+  main.appendChild(sidebar);
+  main.appendChild(sidebarResizeHandle);
+  main.appendChild(content);
+
+  shell.appendChild(toolbar);
+  shell.appendChild(main);
+  body.appendChild(shell);
+
+  rect.fileBrowserView = {
+    data: null,
+    selected: null,
+    upButton,
+    copyButton,
+    pasteButton,
+    moveButton,
+    deleteButton,
+    path,
+    sidebar,
+    sidebarResizeHandle,
+    content,
+  };
+  updatePaneFileBrowserActions(rect);
+  renderPaneFileBrowserMessage(rect, "Loading...");
+  void navigatePaneFileBrowser(rect, rect.cwd || "");
+}
+
+function paneFileBrowserTool(label, title, action) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "pane-file-browser-tool";
+  button.textContent = label;
+  button.title = title;
+  button.addEventListener("click", action);
+  return button;
+}
+
+async function navigatePaneFileBrowser(rect, path) {
+  if (!rect?.fileBrowserView) {
+    return;
+  }
+  const requestID = ++rect.fileBrowserRequestID;
+  renderPaneFileBrowserMessage(rect, "Loading...");
+
+  const url = path
+    ? `/api/directories?files=1&path=${encodeURIComponent(path)}`
+    : "/api/directories?files=1";
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `folder load failed: ${response.status}`);
+    }
+    if (requestID !== rect.fileBrowserRequestID || !rect.fileBrowserView) {
+      return;
+    }
+    rect.fileBrowserView.data = data;
+    setPaneCwd(rect, data.path || "");
+    renderPaneFileBrowser(rect, data);
+  } catch (error) {
+    if (requestID === rect.fileBrowserRequestID) {
+      renderPaneFileBrowserMessage(rect, error.message || "Could not load folder", true);
+    }
+  }
+}
+
+function renderPaneFileBrowser(rect, data) {
+  const view = rect.fileBrowserView;
+  if (!view) {
+    return;
+  }
+  view.path.textContent = data.path || "Computer";
+  view.path.title = data.path || "Computer";
+  view.upButton.disabled = !data.parent;
+  view.selected = null;
+  view.sidebar.replaceChildren();
+
+  appendPaneFileBrowserLocations(rect, view.sidebar, "Locations", data.locations || [], data.path);
+  appendPaneFileBrowserLocations(rect, view.sidebar, "Drives", data.roots || [], data.path);
+
+  view.content.replaceChildren();
+  const header = document.createElement("div");
+  header.className = "pane-file-browser-columns";
+  const nameHeader = document.createElement("span");
+  nameHeader.textContent = "Name";
+  const typeHeader = document.createElement("span");
+  typeHeader.textContent = "Type";
+  header.appendChild(nameHeader);
+  header.appendChild(typeHeader);
+  view.content.appendChild(header);
+
+  const list = document.createElement("div");
+  list.className = "pane-file-browser-list";
+  if ((data.entries || []).length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "pane-file-browser-message";
+    empty.textContent = "This folder is empty";
+    list.appendChild(empty);
+  }
+
+  for (const entry of data.entries || []) {
+    const canOpenInEditor = entry.kind === "file" && isTextEditorFilePath(entry.path);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "pane-file-browser-entry";
+    row.dataset.kind = entry.kind;
+    row.dataset.openable = canOpenInEditor ? "true" : "false";
+    row.title = canOpenInEditor ? `${entry.path}\nDouble-click to open in Text Editor` : entry.path;
+
+    const name = document.createElement("span");
+    name.className = "pane-file-browser-name";
+    name.textContent = entry.name;
+    const type = document.createElement("span");
+    type.className = "pane-file-browser-type";
+    type.textContent = entry.kind === "directory" ? "Folder" : canOpenInEditor ? "Text" : "File";
+    row.appendChild(name);
+    row.appendChild(type);
+
+    row.addEventListener("click", () => {
+      for (const selected of list.querySelectorAll(".is-selected")) {
+        selected.classList.remove("is-selected");
+      }
+      row.classList.add("is-selected");
+      view.selected = entry;
+      updatePaneFileBrowserActions(rect);
+    });
+    row.addEventListener("dblclick", () => {
+      if (entry.kind === "directory") {
+        void navigatePaneFileBrowser(rect, entry.path);
+      } else if (canOpenInEditor) {
+        void openFileFromPaneFileBrowser(entry.path, rect);
+      }
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (entry.kind === "directory" || canOpenInEditor)) {
+        event.preventDefault();
+        if (entry.kind === "directory") {
+          void navigatePaneFileBrowser(rect, entry.path);
+        } else {
+          void openFileFromPaneFileBrowser(entry.path, rect);
+        }
+      }
+    });
+    list.appendChild(row);
+  }
+  view.content.appendChild(list);
+  updatePaneFileBrowserActions(rect);
+}
+
+function isTextEditorFilePath(path) {
+  const name = fileNameFromPath(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && textEditorFileExtensions.has(name.slice(dot));
+}
+
+function fileNameFromPath(path) {
+  const trimmed = (path || "").replace(/[\\/]+$/, "");
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+}
+
+function editorPathKey(path) {
+  const normalized = (path || "").replaceAll("\\", "/");
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+async function openFileFromPaneFileBrowser(path, sourceRect) {
+  if (!isTextEditorFilePath(path)) {
+    return;
+  }
+  const pathKey = editorPathKey(path);
+  const existing = rectangles.find((rect) => (
+    rect.kind === textEditorPaneKind && editorPathKey(rect.lastExportPath) === pathKey
+  ));
+  if (existing) {
+    setMinimized(existing, false);
+    setActivePane(existing, { raise: true, focusEditor: true });
+    return;
+  }
+
+  try {
+    const data = await readHostFile(path);
+    const bounds = board.getBoundingClientRect();
+    const width = Math.min(Math.max(480, sourceRect?.width || 640), Math.max(320, bounds.width - 24));
+    const height = Math.min(Math.max(320, sourceRect?.height || 420), Math.max(220, bounds.height - tabHeight - 24));
+    const rect = createRectangle(
+      (sourceRect?.x || 48) + 32,
+      (sourceRect?.y || tabHeight + 32) + 32,
+      width,
+      height,
+      {
+        kind: textEditorPaneKind,
+        title: fileNameFromPath(data.path || path) || "Text Editor",
+        text: data.text || "",
+        cwd: parentPathFromFilePath(data.path || path),
+        lastExportPath: data.path || path,
+        zIndex: nextZIndex,
+      },
+    );
+    clampIntoBoard(rect);
+    setRectangle(rect, rect);
+    setActivePane(rect, { raise: true, focusEditor: true });
+    scheduleWorkspaceSave();
+    setWorkspaceStatus("saved", "Opened", data.path || path);
+  } catch (error) {
+    console.warn(error);
+    setWorkspaceStatus("error", "Open failed", error.message || "Could not open file");
+  }
+}
+
+function appendPaneFileBrowserLocations(rect, sidebar, label, entries, currentPath) {
+  if (entries.length === 0) {
+    return;
+  }
+  const heading = document.createElement("div");
+  heading.className = "pane-file-browser-sidebar-heading";
+  heading.textContent = label;
+  sidebar.appendChild(heading);
+
+  for (const entry of entries) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pane-file-browser-location";
+    button.textContent = entry.name;
+    button.title = entry.path;
+    button.classList.toggle("is-current", entry.path === currentPath);
+    button.addEventListener("click", () => void navigatePaneFileBrowser(rect, entry.path));
+    sidebar.appendChild(button);
+  }
+}
+
+function renderPaneFileBrowserMessage(rect, messageText, isError = false) {
+  const view = rect.fileBrowserView;
+  if (!view) {
+    return;
+  }
+  view.content.replaceChildren();
+  const message = document.createElement("div");
+  message.className = `pane-file-browser-message${isError ? " is-error" : ""}`;
+  message.textContent = messageText;
+  view.content.appendChild(message);
+}
+
+function updatePaneFileBrowserActions(rect) {
+  const view = rect?.fileBrowserView;
+  if (!view) {
+    return;
+  }
+  const hasSelection = Boolean(view.selected?.path);
+  view.copyButton.disabled = !hasSelection;
+  view.moveButton.disabled = !hasSelection;
+  view.deleteButton.disabled = !hasSelection;
+  view.pasteButton.disabled = !paneFileClipboard || !view.data?.path;
+  view.pasteButton.title = paneFileClipboard
+    ? `${paneFileClipboard.action === "move" ? "Move" : "Copy"} ${paneFileClipboard.name} into this folder`
+    : "Paste queued item into this folder";
+}
+
+function updateAllPaneFileBrowserActions() {
+  for (const rect of rectangles) {
+    if (rect.kind === fileBrowserPaneKind) {
+      updatePaneFileBrowserActions(rect);
+    }
+  }
+}
+
+function queuePaneFileOperation(rect, action) {
+  const selected = rect?.fileBrowserView?.selected;
+  if (!selected?.path) {
+    return;
+  }
+  paneFileClipboard = {
+    action,
+    source: selected.path,
+    name: selected.name,
+  };
+  setWorkspaceStatus("saved", action === "move" ? "Move ready" : "Copied", selected.path);
+  updateAllPaneFileBrowserActions();
+}
+
+async function pastePaneFileOperation(rect) {
+  const destination = rect?.fileBrowserView?.data?.path;
+  const operation = paneFileClipboard;
+  if (!destination || !operation) {
+    return;
+  }
+  try {
+    await requestPaneFileOperation({
+      action: operation.action,
+      source: operation.source,
+      destination,
+    });
+    if (operation.action === "move") {
+      paneFileClipboard = null;
+    }
+    setWorkspaceStatus("saved", operation.action === "move" ? "Moved" : "Copied", operation.name);
+    await refreshPaneFileBrowsers();
+  } catch (error) {
+    setWorkspaceStatus("error", "File operation failed", error.message || "Could not paste item");
+  } finally {
+    updateAllPaneFileBrowserActions();
+  }
+}
+
+async function deletePaneFileSelection(rect) {
+  const selected = rect?.fileBrowserView?.selected;
+  if (!selected?.path) {
+    return;
+  }
+  if (!window.confirm(`Delete ${selected.name}? This cannot be undone.`)) {
+    return;
+  }
+  try {
+    await requestPaneFileOperation({
+      action: "delete",
+      source: selected.path,
+    });
+    if (paneFileClipboard?.source === selected.path) {
+      paneFileClipboard = null;
+    }
+    setWorkspaceStatus("saved", "Deleted", selected.path);
+    await refreshPaneFileBrowsers();
+  } catch (error) {
+    setWorkspaceStatus("error", "Delete failed", error.message || "Could not delete item");
+  } finally {
+    updateAllPaneFileBrowserActions();
+  }
+}
+
+async function requestPaneFileOperation(operation) {
+  const response = await fetch("/api/files", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(operation),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `file operation failed: ${response.status}`);
+  }
+  return data;
+}
+
+async function refreshPaneFileBrowsers() {
+  const refreshes = [];
+  for (const rect of rectangles) {
+    if (rect.kind === fileBrowserPaneKind && rect.fileBrowserView) {
+      refreshes.push(navigatePaneFileBrowser(rect, rect.fileBrowserView.data?.path || rect.cwd || ""));
+    }
+  }
+  await Promise.all(refreshes);
+}
+
+function startTitleRename(rect, title) {
+  hideFloatingMenus();
+  setActivePane(rect, { raise: true });
+  title.readOnly = false;
+  title.classList.add("is-renaming");
+  title.focus({ preventScroll: true });
+  title.select();
+  requestAnimationFrame(() => {
+    if (document.activeElement === title && !title.readOnly) {
+      title.select();
+    }
+  });
+}
+
+function normalizeWorksheetEditorMode(mode) {
+  return mode === normalWorksheetEditorMode ? normalWorksheetEditorMode : defaultWorksheetEditorMode;
+}
+
+function normalizePaneFontSize(fontSize) {
+  const parsed = Number(fontSize);
+  if (!Number.isFinite(parsed)) {
+    return defaultPaneFontSize;
+  }
+  return Math.max(minimumPaneFontSize, Math.min(maximumPaneFontSize, Math.round(parsed)));
+}
+
+function normalizeFileBrowserSidebarWidth(width) {
+  const parsed = Number(width);
+  if (!Number.isFinite(parsed)) {
+    return defaultFileBrowserSidebarWidth;
+  }
+  return Math.max(minimumFileBrowserSidebarWidth, Math.min(maximumFileBrowserSidebarWidth, Math.round(parsed)));
+}
+
+function setFileBrowserSidebarWidth(rect, width) {
+  if (!rect || rect.kind !== fileBrowserPaneKind) {
+    return;
+  }
+  rect.fileBrowserSidebarWidth = normalizeFileBrowserSidebarWidth(width);
+  rect.element.style.setProperty("--file-browser-sidebar-width", `${rect.fileBrowserSidebarWidth}px`);
+}
+
+function setPaneFontSize(rect, fontSize) {
+  if (!rect || (rect.kind !== "terminal" && rect.kind !== "worksheet" && rect.kind !== textEditorPaneKind)) {
+    return;
+  }
+  rect.fontSize = normalizePaneFontSize(fontSize);
+  updatePaneFontSizeUI(rect);
+  if (rect.kind === "terminal" && rect.terminal?.term) {
+    rect.terminal.term.options.fontSize = rect.fontSize;
+    requestTerminalFit(rect);
+  } else {
+    rect.editor?.requestMeasure();
+  }
+  scheduleWorkspaceSave();
+}
+
+function updatePaneFontSizeUI(rect) {
+  if (!rect) {
+    return;
+  }
+  rect.fontSize = normalizePaneFontSize(rect.fontSize);
+  rect.element.style.setProperty("--pane-editor-font-size", `${rect.fontSize}px`);
+  if (rect.fontSizeValue) {
+    rect.fontSizeValue.value = String(rect.fontSize);
+    rect.fontSizeValue.textContent = `${rect.fontSize}px`;
+  }
+  if (rect.fontSizeDecreaseButton) {
+    rect.fontSizeDecreaseButton.disabled = rect.fontSize <= minimumPaneFontSize;
+  }
+  if (rect.fontSizeIncreaseButton) {
+    rect.fontSizeIncreaseButton.disabled = rect.fontSize >= maximumPaneFontSize;
+  }
+}
+
+function mountWorksheetEditor(rect) {
+  if (!rect?.body) {
+    return;
+  }
+
+  const previousSelection = rect.editor?.state.selection || EditorSelection.cursor(0);
+  if (rect.editor) {
+    cancelWorksheetLineSelection(rect.editor);
+    rect.text = rect.commandSpinner
+      ? rect.commandSpinner.textWithoutSpinner(rect.editor.state.doc.toString())
+      : rect.editor.state.doc.toString();
+    rect.editor.destroy();
+    rect.editor = null;
+  }
+
+  const editorExtensions = [
+    basicSetup,
+    tesseraEditorTheme,
+    worksheetFilenameWordChars,
+  ];
+  if (rect.editorMode !== normalWorksheetEditorMode) {
+    editorExtensions.push(freeCursorExtension);
+  }
+  editorExtensions.push(
+    Prec.highest(keymap.of([
+      { key: "Mod-Enter", run: () => runPaneCommand(rect), preventDefault: true },
+      { key: "Ctrl-Enter", run: () => runPaneCommand(rect), preventDefault: true },
+    ])),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged) {
+        const isSpinnerChange = update.transactions.every((transaction) => (
+          transaction.annotation(Transaction.userEvent) === "input.tesseraSpinner"
+        ));
+        if (!isSpinnerChange) {
+          rect.commandSpinner?.map(update.changes);
+        }
+        rect.text = rect.commandSpinner
+          ? rect.commandSpinner.textWithoutSpinner(update.state.doc.toString())
+          : update.state.doc.toString();
+        if (!rect.running) {
+          scheduleWorkspaceSave();
+        }
+      }
+    }),
+  );
+
+  rect.editor = new EditorView({
+    doc: rect.text,
+    selection: clampEditorSelection(previousSelection, rect.text.length),
+    extensions: editorExtensions,
+    parent: rect.body,
+  });
+  rect.editor.dom.addEventListener("pointerdown", (event) => startWorksheetLineSelection(event, rect));
+  updateWorksheetEditorModeUI(rect);
+}
+
+function mountTextEditor(rect) {
+  if (!rect?.body) {
+    return;
+  }
+  rect.editor = new EditorView({
+    doc: rect.text,
+    extensions: [
+      basicSetup,
+      tesseraEditorTheme,
+      worksheetFilenameWordChars,
+      Prec.highest(keymap.of([
+        {
+          key: "Mod-o",
+          run: () => {
+            void openEditorFileBrowser(rect, "import");
+            return true;
+          },
+          preventDefault: true,
+        },
+        {
+          key: "Mod-s",
+          run: () => {
+            void saveTextEditor(rect);
+            return true;
+          },
+          preventDefault: true,
+        },
+      ])),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          rect.text = update.state.doc.toString();
+          scheduleWorkspaceSave();
+        }
+      }),
+    ],
+    parent: rect.body,
+  });
+  updateTextEditorFileUI(rect);
+}
+
+async function saveTextEditor(rect) {
+  if (!rect?.editor || rect.kind !== textEditorPaneKind) {
+    return;
+  }
+  if (rect.lastExportPath) {
+    await saveEditorToFile(rect, { path: rect.lastExportPath });
+  } else {
+    await openEditorFileBrowser(rect, "export");
+  }
+}
+
+function updateTextEditorFileUI(rect) {
+  if (!rect || rect.kind !== textEditorPaneKind || !rect.filePathInput) {
+    return;
+  }
+  rect.filePathInput.value = rect.lastExportPath || "";
+  rect.filePathInput.title = rect.lastExportPath || "Untitled text file";
+}
+
+function clampEditorSelection(selection, docLength) {
+  const head = selection?.main?.head ?? 0;
+  return EditorSelection.cursor(Math.max(0, Math.min(head, docLength)));
+}
+
+function toggleWorksheetEditorMode(rect) {
+  if (!rect?.editor) {
+    return;
+  }
+  rect.editorMode = rect.editorMode === normalWorksheetEditorMode
+    ? defaultWorksheetEditorMode
+    : normalWorksheetEditorMode;
+  mountWorksheetEditor(rect);
+  rect.editor?.focus();
+  scheduleWorkspaceSave();
+}
+
+function updateWorksheetEditorModeUI(rect) {
+  if (!rect || rect.kind !== "worksheet") {
+    return;
+  }
+  const mode = normalizeWorksheetEditorMode(rect.editorMode);
+  rect.editorMode = mode;
+  rect.element.dataset.editorMode = mode;
+  if (rect.body) {
+    rect.body.dataset.editorMode = mode;
+  }
+  if (rect.editorModeButton) {
+    const isNormal = mode === normalWorksheetEditorMode;
+    rect.editorModeButton.textContent = isNormal ? "Normal" : "Free";
+    rect.editorModeButton.title = isNormal ? "Switch to free worksheet editing" : "Switch to normal text editing";
+    rect.editorModeButton.setAttribute("aria-label", rect.editorModeButton.title);
+    rect.editorModeButton.setAttribute("aria-pressed", isNormal ? "true" : "false");
+  }
 }
 
 function setActivePane(rect, options = {}) {
@@ -442,6 +1960,90 @@ function setActivePane(rect, options = {}) {
   if (!wasActive || options.raise) {
     scheduleWorkspaceSave();
   }
+  updateDeskbar();
+}
+
+function openRenameWindowModal(rect) {
+  if (!rect || !rectangles.includes(rect)) {
+    return;
+  }
+  hideAllMenus();
+  renameWindowModal.replaceChildren();
+
+  const panel = document.createElement("section");
+  panel.className = "settings-panel rename-window-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "rename-window-title");
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "rename-window-title";
+  title.textContent = "Rename Window";
+  titleBar.appendChild(title);
+
+  const content = document.createElement("div");
+  content.className = "settings-content rename-window-content";
+  const label = document.createElement("label");
+  label.htmlFor = "rename-window-input";
+  label.textContent = "Window name";
+  const input = document.createElement("input");
+  input.id = "rename-window-input";
+  input.className = "rename-window-input";
+  input.type = "text";
+  input.value = rect.title;
+  input.spellcheck = false;
+
+  const actions = document.createElement("div");
+  actions.className = "rename-window-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "settings-background-button";
+  cancelButton.textContent = "Cancel";
+  const renameButton = document.createElement("button");
+  renameButton.type = "button";
+  renameButton.className = "settings-background-button";
+  renameButton.textContent = "Rename";
+
+  const save = () => {
+    if (!rectangles.includes(rect)) {
+      hideRenameWindowModal();
+      return;
+    }
+    rect.title = input.value;
+    rect.titleInput.value = rect.title;
+    updateDeskbar();
+    scheduleWorkspaceSave();
+    hideRenameWindowModal();
+    setActivePane(rect, { raise: true, focusEditor: true });
+  };
+  cancelButton.addEventListener("click", hideRenameWindowModal);
+  renameButton.addEventListener("click", save);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      save();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      hideRenameWindowModal();
+    }
+  });
+
+  actions.append(cancelButton, renameButton);
+  content.append(label, input, actions);
+  panel.append(titleBar, content);
+  renameWindowModal.appendChild(panel);
+  renameWindowModal.hidden = false;
+  window.requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+}
+
+function hideRenameWindowModal() {
+  renameWindowModal.hidden = true;
+  renameWindowModal.replaceChildren();
 }
 
 function clearActivePane() {
@@ -450,6 +2052,7 @@ function clearActivePane() {
   activePaneID = "";
   delete board.dataset.activePaneId;
   scheduleWorkspaceSave();
+  updateDeskbar();
 }
 
 function clearActivePaneClass() {
@@ -609,6 +2212,228 @@ function chooseDirectory(path) {
   hideDirectoryBrowser();
 }
 
+async function openEditorFileBrowser(rect, mode) {
+  if (!rect?.editor) {
+    return;
+  }
+  fileBrowserRect = rect;
+  fileBrowserMode = mode;
+  fileBrowserFilePath = mode === "export" ? (rect.lastExportPath || "") : "";
+  hideDockMenu();
+  hideEditorMenu();
+  hideWorkspaceMenu();
+  directoryBrowser.hidden = false;
+
+  const startPath = fileBrowserStartPath(rect);
+  renderFileBrowserLoading(startPath);
+  try {
+    await loadFileBrowser(startPath);
+  } catch (error) {
+    renderFileBrowserError(error.message || "Could not load files");
+  }
+}
+
+function fileBrowserStartPath(rect) {
+  if (rect.lastExportPath) {
+    return parentPathFromFilePath(rect.lastExportPath);
+  }
+  return rect.cwd || "";
+}
+
+async function loadFileBrowser(path) {
+  const url = path
+    ? `/api/directories?files=1&path=${encodeURIComponent(path)}`
+    : "/api/directories?files=1";
+  const response = await fetch(url);
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || `file browser load failed: ${response.status}`);
+  }
+  fileBrowserPath = data.path || "";
+  renderFileBrowser(data);
+}
+
+function renderFileBrowserLoading(path) {
+  directoryBrowser.replaceChildren();
+  const panel = directoryBrowserPanel(fileBrowserTitle());
+  const pathLine = document.createElement("div");
+  pathLine.className = "directory-browser-path";
+  pathLine.textContent = path || "host default";
+  const message = document.createElement("div");
+  message.className = "directory-browser-message";
+  message.textContent = "Loading...";
+  panel.appendChild(pathLine);
+  panel.appendChild(message);
+  directoryBrowser.appendChild(panel);
+}
+
+function renderFileBrowserError(messageText) {
+  directoryBrowser.replaceChildren();
+  const panel = directoryBrowserPanel(fileBrowserTitle());
+  const message = document.createElement("div");
+  message.className = "directory-browser-message is-error";
+  message.textContent = messageText;
+  const actions = document.createElement("div");
+  actions.className = "directory-browser-actions";
+  actions.appendChild(directoryBrowserButton("Close", hideDirectoryBrowser));
+  panel.appendChild(message);
+  panel.appendChild(actions);
+  directoryBrowser.appendChild(panel);
+}
+
+function renderFileBrowser(data) {
+  directoryBrowser.replaceChildren();
+  const panel = directoryBrowserPanel(fileBrowserTitle());
+
+  const pathLine = document.createElement("div");
+  pathLine.className = "directory-browser-path";
+  pathLine.textContent = data.path || "host default";
+  pathLine.title = data.path || "host default";
+
+  const nav = document.createElement("div");
+  nav.className = "directory-browser-nav";
+  if (data.parent) {
+    nav.appendChild(directoryBrowserButton("Up", () => loadFileBrowser(data.parent)));
+  }
+  for (const root of data.roots || []) {
+    nav.appendChild(directoryBrowserButton(root.name, () => loadFileBrowser(root.path)));
+  }
+
+  const list = document.createElement("div");
+  list.className = "directory-browser-list";
+  if ((data.entries || []).length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "directory-browser-message";
+    empty.textContent = "No files";
+    list.appendChild(empty);
+  }
+  for (const entry of data.entries || []) {
+    const isDirectory = entry.kind === "directory";
+    const button = directoryBrowserButton(`${isDirectory ? "[dir] " : ""}${entry.name}`, () => {
+      if (isDirectory) {
+        void loadFileBrowser(entry.path);
+      } else if (fileBrowserMode === "import") {
+        void chooseImportFile(entry.path);
+      } else {
+        setFileBrowserExportPath(entry.path);
+      }
+    });
+    button.className = `directory-browser-entry${isDirectory ? " is-directory" : " is-file"}`;
+    button.title = entry.path;
+    list.appendChild(button);
+  }
+
+  panel.appendChild(pathLine);
+  panel.appendChild(nav);
+  if (fileBrowserMode === "export") {
+    panel.appendChild(renderExportFileField(data.path || ""));
+  }
+  panel.appendChild(list);
+  panel.appendChild(renderFileBrowserActions(data.path || ""));
+  directoryBrowser.appendChild(panel);
+}
+
+function renderExportFileField(folderPath) {
+  const row = document.createElement("label");
+  row.className = "directory-browser-file-row";
+  const label = document.createElement("span");
+  label.textContent = "File";
+  const input = document.createElement("input");
+  input.className = "directory-browser-file-input";
+  input.type = "text";
+  input.value = fileBrowserFilePath || defaultExportPath(folderPath);
+  input.placeholder = "Path to export";
+  input.addEventListener("input", () => {
+    fileBrowserFilePath = input.value;
+  });
+  row.appendChild(label);
+  row.appendChild(input);
+  return row;
+}
+
+function renderFileBrowserActions(folderPath) {
+  const actions = document.createElement("div");
+  actions.className = "directory-browser-actions";
+  if (fileBrowserMode === "export") {
+    const label = fileBrowserRect?.kind === textEditorPaneKind ? "Save" : "Export";
+    actions.appendChild(directoryBrowserButton(label, () => {
+      void chooseExportFile(fileBrowserFilePath || defaultExportPath(folderPath));
+    }));
+  }
+  actions.appendChild(directoryBrowserButton("Cancel", hideDirectoryBrowser));
+  return actions;
+}
+
+function fileBrowserTitle() {
+  if (fileBrowserRect?.kind === textEditorPaneKind) {
+    return fileBrowserMode === "export" ? "Save Text File" : "Open Text File";
+  }
+  return fileBrowserMode === "export" ? "Export Worksheet" : "Import Worksheet";
+}
+
+function setFileBrowserExportPath(path) {
+  fileBrowserFilePath = path;
+  void renderFileBrowserForCurrentPath();
+}
+
+async function renderFileBrowserForCurrentPath() {
+  try {
+    await loadFileBrowser(fileBrowserPath || "");
+  } catch (error) {
+    renderFileBrowserError(error.message || "Could not load files");
+  }
+}
+
+async function chooseImportFile(path) {
+  const rect = fileBrowserRect;
+  hideDirectoryBrowser();
+  if (!rect) {
+    return;
+  }
+  await openFileIntoEditor(rect, path);
+}
+
+async function chooseExportFile(path) {
+  const rect = fileBrowserRect;
+  hideDirectoryBrowser();
+  if (!rect) {
+    return;
+  }
+  await saveEditorToFile(rect, { path });
+}
+
+function defaultExportPath(folderPath) {
+  if (fileBrowserFilePath) {
+    return fileBrowserFilePath;
+  }
+  if (fileBrowserRect?.lastExportPath) {
+    return fileBrowserRect.lastExportPath;
+  }
+  const title = (fileBrowserRect?.title || "worksheet").trim() || "worksheet";
+  return joinPath(folderPath || fileBrowserRect?.cwd || "", `${sanitizeFileName(title)}.txt`);
+}
+
+function sanitizeFileName(name) {
+  return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim() || "worksheet";
+}
+
+function joinPath(folderPath, fileName) {
+  if (!folderPath) {
+    return fileName;
+  }
+  const separator = folderPath.includes("\\") ? "\\" : "/";
+  return folderPath.endsWith("\\") || folderPath.endsWith("/") ? `${folderPath}${fileName}` : `${folderPath}${separator}${fileName}`;
+}
+
+function parentPathFromFilePath(path) {
+  const trimmed = (path || "").trim();
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (slash === 2 && trimmed[1] === ":") {
+    return trimmed.slice(0, 3);
+  }
+  return slash > 0 ? trimmed.slice(0, slash) : "";
+}
+
 function setRectangle(rect, next) {
   rect.x = Math.round(next.x);
   rect.y = Math.round(next.y);
@@ -621,6 +2446,9 @@ function setRectangle(rect, next) {
     rect.editor.requestMeasure();
   }
   requestTerminalFit(rect);
+  if (!isArrangingWindows) {
+    arrangeOutSnapshot = null;
+  }
   scheduleWorkspaceSave();
 }
 
@@ -628,12 +2456,13 @@ async function loadWorkspace() {
   isLoadingWorkspace = true;
   setWorkspaceStatus("loading", "Loading...");
   try {
-    const response = await fetch("/api/workspace/default");
+    const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceID)}`);
     if (!response.ok) {
       throw new Error(`load workspace failed: ${response.status}`);
     }
     const workspace = await response.json();
     workspaceID = workspace.id || "default";
+    applyWorkspaceBackground(Boolean(workspace.hasBackground), workspace.backgroundVersion || "", workspace.backgroundMode);
     clearRectanglesForLoad();
 
     let highestZIndex = 0;
@@ -643,18 +2472,30 @@ async function loadWorkspace() {
         kind: pane.kind || "worksheet",
         title: pane.title,
         text: pane.bufferText,
+        editorMode: pane.editorMode,
+        fontSize: pane.fontSize,
         cwd: pane.cwd,
+        lastExportPath: pane.lastExportPath,
+        fileBrowserSidebarWidth: pane.fileBrowserSidebarWidth,
         zIndex: pane.zIndex || 0,
+        minimized: Boolean(pane.minimized),
+        isFull: Boolean(pane.isFull),
+        restoreBox: parseRestoreBox(pane.restoreBox),
       });
       highestZIndex = Math.max(highestZIndex, rect.zIndex);
     }
 
     nextZIndex = Math.max(nextZIndex, highestZIndex + 1);
-    const activeLoadedRect = rectangles.find((rect) => rect.id === workspace.activePaneId) || null;
+    // A visible full pane owns the app surface after navigation, even if an
+    // older saved active-pane ID points at a window behind it.
+    const activeLoadedRect = rectangles.find((rect) => rect.isFull && !rect.minimized)
+      || rectangles.find((rect) => rect.id === workspace.activePaneId && !rect.minimized)
+      || null;
     if (activeLoadedRect) {
       setActivePane(activeLoadedRect, { raise: false });
     }
     await syncRunningCommands();
+    updateDeskbar();
     setWorkspaceStatus("saved", "Saved", "Workspace loaded");
   } catch (error) {
     console.warn(error);
@@ -679,6 +2520,7 @@ function clearRectanglesForLoad() {
   editorMenuRect = null;
   hideAllMenus();
   nextZIndex = 1;
+  updateDeskbar();
 }
 
 function scheduleWorkspaceSave() {
@@ -688,6 +2530,45 @@ function scheduleWorkspaceSave() {
   setWorkspaceStatus("saving", "Saving...");
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(saveWorkspace, 250);
+}
+
+function scheduleUserSettingsSave() {
+  if (!currentUser) {
+    return;
+  }
+  window.clearTimeout(userSettingsSaveTimer);
+  userSettingsSaveTimer = window.setTimeout(() => {
+    void saveUserSettings().catch((error) => {
+      console.warn(error);
+      setWorkspaceStatus("error", "Settings save failed", error.message || "Settings save failed");
+    });
+  }, 250);
+}
+
+async function saveUserSettings() {
+  window.clearTimeout(userSettingsSaveTimer);
+  userSettingsSaveTimer = null;
+  if (!currentUser) {
+    return;
+  }
+  const response = await fetch(userAPIPath("settings"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ defaultPaneFontSize, defaultTheme, themeId: themeID }),
+  });
+  if (!response.ok) {
+    throw new Error(`save user settings failed: ${response.status}`);
+  }
+}
+
+async function flushUserSettingsSave() {
+  if (userSettingsSaveTimer) {
+    await saveUserSettings();
+  }
+}
+
+async function flushAllPersistence() {
+  await Promise.all([flushWorkspaceSave(), flushUserSettingsSave()]);
 }
 
 async function flushWorkspaceSave() {
@@ -710,23 +2591,35 @@ async function saveWorkspace() {
     title: rect.title,
     kind: rect.kind,
     bufferText: rect.kind === "terminal" ? "" : rect.text,
+    editorMode: rect.kind === "worksheet" ? rect.editorMode : "",
+    fontSize: rect.kind === "terminal" || rect.kind === "worksheet" || rect.kind === textEditorPaneKind ? rect.fontSize : defaultPaneFontSize,
     cwd: rect.cwd || "",
+    lastExportPath: rect.kind === "terminal" ? "" : (rect.lastExportPath || ""),
+    fileBrowserSidebarWidth: rect.kind === fileBrowserPaneKind ? rect.fileBrowserSidebarWidth : defaultFileBrowserSidebarWidth,
     x: rect.x,
     y: rect.y,
     width: rect.width,
     height: rect.height,
     zIndex: rect.zIndex,
+    minimized: rect.minimized,
+    // Maximize is an attribute ("fills the board"), not a fixed size — x/y/
+    // width/height above are just this device's current full-board size.
+    // isFull is what actually gets restored; restoreBox is where "Restore"
+    // should go back to, serialized since it's opaque bookkeeping.
+    isFull: Boolean(rect.isFull),
+    restoreBox: rect.restoreBox ? JSON.stringify(rect.restoreBox) : "",
     position: index,
   }));
 
   try {
-    const response = await fetch("/api/workspace/default", {
+    const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceID)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: workspaceID,
-        name: "Default",
+        name: currentSessionName || "Default",
         activePaneId: savedRectangles.some((rect) => rect.id === activePaneID) ? activePaneID : "",
+        backgroundMode: workspaceBackgroundMode,
         layout: { panes: panes.map((pane) => pane.id) },
         panes,
       }),
@@ -746,9 +2639,20 @@ async function saveWorkspace() {
 }
 
 function setWorkspaceStatus(state, text, title = "") {
+  window.clearTimeout(workspaceStatusHideTimer);
+  workspaceStatusHideTimer = null;
+  workspaceStatus.hidden = false;
   workspaceStatus.dataset.state = state;
   workspaceStatus.textContent = text;
   workspaceStatus.title = title || text;
+  if (state === "saved") {
+    workspaceStatusHideTimer = window.setTimeout(() => {
+      if (workspaceStatus.dataset.state === "saved") {
+        workspaceStatus.hidden = true;
+      }
+      workspaceStatusHideTimer = null;
+    }, 3000);
+  }
 }
 
 async function syncRunningCommands() {
@@ -803,6 +2707,146 @@ function stopRunStreams() {
   runStreamControllers.clear();
 }
 
+function startWorksheetLineSelection(event, rect) {
+  if (event.button !== 0 || !rect?.editor || !isLineNumberGutterTarget(event.target)) {
+    return;
+  }
+
+  const lineNumber = lineNumberAtEditorY(rect.editor, event.clientY);
+  if (!lineNumber) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  hideFloatingMenus();
+  setActivePane(rect, { raise: true });
+  worksheetLineDrag = {
+    editor: rect.editor,
+    pointerId: event.pointerId,
+    startLineNumber: lineNumber,
+  };
+  selectWorksheetLineRange(rect.editor, lineNumber, lineNumber);
+
+  const doc = rect.editor.dom.ownerDocument;
+  doc.addEventListener("pointermove", continueWorksheetLineSelection);
+  doc.addEventListener("pointerup", finishWorksheetLineSelection);
+  doc.addEventListener("pointercancel", finishWorksheetLineSelection);
+}
+
+function continueWorksheetLineSelection(event) {
+  if (!worksheetLineDrag || event.pointerId !== worksheetLineDrag.pointerId) {
+    return;
+  }
+  if (event.buttons === 0) {
+    finishWorksheetLineSelection(event);
+    return;
+  }
+
+  const lineNumber = lineNumberAtEditorY(worksheetLineDrag.editor, event.clientY);
+  if (!lineNumber) {
+    return;
+  }
+  event.preventDefault();
+  selectWorksheetLineRange(worksheetLineDrag.editor, worksheetLineDrag.startLineNumber, lineNumber);
+}
+
+function finishWorksheetLineSelection(event) {
+  if (!worksheetLineDrag || event.pointerId !== worksheetLineDrag.pointerId) {
+    return;
+  }
+  cancelWorksheetLineSelection();
+}
+
+function cancelWorksheetLineSelection(editor = null) {
+  if (!worksheetLineDrag || (editor && worksheetLineDrag.editor !== editor)) {
+    return;
+  }
+  const doc = worksheetLineDrag.editor.dom.ownerDocument;
+  doc.removeEventListener("pointermove", continueWorksheetLineSelection);
+  doc.removeEventListener("pointerup", finishWorksheetLineSelection);
+  doc.removeEventListener("pointercancel", finishWorksheetLineSelection);
+  worksheetLineDrag = null;
+}
+
+function startFileBrowserSidebarResize(event, rect, handle) {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  setActivePane(rect, { raise: true });
+  fileBrowserSidebarResizeDrag = {
+    rect,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startWidth: rect.fileBrowserSidebarWidth,
+  };
+  handle.classList.add("is-dragging");
+  document.addEventListener("pointermove", continueFileBrowserSidebarResize);
+  document.addEventListener("pointerup", finishFileBrowserSidebarResize);
+  document.addEventListener("pointercancel", finishFileBrowserSidebarResize);
+}
+
+function continueFileBrowserSidebarResize(event) {
+  const drag = fileBrowserSidebarResizeDrag;
+  if (!drag || event.pointerId !== drag.pointerId) {
+    return;
+  }
+  event.preventDefault();
+  setFileBrowserSidebarWidth(drag.rect, drag.startWidth + (event.clientX - drag.startX));
+  scheduleWorkspaceSave();
+}
+
+function finishFileBrowserSidebarResize(event) {
+  const drag = fileBrowserSidebarResizeDrag;
+  if (!drag || event.pointerId !== drag.pointerId) {
+    return;
+  }
+  drag.rect.fileBrowserView?.sidebarResizeHandle?.classList.remove("is-dragging");
+  document.removeEventListener("pointermove", continueFileBrowserSidebarResize);
+  document.removeEventListener("pointerup", finishFileBrowserSidebarResize);
+  document.removeEventListener("pointercancel", finishFileBrowserSidebarResize);
+  fileBrowserSidebarResizeDrag = null;
+}
+
+function isLineNumberGutterTarget(target) {
+  const element = target instanceof Element ? target : null;
+  if (!element) {
+    return false;
+  }
+  return Boolean(element.closest(".cm-lineNumbers") && element.closest(".cm-gutterElement"));
+}
+
+function lineNumberAtEditorY(editor, clientY) {
+  const contentBox = editor.contentDOM.getBoundingClientRect();
+  if (contentBox.height <= 0 || contentBox.width <= 0) {
+    return null;
+  }
+
+  const x = contentBox.left + Math.min(12, Math.max(1, contentBox.width / 2));
+  const y = Math.min(Math.max(clientY, contentBox.top + 1), contentBox.bottom - 1);
+  const pos = editor.posAtCoords({ x, y }, false);
+  if (pos == null) {
+    return clientY < contentBox.top ? 1 : editor.state.doc.lines;
+  }
+  return editor.state.doc.lineAt(pos).number;
+}
+
+function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
+  const doc = editor.state.doc;
+  const fromLineNumber = Math.max(1, Math.min(startLineNumber, endLineNumber));
+  const toLineNumber = Math.min(doc.lines, Math.max(startLineNumber, endLineNumber));
+  const fromLine = doc.line(fromLineNumber);
+  const toLine = doc.line(toLineNumber);
+  editor.dispatch({
+    selection: EditorSelection.single(fromLine.from, toLine.to),
+    scrollIntoView: true,
+    userEvent: "select.lineNumber",
+  });
+  editor.focus();
+}
+
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
     ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-1").then(async (module) => {
@@ -826,18 +2870,17 @@ async function startTerminal(rect) {
     }
 
     rect.terminalContainer.replaceChildren();
+    // The renderer cannot retheme a live terminal, so pin the container
+    // background to the canvas colors chosen at start time.
+    const terminalTheme = themes[themeID].terminal;
+    rect.terminalContainer.style.background = terminalTheme.background;
     const term = new Terminal({
       cols: 80,
       rows: 24,
-      fontSize: 14,
-      fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
+      fontSize: rect.fontSize,
+      fontFamily: tesseraMonoFontFamily,
       cursorBlink: true,
-      theme: {
-        background: "#10141c",
-        foreground: "#e5e1d5",
-        cursor: "#f4df45",
-        selectionBackground: "#284461",
-      },
+      theme: { ...terminalTheme },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -848,13 +2891,12 @@ async function startTerminal(rect) {
     const socket = new WebSocket(terminalWebSocketURL(rect, term.cols, term.rows));
     socket.binaryType = "arraybuffer";
     const dataDisposable = term.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(terminalTextEncoder.encode(data));
-      }
+      sendTerminalInput(socket, data);
     });
     const resizeDisposable = term.onResize(({ cols, rows }) => {
       sendTerminalResize(socket, cols, rows);
     });
+    const mouseBridge = attachTerminalMouseBridge(rect, term, socket);
 
     socket.addEventListener("open", () => {
       setPaneCwd(rect, rect.cwd, { silent: true });
@@ -877,7 +2919,7 @@ async function startTerminal(rect) {
       term.write("\r\n[tessera terminal connection error]\r\n");
     });
 
-    rect.terminal = { term, fit, socket, dataDisposable, resizeDisposable };
+    rect.terminal = { term, fit, socket, dataDisposable, resizeDisposable, mouseBridge };
     requestTerminalFit(rect);
   } catch (error) {
     console.warn(error);
@@ -887,15 +2929,190 @@ async function startTerminal(rect) {
   }
 }
 
+function attachTerminalMouseBridge(rect, term, socket) {
+  const container = rect.terminalContainer;
+  if (!container) {
+    return null;
+  }
+
+  let activePointerID = null;
+  let activeButtonCode = null;
+
+  const onPointerDown = (event) => {
+    const buttonCode = terminalMouseButtonCode(event.button);
+    if (buttonCode == null || !terminalShouldReportMouse(term, event)) {
+      return;
+    }
+    const position = terminalMousePosition(term, container, event);
+    if (!position) {
+      return;
+    }
+    stopTerminalMouseEvent(event);
+    hideFloatingMenus();
+    setActivePane(rect, { raise: true });
+    term.focus();
+    activePointerID = event.pointerId;
+    activeButtonCode = buttonCode;
+    container.setPointerCapture?.(event.pointerId);
+    sendTerminalMouseSequence(socket, terminalMouseEventCode(buttonCode, event), position, "M");
+  };
+
+  const onPointerMove = (event) => {
+    if (activePointerID !== event.pointerId || activeButtonCode == null || event.buttons === 0 || !terminalShouldReportMouse(term, event)) {
+      return;
+    }
+    const position = terminalMousePosition(term, container, event);
+    if (!position) {
+      return;
+    }
+    stopTerminalMouseEvent(event);
+    sendTerminalMouseSequence(socket, terminalMouseEventCode(activeButtonCode + 32, event), position, "M");
+  };
+
+  const onPointerUp = (event) => {
+    if (activePointerID !== event.pointerId || activeButtonCode == null || !terminalShouldReportMouse(term, event)) {
+      if (activePointerID === event.pointerId) {
+        container.releasePointerCapture?.(event.pointerId);
+      }
+      activePointerID = null;
+      activeButtonCode = null;
+      return;
+    }
+    const position = terminalMousePosition(term, container, event);
+    stopTerminalMouseEvent(event);
+    if (position) {
+      sendTerminalMouseSequence(socket, terminalMouseEventCode(activeButtonCode, event), position, "m");
+    }
+    container.releasePointerCapture?.(event.pointerId);
+    activePointerID = null;
+    activeButtonCode = null;
+  };
+
+  const onPointerCancel = (event) => {
+    if (activePointerID === event.pointerId) {
+      activePointerID = null;
+      activeButtonCode = null;
+    }
+  };
+
+  const onContextMenu = (event) => {
+    if (terminalShouldReportMouse(term, event)) {
+      stopTerminalMouseEvent(event);
+      return;
+    }
+    openTerminalMenu(event, rect);
+  };
+
+  const onWheel = (event) => {
+    if (!terminalShouldReportMouse(term, event)) {
+      return false;
+    }
+    const position = terminalMousePosition(term, container, event);
+    if (!position || event.deltaY === 0) {
+      return false;
+    }
+    const buttonCode = event.deltaY < 0 ? 64 : 65;
+    const steps = Math.min(5, Math.max(1, Math.round(Math.abs(event.deltaY) / 40)));
+    for (let index = 0; index < steps; index += 1) {
+      sendTerminalMouseSequence(socket, terminalMouseEventCode(buttonCode, event), position, "M");
+    }
+    return true;
+  };
+
+  container.addEventListener("pointerdown", onPointerDown, { capture: true });
+  container.addEventListener("pointermove", onPointerMove, { capture: true });
+  container.addEventListener("pointerup", onPointerUp, { capture: true });
+  container.addEventListener("pointercancel", onPointerCancel, { capture: true });
+  container.addEventListener("contextmenu", onContextMenu, { capture: true });
+  term.attachCustomWheelEventHandler?.(onWheel);
+
+  return {
+    dispose() {
+      container.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      container.removeEventListener("pointermove", onPointerMove, { capture: true });
+      container.removeEventListener("pointerup", onPointerUp, { capture: true });
+      container.removeEventListener("pointercancel", onPointerCancel, { capture: true });
+      container.removeEventListener("contextmenu", onContextMenu, { capture: true });
+      term.attachCustomWheelEventHandler?.(null);
+    },
+  };
+}
+
+function terminalShouldReportMouse(term, event) {
+  if (event.shiftKey) {
+    return false;
+  }
+  try {
+    return Boolean(term?.hasMouseTracking?.());
+  } catch {
+    return false;
+  }
+}
+
+function terminalMouseButtonCode(button) {
+  if (button === 0) {
+    return 0;
+  }
+  if (button === 1) {
+    return 1;
+  }
+  if (button === 2) {
+    return 2;
+  }
+  return null;
+}
+
+function terminalMouseEventCode(buttonCode, event) {
+  let code = buttonCode;
+  if (event.shiftKey) {
+    code += 4;
+  }
+  if (event.altKey || event.metaKey) {
+    code += 8;
+  }
+  if (event.ctrlKey) {
+    code += 16;
+  }
+  return code;
+}
+
+function terminalMousePosition(term, container, event) {
+  const canvas = container.querySelector("canvas");
+  const box = canvas?.getBoundingClientRect();
+  if (!box || box.width <= 0 || box.height <= 0) {
+    return null;
+  }
+  const col = Math.min(term.cols, Math.max(1, Math.floor((event.clientX - box.left) / (box.width / term.cols)) + 1));
+  const row = Math.min(term.rows, Math.max(1, Math.floor((event.clientY - box.top) / (box.height / term.rows)) + 1));
+  return { col, row };
+}
+
+function sendTerminalMouseSequence(socket, code, position, finalByte) {
+  sendTerminalInput(socket, `\x1b[<${code};${position.col};${position.row}${finalByte}`);
+}
+
+function stopTerminalMouseEvent(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation?.();
+}
+
 function terminalWebSocketURL(rect, cols, rows) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({
+    workspaceId: workspaceID,
     paneId: rect.id,
     cwd: rect.cwd || "",
     cols: String(cols || 80),
     rows: String(rows || 24),
   });
   return `${protocol}//${window.location.host}/api/terminal?${params.toString()}`;
+}
+
+function sendTerminalInput(socket, data) {
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(terminalTextEncoder.encode(data));
+  }
 }
 
 function sendTerminalResize(socket, cols, rows) {
@@ -936,6 +3153,7 @@ function disposeTerminal(rect, options = {}) {
   }
   terminalState.dataDisposable?.dispose?.();
   terminalState.resizeDisposable?.dispose?.();
+  terminalState.mouseBridge?.dispose?.();
   terminalState.fit?.dispose?.();
   terminalState.term?.dispose?.();
   if (terminalState.socket?.readyState === WebSocket.OPEN || terminalState.socket?.readyState === WebSocket.CONNECTING) {
@@ -947,7 +3165,8 @@ function closeServerTerminal(rect) {
   if (!rect?.id) {
     return;
   }
-  fetch(`/api/terminal?paneId=${encodeURIComponent(rect.id)}`, {
+  const params = new URLSearchParams({ workspaceId: workspaceID, paneId: rect.id });
+  fetch(`/api/terminal?${params.toString()}`, {
     method: "DELETE",
     keepalive: true,
   }).catch((error) => console.warn(error));
@@ -958,6 +3177,26 @@ function newPaneID() {
     return `pane-${crypto.randomUUID()}`;
   }
   return `pane-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function defaultPaneTitle(kind) {
+  const base = kind === "terminal"
+    ? "Terminal"
+    : kind === fileBrowserPaneKind
+      ? "File Browser"
+      : kind === textEditorPaneKind
+        ? "Text Editor"
+      : kind === "worksheet"
+        ? "Worksheet"
+        : "Window";
+  let highest = 0;
+  for (const rect of rectangles) {
+    const match = rect.title.trim().match(new RegExp(`^${base} (\\d+)$`));
+    if (match) {
+      highest = Math.max(highest, Number(match[1]));
+    }
+  }
+  return `${base} ${highest + 1}`;
 }
 
 function moveFreeCursorFromMouse(view, event) {
@@ -1072,7 +3311,7 @@ function moveCursorToMaterializedColumn(view, lineNumber, column, userEvent) {
   return true;
 }
 
-function openDockMenu(event, rect) {
+function openDockMenu(event, rect, offsetY = 0) {
   event.preventDefault();
   event.stopPropagation();
   if (rect.kind === "pending") {
@@ -1082,11 +3321,12 @@ function openDockMenu(event, rect) {
   }
   setActivePane(rect, { raise: true });
   hideEditorMenu();
+  hideTerminalMenu();
   hideWorkspaceMenu();
   hideWindowTypeMenu();
   contextMenuRect = rect;
   renderDockMenu(rect);
-  showMenuAt(dockMenu, event.clientX, event.clientY);
+  showMenuAt(dockMenu, event.clientX, event.clientY + offsetY);
 }
 
 function openEditorMenu(event, rect) {
@@ -1094,6 +3334,7 @@ function openEditorMenu(event, rect) {
   event.stopPropagation();
   setActivePane(rect, { raise: true });
   hideDockMenu();
+  hideTerminalMenu();
   hideWorkspaceMenu();
   hideWindowTypeMenu();
   editorMenuRect = rect;
@@ -1101,17 +3342,36 @@ function openEditorMenu(event, rect) {
   showMenuAt(editorMenu, event.clientX, event.clientY);
 }
 
+function openTerminalMenu(event, rect) {
+  event.preventDefault();
+  event.stopPropagation();
+  setActivePane(rect, { raise: true });
+  rect.terminal?.term?.focus();
+  hideDockMenu();
+  hideEditorMenu();
+  hideWorkspaceMenu();
+  hideWindowTypeMenu();
+  terminalMenuRect = rect;
+  renderTerminalMenu(rect);
+  showMenuAt(terminalMenu, event.clientX, event.clientY);
+}
+
 function openWorkspaceMenu(event) {
   if (event.target !== board) {
     return;
   }
   event.preventDefault();
-  workspaceMenuPoint = boardPoint(event);
+  openWorkspaceMenuAt(event.clientX, event.clientY);
+}
+
+function openWorkspaceMenuAt(clientX, clientY) {
+  workspaceMenuPoint = boardClientPoint(clientX, clientY);
   hideDockMenu();
   hideEditorMenu();
+  hideTerminalMenu();
   hideWindowTypeMenu();
   renderWorkspaceMenu();
-  showMenuAt(workspaceMenu, event.clientX, event.clientY);
+  showMenuAt(workspaceMenu, clientX, clientY);
 }
 
 function renderDockMenu(rect) {
@@ -1122,6 +3382,7 @@ function renderDockMenu(rect) {
     ["right", "Dock Right"],
     ["bottom", "Dock Bottom"],
     [rect.isFull ? "restore" : "full", rect.isFull ? "Restore" : "Full"],
+    [rect.minimized ? "unminimize" : "minimize", rect.minimized ? "Restore" : "Minimize"],
     ["destroy", "Destroy"],
   ];
 
@@ -1154,6 +3415,17 @@ function renderWorkspaceMenu() {
   });
   workspaceMenu.appendChild(terminalButton);
 
+  const worksheetButton = document.createElement("button");
+  worksheetButton.type = "button";
+  worksheetButton.textContent = "New Worksheet";
+  worksheetButton.className = "is-command";
+  worksheetButton.addEventListener("click", () => {
+    const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
+    hideWorkspaceMenu();
+    createWorksheetPane(point.x, point.y);
+  });
+  workspaceMenu.appendChild(worksheetButton);
+
   const panes = rectangles.filter((rect) => rect.kind !== "pending").sort((a, b) => b.zIndex - a.zIndex);
   if (panes.length === 0) {
     const empty = document.createElement("button");
@@ -1161,23 +3433,1097 @@ function renderWorkspaceMenu() {
     empty.textContent = "No windows";
     empty.disabled = true;
     workspaceMenu.appendChild(empty);
-    return;
   }
 
   for (const rect of panes) {
+    const row = document.createElement("div");
+    row.className = "workspace-menu-row";
+    if (rect.id === activePaneID) {
+      row.classList.add("is-active");
+    }
+
     const button = document.createElement("button");
     button.type = "button";
+    button.className = "workspace-menu-name";
     button.textContent = workspaceMenuLabel(rect);
     button.title = rect.cwd ? `${button.textContent} (${rect.cwd})` : button.textContent;
-    if (rect.id === activePaneID) {
-      button.className = "is-active";
-    }
     button.addEventListener("click", () => {
       hideWorkspaceMenu();
+      setMinimized(rect, false);
       setActivePane(rect, { raise: true, focusEditor: true });
     });
-    workspaceMenu.appendChild(button);
+
+    const destroyButton = document.createElement("button");
+    destroyButton.type = "button";
+    destroyButton.className = "workspace-menu-destroy is-danger";
+    destroyButton.textContent = "X";
+    destroyButton.title = `Destroy ${button.textContent}`;
+    destroyButton.setAttribute("aria-label", `Destroy ${button.textContent}`);
+    destroyButton.addEventListener("click", () => {
+      hideWorkspaceMenu();
+      destroyRectangle(rect, { closeServerTerminal: true });
+    });
+
+    row.appendChild(button);
+    row.appendChild(destroyButton);
+    workspaceMenu.appendChild(row);
   }
+
+  const sessionSeparator = document.createElement("div");
+  sessionSeparator.className = "dock-menu-separator";
+  workspaceMenu.appendChild(sessionSeparator);
+  const sessionsButton = document.createElement("button");
+  sessionsButton.type = "button";
+  sessionsButton.textContent = currentSessionName ? `Sessions (${currentSessionName})...` : "Sessions...";
+  sessionsButton.addEventListener("click", () => {
+    hideWorkspaceMenu();
+    void openSessionsModal();
+  });
+  workspaceMenu.appendChild(sessionsButton);
+
+  if (multiUser) {
+    const userSeparator = document.createElement("div");
+    userSeparator.className = "dock-menu-separator";
+    workspaceMenu.appendChild(userSeparator);
+
+    const switchButton = document.createElement("button");
+    switchButton.type = "button";
+    switchButton.textContent = currentUser ? `Switch user (${currentUser})...` : "Switch user...";
+    switchButton.addEventListener("click", () => {
+      hideWorkspaceMenu();
+      void switchUser();
+    });
+    workspaceMenu.appendChild(switchButton);
+  }
+
+  const paletteSeparator = document.createElement("div");
+  paletteSeparator.className = "dock-menu-separator";
+  workspaceMenu.appendChild(paletteSeparator);
+
+  const paletteButton = document.createElement("button");
+  paletteButton.type = "button";
+  paletteButton.className = "has-hint";
+  const paletteLabel = document.createElement("span");
+  paletteLabel.textContent = "Command Palette";
+  const paletteHint = document.createElement("span");
+  paletteHint.className = "menu-hint";
+  paletteHint.textContent = "Ctrl+K";
+  paletteButton.appendChild(paletteLabel);
+  paletteButton.appendChild(paletteHint);
+  paletteButton.addEventListener("click", () => {
+    hideWorkspaceMenu();
+    openCommandPalette();
+  });
+  workspaceMenu.appendChild(paletteButton);
+}
+
+// The Deskbar lists windows and restores minimized panes in place.
+function toggleDeskbar() {
+  if (deskbarPanel.hidden) {
+    openDeskbar();
+  } else {
+    hideDeskbar();
+  }
+}
+
+function openDeskbar(options = {}) {
+  hideAllMenus();
+  renderDeskbar();
+  deskbarPanel.hidden = false;
+  deskbarButton.setAttribute("aria-expanded", "true");
+  if (Number.isInteger(options.focusWindow)) {
+    window.requestAnimationFrame(() => focusDeskbarWindow(options.focusWindow));
+  }
+}
+
+function setWorkspaceBackgroundMode(mode) {
+  workspaceBackgroundMode = normalizeBackgroundDisplayMode(mode);
+  if (workspaceHasBackground) {
+    board.style.setProperty("--board-user-size", backgroundDisplayModes[workspaceBackgroundMode].size);
+  }
+  scheduleWorkspaceSave();
+}
+
+function hideDeskbar() {
+  deskbarPanel.hidden = true;
+  deskbarButton.setAttribute("aria-expanded", "false");
+}
+
+function focusDeskbarWindow(index) {
+  const buttons = Array.from(deskbarPanel.querySelectorAll(".workspace-menu-name"));
+  if (buttons.length === 0) {
+    return;
+  }
+  const normalizedIndex = ((index % buttons.length) + buttons.length) % buttons.length;
+  buttons[normalizedIndex].focus();
+}
+
+function handleDeskbarKeyboard(event) {
+  const row = event.target.closest(".workspace-menu-row");
+  if (!row || !deskbarPanel.contains(row)) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      hideDeskbar();
+      deskbarButton.focus();
+    }
+    return;
+  }
+
+  const rows = Array.from(deskbarPanel.querySelectorAll(".workspace-menu-row"));
+  const rowIndex = rows.indexOf(row);
+  const windowButton = row.querySelector(".workspace-menu-name");
+  const destroyButton = row.querySelector(".workspace-menu-destroy");
+
+  if (event.key === "ArrowRight" && event.target === windowButton) {
+    event.preventDefault();
+    destroyButton?.focus();
+    return;
+  }
+  if (event.key === "ArrowLeft" && event.target === destroyButton) {
+    event.preventDefault();
+    windowButton?.focus();
+    return;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    focusDeskbarWindow(rowIndex + (event.key === "ArrowDown" ? 1 : -1));
+    return;
+  }
+  if (event.key === "Home") {
+    event.preventDefault();
+    focusDeskbarWindow(0);
+    return;
+  }
+  if (event.key === "End") {
+    event.preventDefault();
+    focusDeskbarWindow(-1);
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hideDeskbar();
+    deskbarButton.focus();
+  }
+}
+
+function updateDeskbar() {
+  const activePane = getActivePane();
+  const hideForFocusedFullscreenPane = Boolean(activePane?.isFull && !activePane.minimized);
+  deskbarButton.hidden = hideForFocusedFullscreenPane;
+  if (hideForFocusedFullscreenPane) {
+    hideDeskbar();
+  }
+  const minimizedCount = rectangles.filter((rect) => rect.kind !== "pending" && rect.minimized).length;
+  deskbarButton.dataset.minimizedCount = String(minimizedCount);
+  deskbarButton.setAttribute("aria-label", minimizedCount === 1
+    ? "Window list, 1 minimized window"
+    : minimizedCount > 1
+      ? `Window list, ${minimizedCount} minimized windows`
+      : "Window list");
+  if (!deskbarPanel.hidden) {
+    renderDeskbar();
+  }
+  if (!windowList.hidden) {
+    renderWindowList();
+  }
+}
+
+// The Deskbar keeps window recovery and a small set of workspace controls in
+// one corner, without duplicating the command palette as a general launcher.
+function renderDeskbar() {
+  deskbarPanel.replaceChildren();
+
+  const title = document.createElement("div");
+  title.className = "deskbar-title";
+  const titleText = document.createElement("span");
+  titleText.textContent = "Windows";
+  title.appendChild(titleText);
+  const minimizedCount = rectangles.filter((rect) => rect.kind !== "pending" && rect.minimized).length;
+  const count = document.createElement("span");
+  count.className = "deskbar-user";
+  count.textContent = minimizedCount === 1 ? "1 minimized" : `${minimizedCount} minimized`;
+  title.appendChild(count);
+  deskbarPanel.appendChild(title);
+  const panes = rectangles.filter((rect) => rect.kind !== "pending").sort((a, b) => b.zIndex - a.zIndex);
+  if (panes.length === 0) {
+    const empty = document.createElement("button");
+    empty.type = "button";
+    empty.textContent = "No windows";
+    empty.disabled = true;
+    deskbarPanel.appendChild(empty);
+  }
+  for (const rect of panes) {
+    const row = document.createElement("div");
+    row.className = "workspace-menu-row";
+    if (rect.id === activePaneID) {
+      row.classList.add("is-active");
+    }
+    if (rect.minimized) {
+      row.classList.add("is-minimized");
+    }
+    if (rect.running) {
+      row.classList.add("is-running");
+    }
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-menu-name";
+    button.textContent = workspaceMenuLabel(rect);
+    button.title = rect.cwd ? `${button.textContent} (${rect.cwd})` : button.textContent;
+    button.addEventListener("click", () => {
+      hideDeskbar();
+      setMinimized(rect, false);
+      setActivePane(rect, { raise: true, focusEditor: true });
+    });
+
+    const destroyButton = document.createElement("button");
+    destroyButton.type = "button";
+    destroyButton.className = "workspace-menu-destroy is-danger";
+    destroyButton.textContent = "X";
+    destroyButton.title = `Destroy ${button.textContent}`;
+    destroyButton.setAttribute("aria-label", `Destroy ${button.textContent}`);
+    destroyButton.addEventListener("click", () => {
+      destroyRectangle(rect, { closeServerTerminal: true });
+    });
+
+    row.appendChild(button);
+    row.appendChild(destroyButton);
+    deskbarPanel.appendChild(row);
+  }
+
+  const separator = document.createElement("div");
+  separator.className = "dock-menu-separator";
+  deskbarPanel.appendChild(separator);
+  const sessionsButton = document.createElement("button");
+  sessionsButton.type = "button";
+  sessionsButton.className = "deskbar-settings";
+  sessionsButton.textContent = currentSessionName ? `Sessions (${currentSessionName})...` : "Sessions...";
+  sessionsButton.addEventListener("click", () => void openSessionsModal());
+  deskbarPanel.appendChild(sessionsButton);
+  const settingsButton = document.createElement("button");
+  settingsButton.type = "button";
+  settingsButton.className = "deskbar-settings";
+  settingsButton.textContent = "Settings...";
+  settingsButton.addEventListener("click", openSettingsModal);
+  deskbarPanel.appendChild(settingsButton);
+}
+
+async function openSessionsModal() {
+  hideAllMenus();
+  try {
+    await refreshSessions();
+  } catch (error) {
+    console.warn(error);
+  }
+  const currentIndex = sessions.findIndex((session) => session.id === currentSessionID);
+  sessionSelection = currentIndex >= 0 ? currentIndex : 0;
+  renderSessionsModal();
+  sessionsModal.hidden = false;
+  window.requestAnimationFrame(() => sessionsModal.querySelector(".sessions-panel")?.focus());
+}
+
+function hideSessionsModal() {
+  sessionsModal.hidden = true;
+  sessionsModal.replaceChildren();
+}
+
+function hideSessionActionModal() {
+  sessionActionModal.hidden = true;
+  sessionActionModal.replaceChildren();
+}
+
+function renderSessionsModal() {
+  sessionsModal.replaceChildren();
+  const panel = document.createElement("section");
+  panel.className = "settings-panel sessions-panel";
+  panel.tabIndex = 0;
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "sessions-title");
+  panel.addEventListener("keydown", handleSessionsKeyboard);
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "sessions-title";
+  title.textContent = "Sessions";
+  const createButton = document.createElement("button");
+  createButton.type = "button";
+  createButton.className = "settings-background-button";
+  createButton.textContent = "Create Session";
+  createButton.addEventListener("click", () => openSessionNameDialog("create"));
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "settings-close";
+  closeButton.textContent = "X";
+  closeButton.setAttribute("aria-label", "Close sessions");
+  closeButton.addEventListener("click", hideSessionsModal);
+  titleBar.append(title, createButton, closeButton);
+  panel.appendChild(titleBar);
+
+  const list = document.createElement("div");
+  list.className = "sessions-list";
+  sessions.forEach((session, index) => {
+    const row = document.createElement("div");
+    row.className = "sessions-row";
+    row.classList.toggle("is-selected", index === sessionSelection);
+    row.classList.toggle("is-current", session.id === currentSessionID);
+    const switchButton = document.createElement("button");
+    switchButton.type = "button";
+    switchButton.className = "sessions-name";
+    switchButton.tabIndex = -1;
+    switchButton.textContent = session.name;
+    switchButton.setAttribute("aria-label", `Switch to session ${session.name}`);
+    switchButton.addEventListener("click", () => void switchSession(session));
+    const state = document.createElement("span");
+    state.className = "sessions-state";
+    state.textContent = session.id === currentSessionID ? "Current" : "";
+    const renameButton = document.createElement("button");
+    renameButton.type = "button";
+    renameButton.className = "sessions-action";
+    renameButton.textContent = "Rename";
+    renameButton.addEventListener("click", () => openSessionNameDialog("rename", session));
+    const destroyButton = document.createElement("button");
+    destroyButton.type = "button";
+    destroyButton.className = "sessions-action is-danger";
+    destroyButton.textContent = "Destroy";
+    destroyButton.disabled = sessions.length <= 1;
+    destroyButton.addEventListener("click", () => openDestroySessionDialog(session));
+    row.append(switchButton, state, renameButton, destroyButton);
+    list.appendChild(row);
+  });
+  panel.appendChild(list);
+  sessionsModal.appendChild(panel);
+}
+
+function handleSessionsKeyboard(event) {
+  if (event.target.closest("button") && event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+    return;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (sessions.length) {
+      sessionSelection = (sessionSelection + (event.key === "ArrowDown" ? 1 : -1) + sessions.length) % sessions.length;
+      renderSessionsModal();
+      sessionsModal.querySelector(".sessions-panel")?.focus();
+    }
+  } else if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    const session = sessions[sessionSelection];
+    if (session) {
+      void switchSession(session);
+    }
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    hideSessionsModal();
+  }
+}
+
+function openSessionNameDialog(mode, session = null) {
+  sessionActionModal.replaceChildren();
+  const panel = document.createElement("section");
+  panel.className = "settings-panel rename-window-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.textContent = mode === "create" ? "Create Session" : "Rename Session";
+  titleBar.appendChild(title);
+  const form = document.createElement("form");
+  form.className = "settings-content session-action-content";
+  const label = document.createElement("label");
+  label.textContent = "Session name";
+  const input = document.createElement("input");
+  input.className = "rename-window-input";
+  input.type = "text";
+  input.maxLength = 80;
+  input.value = session?.name || "";
+  const error = document.createElement("div");
+  error.className = "session-action-error";
+  const actions = document.createElement("div");
+  actions.className = "rename-window-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "settings-background-button";
+  cancelButton.textContent = "Cancel";
+  cancelButton.addEventListener("click", hideSessionActionModal);
+  const submitButton = document.createElement("button");
+  submitButton.type = "submit";
+  submitButton.className = "settings-background-button";
+  submitButton.textContent = mode === "create" ? "Create" : "Rename";
+  actions.append(cancelButton, submitButton);
+  label.appendChild(input);
+  form.append(label, error, actions);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submitButton.disabled = true;
+    try {
+      const endpoint = mode === "create"
+        ? userAPIPath("sessions")
+        : `${userAPIPath("sessions")}/${encodeURIComponent(session.id)}`;
+      const response = await fetch(endpoint, {
+        method: mode === "create" ? "POST" : "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: input.value }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `session ${mode} failed`);
+      }
+      const saved = await response.json();
+      await refreshSessions();
+      hideSessionActionModal();
+      if (mode === "create") {
+        await switchSession(saved);
+      } else {
+        if (saved.id === currentSessionID) {
+          currentSessionName = saved.name;
+        }
+        renderSessionsModal();
+      }
+    } catch (requestError) {
+      error.textContent = requestError.message;
+      submitButton.disabled = false;
+      input.focus();
+    }
+  });
+  panel.append(titleBar, form);
+  sessionActionModal.appendChild(panel);
+  sessionActionModal.hidden = false;
+  window.requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+}
+
+function openDestroySessionDialog(session) {
+  sessionActionModal.replaceChildren();
+  const panel = document.createElement("section");
+  panel.className = "settings-panel rename-window-panel";
+  panel.setAttribute("role", "alertdialog");
+  panel.setAttribute("aria-modal", "true");
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.textContent = "Destroy Session";
+  titleBar.appendChild(title);
+  const message = document.createElement("p");
+  message.textContent = `Destroy “${session.name}”? Its windows, history, background, and running processes will be permanently removed.`;
+  const error = document.createElement("div");
+  error.className = "session-action-error";
+  const actions = document.createElement("div");
+  actions.className = "rename-window-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "settings-background-button";
+  cancelButton.textContent = "Cancel";
+  cancelButton.addEventListener("click", hideSessionActionModal);
+  const destroyButton = document.createElement("button");
+  destroyButton.type = "button";
+  destroyButton.className = "settings-background-button is-danger";
+  destroyButton.textContent = "Destroy";
+  destroyButton.addEventListener("click", async () => {
+    destroyButton.disabled = true;
+    try {
+      const response = await fetch(`${userAPIPath("sessions")}/${encodeURIComponent(session.id)}`, { method: "DELETE" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "destroy session failed");
+      }
+      const wasCurrent = session.id === currentSessionID;
+      await refreshSessions();
+      hideSessionActionModal();
+      if (wasCurrent) {
+        currentSessionID = "";
+        currentSessionName = "";
+        clearRectanglesForLoad();
+        await switchSession(sessions[0], { skipSave: true, historyMode: "replace" });
+      } else {
+        sessionSelection = Math.min(sessionSelection, Math.max(0, sessions.length - 1));
+        renderSessionsModal();
+      }
+    } catch (requestError) {
+      error.textContent = requestError.message;
+      destroyButton.disabled = false;
+    }
+  });
+  actions.append(cancelButton, destroyButton);
+  panel.append(titleBar, message, error, actions);
+  sessionActionModal.appendChild(panel);
+  sessionActionModal.hidden = false;
+  window.requestAnimationFrame(() => cancelButton.focus());
+}
+
+function openSettingsModal() {
+  hideDeskbar();
+  renderSettingsModal();
+  settingsModal.hidden = false;
+  window.requestAnimationFrame(() => settingsModal.querySelector("button, select")?.focus());
+}
+
+function hideSettingsModal() {
+  settingsModal.hidden = true;
+  settingsModal.replaceChildren();
+}
+
+function renderSettingsModal() {
+  settingsModal.replaceChildren();
+
+  const panel = document.createElement("section");
+  panel.className = "settings-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "settings-title");
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "settings-title";
+  title.textContent = "Settings";
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "settings-close";
+  closeButton.textContent = "X";
+  closeButton.setAttribute("aria-label", "Close settings");
+  closeButton.addEventListener("click", hideSettingsModal);
+  titleBar.append(title, closeButton);
+  panel.appendChild(titleBar);
+
+  const content = document.createElement("div");
+  content.className = "settings-content";
+  content.appendChild(renderSettingsSection("Font size", [
+    renderSettingsFontRow("Default", "Used for new terminal, worksheet, and text-editor panes in all sessions.", defaultPaneFontSize, (next) => {
+      setDefaultPaneFontSize(next);
+      renderSettingsModal();
+    }),
+    renderCurrentPaneFontRow(),
+  ]));
+  content.appendChild(renderSettingsSection("Theme", [
+    renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
+    renderSettingsThemeRow("Current", "Applied across this user's sessions immediately.", themeID, (next) => applyTheme(next)),
+  ]));
+  content.appendChild(renderSettingsSection("Background", [
+    renderSettingsBackgroundRow(),
+    renderSettingsBackgroundModeRow(),
+  ]));
+  panel.appendChild(content);
+  settingsModal.appendChild(panel);
+}
+
+function renderSettingsSection(titleText, rows) {
+  const section = document.createElement("section");
+  section.className = "settings-section";
+  const title = document.createElement("h3");
+  title.textContent = titleText;
+  section.appendChild(title);
+  for (const row of rows) {
+    section.appendChild(row);
+  }
+  return section;
+}
+
+function renderSettingsFontRow(labelText, description, value, onChange, disabled = false) {
+  const row = document.createElement("div");
+  row.className = "settings-row";
+  const label = document.createElement("div");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = labelText;
+  const detail = document.createElement("span");
+  detail.textContent = description;
+  label.append(name, detail);
+
+  const control = document.createElement("div");
+  control.className = "settings-font-control";
+  const decreaseButton = document.createElement("button");
+  decreaseButton.type = "button";
+  decreaseButton.textContent = "A−";
+  decreaseButton.setAttribute("aria-label", `Decrease ${labelText.toLowerCase()} font size`);
+  const size = document.createElement("output");
+  size.textContent = disabled ? "—" : `${value}px`;
+  const increaseButton = document.createElement("button");
+  increaseButton.type = "button";
+  increaseButton.textContent = "A+";
+  increaseButton.setAttribute("aria-label", `Increase ${labelText.toLowerCase()} font size`);
+  decreaseButton.disabled = disabled || value <= minimumPaneFontSize;
+  increaseButton.disabled = disabled || value >= maximumPaneFontSize;
+  decreaseButton.addEventListener("click", () => onChange(value - 1));
+  increaseButton.addEventListener("click", () => onChange(value + 1));
+  control.append(decreaseButton, size, increaseButton);
+  row.append(label, control);
+  return row;
+}
+
+function renderCurrentPaneFontRow() {
+  const active = getActivePane();
+  if (!active || (active.kind !== "terminal" && active.kind !== "worksheet" && active.kind !== textEditorPaneKind)) {
+    return renderSettingsFontRow("Current", "Select a terminal, worksheet, or text-editor pane to adjust its font.", defaultPaneFontSize, () => {}, true);
+  }
+  return renderSettingsFontRow("Current", `${active.title} only. This value saves with the pane.`, active.fontSize, (next) => {
+    setPaneFontSize(active, next);
+    renderSettingsModal();
+  });
+}
+
+function renderSettingsThemeRow(labelText, description, value, onChange) {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = labelText;
+  const detail = document.createElement("span");
+  detail.textContent = description;
+  label.append(name, detail);
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", `${labelText} theme`);
+  for (const [id, theme] of Object.entries(themes)) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = theme.label;
+    option.selected = id === value;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => onChange(select.value));
+  row.append(label, select);
+  return row;
+}
+
+function renderSettingsBackgroundRow() {
+  const row = document.createElement("div");
+  row.className = "settings-row";
+  const label = document.createElement("div");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Board image";
+  const detail = document.createElement("span");
+  detail.textContent = workspaceHasBackground
+    ? "Shown behind this workspace's panes."
+    : "None set. Applies to this workspace only.";
+  label.append(name, detail);
+
+  const control = document.createElement("div");
+  control.className = "settings-background-control";
+  const setButton = document.createElement("button");
+  setButton.type = "button";
+  setButton.className = "settings-background-button";
+  setButton.textContent = workspaceHasBackground ? "Change..." : "Set...";
+  setButton.addEventListener("click", () => backgroundFileInput.click());
+  control.appendChild(setButton);
+
+  if (workspaceHasBackground) {
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.className = "settings-background-button";
+    clearButton.textContent = "Clear";
+    clearButton.addEventListener("click", () => void clearBackground());
+    control.appendChild(clearButton);
+  }
+
+  row.append(label, control);
+  return row;
+}
+
+function renderSettingsBackgroundModeRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Display";
+  const detail = document.createElement("span");
+  detail.textContent = workspaceHasBackground
+    ? "Fill crops, Fit preserves the full image, Stretch fills both dimensions, Center keeps natural size."
+    : "Set a board image to choose how it is displayed.";
+  label.append(name, detail);
+
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", "Background display mode");
+  select.disabled = !workspaceHasBackground;
+  for (const [id, mode] of Object.entries(backgroundDisplayModes)) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = mode.label;
+    option.selected = id === workspaceBackgroundMode;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => setWorkspaceBackgroundMode(select.value));
+  row.append(label, select);
+  return row;
+}
+
+let paletteEntries = [];
+let paletteSelection = 0;
+let paletteCodeInvokeTimer = null;
+let windowListEntries = [];
+let windowListSelection = 0;
+
+function toggleCommandPalette() {
+  if (commandPalette.hidden) {
+    openCommandPalette();
+  } else {
+    hideCommandPalette();
+  }
+}
+
+function openCommandPalette() {
+  if (!userSelect.hidden) {
+    return;
+  }
+  hideAllMenus();
+  commandPalette.hidden = false;
+  commandPaletteInput.value = "";
+  renderPaletteResults();
+  commandPaletteInput.focus();
+}
+
+function hideCommandPalette() {
+  commandPalette.hidden = true;
+  window.clearTimeout(paletteCodeInvokeTimer);
+  paletteCodeInvokeTimer = null;
+}
+
+function toggleWindowList() {
+  if (windowList.hidden) {
+    openWindowList();
+  } else {
+    hideWindowList();
+  }
+}
+
+function openWindowList() {
+  if (!userSelect.hidden) {
+    return;
+  }
+  hideAllMenus();
+  windowList.hidden = false;
+  renderWindowList();
+  window.requestAnimationFrame(() => windowListPanel.focus());
+}
+
+function hideWindowList() {
+  windowList.hidden = true;
+}
+
+function renderWindowList() {
+  windowListEntries = rectangles
+    .filter((rect) => rect.kind !== "pending")
+    .sort((a, b) => b.zIndex - a.zIndex);
+  const activeIndex = windowListEntries.findIndex((rect) => rect.id === activePaneID);
+  windowListSelection = activeIndex >= 0 ? activeIndex : 0;
+  windowListItems.replaceChildren();
+
+  if (windowListEntries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "command-palette-empty";
+    empty.textContent = "No windows";
+    windowListItems.appendChild(empty);
+    return;
+  }
+
+  windowListEntries.forEach((rect, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "command-palette-item window-list-item";
+    row.tabIndex = -1;
+    row.textContent = workspaceMenuLabel(rect);
+    row.title = rect.minimized ? "Minimized" : "Focus window";
+    row.setAttribute("aria-label", `${row.textContent}${rect.minimized ? ", minimized" : ""}`);
+    row.addEventListener("pointermove", () => setWindowListSelection(index));
+    row.addEventListener("click", () => selectWindowListEntry(index));
+    windowListItems.appendChild(row);
+  });
+  setWindowListSelection(windowListSelection);
+}
+
+function setWindowListSelection(index) {
+  if (windowListEntries.length === 0) {
+    return;
+  }
+  windowListSelection = (index + windowListEntries.length) % windowListEntries.length;
+  const rows = windowListItems.querySelectorAll(".window-list-item");
+  rows.forEach((row, rowIndex) => row.classList.toggle("is-selected", rowIndex === windowListSelection));
+  rows[windowListSelection]?.scrollIntoView({ block: "nearest" });
+}
+
+function selectWindowListEntry(index = windowListSelection) {
+  const rect = windowListEntries[index];
+  if (!rect) {
+    return;
+  }
+  hideWindowList();
+  setMinimized(rect, false);
+  setActivePane(rect, { raise: true, focusEditor: true });
+}
+
+function handleWindowListKeyboard(event) {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    setWindowListSelection(windowListSelection + (event.key === "ArrowDown" ? 1 : -1));
+    return;
+  }
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    selectWindowListEntry();
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hideWindowList();
+  }
+}
+
+// Every action the workspace menu offers, flattened into searchable commands,
+// plus jump-to-window entries (which also restore minimized panes).
+function buildPaletteCommands() {
+  const commands = [];
+  commands.push({ id: "window-list", label: "Window List", hint: "Ctrl+L", run: () => openWindowList() });
+  commands.push({ id: "sessions", label: "Sessions...", hint: currentSessionName || "manage", run: () => void openSessionsModal() });
+  commands.push({ id: "new-session", label: "Create Session...", hint: "session", run: () => openSessionNameDialog("create") });
+  for (const session of sessions) {
+    if (session.id !== currentSessionID) {
+      commands.push({ label: `Switch Session: ${session.name}`, hint: "session", run: () => void switchSession(session) });
+    }
+  }
+  commands.push({ id: "new-terminal", label: "New Terminal", hint: "create", run: () => {
+    const point = paneSpawnPoint();
+    createTerminalPane(point.x, point.y);
+  } });
+  commands.push({ id: "new-worksheet", label: "New Worksheet", hint: "create", run: () => {
+    const point = paneSpawnPoint();
+    createWorksheetPane(point.x, point.y);
+  } });
+  commands.push({ id: "new-file-browser", label: "New File Browser", hint: "create", run: () => {
+    const point = paneSpawnPoint();
+    createFileBrowserPane(point.x, point.y);
+  } });
+  commands.push({ id: "new-text-editor", label: "New Text Editor", hint: "create", run: () => {
+    const point = paneSpawnPoint();
+    createTextEditorPane(point.x, point.y);
+  } });
+  const visiblePaneCount = rectangles.filter((rect) => rect.kind !== "pending" && !rect.minimized).length;
+  if (visiblePaneCount > 1) {
+    commands.push({ id: "next-window", label: "Next Window", hint: "Ctrl+]", run: () => focusAdjacentPane(1) });
+    commands.push({ id: "previous-window", label: "Previous Window", hint: "Ctrl+[", run: () => focusAdjacentPane(-1) });
+  }
+  if (visiblePaneCount > 0) {
+    commands.push({
+      id: "arrange-out",
+      label: arrangeOutSnapshot ? "Back Arrange" : "Cascade Arrange",
+      hint: "Alt+F7",
+      run: () => toggleArrangeWindows(),
+    });
+  }
+  const dockTarget = getActivePane();
+  if (dockTarget) {
+    commands.push({
+      id: "rename-window",
+      label: "Rename Window",
+      hint: dockTarget.title,
+      run: () => openRenameWindowModal(dockTarget),
+    });
+    commands.push({
+      id: "maximize-toggle",
+      label: dockTarget.isFull ? "Restore Window" : "Maximize Window",
+      hint: "Alt+F10",
+      run: () => toggleFullRestore(dockTarget),
+    });
+    commands.push({
+      id: "minimize-toggle",
+      label: dockTarget.minimized ? "Restore Window" : "Minimize Window",
+      hint: "Alt+F9",
+      run: () => toggleMinimize(dockTarget),
+    });
+    for (const [action, id, label] of [["top", "dock-top", "Dock Top"], ["left", "dock-left", "Dock Left"], ["right", "dock-right", "Dock Right"], ["bottom", "dock-bottom", "Dock Bottom"]]) {
+      commands.push({
+        id,
+        label,
+        hint: dockTarget.title,
+        run: () => applyDockAction(action, dockTarget),
+      });
+    }
+    commands.push({ id: "destroy-window", label: "Destroy Window", hint: "Ctrl+Backspace", run: () => destroyActivePane() });
+  }
+  commands.push({ id: "settings", label: "Settings...", hint: "workspace", run: () => openSettingsModal() });
+  if (multiUser) {
+    for (const name of userRoster) {
+      if (name !== currentUser) {
+        commands.push({ label: `Switch user: ${name}`, hint: "user", run: () => void jumpToUser(name) });
+      }
+    }
+  }
+  const panes = rectangles.filter((rect) => rect.kind !== "pending").sort((a, b) => b.zIndex - a.zIndex);
+  for (const rect of panes) {
+    commands.push({
+      label: workspaceMenuLabel(rect),
+      hint: rect.minimized ? "window, minimized" : "window",
+      run: () => {
+        setMinimized(rect, false);
+        setActivePane(rect, { raise: true, focusEditor: true });
+      },
+    });
+  }
+  return commands;
+}
+
+// Fixed, hand-picked 2-letter codes for the static commands (identified by
+// `id`, since a toggle command's label changes but its code shouldn't).
+// Dynamic per-window/per-user entries have no `id` and so show no code —
+// a "fixed set" can't cover an unbounded, runtime-dependent list.
+const paletteShortcutCodes = {
+  "new-terminal": "NN",
+  "new-worksheet": "NW",
+  "new-file-browser": "NF",
+  "new-text-editor": "NE",
+  "next-window": "NX",
+  "previous-window": "PW",
+  "arrange-out": "OO",
+  "maximize-toggle": "MM",
+  "minimize-toggle": "MN",
+  "dock-top": "DT",
+  "dock-left": "DL",
+  "dock-right": "DR",
+  "dock-bottom": "DB",
+  "destroy-window": "DD",
+  "settings": "ST",
+};
+
+// Stamps each command with its fixed code (or none, for dynamic entries).
+function assignPaletteShortcutCodes(commands) {
+  for (const command of commands) {
+    command.code = command.id ? paletteShortcutCodes[command.id] || null : null;
+  }
+}
+
+function findPaletteCodeMatch(query, commands) {
+  const typedCode = query.trim().toUpperCase();
+  return typedCode.length === 2
+    ? commands.find((command) => command.code === typedCode) || null
+    : null;
+}
+
+// Substring matches rank above in-order subsequence matches ("fuzzy"), and
+// earlier/tighter matches rank higher within each class.
+function paletteScore(query, label) {
+  if (!query) {
+    return 1;
+  }
+  const q = query.toLowerCase();
+  const text = label.toLowerCase();
+  const index = text.indexOf(q);
+  if (index >= 0) {
+    return 1000 - index;
+  }
+  let searchFrom = 0;
+  let gaps = 0;
+  for (const ch of q) {
+    const found = text.indexOf(ch, searchFrom);
+    if (found < 0) {
+      return -1;
+    }
+    gaps += found - searchFrom;
+    searchFrom = found + 1;
+  }
+  return 500 - gaps;
+}
+
+function renderPaletteResults() {
+  window.clearTimeout(paletteCodeInvokeTimer);
+  paletteCodeInvokeTimer = null;
+
+  const rawQuery = commandPaletteInput.value;
+  const query = rawQuery.trim();
+  const allCommands = buildPaletteCommands();
+  assignPaletteShortcutCodes(allCommands);
+
+  // Typing exactly one command's 2-letter code invokes it, after a short
+  // pause — long enough to tell "typed a code" apart from "typing the start
+  // of a longer search," which may briefly pass through a valid code too.
+  const typedCode = query.toUpperCase();
+  const codeMatch = findPaletteCodeMatch(query, allCommands);
+  if (codeMatch) {
+      paletteCodeInvokeTimer = window.setTimeout(() => {
+        if (commandPaletteInput.value.trim().toUpperCase() === typedCode) {
+          runPaletteCommand(codeMatch);
+        }
+      }, 350);
+  }
+
+  paletteEntries = allCommands
+    .map((command) => ({ command, score: paletteScore(query, command.label) }))
+    .filter((entry) => entry.score >= 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12)
+    .map((entry) => entry.command);
+  paletteSelection = 0;
+
+  commandPaletteList.replaceChildren();
+  if (paletteEntries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "command-palette-empty";
+    empty.textContent = "No matching commands";
+    commandPaletteList.appendChild(empty);
+    return;
+  }
+  paletteEntries.forEach((command, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "command-palette-item";
+    if (index === paletteSelection) {
+      row.classList.add("is-selected");
+    }
+    const label = document.createElement("span");
+    label.textContent = command.label;
+    const meta = document.createElement("span");
+    meta.className = "command-palette-item-meta";
+    if (command.code) {
+      const code = document.createElement("span");
+      code.className = "command-palette-code";
+      code.textContent = command.code;
+      meta.appendChild(code);
+    }
+    const hint = document.createElement("span");
+    hint.className = "command-palette-hint";
+    hint.textContent = command.hint;
+    meta.appendChild(hint);
+    row.appendChild(label);
+    row.appendChild(meta);
+    row.addEventListener("pointermove", () => setPaletteSelection(index));
+    row.addEventListener("click", () => runPaletteCommand(command));
+    commandPaletteList.appendChild(row);
+  });
+}
+
+function setPaletteSelection(index) {
+  paletteSelection = index;
+  const rows = commandPaletteList.querySelectorAll(".command-palette-item");
+  rows.forEach((row, rowIndex) => {
+    row.classList.toggle("is-selected", rowIndex === index);
+  });
+}
+
+function movePaletteSelection(direction) {
+  if (paletteEntries.length === 0) {
+    return;
+  }
+  const next = (paletteSelection + direction + paletteEntries.length) % paletteEntries.length;
+  setPaletteSelection(next);
+  commandPaletteList.querySelectorAll(".command-palette-item")[next]?.scrollIntoView({ block: "nearest" });
+}
+
+function runPaletteSelection() {
+  const command = paletteEntries[paletteSelection];
+  if (command) {
+    runPaletteCommand(command);
+  }
+}
+
+function runPaletteCommand(command) {
+  hideCommandPalette();
+  command.run();
 }
 
 function showWindowTypeMenu(rect, clientX, clientY) {
@@ -1186,6 +4532,7 @@ function showWindowTypeMenu(rect, clientX, clientY) {
   }
   hideDockMenu();
   hideEditorMenu();
+  hideTerminalMenu();
   hideWorkspaceMenu();
   hideDirectoryBrowser();
   windowTypeRect = rect;
@@ -1198,6 +4545,8 @@ function renderWindowTypeMenu() {
   const actions = [
     ["worksheet", "Worksheet"],
     ["terminal", "Terminal"],
+    [fileBrowserPaneKind, "File Browser"],
+    [textEditorPaneKind, "Text Editor"],
   ];
   for (const [kind, label] of actions) {
     const button = document.createElement("button");
@@ -1216,7 +4565,9 @@ function finalizePendingRectangle(rect, kind) {
   if (!rect || rect.kind !== "pending" || !rectangles.includes(rect)) {
     return;
   }
-  const paneKind = kind === "terminal" ? "terminal" : "worksheet";
+  const paneKind = kind === "terminal" || kind === fileBrowserPaneKind || kind === textEditorPaneKind
+    ? kind
+    : "worksheet";
   const box = rectangleBox(rect);
   const paneID = rect.id;
   const zIndex = rect.zIndex;
@@ -1225,7 +4576,6 @@ function finalizePendingRectangle(rect, kind) {
   const nextRect = createRectangle(box.x, box.y, box.width, box.height, {
     id: paneID,
     kind: paneKind,
-    title: paneKind === "terminal" ? "Terminal" : "",
     cwd,
     zIndex,
   });
@@ -1236,16 +4586,20 @@ function finalizePendingRectangle(rect, kind) {
 function workspaceMenuLabel(rect) {
   const index = rectangles.indexOf(rect);
   const name = rect.title.trim() || `Window ${index + 1}`;
-  const kindSuffix = rect.kind === "terminal" ? " [terminal]" : "";
-  const activePrefix = rect.id === activePaneID ? "> " : "";
+  const kindSuffix = rect.kind === "terminal"
+    ? " [terminal]"
+    : rect.kind === fileBrowserPaneKind
+      ? " [files]"
+      : rect.kind === textEditorPaneKind
+        ? " [editor]"
+      : "";
   const runningSuffix = rect.running ? " !" : "";
-  return `${activePrefix}${name}${kindSuffix}${runningSuffix}`;
+  return `${name}${kindSuffix}${runningSuffix}`;
 }
 
 function createTerminalPane(x, y) {
   const rect = createRectangle(x, Math.max(y, tabHeight), 640, 360, {
     kind: "terminal",
-    title: "Terminal",
     cwd: activeRect?.cwd || "",
   });
   clampIntoBoard(rect);
@@ -1254,14 +4608,72 @@ function createTerminalPane(x, y) {
   scheduleWorkspaceSave();
 }
 
+function createWorksheetPane(x, y) {
+  const rect = createRectangle(x, Math.max(y, tabHeight), 480, 320, {
+    kind: "worksheet",
+    cwd: activeRect?.cwd || "",
+  });
+  clampIntoBoard(rect);
+  setRectangle(rect, rect);
+  setActivePane(rect, { raise: true, focusEditor: true });
+  scheduleWorkspaceSave();
+}
+
+function createFileBrowserPane(x, y) {
+  const rect = createRectangle(x, Math.max(y, tabHeight), 560, 400, {
+    kind: fileBrowserPaneKind,
+    cwd: activeRect?.cwd || "",
+  });
+  clampIntoBoard(rect);
+  setRectangle(rect, rect);
+  setActivePane(rect, { raise: true, focusEditor: true });
+  scheduleWorkspaceSave();
+}
+
+function createTextEditorPane(x, y) {
+  const rect = createRectangle(x, Math.max(y, tabHeight), 480, 320, {
+    kind: textEditorPaneKind,
+    cwd: activeRect?.cwd || "",
+  });
+  clampIntoBoard(rect);
+  setRectangle(rect, rect);
+  setActivePane(rect, { raise: true, focusEditor: true });
+  scheduleWorkspaceSave();
+}
+
+// A cascading spawn point for panes created without a click location (from
+// the Deskbar or the command palette).
+function paneSpawnPoint() {
+  const count = rectangles.filter((rect) => rect.kind !== "pending").length;
+  const step = count % 6;
+  return { x: 48 + step * 32, y: tabHeight + 40 + step * 28 };
+}
+
 function renderEditorMenu(rect) {
   editorMenu.replaceChildren();
-  const actions = [
-    ["run", "Run"],
-    ["copy", "Copy"],
-    ["cut", "Cut"],
-    ["paste", "Paste"],
-  ];
+  const isTextEditor = rect.kind === textEditorPaneKind;
+  const modeActionLabel = rect.editorMode === normalWorksheetEditorMode
+    ? "Switch to Free Editing"
+    : "Switch to Normal Editing";
+  const actions = isTextEditor
+    ? [
+      ["import", "Open..."],
+      ["exportLast", "Save"],
+      ["export", "Save As..."],
+      ["copy", "Copy"],
+      ["cut", "Cut"],
+      ["paste", "Paste"],
+    ]
+    : [
+      ["toggleMode", modeActionLabel],
+      ["run", "Run"],
+      ["copy", "Copy"],
+      ["cut", "Cut"],
+      ["paste", "Paste"],
+      ["import", "Import"],
+      ["export", "Export"],
+      ["exportLast", "Export As Last"],
+    ];
   const hasSelection = hasEditorSelection(rect.editor);
   const canRun = Boolean(commandTargetForEditor(rect.editor)) && !rect.running;
   const canReadClipboard = Boolean(navigator.clipboard?.readText || document.queryCommandSupported?.("paste"));
@@ -1276,8 +4688,10 @@ function renderEditorMenu(rect) {
       button.disabled = !canRun;
     } else if (action === "copy" || action === "cut") {
       button.disabled = !hasSelection;
-    } else {
+    } else if (action === "paste") {
       button.disabled = !canPaste;
+    } else if (action === "exportLast") {
+      button.disabled = !rect.lastExportPath;
     }
     button.addEventListener("click", () => {
       const actionRect = editorMenuRect;
@@ -1288,16 +4702,58 @@ function renderEditorMenu(rect) {
   }
 }
 
+function renderTerminalMenu(rect) {
+  terminalMenu.replaceChildren();
+  const actions = [
+    ["copy", "Copy"],
+    ["paste", "Paste"],
+  ];
+  const term = rect?.terminal?.term;
+  const hasSelection = Boolean(term?.hasSelection?.() || term?.getSelection?.());
+  const canReadClipboard = Boolean(navigator.clipboard?.readText || document.queryCommandSupported?.("paste"));
+  const canPaste = canReadClipboard || editorClipboardText.length > 0;
+
+  for (const [action, label] of actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.dataset.action = action;
+    if (action === "copy") {
+      button.disabled = !hasSelection;
+    } else if (action === "paste") {
+      button.disabled = !canPaste;
+    }
+    button.addEventListener("click", () => {
+      const actionRect = terminalMenuRect;
+      hideTerminalMenu();
+      void applyTerminalMenuAction(action, actionRect);
+    });
+    terminalMenu.appendChild(button);
+  }
+}
+
 function applyDockAction(action, rect) {
   if (!rect) {
     return;
   }
-  setActivePane(rect, { raise: true });
 
   if (action === "destroy") {
     destroyRectangle(rect, { closeServerTerminal: true });
     return;
   }
+
+  if (action === "minimize") {
+    setMinimized(rect, true);
+    return;
+  }
+
+  if (action === "unminimize") {
+    setMinimized(rect, false);
+    setActivePane(rect, { raise: true, focusEditor: true });
+    return;
+  }
+
+  setActivePane(rect, { raise: true });
 
   if (action === "restore") {
     if (rect.restoreBox) {
@@ -1307,34 +4763,202 @@ function applyDockAction(action, rect) {
     return;
   }
 
-  const bounds = board.getBoundingClientRect();
-  const usableHeight = Math.max(16, bounds.height - tabHeight);
-  const halfWidth = Math.max(16, Math.floor(bounds.width / 2));
-  const halfHeight = Math.max(16, Math.floor(usableHeight / 2));
-
-  if (action !== "full") {
-    clearFullState(rect);
-  }
-
-  if (action === "top") {
-    setRectangle(rect, { x: 0, y: tabHeight, width: bounds.width, height: halfHeight });
-  }
-  if (action === "left") {
-    setRectangle(rect, { x: 0, y: tabHeight, width: halfWidth, height: usableHeight });
-  }
-  if (action === "right") {
-    setRectangle(rect, { x: bounds.width - halfWidth, y: tabHeight, width: halfWidth, height: usableHeight });
-  }
-  if (action === "bottom") {
-    setRectangle(rect, { x: 0, y: bounds.height - halfHeight, width: bounds.width, height: halfHeight });
-  }
   if (action === "full") {
+    // A maximized pane must be expanded, not rolled up.
+    if (rect.minimized) {
+      setMinimized(rect, false);
+    }
     if (!rect.isFull) {
       rect.restoreBox = rectangleBox(rect);
     }
     rect.isFull = true;
-    setRectangle(rect, { x: 0, y: tabHeight, width: bounds.width, height: usableHeight });
+    applyFullGeometry(rect);
+    updateWindowControls(rect);
+    return;
   }
+
+  if (action === "top" || action === "left" || action === "right" || action === "bottom") {
+    // A docked pane must be visible and at its own size, not rolled up or
+    // still carrying a stale "full" restore box.
+    if (rect.minimized) {
+      setMinimized(rect, false);
+    }
+    clearFullState(rect);
+    const bounds = board.getBoundingClientRect();
+    const usableHeight = Math.max(16, bounds.height - tabHeight);
+    const halfWidth = Math.max(16, Math.floor(bounds.width / 2));
+    const halfHeight = Math.max(16, Math.floor(usableHeight / 2));
+    if (action === "top") {
+      setRectangle(rect, { x: 0, y: tabHeight, width: bounds.width, height: halfHeight });
+    } else if (action === "left") {
+      setRectangle(rect, { x: 0, y: tabHeight, width: halfWidth, height: usableHeight });
+    } else if (action === "right") {
+      setRectangle(rect, { x: bounds.width - halfWidth, y: tabHeight, width: halfWidth, height: usableHeight });
+    } else if (action === "bottom") {
+      setRectangle(rect, { x: 0, y: bounds.height - halfHeight, width: bounds.width, height: halfHeight });
+    }
+  }
+}
+
+function toggleFullRestore(rect) {
+  applyDockAction(rect?.isFull ? "restore" : "full", rect);
+}
+
+// Maximize is an attribute ("this pane fills the board"), not a fixed size:
+// this always measures the board fresh, so a maximized pane fills whatever
+// screen it's actually being viewed on — including a different device's
+// screen after the workspace reloads, or the browser window being resized
+// while a pane is maximized.
+function applyFullGeometry(rect) {
+  const bounds = board.getBoundingClientRect();
+  setRectangle(rect, { x: 0, y: 0, width: bounds.width, height: bounds.height });
+}
+
+// Re-fills every maximized pane when the viewport changes size, so "full"
+// keeps meaning "fills the board" instead of freezing at whatever size it
+// happened to be maximized at.
+function reapplyFullGeometryForViewport() {
+  for (const rect of rectangles) {
+    if (rect.kind !== "pending" && rect.isFull && !rect.minimized) {
+      applyFullGeometry(rect);
+    }
+  }
+}
+window.addEventListener("resize", reapplyFullGeometryForViewport);
+// The window "resize" event doesn't fire for every way the board's own box
+// can change size (browser chrome changes, OS-level display/zoom changes,
+// some devtools/embedded viewport changes) — a ResizeObserver on the board
+// itself catches those too, since it fires on the actual box change rather
+// than a specific event source.
+new ResizeObserver(reapplyFullGeometryForViewport).observe(board);
+
+// Tiles every visible pane into a near-square grid so all of their contents
+// are on screen at once, remembering each pane's prior box so Back Arrange
+// can undo it.
+function toggleArrangeWindows() {
+  if (arrangeOutSnapshot) {
+    arrangeWindowsBack();
+  } else {
+    arrangeWindowsOut();
+  }
+}
+
+function arrangeWindowsOut() {
+  const panes = rectangles.filter((rect) => rect.kind !== "pending" && !rect.minimized);
+  if (panes.length === 0) {
+    return;
+  }
+
+  if (!arrangeOutSnapshot) {
+    arrangeOutSnapshot = panes.map((rect) => ({ id: rect.id, box: rectangleBox(rect) }));
+  }
+
+  const bounds = board.getBoundingClientRect();
+  const usableHeight = Math.max(16, bounds.height - tabHeight);
+  const columns = Math.ceil(Math.sqrt(panes.length));
+  const rows = Math.ceil(panes.length / columns);
+  const cellWidth = Math.max(16, Math.floor(bounds.width / columns));
+  const cellHeight = Math.max(16, Math.floor(usableHeight / rows));
+
+  isArrangingWindows = true;
+  panes.forEach((rect, index) => {
+    clearFullState(rect);
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    setRectangle(rect, {
+      x: column * cellWidth,
+      y: tabHeight + row * cellHeight,
+      width: cellWidth,
+      height: cellHeight,
+    });
+  });
+  isArrangingWindows = false;
+  scheduleWorkspaceSave();
+}
+
+// Restores every pane's box from the last Cascade Arrange, if nothing has moved,
+// resized, docked, or otherwise repositioned a window since.
+function arrangeWindowsBack() {
+  if (!arrangeOutSnapshot) {
+    return;
+  }
+  const snapshot = arrangeOutSnapshot;
+  isArrangingWindows = true;
+  for (const { id, box } of snapshot) {
+    const rect = rectangles.find((candidate) => candidate.id === id);
+    if (rect) {
+      setRectangle(rect, box);
+    }
+  }
+  isArrangingWindows = false;
+  arrangeOutSnapshot = null;
+  scheduleWorkspaceSave();
+}
+
+function destroyActivePane() {
+  const active = getActivePane();
+  if (active) {
+    destroyRectangle(active, { closeServerTerminal: true });
+  }
+}
+
+// Minimize hides the pane but keeps its live editor or terminal intact. The
+// Deskbar is the persistent visual handle that restores it.
+function setMinimized(rect, on) {
+  if (!rect) {
+    return;
+  }
+  const next = Boolean(on);
+  if (rect.minimized === next) {
+    return;
+  }
+  rect.minimized = next;
+  rect.element.classList.toggle("is-minimized", next);
+  if (next) {
+    rect.element.setAttribute("aria-hidden", "true");
+  } else {
+    rect.element.removeAttribute("aria-hidden");
+    window.requestAnimationFrame(() => {
+      rect.editor?.requestMeasure();
+      requestTerminalFit(rect);
+    });
+  }
+  updateWindowControls(rect);
+  updateDeskbar();
+  if (next && activePaneID === rect.id) {
+    focusTopVisiblePane();
+  }
+  scheduleWorkspaceSave();
+}
+
+function toggleMinimize(rect) {
+  if (!rect) {
+    return;
+  }
+  setActivePane(rect, { raise: true });
+  setMinimized(rect, !rect.minimized);
+}
+
+// Keeps the title-bar buttons' glyphs and tooltips in sync with the pane's
+// maximized/minimized state. The glyphs are CSS triangles keyed off
+// data-glyph: "down" minimize, "up" maximize/expand, "restore" two-headed.
+function updateWindowControls(rect) {
+  if (!rect) {
+    return;
+  }
+  rect.element.classList.toggle("is-full", rect.isFull);
+  if (!rect.minButton || !rect.maxButton) {
+    return;
+  }
+  rect.minButton.dataset.glyph = rect.minimized ? "up" : "down";
+  rect.minButton.title = rect.minimized ? "Restore" : "Minimize";
+  rect.minButton.setAttribute("aria-label", rect.minimized ? "Restore window" : "Minimize window");
+  // A minimized window has no on-canvas controls until the Deskbar restores it.
+  rect.maxButton.hidden = rect.minimized;
+  rect.maxButton.dataset.glyph = rect.isFull ? "restore" : "up";
+  rect.maxButton.title = rect.isFull ? "Restore" : "Maximize";
+  rect.maxButton.setAttribute("aria-label", rect.isFull ? "Restore window" : "Maximize window");
+  updateDeskbar();
 }
 
 async function applyEditorMenuAction(action, rect) {
@@ -1346,6 +4970,11 @@ async function applyEditorMenuAction(action, rect) {
 
   if (action === "run") {
     await runPaneCommand(rect);
+    return;
+  }
+
+  if (action === "toggleMode") {
+    toggleWorksheetEditorMode(rect);
     return;
   }
 
@@ -1373,7 +5002,126 @@ async function applyEditorMenuAction(action, rect) {
       rect.editor.dispatch(rect.editor.state.replaceSelection(text));
     }
     rect.editor.focus();
+    return;
   }
+
+  if (action === "import") {
+    await openEditorFileBrowser(rect, "import");
+    return;
+  }
+
+  if (action === "export") {
+    await openEditorFileBrowser(rect, "export");
+    return;
+  }
+
+  if (action === "exportLast") {
+    await saveEditorToFile(rect, { path: rect.lastExportPath });
+  }
+}
+
+async function applyTerminalMenuAction(action, rect) {
+  const term = rect?.terminal?.term;
+  if (!term) {
+    return;
+  }
+
+  term.focus();
+
+  if (action === "copy") {
+    const text = term.getSelection?.() || "";
+    if (text) {
+      await writeClipboardText(text);
+    }
+    term.focus();
+    return;
+  }
+
+  if (action === "paste") {
+    const text = await readClipboardText();
+    if (text) {
+      term.paste?.(text);
+    }
+    term.focus();
+  }
+}
+
+async function openFileIntoEditor(rect, path) {
+  if (!path) {
+    rect.editor?.focus();
+    return;
+  }
+  try {
+    const data = await readHostFile(path);
+    replaceEditorText(rect, data.text || "");
+    if (rect.kind === textEditorPaneKind) {
+      rect.lastExportPath = data.path || path;
+      updateTextEditorFileUI(rect);
+    }
+    setWorkspaceStatus("saved", rect.kind === textEditorPaneKind ? "Opened" : "Imported", data.path || path);
+    scheduleWorkspaceSave();
+  } catch (error) {
+    console.warn(error);
+    setWorkspaceStatus("error", "Import failed", error.message || "Import failed");
+  } finally {
+    rect.editor?.focus();
+  }
+}
+
+async function saveEditorToFile(rect, options = {}) {
+  const path = options.path || "";
+  if (!path) {
+    rect.editor?.focus();
+    return;
+  }
+  try {
+    const data = await writeHostFile(path, rect.editor.state.doc.toString());
+    rect.lastExportPath = data.path || path;
+    updateTextEditorFileUI(rect);
+    setWorkspaceStatus("saved", rect.kind === textEditorPaneKind ? "Saved" : "Exported", rect.lastExportPath);
+    scheduleWorkspaceSave();
+  } catch (error) {
+    console.warn(error);
+    setWorkspaceStatus("error", "Export failed", error.message || "Export failed");
+  } finally {
+    rect.editor?.focus();
+  }
+}
+
+async function readHostFile(path) {
+  const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `file read failed: ${response.status}`);
+  }
+  return data;
+}
+
+async function writeHostFile(path, text) {
+  const response = await fetch("/api/file", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, text }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `file write failed: ${response.status}`);
+  }
+  return data;
+}
+
+function replaceEditorText(rect, text) {
+  const editor = rect.editor;
+  if (!editor) {
+    return;
+  }
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: text },
+    selection: EditorSelection.cursor(0),
+    scrollIntoView: true,
+    userEvent: "input.import",
+  });
+  rect.text = text;
 }
 
 function commandTargetForEditor(editor) {
@@ -1503,12 +5251,14 @@ function markPaneRunning(rect, runID) {
   rect.running = true;
   rect.runID = runID || rect.runID || "";
   rect.element.dataset.running = "true";
+  updateDeskbar();
 }
 
 function clearPaneRunning(rect) {
   rect.running = false;
   rect.runID = "";
   delete rect.element.dataset.running;
+  updateDeskbar();
 }
 
 function applyRunEvent(rect, event) {
@@ -1833,6 +5583,9 @@ function destroyRectangle(rect, options = {}) {
   if (editorMenuRect === rect) {
     editorMenuRect = null;
   }
+  if (terminalMenuRect === rect) {
+    terminalMenuRect = null;
+  }
   if (windowTypeRect === rect) {
     windowTypeRect = null;
     windowTypeMenu.hidden = true;
@@ -1843,20 +5596,33 @@ function destroyRectangle(rect, options = {}) {
     delete board.dataset.activePaneId;
   }
   disposeTerminal(rect, { closeServer: options.closeServerTerminal });
+  cancelWorksheetLineSelection(rect.editor);
   rect.editor?.destroy();
   rect.editor = null;
   rect.element.remove();
-  if (wasActive) {
-    const nextActive = rectangles[Math.min(index, rectangles.length - 1)] || null;
-    if (nextActive) {
-      setActivePane(nextActive, { raise: true });
-    }
+  if (wasActive && options.selectNext !== false) {
+    focusTopVisiblePane();
   }
+  updateDeskbar();
   scheduleWorkspaceSave();
 }
 
 function handlePaneKeyboardShortcuts(event) {
   if (event.defaultPrevented) {
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "l" || event.key === "L")) {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleWindowList();
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "k" || event.key === "K")) {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleCommandPalette();
     return;
   }
 
@@ -1866,27 +5632,66 @@ function handlePaneKeyboardShortcuts(event) {
     return;
   }
 
-  if (event.altKey && !event.ctrlKey && !event.metaKey && event.key === "`") {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "Backspace" || event.code === "Backspace")) {
     event.preventDefault();
-    focusAdjacentPane(event.shiftKey ? -1 : 1);
+    event.stopPropagation();
+    destroyActivePane();
     return;
   }
 
-  if (!event.altKey && !event.ctrlKey && !event.metaKey && event.key === "F6") {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "]" || event.code === "BracketRight")) {
     event.preventDefault();
-    focusAdjacentPane(event.shiftKey ? -1 : 1);
+    event.stopPropagation();
+    focusAdjacentPane(1);
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "[" || event.code === "BracketLeft")) {
+    event.preventDefault();
+    event.stopPropagation();
+    focusAdjacentPane(-1);
+    return;
+  }
+
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "F10") {
+    event.preventDefault();
+    toggleFullRestore(getActivePane());
+    return;
+  }
+
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "F9") {
+    event.preventDefault();
+    toggleMinimize(getActivePane());
+    return;
+  }
+
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "F7") {
+    event.preventDefault();
+    toggleArrangeWindows();
   }
 }
 
 function focusAdjacentPane(direction) {
-  if (rectangles.length === 0) {
+  const visiblePanes = rectangles.filter((rect) => rect.kind !== "pending" && !rect.minimized);
+  if (visiblePanes.length === 0) {
     return;
   }
 
   const current = getActivePane();
-  const currentIndex = current ? rectangles.indexOf(current) : -1;
-  const nextIndex = (currentIndex + direction + rectangles.length) % rectangles.length;
-  setActivePane(rectangles[nextIndex], { raise: true, focusEditor: true });
+  const currentIndex = current ? visiblePanes.indexOf(current) : -1;
+  const nextIndex = (currentIndex + direction + visiblePanes.length) % visiblePanes.length;
+  setActivePane(visiblePanes[nextIndex], { raise: true, focusEditor: true });
+}
+
+function focusTopVisiblePane() {
+  const next = rectangles
+    .filter((rect) => rect.kind !== "pending" && !rect.minimized)
+    .sort((a, b) => b.zIndex - a.zIndex)[0] || null;
+  if (next) {
+    setActivePane(next, { raise: false, focusEditor: true });
+  } else {
+    clearActivePane();
+  }
 }
 
 function rectangleBox(rect) {
@@ -1898,9 +5703,29 @@ function rectangleBox(rect) {
   };
 }
 
+// Parses a saved restoreBox (opaque JSON text) and keeps its position on
+// whatever board it's loaded into, in case the saved box came from a
+// larger screen.
+function parseRestoreBox(raw) {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const box = JSON.parse(raw);
+    if (!box || typeof box.x !== "number" || typeof box.y !== "number" || typeof box.width !== "number" || typeof box.height !== "number") {
+      return null;
+    }
+    clampIntoBoard(box);
+    return box;
+  } catch {
+    return null;
+  }
+}
+
 function clearFullState(rect) {
   rect.isFull = false;
   rect.restoreBox = null;
+  updateWindowControls(rect);
 }
 
 function hideMenusWhenOutside(event) {
@@ -1910,11 +5735,17 @@ function hideMenusWhenOutside(event) {
   if (!editorMenu.hidden && !editorMenu.contains(event.target)) {
     hideEditorMenu();
   }
+  if (!terminalMenu.hidden && !terminalMenu.contains(event.target)) {
+    hideTerminalMenu();
+  }
   if (!workspaceMenu.hidden && !workspaceMenu.contains(event.target)) {
     hideWorkspaceMenu();
   }
   if (!windowTypeMenu.hidden && !windowTypeMenu.contains(event.target)) {
     hideWindowTypeMenu();
+  }
+  if (!deskbarPanel.hidden && !deskbarPanel.contains(event.target) && !deskbarButton.contains(event.target)) {
+    hideDeskbar();
   }
   if (!directoryBrowser.hidden && !directoryBrowser.contains(event.target)) {
     hideDirectoryBrowser();
@@ -1928,11 +5759,23 @@ function hideMenusOnEscape(event) {
 }
 
 function hideAllMenus() {
+  hideFloatingMenus();
+  hideDirectoryBrowser();
+  hideCommandPalette();
+  hideWindowList();
+  hideDeskbar();
+  hideSettingsModal();
+  hideRenameWindowModal();
+  hideSessionsModal();
+  hideSessionActionModal();
+}
+
+function hideFloatingMenus() {
   hideDockMenu();
   hideEditorMenu();
+  hideTerminalMenu();
   hideWorkspaceMenu();
   hideWindowTypeMenu();
-  hideDirectoryBrowser();
 }
 
 function hideDockMenu() {
@@ -1945,11 +5788,19 @@ function hideEditorMenu() {
   editorMenuRect = null;
 }
 
+function hideTerminalMenu() {
+  terminalMenu.hidden = true;
+  terminalMenuRect = null;
+}
+
 function hideWorkspaceMenu() {
   workspaceMenu.hidden = true;
   workspaceMenuPoint = null;
 }
 
+// Dismissing the window-type menu without picking a type (click outside,
+// Escape, or opening another menu) cancels the draw instead of defaulting
+// to a window kind — the user gets exactly what they chose, or nothing.
 function hideWindowTypeMenu(options = {}) {
   const rect = windowTypeRect;
   windowTypeMenu.hidden = true;
@@ -1958,7 +5809,7 @@ function hideWindowTypeMenu(options = {}) {
     return;
   }
   if (rect && rect.kind === "pending" && rectangles.includes(rect)) {
-    finalizePendingRectangle(rect, "worksheet");
+    destroyRectangle(rect, { selectNext: false });
   }
 }
 
@@ -1966,6 +5817,10 @@ function hideDirectoryBrowser() {
   directoryBrowser.hidden = true;
   directoryBrowserRect = null;
   directoryBrowserPath = "";
+  fileBrowserRect = null;
+  fileBrowserMode = "";
+  fileBrowserPath = "";
+  fileBrowserFilePath = "";
 }
 
 function showMenuAt(menu, clientX, clientY) {
@@ -2046,16 +5901,27 @@ function resizeBox(original, handle, dx, dy, square) {
 
 function clampIntoBoard(rect) {
   const bounds = board.getBoundingClientRect();
-  rect.width = Math.min(rect.width, bounds.width);
-  rect.height = Math.min(rect.height, bounds.height - tabHeight);
-  rect.x = Math.min(Math.max(0, rect.x), bounds.width - rect.width);
-  rect.y = Math.min(Math.max(tabHeight, rect.y), bounds.height - rect.height);
+  const visibleX = Math.min(56, rect.width, bounds.width);
+  const visibleY = Math.min(56, rect.height, bounds.height);
+  const titleVisible = 12;
+
+  const minX = visibleX - rect.width;
+  const maxX = bounds.width - visibleX;
+  const minY = Math.max(visibleY - rect.height, tabHeight - titleVisible);
+  const maxY = bounds.height - visibleY;
+
+  rect.x = Math.min(Math.max(minX, rect.x), maxX);
+  rect.y = Math.min(Math.max(minY, rect.y), maxY);
 }
 
 function boardPoint(event) {
+  return boardClientPoint(event.clientX, event.clientY);
+}
+
+function boardClientPoint(clientX, clientY) {
   const bounds = board.getBoundingClientRect();
   return {
-    x: event.clientX - bounds.left,
-    y: event.clientY - bounds.top,
+    x: clientX - bounds.left,
+    y: clientY - bounds.top,
   };
 }

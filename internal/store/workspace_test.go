@@ -28,15 +28,19 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	}
 
 	ws.Panes = []Pane{{
-		ID:         "pane-first",
-		Title:      "First",
-		BufferText: "pwd\noutput\n",
-		Cwd:        defaultCwd,
-		X:          11,
-		Y:          22,
-		Width:      333,
-		Height:     222,
-		ZIndex:     4,
+		ID:             "pane-first",
+		Title:          "First",
+		BufferText:     "pwd\noutput\n",
+		EditorMode:     "normal",
+		FontSize:       18,
+		Cwd:            defaultCwd,
+		LastExportPath: filepath.Join(defaultCwd, "first.txt"),
+		Minimized:      true,
+		X:              11,
+		Y:              22,
+		Width:          333,
+		Height:         222,
+		ZIndex:         4,
 	}, {
 		ID:         "pane-test",
 		Title:      "Second",
@@ -49,6 +53,10 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 		ZIndex:     8,
 	}}
 	ws.ActivePaneID = "pane-test"
+	ws.BackgroundMode = "fit"
+	ws.DefaultPaneFontSize = 18
+	ws.DefaultTheme = "studio"
+	ws.ThemeID = "hacker"
 	ws.Layout = json.RawMessage(`{"panes":["pane-first","pane-test"]}`)
 
 	if err := st.SaveWorkspace(ctx, ws); err != nil {
@@ -62,11 +70,29 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	if loaded.ActivePaneID != "pane-test" {
 		t.Fatalf("active pane = %q, want pane-test", loaded.ActivePaneID)
 	}
+	if loaded.BackgroundMode != "fit" {
+		t.Fatalf("background mode = %q, want fit", loaded.BackgroundMode)
+	}
+	if loaded.DefaultPaneFontSize != 18 || loaded.DefaultTheme != "studio" || loaded.ThemeID != "hacker" {
+		t.Fatalf("workspace settings were not persisted: %+v", loaded)
+	}
 	if len(loaded.Panes) != 2 {
 		t.Fatalf("pane count = %d, want 2", len(loaded.Panes))
 	}
 	if loaded.Panes[0].BufferText != "pwd\noutput\n" {
 		t.Fatalf("first pane buffer was not persisted: %q", loaded.Panes[0].BufferText)
+	}
+	if loaded.Panes[0].LastExportPath != filepath.Join(defaultCwd, "first.txt") {
+		t.Fatalf("first pane last export path = %q", loaded.Panes[0].LastExportPath)
+	}
+	if loaded.Panes[0].EditorMode != "normal" {
+		t.Fatalf("first pane editor mode = %q, want normal", loaded.Panes[0].EditorMode)
+	}
+	if loaded.Panes[0].FontSize != 18 {
+		t.Fatalf("first pane font size = %d, want 18", loaded.Panes[0].FontSize)
+	}
+	if !loaded.Panes[0].Minimized {
+		t.Fatal("first pane minimized state was not persisted")
 	}
 	if loaded.Panes[0].X != 11 || loaded.Panes[0].Y != 22 || loaded.Panes[0].Width != 333 || loaded.Panes[0].Height != 222 || loaded.Panes[0].ZIndex != 4 {
 		t.Fatalf("first pane geometry was not persisted: %+v", loaded.Panes[0])
@@ -172,5 +198,36 @@ func TestPreservePaneBuffersKeepsRunningPaneTranscript(t *testing.T) {
 	}
 	if running.Title != "Running renamed" || running.Width != 500 {
 		t.Fatalf("non-transcript pane fields were not saved: %+v", running)
+	}
+}
+
+func TestAllMinimizedPanesDoNotBecomeActive(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	ws := &Workspace{
+		ID:   DefaultWorkspaceID,
+		Name: "Default",
+		Panes: []Pane{{
+			ID:        "pane-hidden",
+			Title:     "Hidden",
+			Minimized: true,
+			Width:     320,
+			Height:    200,
+		}},
+	}
+	if err := st.SaveWorkspace(ctx, ws); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	loaded, err := st.LoadWorkspace(ctx, DefaultWorkspaceID)
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	if loaded.ActivePaneID != "" {
+		t.Fatalf("active pane = %q, want none when every pane is minimized", loaded.ActivePaneID)
 	}
 }

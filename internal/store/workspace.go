@@ -15,44 +15,76 @@ const DefaultWorkspaceID = "default"
 
 type Workspace struct {
 	ID           string          `json:"id"`
+	OwnerID      string          `json:"ownerId,omitempty"`
 	Name         string          `json:"name"`
 	ActivePaneID string          `json:"activePaneId"`
 	Layout       json.RawMessage `json:"layout"`
 	Panes        []Pane          `json:"panes"`
+	// HasBackground and BackgroundVersion describe the workspace's background
+	// image. They are populated on load (the image bytes live in a separate
+	// table, served on demand) and ignored on save.
+	HasBackground       bool   `json:"hasBackground"`
+	BackgroundVersion   string `json:"backgroundVersion,omitempty"`
+	BackgroundMode      string `json:"backgroundMode"`
+	DefaultPaneFontSize int    `json:"defaultPaneFontSize"`
+	DefaultTheme        string `json:"defaultTheme"`
+	ThemeID             string `json:"themeId"`
+	LastOpenedAt        string `json:"lastOpenedAt,omitempty"`
 }
 
 type Pane struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Title      string `json:"title"`
-	BufferText string `json:"bufferText"`
-	Cwd        string `json:"cwd"`
-	X          int    `json:"x"`
-	Y          int    `json:"y"`
-	Width      int    `json:"width"`
-	Height     int    `json:"height"`
-	ZIndex     int    `json:"zIndex"`
-	Position   int    `json:"position"`
+	ID                      string `json:"id"`
+	Kind                    string `json:"kind"`
+	Title                   string `json:"title"`
+	BufferText              string `json:"bufferText"`
+	EditorMode              string `json:"editorMode"`
+	FontSize                int    `json:"fontSize"`
+	Cwd                     string `json:"cwd"`
+	LastExportPath          string `json:"lastExportPath"`
+	FileBrowserSidebarWidth int    `json:"fileBrowserSidebarWidth"`
+	IsFull                  bool   `json:"isFull"`
+	RestoreBox              string `json:"restoreBox"`
+	Minimized               bool   `json:"minimized"`
+	X                       int    `json:"x"`
+	Y                       int    `json:"y"`
+	Width                   int    `json:"width"`
+	Height                  int    `json:"height"`
+	ZIndex                  int    `json:"zIndex"`
+	Position                int    `json:"position"`
 }
 
 func (s *Store) LoadDefaultWorkspace(ctx context.Context, defaultCwd string) (*Workspace, error) {
-	ws, err := s.LoadWorkspace(ctx, DefaultWorkspaceID)
+	return s.LoadOrCreateWorkspace(ctx, DefaultWorkspaceID, "Default")
+}
+
+// LoadOrCreateWorkspace returns the workspace with the given id, creating an
+// empty one (named name, or the id when name is blank) if it does not exist.
+// It backs both the single default workspace and per-user workspaces.
+func (s *Store) LoadOrCreateWorkspace(ctx context.Context, id, name string) (*Workspace, error) {
+	if id == "" {
+		id = DefaultWorkspaceID
+	}
+	ws, err := s.LoadWorkspace(ctx, id)
 	if err == nil {
 		return ws, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	if defaultCwd == "" {
-		defaultCwd, _ = os.Getwd()
+	if name == "" {
+		name = id
 	}
 
 	ws = &Workspace{
-		ID:           DefaultWorkspaceID,
-		Name:         "Default",
-		ActivePaneID: "",
-		Layout:       json.RawMessage(`{"panes":[]}`),
-		Panes:        []Pane{},
+		ID:                  id,
+		OwnerID:             id,
+		Name:                name,
+		ActivePaneID:        "",
+		Layout:              json.RawMessage(`{"panes":[]}`),
+		Panes:               []Pane{},
+		DefaultPaneFontSize: defaultPaneFontSize,
+		DefaultTheme:        defaultThemeID,
+		ThemeID:             defaultThemeID,
 	}
 	if err := s.SaveWorkspace(ctx, ws); err != nil {
 		return nil, err
@@ -64,9 +96,9 @@ func (s *Store) LoadWorkspace(ctx context.Context, id string) (*Workspace, error
 	var ws Workspace
 	var layoutText string
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, name, active_pane_id, layout_json
+	SELECT id, owner_id, name, active_pane_id, layout_json, background_mode, default_pane_font_size, default_theme, theme_id, last_opened_at
 FROM workspaces
-WHERE id = ?`, id).Scan(&ws.ID, &ws.Name, &ws.ActivePaneID, &layoutText)
+WHERE id = ?`, id).Scan(&ws.ID, &ws.OwnerID, &ws.Name, &ws.ActivePaneID, &layoutText, &ws.BackgroundMode, &ws.DefaultPaneFontSize, &ws.DefaultTheme, &ws.ThemeID, &ws.LastOpenedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -74,9 +106,13 @@ WHERE id = ?`, id).Scan(&ws.ID, &ws.Name, &ws.ActivePaneID, &layoutText)
 		layoutText = "{}"
 	}
 	ws.Layout = json.RawMessage(layoutText)
+	ws.BackgroundMode = normalizeBackgroundMode(ws.BackgroundMode)
+	ws.DefaultPaneFontSize = normalizeDefaultPaneFontSize(ws.DefaultPaneFontSize)
+	ws.DefaultTheme = normalizeThemeID(ws.DefaultTheme)
+	ws.ThemeID = normalizeThemeID(ws.ThemeID)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, kind, title, buffer_text, cwd, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, file_browser_sidebar_width, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ?
 ORDER BY position ASC, created_at ASC`, id)
@@ -87,7 +123,7 @@ ORDER BY position ASC, created_at ASC`, id)
 
 	for rows.Next() {
 		var pane Pane
-		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.Cwd, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
+		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.FileBrowserSidebarWidth, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
 			return nil, fmt.Errorf("scan pane: %w", err)
 		}
 		if pane.Kind == "" {
@@ -101,6 +137,19 @@ ORDER BY position ASC, created_at ASC`, id)
 	if ws.Panes == nil {
 		ws.Panes = []Pane{}
 	}
+
+	var backgroundUpdatedAt string
+	err = s.db.QueryRowContext(ctx, `SELECT updated_at FROM workspace_backgrounds WHERE workspace_id = ?`, id).Scan(&backgroundUpdatedAt)
+	switch {
+	case err == nil:
+		ws.HasBackground = true
+		ws.BackgroundVersion = backgroundUpdatedAt
+	case errors.Is(err, sql.ErrNoRows):
+		// no background configured
+	default:
+		return nil, fmt.Errorf("load background meta: %w", err)
+	}
+
 	return &ws, nil
 }
 
@@ -113,10 +162,10 @@ func (s *Store) LoadPane(ctx context.Context, workspaceID, paneID string) (*Pane
 	}
 	var pane Pane
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, kind, title, buffer_text, cwd, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, file_browser_sidebar_width, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ? AND id = ?`, workspaceID, paneID).Scan(
-		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.Cwd, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
+		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.FileBrowserSidebarWidth, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
 	if err != nil {
 		return nil, err
 	}
@@ -136,11 +185,23 @@ func (s *Store) SaveWorkspace(ctx context.Context, ws *Workspace) error {
 	if ws.Name == "" {
 		ws.Name = "Default"
 	}
+	if ws.OwnerID == "" {
+		ws.OwnerID = ws.ID
+	}
 	if len(ws.Layout) == 0 || !json.Valid(ws.Layout) {
 		ws.Layout = json.RawMessage(`{"panes":[]}`)
 	}
-	if ws.ActivePaneID == "" && len(ws.Panes) > 0 {
-		ws.ActivePaneID = ws.Panes[0].ID
+	ws.BackgroundMode = normalizeBackgroundMode(ws.BackgroundMode)
+	ws.DefaultPaneFontSize = normalizeDefaultPaneFontSize(ws.DefaultPaneFontSize)
+	ws.DefaultTheme = normalizeThemeID(ws.DefaultTheme)
+	ws.ThemeID = normalizeThemeID(ws.ThemeID)
+	if ws.ActivePaneID == "" {
+		for _, pane := range ws.Panes {
+			if !pane.Minimized {
+				ws.ActivePaneID = pane.ID
+				break
+			}
+		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -150,15 +211,21 @@ func (s *Store) SaveWorkspace(ctx context.Context, ws *Workspace) error {
 	defer tx.Rollback()
 
 	now := nowText()
+	if ws.LastOpenedAt == "" {
+		ws.LastOpenedAt = now
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO workspaces (id, name, active_pane_id, layout_json, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO workspaces (id, owner_id, name, active_pane_id, layout_json, background_mode, default_pane_font_size, default_theme, theme_id, last_opened_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
-  name = excluded.name,
   active_pane_id = excluded.active_pane_id,
   layout_json = excluded.layout_json,
+  background_mode = excluded.background_mode,
+  default_pane_font_size = excluded.default_pane_font_size,
+  default_theme = excluded.default_theme,
+  theme_id = excluded.theme_id,
   updated_at = excluded.updated_at`,
-		ws.ID, ws.Name, ws.ActivePaneID, string(ws.Layout), now, now); err != nil {
+		ws.ID, ws.OwnerID, ws.Name, ws.ActivePaneID, string(ws.Layout), ws.BackgroundMode, ws.DefaultPaneFontSize, ws.DefaultTheme, ws.ThemeID, ws.LastOpenedAt, now, now); err != nil {
 		return fmt.Errorf("upsert workspace: %w", err)
 	}
 
@@ -180,17 +247,27 @@ ON CONFLICT(id) DO UPDATE SET
 		if pane.Height < 1 {
 			pane.Height = 240
 		}
+		if pane.FileBrowserSidebarWidth < 1 {
+			pane.FileBrowserSidebarWidth = 200
+		}
 		pane.Position = i
 		seen[pane.ID] = true
 
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO panes (id, workspace_id, kind, title, buffer_text, cwd, x, y, width, height, z_index, position, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, file_browser_sidebar_width, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   kind = excluded.kind,
   title = excluded.title,
   buffer_text = excluded.buffer_text,
+  editor_mode = excluded.editor_mode,
+  font_size = excluded.font_size,
   cwd = excluded.cwd,
+  last_export_path = excluded.last_export_path,
+  file_browser_sidebar_width = excluded.file_browser_sidebar_width,
+  is_full = excluded.is_full,
+  restore_box = excluded.restore_box,
+  minimized = excluded.minimized,
   x = excluded.x,
   y = excluded.y,
   width = excluded.width,
@@ -198,7 +275,7 @@ ON CONFLICT(id) DO UPDATE SET
   z_index = excluded.z_index,
   position = excluded.position,
   updated_at = excluded.updated_at`,
-			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.Cwd, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now); err != nil {
+			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.Cwd, pane.LastExportPath, pane.FileBrowserSidebarWidth, pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now); err != nil {
 			return fmt.Errorf("upsert pane %s: %w", pane.ID, err)
 		}
 	}
@@ -234,6 +311,36 @@ ON CONFLICT(id) DO UPDATE SET
 		return fmt.Errorf("commit workspace: %w", err)
 	}
 	return nil
+}
+
+func normalizeBackgroundMode(mode string) string {
+	switch mode {
+	case "fit", "stretch", "center":
+		return mode
+	default:
+		return "fill"
+	}
+}
+
+const (
+	defaultPaneFontSize = 14
+	minimumPaneFontSize = 10
+	maximumPaneFontSize = 24
+	defaultThemeID      = "next-tessera"
+)
+
+func normalizeDefaultPaneFontSize(fontSize int) int {
+	if fontSize < minimumPaneFontSize || fontSize > maximumPaneFontSize {
+		return defaultPaneFontSize
+	}
+	return fontSize
+}
+
+func normalizeThemeID(themeID string) string {
+	if themeID == "" {
+		return defaultThemeID
+	}
+	return themeID
 }
 
 func (s *Store) UpdatePaneBufferAndCwd(ctx context.Context, workspaceID, paneID, bufferText, cwd string) error {
@@ -274,6 +381,7 @@ func (s *Store) PreservePaneBuffers(ctx context.Context, ws *Workspace, paneIDs 
 		}
 		ws.Panes[i].BufferText = pane.BufferText
 		ws.Panes[i].Cwd = pane.Cwd
+		ws.Panes[i].LastExportPath = pane.LastExportPath
 	}
 	return nil
 }
