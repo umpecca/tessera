@@ -68,6 +68,7 @@ const minimumFileBrowserSidebarWidth = 110;
 const maximumFileBrowserSidebarWidth = 480;
 let fileBrowserSidebarResizeDrag = null;
 let defaultPaneFontSize = fallbackPaneFontSize;
+let deskbarButtonEnabled = true;
 
 // Terminal canvas colors cannot use CSS variables, so each theme carries its
 // own set. Everything else themes through styles.css.
@@ -107,6 +108,15 @@ const themes = {
       foreground: "#d6dce4",
       cursor: "#8fb4dd",
       selectionBackground: "#33506e",
+    },
+  },
+  "oled-terminal": {
+    label: "OLED Terminal",
+    terminal: {
+      background: "#000000",
+      foreground: "#b8b8b8",
+      cursor: "#d0d0d0",
+      selectionBackground: "#343434",
     },
   },
 };
@@ -177,6 +187,7 @@ function setDefaultPaneFontSize(fontSize) {
 function applyTheme(id, { save = true } = {}) {
   themeID = themes[id] ? id : defaultThemeID;
   document.documentElement.dataset.theme = themeID;
+  reflowDockedPanesForTheme();
   if (save) {
     scheduleUserSettingsSave();
   }
@@ -712,6 +723,16 @@ serverUpdateModal.addEventListener("pointerdown", (event) => {
 });
 document.body.appendChild(serverUpdateModal);
 
+const helpModal = document.createElement("div");
+helpModal.className = "settings-modal help-modal";
+helpModal.hidden = true;
+helpModal.addEventListener("pointerdown", (event) => {
+  if (event.target === helpModal) {
+    hideHelpModal();
+  }
+});
+document.body.appendChild(helpModal);
+
 const commandPalette = document.createElement("div");
 commandPalette.className = "command-palette";
 commandPalette.hidden = true;
@@ -1214,6 +1235,14 @@ function createRectangle(x, y, width, height, options = {}) {
         : "Workspace text");
   body.addEventListener("pointerdown", () => {
     hideFloatingMenus();
+  }, { capture: true });
+  // OLED Terminal hides the title tab, so keep pane movement available without
+  // adding visible chrome. Capture the modified gesture before terminal mouse
+  // reporting or editor selection handles the pointer event.
+  body.addEventListener("pointerdown", (event) => {
+    if (themeID === "oled-terminal" && event.altKey && event.button === 0) {
+      startMoving(event, rect);
+    }
   }, { capture: true });
   body.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
@@ -1962,6 +1991,7 @@ function setActivePane(rect, options = {}) {
   board.dataset.activePaneId = activePaneID;
   rect.element.dataset.activePane = "true";
   rect.element.classList.add("is-selected");
+  setTerminalCursorBlink(rect, true);
   if (options.raise) {
     rect.zIndex = nextZIndex;
     nextZIndex += 1;
@@ -1999,14 +2029,14 @@ function openRenameWindowModal(rect) {
   titleBar.className = "settings-title";
   const title = document.createElement("h2");
   title.id = "rename-window-title";
-  title.textContent = "Rename Window";
+  title.textContent = "Set Window Title";
   titleBar.appendChild(title);
 
   const content = document.createElement("div");
   content.className = "settings-content rename-window-content";
   const label = document.createElement("label");
   label.htmlFor = "rename-window-input";
-  label.textContent = "Window name";
+  label.textContent = "Window title";
   const input = document.createElement("input");
   input.id = "rename-window-input";
   input.className = "rename-window-input";
@@ -2023,7 +2053,7 @@ function openRenameWindowModal(rect) {
   const renameButton = document.createElement("button");
   renameButton.type = "button";
   renameButton.className = "settings-background-button";
-  renameButton.textContent = "Rename";
+  renameButton.textContent = "Set Title";
 
   const save = () => {
     if (!rectangles.includes(rect)) {
@@ -2078,6 +2108,27 @@ function clearActivePaneClass() {
   if (activeRect) {
     activeRect.element.classList.remove("is-selected");
     delete activeRect.element.dataset.activePane;
+    setTerminalCursorBlink(activeRect, false);
+  }
+}
+
+// Ghostty's cursor blinks continuously once started, so tie it to pane focus
+// ourselves rather than leaving every terminal blinking at once. Disabling
+// blink alone leaves a static cursor drawn (ghostty's stopCursorBlink()
+// forces it visible), so also reach into the renderer to hide it entirely
+// on panes that aren't focused.
+function setTerminalCursorBlink(rect, blink) {
+  if (rect?.kind !== "terminal" || !rect.terminal?.term) {
+    return;
+  }
+  try {
+    const { term } = rect.terminal;
+    term.options.cursorBlink = blink;
+    if (term.renderer) {
+      term.renderer.cursorVisible = blink;
+    }
+  } catch {
+    // Terminal not fully initialized yet; ignore.
   }
 }
 
@@ -2504,6 +2555,8 @@ async function loadWorkspace() {
       highestZIndex = Math.max(highestZIndex, rect.zIndex);
     }
 
+    reflowDockedPanesForTheme();
+
     nextZIndex = Math.max(nextZIndex, highestZIndex + 1);
     // A visible full pane owns the app surface after navigation, even if an
     // older saved active-pane ID points at a window behind it.
@@ -2898,7 +2951,7 @@ async function startTerminal(rect) {
       rows: 24,
       fontSize: rect.fontSize,
       fontFamily: tesseraMonoFontFamily,
-      cursorBlink: true,
+      cursorBlink: activeRect === rect,
       theme: { ...terminalTheme },
     });
     const fit = new FitAddon();
@@ -3578,6 +3631,14 @@ function hideDeskbar() {
   deskbarButton.setAttribute("aria-expanded", "false");
 }
 
+function toggleDeskbarButton() {
+  deskbarButtonEnabled = !deskbarButtonEnabled;
+  if (!deskbarButtonEnabled) {
+    hideDeskbar();
+  }
+  updateDeskbar();
+}
+
 function focusDeskbarWindow(index) {
   const buttons = Array.from(deskbarPanel.querySelectorAll(".workspace-menu-name"));
   if (buttons.length === 0) {
@@ -3638,8 +3699,8 @@ function handleDeskbarKeyboard(event) {
 function updateDeskbar() {
   const activePane = getActivePane();
   const hideForFocusedFullscreenPane = Boolean(activePane?.isFull && !activePane.minimized);
-  deskbarButton.hidden = hideForFocusedFullscreenPane;
-  if (hideForFocusedFullscreenPane) {
+  deskbarButton.hidden = !deskbarButtonEnabled || hideForFocusedFullscreenPane;
+  if (deskbarButton.hidden) {
     hideDeskbar();
   }
   const minimizedCount = rectangles.filter((rect) => rect.kind !== "pending" && rect.minimized).length;
@@ -4040,6 +4101,108 @@ function renderSettingsModal() {
   settingsModal.appendChild(panel);
 }
 
+function openHelpModal() {
+  hideDeskbar();
+  renderHelpModal();
+  helpModal.hidden = false;
+  window.requestAnimationFrame(() => helpModal.querySelector("button")?.focus());
+}
+
+function hideHelpModal() {
+  helpModal.hidden = true;
+  helpModal.replaceChildren();
+}
+
+function renderHelpModal() {
+  helpModal.replaceChildren();
+
+  const panel = document.createElement("section");
+  panel.className = "settings-panel help-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "help-title");
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "help-title";
+  title.textContent = "Help";
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "settings-close";
+  closeButton.textContent = "X";
+  closeButton.setAttribute("aria-label", "Close help");
+  closeButton.addEventListener("click", hideHelpModal);
+  titleBar.append(title, closeButton);
+
+  const content = document.createElement("div");
+  content.className = "settings-content help-content";
+  content.appendChild(renderHelpSection("Window controls", [
+    ["Move an OLED window", "Alt/Option + left-drag anywhere inside the pane."],
+    ["Move a standard window", "Drag its title tab."],
+    ["Change the active title", "Run Set Window Title... from the command palette."],
+  ]));
+  content.appendChild(renderHelpSection("Keyboard shortcuts", [
+    ["Command palette", "Ctrl/Cmd+K"],
+    ["Window list", "Ctrl/Cmd+L"],
+    ["Run worksheet command", "Ctrl/Cmd+Enter"],
+    ["Destroy active window", "Ctrl/Cmd+Backspace"],
+    ["Next / previous window", "Ctrl/Cmd+] / Ctrl/Cmd+["],
+    ["Maximize / restore", "Alt+F10"],
+    ["Minimize / restore", "Alt+F9"],
+    ["Cascade / restore arrangement", "Alt+F7"],
+  ]));
+
+  const commands = buildPaletteCommands();
+  assignPaletteShortcutCodes(commands);
+  const commandSection = document.createElement("section");
+  commandSection.className = "settings-section";
+  const commandHeading = document.createElement("h3");
+  commandHeading.textContent = "Command palette";
+  commandSection.appendChild(commandHeading);
+  const commandList = document.createElement("div");
+  commandList.className = "help-command-list";
+  for (const command of commands) {
+    const row = document.createElement("div");
+    row.className = "help-command-row";
+    const label = document.createElement("span");
+    label.textContent = command.label;
+    const code = document.createElement("kbd");
+    code.textContent = command.code || "—";
+    const hint = document.createElement("span");
+    hint.textContent = command.hint || "";
+    row.append(label, code, hint);
+    commandList.appendChild(row);
+  }
+  commandSection.appendChild(commandList);
+  content.appendChild(commandSection);
+
+  panel.append(titleBar, content);
+  helpModal.appendChild(panel);
+}
+
+function renderHelpSection(titleText, entries) {
+  const section = document.createElement("section");
+  section.className = "settings-section";
+  const title = document.createElement("h3");
+  title.textContent = titleText;
+  section.appendChild(title);
+  const list = document.createElement("div");
+  list.className = "help-shortcut-list";
+  for (const [labelText, valueText] of entries) {
+    const row = document.createElement("div");
+    row.className = "help-shortcut-row";
+    const label = document.createElement("span");
+    label.textContent = labelText;
+    const value = document.createElement("span");
+    value.textContent = valueText;
+    row.append(label, value);
+    list.appendChild(row);
+  }
+  section.appendChild(list);
+  return section;
+}
+
 function renderSettingsSection(titleText, rows) {
   const section = document.createElement("section");
   section.className = "settings-section";
@@ -4129,8 +4292,8 @@ function renderSettingsBackgroundRow() {
   name.textContent = "Board image";
   const detail = document.createElement("span");
   detail.textContent = workspaceHasBackground
-    ? "Shown behind this workspace's panes."
-    : "None set. Applies to this workspace only.";
+    ? "Shown behind this workspace's panes. New sessions start with a copy of it."
+    : "None set. Sessions created from here will also start without one.";
   label.append(name, detail);
 
   const control = document.createElement("div");
@@ -4420,9 +4583,27 @@ async function runServerUpdate() {
 // plus jump-to-window entries (which also restore minimized panes).
 function buildPaletteCommands() {
   const commands = [];
+  commands.push({ id: "help", label: "Help", hint: "shortcuts and commands", run: () => openHelpModal() });
   commands.push({ id: "window-list", label: "Window List", hint: "Ctrl+L", run: () => openWindowList() });
+  commands.push({
+    id: "deskbar-button-toggle",
+    label: deskbarButtonEnabled ? "Hide Deskbar Button" : "Show Deskbar Button",
+    hint: "interface",
+    run: () => toggleDeskbarButton(),
+  });
   commands.push({ id: "sessions", label: "Sessions...", hint: currentSessionName || "manage", run: () => void openSessionsModal() });
   commands.push({ id: "new-session", label: "Create Session...", hint: "session", run: () => openSessionNameDialog("create") });
+  if (sessions.length > 1) {
+    const current = sessions.find((session) => session.id === currentSessionID);
+    if (current) {
+      commands.push({
+        id: "destroy-session",
+        label: "Destroy Session...",
+        hint: currentSessionName || "delete",
+        run: () => openDestroySessionDialog(current),
+      });
+    }
+  }
   for (const session of sessions) {
     if (session.id !== currentSessionID) {
       commands.push({ label: `Switch Session: ${session.name}`, hint: "session", run: () => void switchSession(session) });
@@ -4461,7 +4642,7 @@ function buildPaletteCommands() {
   if (dockTarget) {
     commands.push({
       id: "rename-window",
-      label: "Rename Window",
+      label: "Set Window Title...",
       hint: dockTarget.title,
       run: () => openRenameWindowModal(dockTarget),
     });
@@ -4515,6 +4696,7 @@ function buildPaletteCommands() {
 // Dynamic per-window/per-user entries have no `id` and so show no code —
 // a "fixed set" can't cover an unbounded, runtime-dependent list.
 const paletteShortcutCodes = {
+  "help": "HP",
   "new-terminal": "NN",
   "new-worksheet": "NW",
   "new-file-browser": "NF",
@@ -4529,6 +4711,8 @@ const paletteShortcutCodes = {
   "dock-right": "DR",
   "dock-bottom": "DB",
   "destroy-window": "DD",
+  "rename-window": "WT",
+  "deskbar-button-toggle": "HB",
   "settings": "ST",
   "update-server": "UP",
 };
@@ -4927,17 +5111,59 @@ function applyDockAction(action, rect) {
     }
     clearFullState(rect);
     const bounds = board.getBoundingClientRect();
-    const usableHeight = Math.max(16, bounds.height - tabHeight);
-    const halfWidth = Math.max(16, Math.floor(bounds.width / 2));
-    const halfHeight = Math.max(16, Math.floor(usableHeight / 2));
-    if (action === "top") {
-      setRectangle(rect, { x: 0, y: tabHeight, width: bounds.width, height: halfHeight });
-    } else if (action === "left") {
-      setRectangle(rect, { x: 0, y: tabHeight, width: halfWidth, height: usableHeight });
-    } else if (action === "right") {
-      setRectangle(rect, { x: bounds.width - halfWidth, y: tabHeight, width: halfWidth, height: usableHeight });
-    } else if (action === "bottom") {
-      setRectangle(rect, { x: 0, y: bounds.height - halfHeight, width: bounds.width, height: halfHeight });
+    setDockedPaneGeometry(rect, action, bounds);
+  }
+}
+
+function dockTopInset() {
+  return themeID === "oled-terminal" ? 0 : tabHeight;
+}
+
+function dockedPaneBox(action, bounds, inset = dockTopInset()) {
+  const usableHeight = Math.max(16, bounds.height - inset);
+  const halfWidth = Math.max(16, Math.floor(bounds.width / 2));
+  const halfHeight = Math.max(16, Math.floor(usableHeight / 2));
+  if (action === "top") {
+    return { x: 0, y: inset, width: bounds.width, height: halfHeight };
+  }
+  if (action === "left") {
+    return { x: 0, y: inset, width: halfWidth, height: usableHeight };
+  }
+  if (action === "right") {
+    return { x: bounds.width - halfWidth, y: inset, width: halfWidth, height: usableHeight };
+  }
+  return { x: 0, y: bounds.height - halfHeight, width: bounds.width, height: halfHeight };
+}
+
+function setDockedPaneGeometry(rect, action, bounds = board.getBoundingClientRect()) {
+  setRectangle(rect, dockedPaneBox(action, bounds));
+}
+
+function sameRectangleBox(rect, box) {
+  return rect.x === box.x && rect.y === box.y && rect.width === box.width && rect.height === box.height;
+}
+
+// Docked panes from every theme use one of two exact geometry families: the
+// normal title-tab inset or the OLED theme's titleless edge-to-edge layout.
+// Recognizing either form lets existing saved docks update on theme changes.
+function reflowDockedPanesForTheme() {
+  const bounds = board.getBoundingClientRect();
+  if (bounds.width < 1 || bounds.height < 1) {
+    return;
+  }
+  const insetBoxes = [0, tabHeight].flatMap((inset) => (
+    ["top", "left", "right", "bottom"].map((action) => ({ action, box: dockedPaneBox(action, bounds, inset) }))
+  ));
+  for (const rect of rectangles) {
+    if (rect.kind === "pending" || rect.minimized || rect.isFull) {
+      continue;
+    }
+    const match = insetBoxes.find(({ box }) => sameRectangleBox(rect, box));
+    if (match) {
+      const themedBox = dockedPaneBox(match.action, bounds);
+      if (!sameRectangleBox(rect, themedBox)) {
+        setRectangle(rect, themedBox);
+      }
     }
   }
 }
@@ -5907,6 +6133,7 @@ function hideAllMenus() {
   hideWindowList();
   hideDeskbar();
   hideSettingsModal();
+  hideHelpModal();
   hideRenameWindowModal();
   hideSessionsModal();
   hideSessionActionModal();
@@ -6049,7 +6276,10 @@ function clampIntoBoard(rect) {
 
   const minX = visibleX - rect.width;
   const maxX = bounds.width - visibleX;
-  const minY = Math.max(visibleY - rect.height, tabHeight - titleVisible);
+  // The floor keeps a sliver of the title tab grabbable when a window is
+  // dragged mostly above the board; OLED Terminal has no tab, so it should
+  // allow panes flush against the top edge instead of leaving a gap.
+  const minY = Math.max(visibleY - rect.height, dockTopInset() - titleVisible);
   const maxY = bounds.height - visibleY;
 
   rect.x = Math.min(Math.max(minX, rect.x), maxX);

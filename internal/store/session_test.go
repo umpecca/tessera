@@ -67,6 +67,54 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 	}
 }
 
+func TestCreateSessionInheritsBackgroundFromMostRecentSession(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	first, err := st.EnsureUserDefaultSession(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ensure default session: %v", err)
+	}
+	if _, err := st.SaveWorkspaceBackground(ctx, first.ID, "image/jpeg", []byte("wallpaper-bytes")); err != nil {
+		t.Fatalf("save background: %v", err)
+	}
+	ws, err := st.LoadWorkspace(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	ws.BackgroundMode = "center"
+	if err := st.SaveWorkspace(ctx, ws); err != nil {
+		t.Fatalf("save workspace mode: %v", err)
+	}
+	if err := st.ActivateSession(ctx, "alice", first.ID); err != nil {
+		t.Fatalf("activate session: %v", err)
+	}
+
+	second, err := st.CreateSession(ctx, "alice", "Project")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	bg, err := st.LoadWorkspaceBackground(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("load new session background: %v", err)
+	}
+	if bg.MimeType != "image/jpeg" || string(bg.Image) != "wallpaper-bytes" {
+		t.Fatalf("copied background = %+v", bg)
+	}
+	secondWS, err := st.LoadWorkspace(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("load new session workspace: %v", err)
+	}
+	if secondWS.BackgroundMode != "center" {
+		t.Fatalf("copied background mode = %q", secondWS.BackgroundMode)
+	}
+}
+
 func TestLegacyWorkspaceMigratesToDefaultSession(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "legacy.sqlite3")

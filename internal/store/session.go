@@ -102,6 +102,17 @@ func (s *Store) CreateSession(ctx context.Context, userID, name string) (*Sessio
 	if err != nil {
 		return nil, err
 	}
+
+	// New sessions start with the same wallpaper as the user's most recently
+	// used session, the same way they already inherit the font size and
+	// theme, so switching to a fresh session doesn't lose the background.
+	var sourceSessionID string
+	var sourceBackgroundMode string
+	if existing, err := s.ListSessions(ctx, userID); err == nil && len(existing) > 0 {
+		sourceSessionID = existing[0].ID
+		sourceBackgroundMode, _ = s.workspaceBackgroundMode(ctx, sourceSessionID)
+	}
+
 	now := nowText()
 	ws := &Workspace{
 		ID:                  NewID("session"),
@@ -115,13 +126,34 @@ func (s *Store) CreateSession(ctx context.Context, userID, name string) (*Sessio
 		ThemeID:             settings.ThemeID,
 		LastOpenedAt:        now,
 	}
+	if sourceBackgroundMode != "" {
+		ws.BackgroundMode = sourceBackgroundMode
+	}
 	if err := s.SaveWorkspace(ctx, ws); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique constraint") {
 			return nil, ErrSessionNameExists
 		}
 		return nil, err
 	}
+	if sourceSessionID != "" {
+		if bg, err := s.LoadWorkspaceBackground(ctx, sourceSessionID); err == nil {
+			if _, err := s.SaveWorkspaceBackground(ctx, ws.ID, bg.MimeType, bg.Image); err != nil {
+				return nil, fmt.Errorf("copy session background: %w", err)
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("load source session background: %w", err)
+		}
+	}
 	return &Session{ID: ws.ID, UserID: userID, Name: name, CreatedAt: now, UpdatedAt: now, LastOpenedAt: now}, nil
+}
+
+func (s *Store) workspaceBackgroundMode(ctx context.Context, workspaceID string) (string, error) {
+	var mode string
+	err := s.db.QueryRowContext(ctx, `SELECT background_mode FROM workspaces WHERE id = ?`, workspaceID).Scan(&mode)
+	if err != nil {
+		return "", err
+	}
+	return normalizeBackgroundMode(mode), nil
 }
 
 func (s *Store) RenameSession(ctx context.Context, userID, sessionID, name string) (*Session, error) {

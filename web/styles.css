@@ -417,6 +417,116 @@
   --pane-active-glow: 0 0 16px rgba(0, 0, 0, 0.5);
 }
 
+/*
+ * Theme: OLED Terminal. True black surfaces and quiet gray text, modeled on
+ * dense tmux/Emacs layouts. The title tabs remain in the DOM so switching
+ * themes restores them; this theme simply leaves the bottom modeline visible.
+ */
+:root[data-theme="oled-terminal"] {
+  --board-bg: #000000;
+  --pane-bg: #000000;
+  --chrome-bg: #080808;
+  --input-bg: #000000;
+
+  --bevel-hi: #222222;
+  --bevel-lo: #000000;
+  --border-strong: #242424;
+  --border-panel: #303030;
+  --bevel-panel-lo: #080808;
+  --divider: #202020;
+
+  --text: #b8b8b8;
+  --text-muted: #929292;
+  --text-faint: #707070;
+  --text-disabled: #4d4d4d;
+
+  --accent-border: #686868;
+  --accent-bevel-hi: #888888;
+  --accent-bevel-lo: #202020;
+  --accent-strong-bg: #181818;
+  --accent-strong-text: #d0d0d0;
+  --selection-bg: rgba(190, 190, 190, 0.22);
+  --dock-preview-fill: rgba(180, 180, 180, 0.12);
+  --dock-preview-inner: rgba(230, 230, 230, 0.22);
+
+  --highlight-bg: #242424;
+  --highlight-bevel-hi: #383838;
+  --grip-bg: #080808;
+  --grip-border: #242424;
+  --grip-active-border: #606060;
+  --grip-bevel-hi: #303030;
+  --grip-bevel-lo: #000000;
+  --control-border: #242424;
+  --control-face: #080808;
+  --control-bevel-hi: #303030;
+  --control-bevel-lo: #000000;
+  --control-glyph: #a0a0a0;
+
+  --running-border: #777777;
+  --running-bg: #444444;
+  --running-bevel-hi: #888888;
+  --running-bevel-lo: #202020;
+  --danger-text: #c0c0c0;
+  --danger-border: #666666;
+  --danger-bg: #181818;
+  --danger-bevel-hi: #303030;
+  --danger-bevel-lo: #080808;
+
+  --terminal-bg: #000000;
+  --terminal-text: #b8b8b8;
+  --editor-bg: #000000;
+  --editor-selection-bg: rgba(190, 190, 190, 0.22);
+  --editor-text: #b8b8b8;
+  --editor-caret: #d0d0d0;
+  --editor-gutter-bg: #000000;
+  --editor-gutter-text: #606060;
+  --editor-gutter-border: #181818;
+  --editor-active-line: rgba(255, 255, 255, 0.035);
+  --editor-active-line-gutter: rgba(255, 255, 255, 0.055);
+
+  --focus-outline: rgba(184, 184, 184, 0.5);
+  --focus-outline-strong: rgba(208, 208, 208, 0.8);
+  --accent-focus-outline: rgba(208, 208, 208, 0.65);
+  --accent-focus-outline-strong: rgba(224, 224, 224, 0.8);
+  --rename-bg: #101010;
+  --rename-bevel: #303030;
+  --accent-rename-border: #686868;
+  --accent-rename-bg: #181818;
+  --overlay-backdrop: rgba(0, 0, 0, 0.72);
+  --menu-shadow: rgba(0, 0, 0, 0.8);
+  --panel-shadow: rgba(0, 0, 0, 0.85);
+  --board-overlay: none;
+  --icon-filter: grayscale(1);
+  --pane-active-glow: none;
+}
+
+/* Hide, rather than remove, the decorative title tabs for this theme. */
+:root[data-theme="oled-terminal"] .window-tab {
+  display: none;
+}
+
+:root[data-theme="oled-terminal"] .rectangle {
+  border-width: 10px;
+  border-color: rgba(180, 180, 180, 0.22);
+}
+
+:root[data-theme="oled-terminal"] .rectangle.is-selected,
+:root[data-theme="oled-terminal"] .rectangle[data-active-pane="true"] {
+  border-color: rgba(210, 210, 210, 0.4);
+}
+
+:root[data-theme="oled-terminal"] .rectangle[data-pane-kind="pending"] {
+  border-color: rgba(180, 180, 180, 0.4);
+}
+
+:root[data-theme="oled-terminal"] .rectangle.is-full {
+  border-width: 0;
+}
+
+:root[data-theme="oled-terminal"] .window-status {
+  background: #080808;
+}
+
 html,
 body {
   width: 100%;
@@ -1829,6 +1939,65 @@ input {
     3px 3px 0 var(--panel-shadow);
   color: var(--text);
   font-family: var(--tessera-font);
+}
+
+.help-panel {
+  width: min(720px, calc(100vw - 48px));
+  max-height: calc(100dvh - 48px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.help-content {
+  min-height: 0;
+  overflow: auto;
+}
+
+.help-shortcut-list,
+.help-command-list {
+  border: 1px solid var(--divider);
+  background: var(--pane-bg);
+}
+
+.help-shortcut-row,
+.help-command-row {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--divider);
+  font-size: 12px;
+}
+
+.help-shortcut-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+}
+
+.help-command-row {
+  grid-template-columns: minmax(0, 1fr) 30px minmax(90px, auto);
+}
+
+.help-shortcut-row > span:last-child,
+.help-command-row > span:last-child {
+  color: var(--text-faint);
+  font-size: 11px;
+  text-align: right;
+}
+
+.help-shortcut-row:last-child,
+.help-command-row:last-child {
+  border-bottom: 0;
+}
+
+.help-command-row kbd {
+  border: 1px solid var(--border-strong);
+  padding: 1px 3px;
+  background: var(--chrome-bg);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
 }
 
 .settings-title {
