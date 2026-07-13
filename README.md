@@ -59,36 +59,6 @@ user.
 Authentication is intentionally out of scope — this is workspace separation, not
 access control.
 
-## Run (desktop app, Wails)
-
-One-time setup:
-
-```powershell
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
-wails doctor   # checks the WebView2 runtime is present
-```
-
-Build and run:
-
-```powershell
-cd cmd\tessera-desktop
-wails build
-.\build\bin\tessera-desktop.exe
-```
-
-The desktop app starts the same Tessera server in-process on an ephemeral
-localhost port and opens a native window onto it, so terminals (WebSocket)
-and streamed command output work exactly as in the browser. It accepts the
-same `-db` and `-web` flags; logs go to `tessera-desktop.log` next to the
-database. `wails build -debug` produces a build with devtools (F12).
-
-Without the Wails CLI: `go build -tags desktop,production -ldflags "-H windowsgui" -o bin\tessera-desktop.exe .\cmd\tessera-desktop`
-(skips icon/manifest embedding).
-
-Both modes use the same default database (`%AppData%\Tessera\tessera.sqlite3`
-on Windows); avoid running web and desktop mode concurrently against the same
-database file.
-
 ## MVP
 
 - Blank full-window workspace.

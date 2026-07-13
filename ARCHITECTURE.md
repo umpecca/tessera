@@ -18,9 +18,6 @@ Constraints and assumptions:
 tessera/
   cmd/tessera/
     main.go                 # web-server entrypoint (console binary)
-  cmd/tessera-desktop/
-    main.go                 # Wails desktop entrypoint (GUI binary)
-    wails.json              # Wails build configuration
   internal/server/
     server.go               # shared bootstrap: store, managers, listener, shutdown
   internal/app/
