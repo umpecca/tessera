@@ -1,0 +1,1 @@
+ALTER TABLE workspaces ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';

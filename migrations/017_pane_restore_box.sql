@@ -1,0 +1,1 @@
+ALTER TABLE panes ADD COLUMN restore_box TEXT NOT NULL DEFAULT '';

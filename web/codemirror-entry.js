@@ -1,3 +1,16 @@
 export { basicSetup, EditorView } from "codemirror";
 export { EditorSelection, EditorState, Prec, Transaction } from "@codemirror/state";
 export { keymap } from "@codemirror/view";
+export { css } from "@codemirror/lang-css";
+export { cpp } from "@codemirror/lang-cpp";
+export { go } from "@codemirror/lang-go";
+export { html } from "@codemirror/lang-html";
+export { java } from "@codemirror/lang-java";
+export { javascript } from "@codemirror/lang-javascript";
+export { markdown } from "@codemirror/lang-markdown";
+export { php } from "@codemirror/lang-php";
+export { python } from "@codemirror/lang-python";
+export { rust } from "@codemirror/lang-rust";
+export { sql } from "@codemirror/lang-sql";
+export { xml } from "@codemirror/lang-xml";
+export { yaml } from "@codemirror/lang-yaml";

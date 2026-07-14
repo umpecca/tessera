@@ -1,0 +1,1 @@
+ALTER TABLE panes ADD COLUMN kind TEXT NOT NULL DEFAULT 'worksheet';

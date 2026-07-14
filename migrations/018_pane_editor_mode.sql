@@ -1,0 +1,1 @@
+ALTER TABLE panes ADD COLUMN editor_mode TEXT NOT NULL DEFAULT '';

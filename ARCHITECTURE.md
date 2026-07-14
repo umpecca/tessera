@@ -1,88 +1,143 @@
 # Architecture Overview
 
-Tessera is a local-first, text-first computer workspace. The MVP is one Go host process serving one browser SPA, one SQLite database, and local shell execution. A workspace contains panes. Each pane owns an editable worksheet buffer, a current working directory, and a transcript of commands and output that remains normal editable text.
+Tessera is a local-first, text-first computer workspace. One Go process serves
+an embedded browser SPA, persists workspace state in SQLite, manages local
+commands and PTY terminals, and exposes host filesystem operations. Users work
+inside movable, resizable panes organized into named desktop sessions.
 
-Current baby-step prototype: the loaded SPA is intentionally a blank rectangle board. Users can draw rectangles with the mouse, move them, and resize them. Pane/workbook/shell concepts remain future direction until the rectangle workspace primitive feels right.
+The architecture deliberately favors a single deployable process and direct
+code paths over distributed services or framework-heavy abstractions.
 
 Constraints and assumptions:
 
-- Target user: one local operator using Tessera as a durable command worksheet and pane workspace.
-- First platform: local desktop browser talking to a Go process on localhost.
-- Authentication: none for the MVP; bind to localhost by default.
-- Persistence: SQLite file under local app data or an explicit `-db` path.
-- Scope: editable panes, split layout, run selection/current line, stream output, save/load workspace.
+- Target users are one operator or a small trusted group controlling a local
+  machine or trusted LAN host.
+- Tessera currently has no authentication and no robust authorization.
+- The `-users` roster separates state but is not an identity or access-control
+  system.
+- Network access is trusted access: API clients can execute commands and
+  access files with the Tessera process's operating-system permissions.
+- The listener defaults to `127.0.0.1`; LAN binding is explicit.
+- SQLite is the durable application store. Host files remain ordinary files
+  outside the database.
+- The frontend is a browser SPA; Windows and macOS additionally support native
+  tray controls.
 
 ## Project Structure
 
 ```text
 tessera/
   cmd/tessera/
-    main.go                 # web-server entrypoint (console binary)
-  internal/server/
-    server.go               # shared bootstrap: store, managers, listener, shutdown
+    main.go                    # flags, process lifecycle, tray and update restart
   internal/app/
-    app.go                  # dependency wiring and HTTP route registration
+    app.go                     # dependency wiring and HTTP handler construction
+  internal/server/
+    server.go                  # store/managers/listener startup and shutdown
+  internal/desktop/
+    controller.go              # start, stop, and configure lifecycle
+    tray*.go                   # Windows/macOS tray; server-only platform stub
+    open_*.go                  # platform default-browser integration
   internal/httpapi/
-    api.go                  # route registration and JSON helpers
-    workspace.go            # workspace load/save endpoints
-    command.go              # command run and streaming endpoints
-    directories.go          # directory browser endpoint
-    terminal.go             # WebSocket terminal endpoint
-    static.go               # embedded SPA/static handler (fs.FS)
+    api.go                     # route registration and shared JSON responses
+    workspace.go               # workspace document API
+    sessions.go                # roster, named sessions, and user settings
+    command.go                 # command start and NDJSON streaming
+    terminal.go                # terminal WebSocket transport
+    directories.go             # directory browser data
+    files.go                   # file read/write
+    file_operations.go         # copy, move, and delete
+    background.go              # workspace background image API
+    update.go                  # self-update API
+    static.go                  # embedded SPA and history fallback
   internal/store/
-    store.go                # SQLite open, migration, shared helpers
-    workspace.go            # workspace, pane, and buffer persistence
+    store.go                   # SQLite open and embedded migration runner
+    workspace.go               # workspaces, panes, and command-run persistence
+    session.go                 # session CRUD and per-user settings
+    workspace_background.go    # image BLOB persistence
   internal/runs/
-    manager.go              # run lifecycle, event fan-out, persistence
+    manager.go                 # command lifecycle, transcript updates, subscribers
   internal/shell/
-    runner.go               # per-pane shell command execution
+    runner.go                  # platform shell execution and cwd tracking
+    proc_*.go                  # platform process behavior
   internal/terminal/
-    manager.go, session*.go # pty terminal sessions (ConPTY on Windows)
+    manager.go                 # session ownership, replay, and teardown
+    session*.go                # ConPTY and Unix PTY implementations
+  internal/update/
+    update.go                  # GitHub release check, binary swap, restart request
+  internal/version/
+    version.go                 # build-time version value
   web/
-    embed.go                # go:embed of the SPA files served at the web root
-    index.html
-    app.js                  # SPA: board, panes, editors, API wiring
-    styles.css
-    codemirror-entry.js     # esbuild input for vendor/codemirror.js
-    terminal-entry.js       # esbuild input for vendor/terminal.js
-    vendor/                 # committed esbuild bundles (CodeMirror, ghostty)
+    app.js                     # SPA state, pane UI, interactions, and API calls
+    styles.css                 # workspace, pane, modal, Deskbar, and theme styling
+    index.html                 # application shell and bundled module loading
+    embed.go                   # go:embed filesystem
+    codemirror-entry.js        # editor bundle entry point
+    terminal-entry.js          # terminal bundle entry point
+    text-editor-language.mjs   # file-extension language selection
+    vendor/                    # committed esbuild output
+    assets/                    # fonts, application icons, and pane icons
   migrations/
-    001_init.sql            # SQLite schema
-  README.md
-  ARCHITECTURE.md
+    embed.go                   # embeds the ordered SQL sequence
+    001_*.sql ... 025_*.sql    # append-only application schema migrations
+  tasks/                       # small implementation task records
+  .github/workflows/
+    release.yml                # tested multi-platform tagged releases
 ```
 
-The MVP keeps code locality high by grouping behavior by concrete feature. There is no ORM, no generated client, no build step, and no plugin boundary.
+The Go backend is separated by concrete responsibility. The frontend currently
+keeps most application behavior in `web/app.js`; this preserves directness but
+is the main modularization pressure point as features grow.
 
 ## High-Level System Diagram
 
 ```mermaid
 flowchart LR
-  U["User in browser"] <--> SPA["Tessera SPA"]
-  SPA <--> API["Go localhost API and static host"]
-  API <--> DB["SQLite workspace database"]
-  API <--> SH["Local shell process"]
-  SH --> API
-  API --> SPA
+  USER["Trusted user"] --> BROWSER["Browser or installed web app"]
+  BROWSER <--> SPA["Tessera SPA"]
+  SPA <--> API["Go HTTP API and static host"]
+  API <--> DB["SQLite database"]
+  API <--> FS["Host filesystem"]
+  API <--> RUNS["Shell command manager"]
+  API <--> PTY["PTY terminal manager"]
+  RUNS <--> OS["Operating-system processes"]
+  PTY <--> OS
+  API -. update check .-> GH["GitHub Releases"]
+  TRAY["Windows/macOS tray"] <--> API
 ```
 
-Data flow:
+Primary data flows:
 
-- The browser loads the SPA from the Go host.
-- The SPA loads the active workspace with panes, buffer text, layout, and working directories.
-- The user edits worksheet text directly in each pane.
-- The user selects text or places the caret on a line and runs it.
-- The SPA sends pane id, command text, working directory, and insertion point to the Go API.
-- The Go host starts a local shell command, streams output events, and returns the final working directory when it can be determined.
-- The SPA inserts command output inline below the command and saves the updated workspace.
+1. The browser loads the embedded SPA and selects a configured user and named
+   session.
+2. The SPA loads the workspace document and renders its panes.
+3. Client-side edits and geometry changes are debounced into whole-workspace
+   saves. The server preserves buffers owned by active command runs to prevent
+   stale client saves from overwriting streamed transcript output.
+4. Worksheet commands are sent to the run manager. Output is streamed as NDJSON,
+   persisted into the pane transcript, and available for subscriber reattachment.
+5. Terminal panes attach through WebSocket to session-scoped PTY processes.
+6. File Browser and Text Editor panes call filesystem APIs using host paths.
+7. Destroying a named session stops that session's commands and terminals before
+   deleting its persisted workspace.
 
 ## Technology Used
 
-- Go: backend host, local HTTP API, command execution, static file serving.
-- SQLite: durable workspace, panes, buffers, layout metadata, run history.
-- Browser-native HTML/CSS/JavaScript: SPA UI without React, Vue, or bundling.
-- Server-Sent Events or newline-delimited JSON: simple one-way command output streaming.
-- PowerShell on Windows and `/bin/sh` on Unix-like systems: default local command shells.
+- **Go 1.26:** executable entry point, HTTP server, lifecycle management,
+  concurrency, shell execution, terminal sessions, and updater.
+- **`net/http`:** API routing and embedded static-file delivery.
+- **SQLite via `modernc.org/sqlite`:** embedded durable state without a separate
+  database service.
+- **Gorilla WebSocket:** bidirectional terminal transport.
+- **ConPTY and `creack/pty`:** Windows and Unix-like terminal processes.
+- **Vanilla HTML, CSS, and JavaScript:** SPA implementation without a component
+  framework.
+- **CodeMirror 6:** worksheet and text-editor surfaces.
+- **ghostty-web:** browser terminal renderer.
+- **esbuild:** produces committed CodeMirror and terminal bundles.
+- **getlantern/systray:** Windows and macOS notification-area controls. Linux
+  releases exclude the tray implementation and remain CGO-free.
+- **GitHub Actions and GitHub Releases:** tagged builds, release assets, and the
+  self-update source.
 
 ## Core Components
 
@@ -90,20 +145,32 @@ Data flow:
 
 Name: Tessera Workspace SPA
 
-Description: A single-page workspace with editable worksheet panes. It supports pane focus, split panes, current line or selection execution, inline output insertion, per-pane working-directory display, and explicit or debounce-based save.
+Description: The browser UI owns workspace interaction, client-side pane state,
+session routing, modal and command-palette behavior, debounced persistence, and
+rendering for all pane types.
 
-Technologies: HTML, CSS, browser JavaScript, `contenteditable` or `textarea` per pane for the MVP.
+Technologies: Browser JavaScript, HTML, CSS, CodeMirror 6, ghostty-web, WebSocket,
+Fetch API, and browser history/storage APIs.
 
-Deployment: Served by the local Go host from embedded static files or `web/` in development.
+Deployment: Embedded in the Go binary from `web/`; `-web <directory>` serves
+working assets from disk during development. The manifest supports home-screen
+installation on compatible browsers.
 
-Frontend component structure:
+Current pane types:
 
-- `app.js`: starts the app, loads the workspace, connects global keyboard shortcuts, and delegates rendering.
-- `api.js`: wraps `GET /api/workspace/default`, `PUT /api/workspace/default`, and `POST /api/run`.
-- `state.js`: owns the in-browser workspace object, active pane id, dirty flag, and debounced persistence.
-- `layout.js`: renders the split tree from `layout_json`, supports split-left-right and split-top-bottom commands, and maps panes to worksheet elements.
-- `worksheet.js`: owns editable buffer behavior, current line or selection extraction, output insertion, and caret restoration.
-- `styles.css`: provides dense, utilitarian workspace styling with fixed toolbar heights and pane chrome.
+- **Worksheet:** editable command-and-output transcript with selection/current
+  line execution and free/normal cursor modes.
+- **Terminal:** live PTY terminal with resize, font controls, scrollback replay,
+  and session-scoped lifecycle.
+- **Text Editor:** tabbed host-file editor with save/save-as and syntax
+  highlighting selected by file extension.
+- **File Browser:** directory navigation and file copy, move, delete, paste, and
+  supported-text-file open behavior.
+
+The SPA also implements overlapping window geometry, active-pane and z-order
+state, minimize/maximize/dock/restore behavior, the Deskbar, command palette,
+settings, themes, background images, user selection, named-session management,
+and route/history synchronization.
 
 ### Backend Services
 
@@ -111,208 +178,275 @@ Frontend component structure:
 
 Name: Tessera Host
 
-Description: Serves the SPA, exposes workspace and command APIs, persists state to SQLite, and runs local shell commands for panes.
+Description: Starts storage and process managers, registers the HTTP API, serves
+the SPA, listens on the configured address, and coordinates graceful shutdown.
 
-Technologies: Go standard library HTTP server, `database/sql`, SQLite driver, `os/exec`.
+Technologies: Go, `net/http`, `database/sql`, embedded filesystems.
 
-Deployment: Local executable.
+Deployment: One local executable. The default database lives under the user's
+configuration directory unless `-db` overrides it.
 
-#### Shell Runner
+#### Workspace and Session API
 
-Name: Shell Runner
+Name: Workspace and Session API
 
-Description: Executes one command at a time per pane for the MVP. Streams stdout and stderr to the browser and reports process exit status. The runner receives a working directory from the pane state. Directory changes are tracked through a host-managed command wrapper where practical.
+Description: Loads and saves complete workspace documents; manages configured
+users, named sessions, active-session timestamps, per-user settings, and
+session-scoped teardown.
 
-Technologies: Go `exec.CommandContext`, pipes, goroutines, process cancellation.
+Technologies: Go HTTP handlers and SQLite transactions.
 
-Deployment: In-process component inside Tessera Host.
+Deployment: In-process inside the Tessera Host.
 
-API endpoints:
+Important route groups:
 
 ```text
-GET /api/health
-  Returns basic process status.
-
-GET /api/workspace/default
-  Loads the default workspace. Creates it on first run.
-
-PUT /api/workspace/default
-  Saves workspace layout, active pane, pane buffers, pane titles, pane positions, and pane cwd values.
-
-POST /api/run
-  Runs one command for one pane and streams newline-delimited JSON events in the response body.
+GET  /api/health
+GET  /api/users
+GET/POST/PATCH/DELETE /api/users/{user}/sessions/...
+GET/PUT /api/users/{user}/settings
+GET/PUT /api/workspace/{session}
+GET/PUT/DELETE /api/workspace/{session}/background
 ```
 
-`POST /api/run` request body:
+#### Command Run Manager
 
-```json
-{
-  "workspaceId": "default",
-  "paneId": "pane-1",
-  "command": "pwd",
-  "cwd": "C:\\Users\\Administrator\\Repos\\tessera"
-}
-```
+Name: Command Run Manager
 
-`POST /api/run` response events:
+Description: Runs worksheet commands, streams stdout/stderr, tracks working
+directory changes, persists run metadata, inserts transcript output, supports
+subscriber reattachment, and stops commands by session.
 
-```json
-{"type":"start","runId":"run-1","cwd":"C:\\Users\\Administrator\\Repos\\tessera"}
-{"type":"stdout","text":"C:\\Users\\Administrator\\Repos\\tessera\r\n"}
-{"type":"stderr","text":"warning text\r\n"}
-{"type":"exit","code":0,"cwd":"C:\\Users\\Administrator\\Repos\\tessera"}
-```
+Technologies: Go goroutines, `os/exec`, PowerShell on Windows, `/bin/sh` on
+Unix-like systems, NDJSON streaming.
 
-The first implementation should avoid separate pane mutation endpoints. The browser saves the whole workspace document after edits and split operations. This keeps persistence simple while the data model is still small.
+Deployment: In-process inside the Tessera Host.
+
+#### Terminal Manager
+
+Name: Terminal Manager
+
+Description: Owns PTY sessions keyed by workspace and pane, replays bounded
+scrollback to reconnecting clients, broadcasts output, resizes terminals, and
+terminates sessions during pane, workspace, or server teardown.
+
+Technologies: ConPTY, Unix PTYs, Gorilla WebSocket.
+
+Deployment: In-process inside the Tessera Host.
+
+#### Filesystem API
+
+Name: Filesystem API
+
+Description: Lists directories, reads and writes files, and performs copy,
+move, and delete operations using absolute host paths.
+
+Technologies: Go `os`, `io`, and `path/filepath` packages.
+
+Deployment: In-process and operating with the Tessera process's filesystem
+permissions. There is currently no configured root-directory sandbox.
+
+#### Desktop Controller
+
+Name: Desktop Controller
+
+Description: Starts and stops the local server and opens its URL in the default
+browser. Windows and macOS builds expose these actions through a tray menu;
+Linux uses the server lifecycle without a tray.
+
+Technologies: Go platform files and getlantern/systray on supported platforms.
+
+Deployment: Compiled into the main executable.
+
+#### Self-Updater
+
+Name: GitHub Release Updater
+
+Description: Checks the latest release, selects the exact OS/architecture asset,
+downloads it, swaps the current executable, requests shutdown, and launches the
+replacement.
+
+Technologies: GitHub Releases REST API and Go HTTP/file APIs.
+
+Deployment: In-process. It currently assumes anonymous access to release
+metadata and assets.
 
 ## Data Stores
 
-### SQLite Workspace Database
+### SQLite Application Database
 
 Name: Tessera SQLite Database
 
-Type: SQLite
+Type: SQLite file
 
-Purpose: Stores workspaces, pane buffers, pane layout, per-pane working directories, and command run records.
+Purpose: Durable storage for users' sessions, pane state, settings, backgrounds,
+and command-run metadata.
 
 Key Schemas/Collections:
 
-```sql
-CREATE TABLE workspaces (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  active_pane_id TEXT,
-  layout_json TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
+- `workspaces`: named sessions, owner, active pane, layout, theme/background
+  metadata, and last-opened timestamps.
+- `panes`: pane kind, buffer, editor state, paths, geometry, z-order, fullscreen,
+  minimized state, and font settings.
+- `command_runs`: command text, before/after working directories, status, exit
+  code, and timestamps.
+- `workspace_backgrounds`: background image MIME type and BLOB data.
+- `user_settings`: default theme and font settings shared across a user's
+  sessions.
 
-CREATE TABLE panes (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  title TEXT NOT NULL DEFAULT 'Pane',
-  buffer_text TEXT NOT NULL DEFAULT '',
-  cwd TEXT NOT NULL DEFAULT '',
-  position INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
+Numbered files under `migrations/` are the single source of truth for the
+application schema and are embedded into the executable. `internal/store/store.go`
+validates a contiguous sequence, applies each pending migration transactionally,
+and records progress with SQLite `PRAGMA user_version`. Historical one-column
+`ALTER TABLE` migrations allow pre-versioned Tessera databases to adopt columns
+they already contain without duplicating schema definitions in Go.
 
-CREATE TABLE command_runs (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  pane_id TEXT NOT NULL REFERENCES panes(id) ON DELETE CASCADE,
-  command_text TEXT NOT NULL,
-  cwd_before TEXT NOT NULL,
-  cwd_after TEXT NOT NULL DEFAULT '',
-  exit_code INTEGER,
-  started_at TEXT NOT NULL,
-  finished_at TEXT
-);
-```
+### Host Filesystem
 
-`layout_json` stores the split tree. For the MVP it can be a compact JSON object such as:
+Name: Host Filesystem
 
-```json
-{
-  "direction": "row",
-  "children": [
-    { "paneId": "pane-1" },
-    { "paneId": "pane-2" }
-  ]
-}
-```
+Type: Operating-system files and directories
+
+Purpose: User content opened by Text Editor and File Browser panes, executable
+replacement files used by the updater, and the SQLite database itself.
+
+Key Schemas/Collections: N/A. Paths are ordinary host paths and are not imported
+into an application-owned storage hierarchy.
 
 ## External Integrations / APIs
 
-Service Name 1: Local Operating System Shell
-
-Purpose: Runs commands selected by the user in worksheet panes.
-
-Integration Method: Go process execution with stdout and stderr pipes.
+- **Local operating-system shell:** executes worksheet commands through
+  PowerShell or `/bin/sh`.
+- **Local PTY facilities:** provides interactive terminal processes through
+  ConPTY or Unix PTYs.
+- **Host filesystem:** supplies file navigation and mutation capabilities.
+- **Default browser and desktop tray:** opens/configures the local service and
+  controls its lifecycle on desktop platforms.
+- **GitHub Releases API:** supplies version metadata and release binaries for
+  self-update. No GitHub token is currently configured.
 
 ## Deployment & Infrastructure
 
-Cloud Provider: N/A. Tessera MVP is local-only.
+Cloud Provider: N/A. Tessera is a local executable and does not require hosted
+application infrastructure.
 
-Key Services Used: N/A.
+Key Services Used: A local TCP listener, a local SQLite file, host processes,
+and optional GitHub Releases access.
 
-CI/CD Pipeline: N/A for the initial MVP. Add GitHub Actions only after the first executable MVP exists.
+CI/CD Pipeline: `.github/workflows/release.yml` runs on `v*` tags. It builds and
+tests Linux amd64 and Windows amd64 with `CGO_ENABLED=0`, plus macOS Intel and
+ARM with `CGO_ENABLED=1`. The resulting assets are published to one GitHub
+Release and retain the names expected by the self-updater.
 
-Monitoring & Logging: Go standard logger to stderr. Command output belongs in the worksheet transcript, not in application logs, unless debugging is enabled.
+Monitoring & Logging: Go standard logging writes lifecycle and failure messages
+to stderr or the platform process output. Command output belongs to worksheet
+transcripts or terminal streams. There is no centralized telemetry service.
 
 ## Security Considerations
 
-Authentication: None for MVP. The server must bind to `127.0.0.1` by default.
+Authentication: None. Browser-stored user selection and the configured roster
+are convenience mechanisms, not proof of identity.
 
-Authorization: N/A for single-user local operation.
+Authorization: No robust authorization exists yet. User and session ownership
+checks prevent accidental cross-session routing within the configured model,
+but any client that can reach the service can select a configured user and call
+powerful APIs.
 
-Data Encryption: N/A for MVP. SQLite remains a local unencrypted file.
+Data Encryption: SQLite and workspace background BLOBs are not encrypted by
+Tessera. Local HTTP is plaintext. Operating-system storage controls and network
+isolation provide the current protection boundary.
 
 Key Security Tools/Practices:
 
-- Treat command execution as intentionally powerful and local-only.
-- Never listen on public interfaces unless the user explicitly opts in.
-- Include request cancellation so the user can stop long-running commands.
-- Avoid passing commands through nested quoting when possible.
-- Show the working directory clearly before command execution.
+- Bind to `127.0.0.1` by default.
+- Treat `0.0.0.0` or any non-loopback binding as trusted-network-only.
+- Do not expose Tessera directly to the public internet.
+- Treat API reachability as permission to execute commands and access host files
+  with the Tessera process's privileges.
+- Reject cross-origin terminal WebSocket connections. This is defense in depth,
+  not authentication.
+- Scope process teardown by workspace so deleting one session does not terminate
+  another session's work.
+- Avoid running Tessera with operating-system privileges it does not need.
+
+Planned security direction:
+
+1. Introduce real user authentication with secure server-side sessions or
+   equivalent short-lived credentials.
+2. Add robust authorization checks to every workspace, session, settings,
+   filesystem, command, terminal, update, and administrative operation.
+3. Define explicit roles/capabilities and ownership rules instead of inferring
+   access from a client-supplied user or session identifier.
+4. Add CSRF protection and consistent HTTP origin validation for state-changing
+   requests.
+5. Add configurable filesystem roots and command-execution policies for
+   deployments that should not expose the entire host account.
+6. Support TLS through native configuration or a documented trusted reverse
+   proxy deployment.
+7. Record security-relevant actions in an audit log without copying sensitive
+   command output unnecessarily.
 
 ## Development & Testing Environment
 
 Local Setup Instructions:
 
 ```powershell
-go mod init tessera
 go run ./cmd/tessera
+go run ./cmd/tessera -web .\web
+npm install
+npm run build:web
 ```
 
 Testing Frameworks:
 
-- Go `testing` package for store and shell wrapper behavior.
-- Manual browser smoke test for split panes, command streaming, save, and reload.
+- Go `testing` for storage, migrations, sessions, API routing, filesystem
+  operations, command streaming, terminals, desktop lifecycle, and updater
+  behavior.
+- Node's built-in test runner for isolated frontend language-selection logic.
+- Manual or controlled-browser smoke tests for interaction-heavy workspace
+  behavior.
 
 Code Quality Tools:
 
-- `gofmt` for Go files.
-- No frontend build tooling in the MVP.
+```powershell
+gofmt -w <changed-go-files>
+go test ./...
+go vet ./...
+node --check web/app.js
+node --test web/text-editor-language.test.mjs
+```
+
+The release workflow also rebuilds committed frontend bundles with esbuild and
+runs the Go test suite on every target runner.
 
 ## Future Considerations / Roadmap
 
-- First implementation step 1: create `go.mod`, `cmd/tessera/main.go`, app wiring, static file serving, and `GET /api/health`.
-- First implementation step 2: add SQLite store open and migration, then implement default workspace load/save.
-- First implementation step 3: build the vanilla SPA shell with toolbar, two-pane-capable layout renderer, editable worksheet panes, focus tracking, and debounced save.
-- First implementation step 4: implement `POST /api/run` as an NDJSON streaming response from a shell command.
-- First implementation step 5: insert streamed output inline below the command and update the pane cwd on final exit.
-- First implementation step 6: add focused Go tests for store migrations/load/save and a shell runner test using a harmless command.
-- Add command cancellation endpoint after basic streaming works.
-- Replace simple pane layout with resizable split handles.
-- Add named workspaces and workspace picker.
-- Add durable run metadata views only if transcripts alone are insufficient.
-- Add file path affordances such as open file, reveal path, or paste path.
-- Add search across worksheet buffers.
-- Add optional terminal-like process sessions only after stateless command execution proves limiting.
-
-Avoid for MVP:
-
-- IDE project model.
-- Language server integration.
-- Remote multi-user synchronization.
-- Plugin system.
-- Containers or orchestration.
-- Complex terminal emulation.
+- Implement the authentication and robust authorization plan described above
+  before treating Tessera as safe for untrusted or public network access.
+- Split `web/app.js` into direct feature modules for API/persistence, workspace
+  interaction, pane kinds, and overlays as frontend behavior continues to grow.
+- Add focused browser automation for session routing, persistence, pane
+  geometry, fullscreen, Deskbar, terminal attachment, and file-editor flows.
+- Keep applied migration files immutable and append a new numbered SQL file for
+  every future schema change; extend migration tests with each persisted field.
+- Package and sign macOS releases as `.app` bundles; consider platform-native
+  installation and update verification on all desktop targets.
+- Add release checksums or signatures and authenticated GitHub access if private
+  releases must be supported.
+- Keep remote synchronization, plugins, containers, and IDE-scale project models
+  out of scope until the local workspace and security boundaries are stable.
 
 ## Glossary / Acronyms
 
-SPA: Single Page Application.
-
-Pane: A visible workspace region containing one editable worksheet buffer.
-
-Worksheet: Editable text containing notes, commands, paths, and command output together.
-
-Buffer: The persisted text content of a worksheet pane.
-
-Run Current Line/Selection: Execute selected text when present, otherwise execute the line containing the caret.
-
-CWD: Current working directory used when executing commands for a pane.
-
-Transcript: Command and output text preserved inline in the worksheet buffer.
+- **API:** Application Programming Interface exposed by the local Go host.
+- **CGO:** Go interoperability with C; required by the current macOS tray build.
+- **CWD:** Current working directory used by a pane's command or terminal.
+- **NDJSON:** Newline-delimited JSON used to stream command events.
+- **Pane:** A movable workspace window containing a worksheet, terminal, text
+  editor, or file browser.
+- **PTY:** Pseudo-terminal backing an interactive terminal pane.
+- **Session:** A named, persisted desktop owned by one configured user entry.
+- **SPA:** Single-page application served by the Tessera host.
+- **Transcript:** Editable worksheet text containing commands and inserted output.
+- **Trusted environment:** A host and network where every client able to reach
+  Tessera is allowed to exercise Tessera's command and filesystem capabilities.

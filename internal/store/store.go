@@ -5,9 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
+
+	storemigrations "tessera/migrations"
 
 	_ "modernc.org/sqlite"
 )
@@ -16,79 +22,11 @@ type Store struct {
 	db *sql.DB
 }
 
-const initSQL = `
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS workspaces (
-  id TEXT PRIMARY KEY,
-  owner_id TEXT NOT NULL DEFAULT '',
-  name TEXT NOT NULL,
-  active_pane_id TEXT NOT NULL DEFAULT '',
-  layout_json TEXT NOT NULL DEFAULT '{}',
-  background_mode TEXT NOT NULL DEFAULT 'fill',
-  default_pane_font_size INTEGER NOT NULL DEFAULT 14,
-  default_theme TEXT NOT NULL DEFAULT 'next-tessera',
-  theme_id TEXT NOT NULL DEFAULT 'next-tessera',
-  last_opened_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS panes (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL DEFAULT 'worksheet',
-  title TEXT NOT NULL DEFAULT 'Pane',
-  buffer_text TEXT NOT NULL DEFAULT '',
-  editor_mode TEXT NOT NULL DEFAULT '',
-  font_size INTEGER NOT NULL DEFAULT 14,
-  cwd TEXT NOT NULL DEFAULT '',
-  last_export_path TEXT NOT NULL DEFAULT '',
-  file_browser_sidebar_width INTEGER NOT NULL DEFAULT 200,
-  is_full INTEGER NOT NULL DEFAULT 0,
-  restore_box TEXT NOT NULL DEFAULT '',
-  minimized INTEGER NOT NULL DEFAULT 0,
-  x INTEGER NOT NULL DEFAULT 80,
-  y INTEGER NOT NULL DEFAULT 80,
-  width INTEGER NOT NULL DEFAULT 360,
-  height INTEGER NOT NULL DEFAULT 240,
-  z_index INTEGER NOT NULL DEFAULT 0,
-  position INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS command_runs (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  pane_id TEXT NOT NULL REFERENCES panes(id) ON DELETE CASCADE,
-  command_text TEXT NOT NULL,
-  cwd_before TEXT NOT NULL,
-  cwd_after TEXT NOT NULL DEFAULT '',
-  exit_code INTEGER,
-  started_at TEXT NOT NULL,
-  finished_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS workspace_backgrounds (
-  workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
-  mime_type TEXT NOT NULL,
-  image BLOB NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS user_settings (
-  user_id TEXT PRIMARY KEY,
-  default_pane_font_size INTEGER NOT NULL DEFAULT 14,
-  default_theme TEXT NOT NULL DEFAULT 'next-tessera',
-  theme_id TEXT NOT NULL DEFAULT 'next-tessera',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_panes_workspace_position ON panes(workspace_id, position);
-CREATE INDEX IF NOT EXISTS idx_command_runs_workspace_started ON command_runs(workspace_id, started_at);
-`
+type migration struct {
+	version int
+	name    string
+	sql     string
+}
 
 func Open(ctx context.Context, path string) (*Store, error) {
 	if path == "" {
@@ -128,118 +66,159 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;"); err != nil {
 		return fmt.Errorf("configure sqlite: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, initSQL); err != nil {
-		return fmt.Errorf("migrate sqlite: %w", err)
-	}
-	if err := s.ensurePaneGeometryColumns(ctx); err != nil {
-		return err
-	}
-	if err := s.ensureWorkspaceColumns(ctx); err != nil {
-		return err
-	}
-	return nil
-}
 
-func (s *Store) ensureWorkspaceColumns(ctx context.Context) error {
-	columns, err := s.tableColumns(ctx, "workspaces")
+	migrations, err := loadMigrations()
 	if err != nil {
 		return err
 	}
-	hadOwnerID := columns["owner_id"]
-	additions := map[string]string{
-		"owner_id":               "ALTER TABLE workspaces ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''",
-		"last_opened_at":         "ALTER TABLE workspaces ADD COLUMN last_opened_at TEXT NOT NULL DEFAULT ''",
-		"background_mode":        "ALTER TABLE workspaces ADD COLUMN background_mode TEXT NOT NULL DEFAULT 'fill'",
-		"default_pane_font_size": "ALTER TABLE workspaces ADD COLUMN default_pane_font_size INTEGER NOT NULL DEFAULT 14",
-		"default_theme":          "ALTER TABLE workspaces ADD COLUMN default_theme TEXT NOT NULL DEFAULT 'next-tessera'",
-		"theme_id":               "ALTER TABLE workspaces ADD COLUMN theme_id TEXT NOT NULL DEFAULT 'next-tessera'",
+	currentVersion, err := s.userVersion(ctx)
+	if err != nil {
+		return err
 	}
-	for name, statement := range additions {
-		if columns[name] {
+	latestVersion := migrations[len(migrations)-1].version
+	if currentVersion > latestVersion {
+		return fmt.Errorf("database migration version %d is newer than supported version %d", currentVersion, latestVersion)
+	}
+
+	hasLegacySchema, err := s.tableExists(ctx, "workspaces")
+	if err != nil {
+		return err
+	}
+	adoptingLegacySchema := currentVersion == 0 && hasLegacySchema
+
+	for _, migration := range migrations {
+		if migration.version <= currentVersion {
 			continue
 		}
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("add workspaces.%s column: %w", name, err)
+		if err := s.applyMigration(ctx, migration); err != nil {
+			if !adoptingLegacySchema || !isAdoptableDuplicateColumn(migration, err) {
+				return fmt.Errorf("apply migration %s: %w", migration.name, err)
+			}
+			// Pre-versioned databases may already contain this one-column ALTER.
+			// Every ALTER migration contains exactly one statement, so recording a
+			// duplicate as adopted cannot hide a partially applied migration file.
+			if err := s.recordMigrationVersion(ctx, migration.version); err != nil {
+				return fmt.Errorf("adopt migration %s: %w", migration.name, err)
+			}
 		}
-	}
-	if !hadOwnerID {
-		if _, err := s.db.ExecContext(ctx, `
-UPDATE workspaces
-SET owner_id = id,
-    name = 'Default',
-    last_opened_at = CASE WHEN last_opened_at = '' THEN updated_at ELSE last_opened_at END`); err != nil {
-			return fmt.Errorf("migrate legacy workspaces to sessions: %w", err)
-		}
-		if _, err := s.db.ExecContext(ctx, `
-INSERT OR IGNORE INTO user_settings (user_id, default_pane_font_size, default_theme, theme_id, created_at, updated_at)
-SELECT owner_id, default_pane_font_size, default_theme, theme_id, created_at, updated_at
-FROM workspaces`); err != nil {
-			return fmt.Errorf("migrate workspace settings to users: %w", err)
-		}
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_owner_name ON workspaces(owner_id, name COLLATE NOCASE)`); err != nil {
-		return fmt.Errorf("index workspace session names: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_workspaces_owner_opened ON workspaces(owner_id, last_opened_at DESC)`); err != nil {
-		return fmt.Errorf("index workspace sessions by recent use: %w", err)
+		currentVersion = migration.version
 	}
 	return nil
 }
 
-func (s *Store) ensurePaneGeometryColumns(ctx context.Context) error {
-	columns, err := s.tableColumns(ctx, "panes")
+func loadMigrations() ([]migration, error) {
+	entries, err := fs.ReadDir(storemigrations.Files, ".")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded migrations: %w", err)
+	}
+	var migrations []migration
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".sql" {
+			continue
+		}
+		prefix, _, ok := strings.Cut(entry.Name(), "_")
+		if !ok {
+			return nil, fmt.Errorf("migration %q must start with a numeric version and underscore", entry.Name())
+		}
+		version, err := strconv.Atoi(prefix)
+		if err != nil || version < 1 {
+			return nil, fmt.Errorf("migration %q has invalid version", entry.Name())
+		}
+		sqlBytes, err := fs.ReadFile(storemigrations.Files, entry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("read migration %s: %w", entry.Name(), err)
+		}
+		migrations = append(migrations, migration{
+			version: version,
+			name:    entry.Name(),
+			sql:     string(sqlBytes),
+		})
+	}
+
+	sort.Slice(migrations, func(i, j int) bool {
+		return migrations[i].version < migrations[j].version
+	})
+	if err := validateMigrationSequence(migrations); err != nil {
+		return nil, err
+	}
+	return migrations, nil
+}
+
+func validateMigrationSequence(migrations []migration) error {
+	if len(migrations) == 0 {
+		return errors.New("no embedded migrations found")
+	}
+	for index, migration := range migrations {
+		expected := index + 1
+		if migration.version != expected {
+			return fmt.Errorf("migration sequence has version %d at position %d; want %d", migration.version, index, expected)
+		}
+	}
+	return nil
+}
+
+func (s *Store) applyMigration(ctx context.Context, migration migration) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	additions := map[string]string{
-		"kind":                       "ALTER TABLE panes ADD COLUMN kind TEXT NOT NULL DEFAULT 'worksheet'",
-		"x":                          "ALTER TABLE panes ADD COLUMN x INTEGER NOT NULL DEFAULT 80",
-		"y":                          "ALTER TABLE panes ADD COLUMN y INTEGER NOT NULL DEFAULT 80",
-		"width":                      "ALTER TABLE panes ADD COLUMN width INTEGER NOT NULL DEFAULT 360",
-		"height":                     "ALTER TABLE panes ADD COLUMN height INTEGER NOT NULL DEFAULT 240",
-		"z_index":                    "ALTER TABLE panes ADD COLUMN z_index INTEGER NOT NULL DEFAULT 0",
-		"last_export_path":           "ALTER TABLE panes ADD COLUMN last_export_path TEXT NOT NULL DEFAULT ''",
-		"file_browser_sidebar_width": "ALTER TABLE panes ADD COLUMN file_browser_sidebar_width INTEGER NOT NULL DEFAULT 200",
-		"is_full":                    "ALTER TABLE panes ADD COLUMN is_full INTEGER NOT NULL DEFAULT 0",
-		"restore_box":                "ALTER TABLE panes ADD COLUMN restore_box TEXT NOT NULL DEFAULT ''",
-		"editor_mode":                "ALTER TABLE panes ADD COLUMN editor_mode TEXT NOT NULL DEFAULT ''",
-		"font_size":                  "ALTER TABLE panes ADD COLUMN font_size INTEGER NOT NULL DEFAULT 14",
-		"minimized":                  "ALTER TABLE panes ADD COLUMN minimized INTEGER NOT NULL DEFAULT 0",
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, migration.sql); err != nil {
+		return err
 	}
-	for name, statement := range additions {
-		if columns[name] {
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("add panes.%s column: %w", name, err)
-		}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", migration.version)); err != nil {
+		return err
 	}
-	return nil
+	return tx.Commit()
 }
 
-func (s *Store) tableColumns(ctx context.Context, table string) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+func (s *Store) recordMigrationVersion(ctx context.Context, version int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("inspect %s columns: %w", table, err)
+		return err
 	}
-	defer rows.Close()
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
-	columns := make(map[string]bool)
-	for rows.Next() {
-		var cid int
-		var name, columnType string
-		var notNull int
-		var defaultValue sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			return nil, fmt.Errorf("scan %s column: %w", table, err)
+func (s *Store) userVersion(ctx context.Context) (int, error) {
+	var version int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return 0, fmt.Errorf("read database migration version: %w", err)
+	}
+	return version, nil
+}
+
+func (s *Store) tableExists(ctx context.Context, table string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM sqlite_master
+  WHERE type = 'table' AND name = ?
+)`, table).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	return exists != 0, nil
+}
+
+func isAdoptableDuplicateColumn(migration migration, err error) bool {
+	if !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return false
+	}
+	statements := strings.Split(migration.sql, ";")
+	var nonEmpty []string
+	for _, statement := range statements {
+		if statement = strings.TrimSpace(statement); statement != "" {
+			nonEmpty = append(nonEmpty, statement)
 		}
-		columns[name] = true
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate %s columns: %w", table, err)
-	}
-	return columns, nil
+	return len(nonEmpty) == 1 && strings.HasPrefix(strings.ToUpper(nonEmpty[0]), "ALTER TABLE ")
 }
 
 func nowText() string {

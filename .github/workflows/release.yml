@@ -13,19 +13,27 @@ jobs:
     strategy:
       matrix:
         include:
-          - goos: linux
+          - runner: ubuntu-latest
+            goos: linux
             goarch: amd64
+            cgo: "0"
             ext: ""
-          - goos: darwin
+          - runner: macos-15-intel
+            goos: darwin
             goarch: amd64
+            cgo: "1"
             ext: ""
-          - goos: darwin
+          - runner: macos-15
+            goos: darwin
             goarch: arm64
+            cgo: "1"
             ext: ""
-          - goos: windows
+          - runner: windows-latest
+            goos: windows
             goarch: amd64
+            cgo: "0"
             ext: ".exe"
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,19 +49,22 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Test
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: go test ./...
+
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: |
-          mkdir -p dist
-          go build -ldflags "-s -w -X tessera/internal/version.Version=${GITHUB_REF_NAME}" -o dist/tessera-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/tessera
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: go build -ldflags "-s -w -X tessera/internal/version.Version=${{ github.ref_name }}" -o tessera-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/tessera
 
       - uses: actions/upload-artifact@v4
         with:
           name: tessera-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*
+          path: tessera-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
 
   release:
     needs: build

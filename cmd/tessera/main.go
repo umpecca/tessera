@@ -4,13 +4,13 @@ import (
 	"context"
 	"flag"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
+	"tessera/internal/desktop"
 	"tessera/internal/server"
 	"tessera/internal/update"
 )
@@ -25,9 +25,14 @@ func main() {
 	dbPath := flag.String("db", server.DefaultDBPath(), "SQLite database path")
 	webDir := flag.String("web", "", "serve the SPA from this directory instead of embedded assets")
 	usersFlag := flag.String("users", "", "comma-separated user roster; enables the user selection screen and a separate workspace per user")
+	tray := flag.Bool("tray", desktop.TraySupported(), "show Start, Stop, Configure, and Exit controls in the system tray")
 	flag.Parse()
 
 	users := parseUsers(*usersFlag)
+	useTray := *tray && desktop.TraySupported()
+	if *tray && !desktop.TraySupported() {
+		log.Printf("system tray is not supported on this platform; continuing without it")
+	}
 
 	updater, err := update.New(updateRepo)
 	if err != nil {
@@ -36,18 +41,18 @@ func main() {
 		updater.CleanupOld()
 	}
 
-	srv, err := server.Start(context.Background(), server.Options{
+	controller := desktop.NewController(server.Options{
 		Addr:    *addr,
 		DBPath:  *dbPath,
 		WebDir:  *webDir,
 		Users:   users,
 		Updater: updater,
 	})
-	if err != nil {
+	if err := controller.Start(context.Background()); err != nil {
 		log.Fatalf("start server: %v", err)
 	}
 
-	log.Printf("Tessera listening at %s", srv.URL)
+	log.Printf("Tessera listening at %s", controller.URL())
 	log.Printf("SQLite database: %s", *dbPath)
 	if len(users) > 0 {
 		log.Printf("Multi-user mode: %s", strings.Join(users, ", "))
@@ -55,31 +60,42 @@ func main() {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	restart := false
+	exitTray := make(chan struct{}, 1)
+	type shutdownReason bool
+	const restartForUpdate shutdownReason = true
+	shutdown := make(chan shutdownReason, 1)
 	var restartCh <-chan struct{}
 	if updater != nil {
 		restartCh = updater.RestartRequested()
 	}
 
-	select {
-	case <-stop:
-	case <-restartCh:
-		restart = true
-		log.Printf("restarting for update")
-	case err := <-srv.ServeErr():
-		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server failed: %v", err)
+	go func() {
+		select {
+		case <-stop:
+			shutdown <- false
+		case <-restartCh:
+			log.Printf("restarting for update")
+			shutdown <- restartForUpdate
+		case <-exitTray:
+			shutdown <- false
 		}
+		if useTray {
+			desktop.QuitTray()
+		}
+	}()
+
+	if useTray {
+		desktop.RunTray(controller, func() { exitTray <- struct{}{} })
 	}
+	restart := <-shutdown
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if err := controller.Stop(shutdownCtx); err != nil {
 		log.Printf("server shutdown: %v", err)
 	}
 
-	if restart {
+	if bool(restart) {
 		if err := updater.SpawnReplacement(); err != nil {
 			log.Fatalf("spawn updated executable: %v", err)
 		}

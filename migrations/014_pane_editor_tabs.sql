@@ -1,0 +1,1 @@
+ALTER TABLE panes ADD COLUMN editor_tabs TEXT NOT NULL DEFAULT '';

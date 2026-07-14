@@ -1,12 +1,44 @@
 # Tessera
 
-Tessera is being built in small steps toward a local, text-first computer workspace. The current first screen is a blank browser workspace where rectangles can be drawn, moved, and resized with the mouse.
+Tessera is a local-first, text-first computer workspace. A Go host serves an
+embedded browser application, persists desktops in SQLite, and provides local
+shell, terminal, and filesystem capabilities. The interface uses movable,
+resizable panes with BeOS-inspired window chrome and a Deskbar.
 
-## Run (web server)
+See [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries, data flow,
+deployment details, and the security roadmap.
+
+## Security and trusted-environment status
+
+Tessera is currently intended for use by one operator or a small group in a
+trusted environment. It does not yet provide authentication or robust
+authorization.
+
+This is an important operational boundary:
+
+- The `-users` roster and named sessions separate workspace state; they do not
+  verify identity or prevent one connected user from selecting another user.
+- The HTTP API can execute shell commands and read, write, copy, move, or
+  delete files available to the Tessera process.
+- The default listener is `127.0.0.1`, which limits access to the host machine.
+- Binding to `0.0.0.0` exposes Tessera to the network. Do this only on a
+  trusted, appropriately isolated network whose users are allowed to control
+  the host machine.
+- Tessera does not currently terminate TLS. Do not expose it directly to the
+  public internet.
+
+Future security work is expected to add real authentication, robust
+authorization for users, sessions, files, commands, and administrative
+operations, request-forgery protection, and an auditable access model. Until
+that work exists, network reachability should be treated as trusted access to
+the host.
+
+## Run
+
+Run from the repository root:
 
 ```powershell
 go run ./cmd/tessera
-go run ./cmd/tessera -addr 0.0.0.0:7331
 ```
 
 Then open:
@@ -15,72 +47,169 @@ Then open:
 http://127.0.0.1:7331
 ```
 
-The SPA is embedded in the binary, so the server runs from any directory.
-`npm install` and `npm run build:web` are only needed when the frontend
-dependencies change (the bundles in `web/vendor/` are committed).
+The SPA is embedded in the binary, so a built executable can run from any
+directory. During frontend development, serve the working `web/` directory:
 
-### Install on an iPad (home screen)
-
-Tessera ships a web app manifest and icons, so it installs as a standalone
-app. Start the server bound to your LAN (`-addr 0.0.0.0:7331`), open the
-machine's address (e.g. `http://192.168.1.20:7331`) in **Safari** on the iPad,
-then **Share → Add to Home Screen**. Launching from the home screen opens it
-full-screen with no browser chrome. The bottom-right command button replaces
-right-click on touch, and the compact bottom-right window button opens the
-Deskbar; drag to draw panes, tap the tab grip for pane actions, and double-tap
-a title tab to minimize it.
+```powershell
+go run ./cmd/tessera -web .\web
+```
 
 Useful flags:
 
-```powershell
-go run ./cmd/tessera -addr 127.0.0.1:7331 -db .\tessera.sqlite3 -web .\web
+```text
+-addr string    listen address (default 127.0.0.1:7331)
+-db string      SQLite database path
+-tray bool      enable native tray controls when supported
+-users string   comma-separated local workspace roster
+-web string     serve SPA assets from a directory instead of the embedded copy
 ```
 
-`-web .\web` serves the SPA from disk instead of the embedded copy, so
-frontend edits show up on reload during development (run from the repo root).
+For example:
 
-### Multi-user mode
+```powershell
+go run ./cmd/tessera -addr 127.0.0.1:7331 -db .\tessera.sqlite3 -web .\web
+go run ./cmd/tessera -users alice,bob,carol
+```
 
-Pass `-users` with a comma-separated roster to turn on a user selection screen,
-where each user gets a separate set of named desktop sessions:
+## Workspace model
+
+Tessera presents a full-window desktop where panes can overlap and retain
+their geometry, z-order, title, working directory, font size, and content.
+
+Current pane types:
+
+- **Worksheet:** a CodeMirror-backed editable command worksheet. Run the
+  selection or current line with `Ctrl+Enter`/`Cmd+Enter`; streamed output is
+  inserted as editable text below the command.
+- **Terminal:** a persistent PTY terminal using ConPTY on Windows and a Unix
+  PTY on macOS/Linux. Terminal sessions retain bounded scrollback while the
+  server process remains alive.
+- **Text Editor:** a file-oriented CodeMirror editor with tabs, save/save-as,
+  per-tab state, and syntax highlighting for supported file extensions.
+- **File Browser:** host filesystem navigation with open, copy, move, paste,
+  and delete operations. Supported text files open in a Text Editor pane.
+
+Workspace behavior includes:
+
+- Drag empty space to create a pane; move and resize panes directly.
+- Hold `Shift` while drawing or resizing to constrain to a square.
+- Minimize, maximize, restore, dock, rename, and destroy panes.
+- Use the Deskbar to list, focus, and restore open panes.
+- Use `Ctrl+K`/`Cmd+K` to search commands, pane types, sessions, themes, and
+  open windows.
+- Cycle active panes with `Ctrl+]` and `Ctrl+[`.
+- Choose a theme, default pane font size, and per-session background image.
+- Persist the active pane and complete workspace document to SQLite.
+
+## Users and named sessions
+
+Without `-users`, Tessera creates named sessions for a synthetic `default`
+user. With `-users`, the first screen presents the configured roster:
 
 ```powershell
 go run ./cmd/tessera -users alice,bob,carol
 ```
 
-The first screen then lists the users; picking one loads that user's most recent
-session. **Sessions** in the command palette, deskbar, or workspace menu opens a
-keyboard-accessible manager for creating, renaming, switching, and destroying
-desktops. Each session has its own windows, background, and running processes;
-theme and default font settings are shared by the user. Session URLs are stable
-and browser Back/Forward switches between them. The user choice is remembered per
-browser. Without the flag, Tessera uses the same session model for one `default`
-user.
-Authentication is intentionally out of scope — this is workspace separation, not
-access control.
+Each user can create, rename, switch, and delete named desktop sessions.
+Sessions have stable routes of the form:
 
-## MVP
+```text
+/users/{user}/sessions/{session}
+```
 
-- Blank full-window workspace.
-- Drag empty space to draw a rectangle.
-- Drag a rectangle to move it.
-- Drag a selected rectangle's corner handles to resize it.
-- Hold `Shift` while drawing or resizing to constrain to a square.
-- Each rectangle has an attached BeOS-like top tab with a transparent editable title field.
-- Type directly inside a rectangle to use it as a CodeMirror-backed text workspace.
-- Click or arrow into empty editor space to materialize free-cursor whitespace.
-- Press `Ctrl+Enter`/`Cmd+Enter`, or right-click the editor and choose Run, to run the selected text or current line through the Go shell and insert output below it.
-- Transcript insertion is plain text: commands remain editable, stdout and stderr insert below at the command's indentation with no prompt prefix, and `[exit N]` appears only when there is no command output or the exit code is nonzero.
-- Each pane has a small `cwd` status field; click it to browse for a directory, and commands such as `cd ..` update it after execution.
-- Terminal, worksheet, and text-editor panes each have `A−` / `A+` controls in their status strip; their font size saves with the pane and restores on reload.
-- Right-click inside a rectangle's editor to copy, cut, or paste selected text.
-- Clicking a rectangle brings it above overlapping rectangles.
-- The active pane is explicit, saves to SQLite, restores on refresh, and can be cycled with `Ctrl+]` / `Ctrl+[`.
-- Minimize removes a pane from the canvas without stopping it; the compact bottom-right Deskbar lists every open pane and restores minimized panes in place. Double-click a title tab to minimize it.
-- Right-click the top-left tab grip to dock, restore, or destroy a rectangle.
-- Pane geometry, z-order, title, and text save to SQLite and reload on refresh.
-- Right-click empty space to switch themes or set a custom background image; the image is stored in SQLite per workspace (per user in multi-user mode) and reloads on refresh.
-- The bottom-right window button opens a BeOS Deskbar-style live window list; minimized panes are dimmed there and restore on selection.
-- The Deskbar's `Settings...` panel separates default font/theme choices from the current pane font and currently applied theme.
-- Tessera uses the local Swiss721 font files in `web/assets` as the default UI, editor, and terminal font.
-- `Ctrl+K`/`Cmd+K` (or "Command Palette" in any workspace menu) opens a fuzzy-searchable palette over every action — new panes, themes, background, user switching, and jump-to-window.
+Browser Back/Forward switches session routes. Each session owns its panes,
+background, running commands, and terminals; theme and default font settings
+are shared at the user level. Destroying a session stops only that session's
+running commands and terminals, and the final session cannot be deleted.
+
+The selected user is remembered in browser storage. This is convenience and
+state separation only, not authentication or authorization.
+
+## Desktop and platform behavior
+
+On Windows and macOS, Tessera normally adds a notification-area icon. Its menu
+can start and stop the local server, open Tessera in the default browser, or
+exit cleanly. Pass `-tray=false` for server-only/headless use.
+
+Linux releases run server-only without a tray, keeping the executable CGO-free
+and avoiding GTK/AppIndicator dependencies. macOS tray builds use CGO. Windows
+tray builds remain CGO-free and may use `-ldflags=-H=windowsgui` to hide the
+console window.
+
+### macOS notes
+
+For an unsigned downloaded binary:
+
+```bash
+chmod +x /path/to/tessera
+xattr -d com.apple.quarantine /path/to/tessera
+```
+
+If filesystem access prompts stall the host process, grant Full Disk Access to
+the process that launches Tessera, such as Terminal, iTerm2, or the packaged
+Tessera application. A future `.app` bundle and signing flow should provide a
+more conventional macOS installation.
+
+## Access from an iPad or another device
+
+Tessera includes a web app manifest and touch-oriented workspace controls. To
+reach it from an iPad on the same network, bind the server to the LAN:
+
+```powershell
+go run ./cmd/tessera -addr 0.0.0.0:7331
+```
+
+Open `http://<host-address>:7331` in Safari and use **Share > Add to Home
+Screen** for standalone display. The command button provides touch access to
+context actions, and the window button opens the Deskbar.
+
+Only use LAN binding in the trusted-environment model described above. Any
+device that can reach the service should currently be treated as having the
+ability to operate Tessera and, through Tessera, the host machine.
+
+## Development and testing
+
+Frontend dependencies are bundled with esbuild and committed under
+`web/vendor/`:
+
+```powershell
+npm install
+npm run build:web
+```
+
+Routine checks:
+
+```powershell
+go test ./...
+go vet ./...
+node --check web/app.js
+node --test web/text-editor-language.test.mjs
+```
+
+The Go tests cover store migrations and persistence, session lifecycle,
+workspace isolation, command streaming, terminals, file operations, desktop
+server control, and update behavior. Browser-visible interaction changes still
+require focused browser smoke testing.
+
+Database schema changes belong in the next contiguous numbered SQL file under
+`migrations/`. Those files are embedded into the executable and applied in
+order using SQLite `PRAGMA user_version`. Treat applied migration files as
+immutable; append a new migration instead of editing an existing one.
+
+## Releases and self-update
+
+Pushing a `v*` tag runs the GitHub Actions release workflow and publishes:
+
+- `tessera-linux-amd64`
+- `tessera-windows-amd64.exe`
+- `tessera-darwin-amd64`
+- `tessera-darwin-arm64`
+
+Linux and Windows builds use `CGO_ENABLED=0`. macOS Intel and ARM builds run on
+native macOS runners with `CGO_ENABLED=1` for tray support.
+
+The in-app updater checks the latest GitHub Release, downloads the asset that
+matches the current operating system and architecture, swaps the executable,
+and restarts Tessera. The current updater uses anonymous GitHub Releases API
+access, so the repository and release assets must be reachable without private
+repository credentials.

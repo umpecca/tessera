@@ -1,0 +1,1 @@
+ALTER TABLE panes ADD COLUMN last_export_path TEXT NOT NULL DEFAULT '';

@@ -35,6 +35,7 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 		FontSize:       18,
 		Cwd:            defaultCwd,
 		LastExportPath: filepath.Join(defaultCwd, "first.txt"),
+		EditorTabs:     `{"active":0,"tabs":[{"path":"first.txt","text":"pwd\noutput\n"}]}`,
 		Minimized:      true,
 		X:              11,
 		Y:              22,
@@ -84,6 +85,9 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	}
 	if loaded.Panes[0].LastExportPath != filepath.Join(defaultCwd, "first.txt") {
 		t.Fatalf("first pane last export path = %q", loaded.Panes[0].LastExportPath)
+	}
+	if loaded.Panes[0].EditorTabs == "" {
+		t.Fatal("first pane editor tabs were not persisted")
 	}
 	if loaded.Panes[0].EditorMode != "normal" {
 		t.Fatalf("first pane editor mode = %q, want normal", loaded.Panes[0].EditorMode)

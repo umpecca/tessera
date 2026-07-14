@@ -6,7 +6,21 @@ import {
   Prec,
   Transaction,
   keymap,
-} from "./vendor/codemirror.js?v=run-fixes-4";
+  css,
+  cpp,
+  go,
+  html,
+  java,
+  javascript,
+  markdown,
+  php,
+  python,
+  rust,
+  sql,
+  xml,
+  yaml,
+} from "./vendor/codemirror.js?v=syntax-highlighting-1";
+import { textEditorLanguageID } from "./text-editor-language.mjs";
 
 const board = document.querySelector("#board");
 const tabHeight = 24;
@@ -42,6 +56,10 @@ let sessions = [];
 let currentSessionID = "";
 let currentSessionName = "";
 let sessionSelection = 0;
+let sessionQuery = "";
+let sessionEntries = [];
+let sessionsSearchInput = null;
+let sessionsList = null;
 let sessionNavigationPending = false;
 let workspaceHasBackground = false;
 let workspaceBackgroundVersion = "";
@@ -186,6 +204,9 @@ function setDefaultPaneFontSize(fontSize) {
 
 function applyTheme(id, { save = true } = {}) {
   themeID = themes[id] ? id : defaultThemeID;
+  if (themeID !== "oled-terminal") {
+    rectangles.forEach((rect) => setOLEDMoveMode(rect, false));
+  }
   document.documentElement.dataset.theme = themeID;
   reflowDockedPanesForTheme();
   if (save) {
@@ -592,6 +613,89 @@ const textEditorFileExtensions = new Set([
   ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".psd1", ".bat", ".cmd",
 ]);
 
+function textEditorLanguageExtension(path) {
+  switch (textEditorLanguageID(path)) {
+    case "markdown": return markdown();
+    case "json": return javascript({ json: true });
+    case "xml": return xml();
+    case "yaml": return yaml();
+    case "html": return html();
+    case "css": return css();
+    case "javascript": return javascript();
+    case "jsx": return javascript({ jsx: true });
+    case "typescript": return javascript({ typescript: true });
+    case "tsx": return javascript({ typescript: true, jsx: true });
+    case "go": return go();
+    case "python": return python();
+    case "php": return php();
+    case "java": return java();
+    case "cpp": return cpp();
+    case "rust": return rust();
+    case "sql": return sql();
+    default: return null;
+  }
+}
+
+function newTextEditorTab(path = "", text = "") {
+  return { id: newPaneID(), path, text, selection: 0 };
+}
+
+function parseTextEditorTabs(rawTabs, fallbackPath, fallbackText) {
+  try {
+    const saved = typeof rawTabs === "string" ? JSON.parse(rawTabs) : rawTabs;
+    const tabs = Array.isArray(saved?.tabs) ? saved.tabs
+      .filter((tab) => tab && typeof tab === "object")
+      .map((tab) => ({
+        id: typeof tab.id === "string" && tab.id ? tab.id : newPaneID(),
+        path: typeof tab.path === "string" ? tab.path : "",
+        text: typeof tab.text === "string" ? tab.text : "",
+        selection: Number.isInteger(tab.selection) ? Math.max(0, tab.selection) : 0,
+      })) : [];
+    if (tabs.length > 0) {
+      return { tabs, active: Math.max(0, Math.min(Number(saved.active) || 0, tabs.length - 1)) };
+    }
+  } catch {
+    // Older panes have no tab document; fall back to their single saved file.
+  }
+  return { tabs: [newTextEditorTab(fallbackPath, fallbackText)], active: 0 };
+}
+
+function activeTextEditorTab(rect) {
+  return rect.textEditorTabs?.[rect.activeTextEditorTab] || null;
+}
+
+function syncActiveTextEditorTab(rect) {
+  const tab = activeTextEditorTab(rect);
+  if (!tab) {
+    return;
+  }
+  rect.text = tab.text;
+  rect.lastExportPath = tab.path;
+}
+
+function rememberActiveTextEditorTab(rect) {
+  const tab = activeTextEditorTab(rect);
+  if (!tab || !rect.editor) {
+    return;
+  }
+  tab.text = rect.editor.state.doc.toString();
+  tab.selection = rect.editor.state.selection.main.head;
+  rect.text = tab.text;
+}
+
+function serializedTextEditorTabs(rect) {
+  rememberActiveTextEditorTab(rect);
+  return JSON.stringify({
+    active: rect.activeTextEditorTab,
+    tabs: rect.textEditorTabs.map((tab) => ({
+      id: tab.id,
+      path: tab.path,
+      text: tab.text,
+      selection: tab.selection,
+    })),
+  });
+}
+
 const freeCursorExtension = Prec.highest([
   keymap.of([
     { key: "ArrowUp", run: (view) => moveFreeCursorVertically(view, -1), preventDefault: true },
@@ -883,6 +987,10 @@ function startMoving(event, rect) {
 }
 
 function startResizing(event, rect, handle) {
+  if (themeID === "oled-terminal" && rect.oledMoveMode && event.button === 0) {
+    startMoving(event, rect);
+    return;
+  }
   if (event.button !== 0) {
     return;
   }
@@ -903,6 +1011,22 @@ function startResizing(event, rect, handle) {
     original: { ...rect },
   };
   rect.element.setPointerCapture(event.pointerId);
+}
+
+function setOLEDMoveMode(rect, enabled) {
+  if (!rect) {
+    return;
+  }
+  if (enabled) {
+    for (const other of rectangles) {
+      if (other !== rect && other.oledMoveMode) {
+        other.oledMoveMode = false;
+        other.element.dataset.oledMoveMode = "false";
+      }
+    }
+  }
+  rect.oledMoveMode = Boolean(enabled);
+  rect.element.dataset.oledMoveMode = rect.oledMoveMode ? "true" : "false";
 }
 
 function continueInteraction(event) {
@@ -958,6 +1082,10 @@ function finishInteraction(event) {
     return;
   }
 
+  if (finishedInteraction.type === "move") {
+    setOLEDMoveMode(finishedInteraction.rect, false);
+  }
+
 }
 
 function createRectangle(x, y, width, height, options = {}) {
@@ -986,6 +1114,10 @@ function createRectangle(x, y, width, height, options = {}) {
     fontSize: normalizePaneFontSize(options.fontSize),
     cwd: options.cwd || "",
     lastExportPath: options.lastExportPath || "",
+    textEditorTabs: [],
+    activeTextEditorTab: 0,
+    textEditorTabBar: null,
+    oledMoveMode: false,
     fileBrowserSidebarWidth: normalizeFileBrowserSidebarWidth(options.fileBrowserSidebarWidth),
     running: false,
     runID: "",
@@ -1007,8 +1139,15 @@ function createRectangle(x, y, width, height, options = {}) {
     minButton: null,
     maxButton: null,
   };
+  if (rect.kind === textEditorPaneKind) {
+    const tabState = parseTextEditorTabs(options.editorTabs, rect.lastExportPath, rect.text);
+    rect.textEditorTabs = tabState.tabs;
+    rect.activeTextEditorTab = tabState.active;
+    syncActiveTextEditorTab(rect);
+  }
   element.dataset.paneId = rect.id;
   element.dataset.paneKind = rect.kind;
+  element.dataset.oledMoveMode = "false";
   element.style.setProperty("--pane-editor-font-size", `${rect.fontSize}px`);
   element.style.setProperty("--file-browser-sidebar-width", `${rect.fileBrowserSidebarWidth}px`);
   element.classList.toggle("is-full", rect.isFull);
@@ -1236,11 +1375,10 @@ function createRectangle(x, y, width, height, options = {}) {
   body.addEventListener("pointerdown", () => {
     hideFloatingMenus();
   }, { capture: true });
-  // OLED Terminal hides the title tab, so keep pane movement available without
-  // adding visible chrome. Capture the modified gesture before terminal mouse
-  // reporting or editor selection handles the pointer event.
+  // A right-click on an OLED border arms this explicit move mode. Keep it
+  // ahead of terminal mouse reporting and editor selection handling.
   body.addEventListener("pointerdown", (event) => {
-    if (themeID === "oled-terminal" && event.altKey && event.button === 0) {
+    if (themeID === "oled-terminal" && rect.oledMoveMode && event.button === 0) {
       startMoving(event, rect);
     }
   }, { capture: true });
@@ -1312,6 +1450,15 @@ function createRectangle(x, y, width, height, options = {}) {
     const node = document.createElement("div");
     node.className = kind === "edge" ? `resize-edge resize-edge-${handle}` : `resize-handle handle-${handle}`;
     node.addEventListener("pointerdown", (event) => startResizing(event, rect, handle));
+    node.addEventListener("contextmenu", (event) => {
+      if (themeID !== "oled-terminal") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setActivePane(rect, { raise: true });
+      setOLEDMoveMode(rect, !rect.oledMoveMode);
+    });
     element.appendChild(node);
   }
 
@@ -1884,16 +2031,35 @@ function mountWorksheetEditor(rect) {
   updateWorksheetEditorModeUI(rect);
 }
 
-function mountTextEditor(rect) {
+function mountTextEditor(rect, options = {}) {
   if (!rect?.body) {
     return;
   }
+  const currentTab = activeTextEditorTab(rect);
+  const previousSelection = options.selection ?? (rect.editor?.state.selection || EditorSelection.cursor(currentTab?.selection || 0));
+  if (rect.editor) {
+    if (!options.skipRemember) {
+      rememberActiveTextEditorTab(rect);
+    }
+    rect.editor.destroy();
+    rect.editor = null;
+  }
+  const languageExtension = textEditorLanguageExtension(rect.lastExportPath);
+  rect.body.classList.add("is-text-editor");
+  const tabBar = document.createElement("div");
+  tabBar.className = "text-editor-tabs";
+  const editorHost = document.createElement("div");
+  editorHost.className = "text-editor-host";
+  rect.body.replaceChildren(tabBar, editorHost);
+  rect.textEditorTabBar = tabBar;
   rect.editor = new EditorView({
     doc: rect.text,
+    selection: clampEditorSelection(previousSelection, rect.text.length),
     extensions: [
       basicSetup,
       tesseraEditorTheme,
       worksheetFilenameWordChars,
+      ...(languageExtension ? [languageExtension] : []),
       Prec.highest(keymap.of([
         {
           key: "Mod-o",
@@ -1919,9 +2085,85 @@ function mountTextEditor(rect) {
         }
       }),
     ],
-    parent: rect.body,
+    parent: editorHost,
   });
+  renderTextEditorTabs(rect);
   updateTextEditorFileUI(rect);
+}
+
+function renderTextEditorTabs(rect) {
+  const tabBar = rect?.textEditorTabBar;
+  if (!tabBar) {
+    return;
+  }
+  tabBar.replaceChildren();
+  rect.textEditorTabs.forEach((tab, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "text-editor-tab";
+    button.classList.toggle("is-active", index === rect.activeTextEditorTab);
+    button.textContent = fileNameFromPath(tab.path) || "Untitled";
+    button.title = tab.path || "Untitled text file";
+    button.addEventListener("pointerdown", (event) => event.stopPropagation());
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      activateTextEditorTab(rect, index);
+    });
+    const close = document.createElement("span");
+    close.className = "text-editor-tab-close";
+    close.textContent = "×";
+    close.title = "Close tab";
+    close.addEventListener("pointerdown", (event) => event.stopPropagation());
+    close.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeTextEditorTab(rect, index);
+    });
+    button.appendChild(close);
+    tabBar.appendChild(button);
+  });
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "text-editor-tab-add";
+  add.textContent = "+";
+  add.title = "Open file in a new tab";
+  add.setAttribute("aria-label", add.title);
+  add.addEventListener("pointerdown", (event) => event.stopPropagation());
+  add.addEventListener("click", (event) => {
+    event.preventDefault();
+    void openEditorFileBrowser(rect, "import");
+  });
+  tabBar.appendChild(add);
+}
+
+function activateTextEditorTab(rect, index) {
+  if (index < 0 || index >= rect.textEditorTabs.length || index === rect.activeTextEditorTab) {
+    return;
+  }
+  rememberActiveTextEditorTab(rect);
+  rect.activeTextEditorTab = index;
+  syncActiveTextEditorTab(rect);
+  const tab = activeTextEditorTab(rect);
+  mountTextEditor(rect, { selection: EditorSelection.cursor(tab.selection), skipRemember: true });
+  rect.editor?.focus();
+  scheduleWorkspaceSave();
+}
+
+function closeTextEditorTab(rect, index) {
+  if (index < 0 || index >= rect.textEditorTabs.length) {
+    return;
+  }
+  rememberActiveTextEditorTab(rect);
+  rect.textEditorTabs.splice(index, 1);
+  if (rect.textEditorTabs.length === 0) {
+    rect.textEditorTabs.push(newTextEditorTab());
+  }
+  rect.activeTextEditorTab = Math.max(0, Math.min(rect.activeTextEditorTab - (index < rect.activeTextEditorTab ? 1 : 0), rect.textEditorTabs.length - 1));
+  syncActiveTextEditorTab(rect);
+  const tab = activeTextEditorTab(rect);
+  mountTextEditor(rect, { selection: EditorSelection.cursor(tab.selection), skipRemember: true });
+  rect.editor?.focus();
+  scheduleWorkspaceSave();
 }
 
 async function saveTextEditor(rect) {
@@ -1941,6 +2183,7 @@ function updateTextEditorFileUI(rect) {
   }
   rect.filePathInput.value = rect.lastExportPath || "";
   rect.filePathInput.title = rect.lastExportPath || "Untitled text file";
+  renderTextEditorTabs(rect);
 }
 
 function clampEditorSelection(selection, docLength) {
@@ -2546,6 +2789,7 @@ async function loadWorkspace() {
         fontSize: pane.fontSize,
         cwd: pane.cwd,
         lastExportPath: pane.lastExportPath,
+        editorTabs: pane.editorTabs,
         fileBrowserSidebarWidth: pane.fileBrowserSidebarWidth,
         zIndex: pane.zIndex || 0,
         minimized: Boolean(pane.minimized),
@@ -2667,6 +2911,7 @@ async function saveWorkspace() {
     fontSize: rect.kind === "terminal" || rect.kind === "worksheet" || rect.kind === textEditorPaneKind ? rect.fontSize : defaultPaneFontSize,
     cwd: rect.cwd || "",
     lastExportPath: rect.kind === "terminal" ? "" : (rect.lastExportPath || ""),
+    editorTabs: rect.kind === textEditorPaneKind ? serializedTextEditorTabs(rect) : "",
     fileBrowserSidebarWidth: rect.kind === fileBrowserPaneKind ? rect.fileBrowserSidebarWidth : defaultFileBrowserSidebarWidth,
     x: rect.x,
     y: rect.y,
@@ -3805,16 +4050,24 @@ async function openSessionsModal() {
   } catch (error) {
     console.warn(error);
   }
-  const currentIndex = sessions.findIndex((session) => session.id === currentSessionID);
-  sessionSelection = currentIndex >= 0 ? currentIndex : 0;
+  sessionQuery = "";
+  sessionSelection = 0;
   renderSessionsModal();
+  const currentIndex = sessionEntries.findIndex((entry) => entry.session.id === currentSessionID);
+  if (currentIndex >= 0) {
+    sessionSelection = currentIndex;
+    renderSessionsResults();
+  }
   sessionsModal.hidden = false;
-  window.requestAnimationFrame(() => sessionsModal.querySelector(".sessions-panel")?.focus());
+  window.requestAnimationFrame(() => sessionsSearchInput?.focus());
 }
 
 function hideSessionsModal() {
   sessionsModal.hidden = true;
   sessionsModal.replaceChildren();
+  sessionsSearchInput = null;
+  sessionsList = null;
+  sessionEntries = [];
 }
 
 function hideSessionActionModal() {
@@ -3851,9 +4104,51 @@ function renderSessionsModal() {
   titleBar.append(title, createButton, closeButton);
   panel.appendChild(titleBar);
 
+  const searchInput = document.createElement("input");
+  searchInput.className = "command-palette-input sessions-search-input";
+  searchInput.type = "text";
+  searchInput.placeholder = "Type a session name...";
+  searchInput.spellcheck = false;
+  searchInput.value = sessionQuery;
+  searchInput.setAttribute("aria-label", "Find a session");
+  searchInput.addEventListener("input", () => {
+    sessionQuery = searchInput.value;
+    sessionSelection = 0;
+    renderSessionsResults();
+  });
+  panel.appendChild(searchInput);
+
   const list = document.createElement("div");
-  list.className = "sessions-list";
-  sessions.forEach((session, index) => {
+  list.className = "sessions-list command-palette-list";
+  panel.appendChild(list);
+  sessionsModal.appendChild(panel);
+  sessionsSearchInput = searchInput;
+  sessionsList = list;
+  renderSessionsResults();
+}
+
+function renderSessionsResults() {
+  if (!sessionsList) {
+    return;
+  }
+
+  const query = sessionQuery.trim();
+  sessionEntries = sessions
+    .map((session) => ({ session, score: paletteScore(query, session.name) }))
+    .filter((entry) => entry.score >= 0)
+    .sort((a, b) => b.score - a.score || a.session.name.localeCompare(b.session.name));
+  sessionSelection = Math.min(sessionSelection, Math.max(0, sessionEntries.length - 1));
+  sessionsList.replaceChildren();
+
+  if (sessionEntries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "command-palette-empty";
+    empty.textContent = "No matching sessions";
+    sessionsList.appendChild(empty);
+    return;
+  }
+
+  sessionEntries.forEach(({ session }, index) => {
     const row = document.createElement("div");
     row.className = "sessions-row";
     row.classList.toggle("is-selected", index === sessionSelection);
@@ -3880,10 +4175,8 @@ function renderSessionsModal() {
     destroyButton.disabled = sessions.length <= 1;
     destroyButton.addEventListener("click", () => openDestroySessionDialog(session));
     row.append(switchButton, state, renameButton, destroyButton);
-    list.appendChild(row);
+    sessionsList.appendChild(row);
   });
-  panel.appendChild(list);
-  sessionsModal.appendChild(panel);
 }
 
 function handleSessionsKeyboard(event) {
@@ -3892,14 +4185,14 @@ function handleSessionsKeyboard(event) {
   }
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
-    if (sessions.length) {
-      sessionSelection = (sessionSelection + (event.key === "ArrowDown" ? 1 : -1) + sessions.length) % sessions.length;
-      renderSessionsModal();
-      sessionsModal.querySelector(".sessions-panel")?.focus();
+    if (sessionEntries.length) {
+      sessionSelection = (sessionSelection + (event.key === "ArrowDown" ? 1 : -1) + sessionEntries.length) % sessionEntries.length;
+      renderSessionsResults();
+      sessionsList?.querySelectorAll(".sessions-row")[sessionSelection]?.scrollIntoView({ block: "nearest" });
     }
   } else if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    const session = sessions[sessionSelection];
+    const session = sessionEntries[sessionSelection]?.session;
     if (session) {
       void switchSession(session);
     }
@@ -4138,7 +4431,7 @@ function renderHelpModal() {
   const content = document.createElement("div");
   content.className = "settings-content help-content";
   content.appendChild(renderHelpSection("Window controls", [
-    ["Move an OLED window", "Alt/Option + left-drag anywhere inside the pane."],
+    ["Move an OLED window", "Right-click a pane border to arm Move mode, then left-drag the pane."],
     ["Move a standard window", "Drag its title tab."],
     ["Change the active title", "Run Set Window Title... from the command palette."],
   ]));
@@ -4625,11 +4918,9 @@ function buildPaletteCommands() {
     const point = paneSpawnPoint();
     createTextEditorPane(point.x, point.y);
   } });
+  commands.push({ id: "next-window", label: "Next Window", hint: "Ctrl+]", run: () => focusAdjacentPane(1) });
+  commands.push({ id: "previous-window", label: "Previous Window", hint: "Ctrl+[", run: () => focusAdjacentPane(-1) });
   const visiblePaneCount = rectangles.filter((rect) => rect.kind !== "pending" && !rect.minimized).length;
-  if (visiblePaneCount > 1) {
-    commands.push({ id: "next-window", label: "Next Window", hint: "Ctrl+]", run: () => focusAdjacentPane(1) });
-    commands.push({ id: "previous-window", label: "Previous Window", hint: "Ctrl+[", run: () => focusAdjacentPane(-1) });
-  }
   if (visiblePaneCount > 0) {
     commands.push({
       id: "arrange-out",
@@ -5420,11 +5711,24 @@ async function openFileIntoEditor(rect, path) {
     return;
   }
   try {
-    const data = await readHostFile(path);
-    replaceEditorText(rect, data.text || "");
     if (rect.kind === textEditorPaneKind) {
-      rect.lastExportPath = data.path || path;
-      updateTextEditorFileUI(rect);
+      const pathKey = editorPathKey(path);
+      const existingIndex = rect.textEditorTabs.findIndex((tab) => editorPathKey(tab.path) === pathKey);
+      if (existingIndex >= 0) {
+        activateTextEditorTab(rect, existingIndex);
+        setWorkspaceStatus("saved", "Opened", rect.textEditorTabs[existingIndex].path);
+        return;
+      }
+    }
+    const data = await readHostFile(path);
+    if (rect.kind === textEditorPaneKind) {
+      rememberActiveTextEditorTab(rect);
+      rect.textEditorTabs.push(newTextEditorTab(data.path || path, data.text || ""));
+      rect.activeTextEditorTab = rect.textEditorTabs.length - 1;
+      syncActiveTextEditorTab(rect);
+      mountTextEditor(rect, { selection: EditorSelection.cursor(0), skipRemember: true });
+    } else {
+      replaceEditorText(rect, data.text || "");
     }
     setWorkspaceStatus("saved", rect.kind === textEditorPaneKind ? "Opened" : "Imported", data.path || path);
     scheduleWorkspaceSave();
@@ -5445,6 +5749,14 @@ async function saveEditorToFile(rect, options = {}) {
   try {
     const data = await writeHostFile(path, rect.editor.state.doc.toString());
     rect.lastExportPath = data.path || path;
+    if (rect.kind === textEditorPaneKind) {
+      const tab = activeTextEditorTab(rect);
+      if (tab) {
+        tab.path = rect.lastExportPath;
+        tab.text = rect.editor.state.doc.toString();
+        tab.selection = rect.editor.state.selection.main.head;
+      }
+    }
     updateTextEditorFileUI(rect);
     setWorkspaceStatus("saved", rect.kind === textEditorPaneKind ? "Saved" : "Exported", rect.lastExportPath);
     scheduleWorkspaceSave();
