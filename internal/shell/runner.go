@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -61,20 +60,26 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) <-chan Event {
 		cmd := commandForPlatform(ctx, req.Command)
 		cmd.Dir = cwd
 
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			code := 1
-			send(ctx, events, Event{Type: "error", RunID: req.RunID, Error: err.Error()})
-			send(ctx, events, Event{Type: "exit", RunID: req.RunID, Cwd: cwd, Code: &code})
-			return
+		var mu sync.Mutex
+		cwdAfter := cwd
+		markerExitCode := -1
+		stdout := &stdoutEventWriter{
+			ctx:    ctx,
+			events: events,
+			runID:  req.RunID,
+			setCwd: func(nextCwd string) {
+				mu.Lock()
+				cwdAfter = nextCwd
+				mu.Unlock()
+			},
+			setExitCode: func(exitCode int) {
+				mu.Lock()
+				markerExitCode = exitCode
+				mu.Unlock()
+			},
 		}
-		stderr, err := cmd.StderrPipe()
-		if err != nil {
-			code := 1
-			send(ctx, events, Event{Type: "error", RunID: req.RunID, Error: err.Error()})
-			send(ctx, events, Event{Type: "exit", RunID: req.RunID, Cwd: cwd, Code: &code})
-			return
-		}
+		cmd.Stdout = stdout
+		cmd.Stderr = &rawEventWriter{ctx: ctx, events: events, runID: req.RunID, eventType: "stderr"}
 
 		if err := cmd.Start(); err != nil {
 			code := 1
@@ -83,34 +88,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) <-chan Event {
 			return
 		}
 
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		cwdAfter := cwd
-		markerExitCode := -1
-
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			streamStdout(ctx, events, req.RunID, stdout, func(nextCwd string) {
-				mu.Lock()
-				cwdAfter = nextCwd
-				mu.Unlock()
-			}, func(exitCode int) {
-				mu.Lock()
-				markerExitCode = exitCode
-				mu.Unlock()
-			})
-		}()
-		go func() {
-			defer wg.Done()
-			streamRawOutput(ctx, events, req.RunID, "stderr", stderr)
-		}()
-
-		// StdoutPipe and StderrPipe require their readers to finish before Wait,
-		// which closes both pipes after the process exits. Waiting in the other
-		// order can discard buffered output from short-lived commands.
-		wg.Wait()
 		waitErr := cmd.Wait()
+		stdout.Flush()
 
 		mu.Lock()
 		exitCode := markerExitCode
@@ -148,25 +127,23 @@ func commandForPlatform(ctx context.Context, command string) *exec.Cmd {
 	return cmd
 }
 
-func streamStdout(ctx context.Context, events chan<- Event, runID string, reader io.Reader, setCwd func(string), setExitCode func(int)) {
-	buf := make([]byte, 4096)
-	pending := ""
+type stdoutEventWriter struct {
+	ctx         context.Context
+	events      chan<- Event
+	runID       string
+	pending     string
+	setCwd      func(string)
+	setExitCode func(int)
+}
 
-	for {
-		n, err := reader.Read(buf)
-		if n > 0 {
-			pending += string(buf[:n])
-			pending = flushStdoutPending(ctx, events, runID, pending, false, setCwd, setExitCode)
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				send(ctx, events, Event{Type: "error", RunID: runID, Error: err.Error()})
-			}
-			break
-		}
-	}
+func (w *stdoutEventWriter) Write(data []byte) (int, error) {
+	w.pending += string(data)
+	w.pending = flushStdoutPending(w.ctx, w.events, w.runID, w.pending, false, w.setCwd, w.setExitCode)
+	return len(data), nil
+}
 
-	flushStdoutPending(ctx, events, runID, pending, true, setCwd, setExitCode)
+func (w *stdoutEventWriter) Flush() {
+	w.pending = flushStdoutPending(w.ctx, w.events, w.runID, w.pending, true, w.setCwd, w.setExitCode)
 }
 
 func flushStdoutPending(ctx context.Context, events chan<- Event, runID, pending string, final bool, setCwd func(string), setExitCode func(int)) string {
@@ -216,20 +193,16 @@ func possibleMarkerText(text string) bool {
 		strings.HasPrefix(text, exitMarker)
 }
 
-func streamRawOutput(ctx context.Context, events chan<- Event, runID, eventType string, reader io.Reader) {
-	buf := make([]byte, 4096)
-	for {
-		n, err := reader.Read(buf)
-		if n > 0 {
-			send(ctx, events, Event{Type: eventType, RunID: runID, Text: string(buf[:n])})
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				send(ctx, events, Event{Type: "error", RunID: runID, Error: err.Error()})
-			}
-			return
-		}
-	}
+type rawEventWriter struct {
+	ctx       context.Context
+	events    chan<- Event
+	runID     string
+	eventType string
+}
+
+func (w *rawEventWriter) Write(data []byte) (int, error) {
+	send(w.ctx, w.events, Event{Type: w.eventType, RunID: w.runID, Text: string(data)})
+	return len(data), nil
 }
 
 func exitCodeFromError(err error) int {
