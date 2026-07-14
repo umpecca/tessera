@@ -24,7 +24,7 @@ import (
 const defaultAPIBase = "https://api.github.com"
 
 type Updater struct {
-	Repo    string // e.g. "bently0602/tessera"
+	Repo    string // e.g. "umpecca/tessera"
 	APIBase string // GitHub API base; TESSERA_UPDATE_API overrides for testing
 
 	// exePath is resolved at startup: on Windows the swap renames the running

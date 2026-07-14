@@ -16,7 +16,7 @@ import (
 )
 
 // updateRepo is the GitHub repository the self-updater checks for releases.
-const updateRepo = "bently0602/tessera"
+const updateRepo = "umpecca/tessera"
 
 func main() {
 	log.SetFlags(0)
