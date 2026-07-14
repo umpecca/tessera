@@ -106,8 +106,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) <-chan Event {
 			streamRawOutput(ctx, events, req.RunID, "stderr", stderr)
 		}()
 
-		waitErr := cmd.Wait()
+		// StdoutPipe and StderrPipe require their readers to finish before Wait,
+		// which closes both pipes after the process exits. Waiting in the other
+		// order can discard buffered output from short-lived commands.
 		wg.Wait()
+		waitErr := cmd.Wait()
 
 		mu.Lock()
 		exitCode := markerExitCode
