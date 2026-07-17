@@ -16,6 +16,11 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-latest
+            goos: freebsd
+            goarch: amd64
+            cgo: "0"
+            ext: ""
+          - runner: ubuntu-latest
             goos: linux
             goarch: amd64
             cgo: "0"
@@ -35,6 +40,11 @@ jobs:
             goarch: amd64
             cgo: "0"
             ext: ".exe"
+          - runner: ubuntu-latest
+            goos: openbsd
+            goarch: amd64
+            cgo: "0"
+            ext: ""
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -68,9 +78,86 @@ jobs:
           name: tessera-${{ matrix.goos }}-${{ matrix.goarch }}
           path: tessera-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
 
+  encoder:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            ext: ""
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+            ext: ""
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Build pinned LAME 3.100
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz \
+            --output lame-3.100.tar.gz
+          tar -xzf lame-3.100.tar.gz
+          cd lame-3.100
+          ./configure --disable-shared --enable-static
+          make -j2
+          cp frontend/lame ../tessera-lame-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tessera-lame-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: tessera-lame-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+
+  encoder-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            autoconf automake libtool make tar
+            mingw-w64-x86_64-gcc
+      - name: Build pinned LAME 3.100
+        shell: msys2 {0}
+        run: |
+          curl --fail --location --retry 3 \
+            https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz \
+            --output lame-3.100.tar.gz
+          tar -xzf lame-3.100.tar.gz
+          cd lame-3.100
+          ./configure --disable-shared --enable-static
+          make -j2
+          cp frontend/lame.exe ../tessera-lame-windows-amd64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tessera-lame-windows-amd64
+          path: tessera-lame-windows-amd64.exe
+
+  encoder-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preserve LAME source and license
+        run: |
+          curl --fail --location --retry 3 \
+            https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz \
+            --output lame-3.100.tar.gz
+          tar -xzf lame-3.100.tar.gz lame-3.100/COPYING
+          cp lame-3.100/COPYING LICENSE.LAME.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tessera-lame-source
+          path: |
+            lame-3.100.tar.gz
+            LICENSE.LAME.txt
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, encoder, encoder-windows, encoder-source]
     runs-on: ubuntu-latest
     permissions:
       contents: write

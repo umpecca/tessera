@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 
+	"tessera/internal/audio"
 	"tessera/internal/runs"
 	"tessera/internal/shell"
 	"tessera/internal/store"
@@ -21,6 +22,7 @@ type API struct {
 	Runner    *shell.Runner
 	Runs      *runs.Manager
 	Terminals *terminal.Manager
+	Audio     *audio.Manager
 	WebFS     fs.FS
 	// Users is the roster for multi-user mode. When empty, Tessera runs in
 	// single-user mode with just the default workspace.
@@ -28,6 +30,9 @@ type API struct {
 	// Updater enables the self-update endpoint; nil (e.g. the desktop build)
 	// makes /api/update report the feature as unavailable.
 	Updater *update.Updater
+	// MaxUploadBytes limits one streamed File Browser upload. Values at or below
+	// zero use DefaultMaxUploadBytes.
+	MaxUploadBytes int64
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -39,8 +44,15 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/runs", a.listRuns)
 	mux.HandleFunc("/api/runs/", a.runEvents)
 	mux.HandleFunc("/api/terminal", a.terminalSession)
+	mux.HandleFunc("/api/audio/state", a.audioState)
+	mux.HandleFunc("/api/audio/source", a.audioSource)
+	mux.HandleFunc("/api/audio/control", a.audioControl)
+	mux.HandleFunc("/api/audio/events", a.audioEvents)
+	mux.HandleFunc("/api/audio/stream", a.audioStream)
 	mux.HandleFunc("/api/directories", a.listDirectories)
 	mux.HandleFunc("/api/file", a.fileContents)
+	mux.HandleFunc("/api/files/download", a.downloadFile)
+	mux.HandleFunc("/api/files/upload", a.uploadFile)
 	mux.HandleFunc("/api/files", a.fileOperations)
 	mux.HandleFunc("/api/update", a.selfUpdate)
 	mux.HandleFunc("/", a.staticFiles())

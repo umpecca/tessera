@@ -25,10 +25,11 @@ type Session struct {
 }
 
 type UserSettings struct {
-	UserID              string `json:"userId"`
-	DefaultPaneFontSize int    `json:"defaultPaneFontSize"`
-	DefaultTheme        string `json:"defaultTheme"`
-	ThemeID             string `json:"themeId"`
+	UserID               string `json:"userId"`
+	DefaultPaneFontSize  int    `json:"defaultPaneFontSize"`
+	DefaultTheme         string `json:"defaultTheme"`
+	ThemeID              string `json:"themeId"`
+	DeskbarButtonEnabled bool   `json:"deskbarButtonEnabled"`
 }
 
 func normalizeSessionName(name string) (string, error) {
@@ -245,14 +246,14 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 	}
 	var settings UserSettings
 	err := s.db.QueryRowContext(ctx, `
-SELECT user_id, default_pane_font_size, default_theme, theme_id
+SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled
 FROM user_settings
-WHERE user_id = ?`, userID).Scan(&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme, &settings.ThemeID)
+WHERE user_id = ?`, userID).Scan(&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme, &settings.ThemeID, &settings.DeskbarButtonEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		now := nowText()
 		if _, err := s.db.ExecContext(ctx, `
-INSERT OR IGNORE INTO user_settings (user_id, default_pane_font_size, default_theme, theme_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, now, now); err != nil {
+INSERT OR IGNORE INTO user_settings (user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, now, now); err != nil {
 			return nil, fmt.Errorf("create user settings: %w", err)
 		}
 		return s.LoadUserSettings(ctx, userID)
@@ -278,13 +279,14 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 	settings.ThemeID = normalizeThemeID(settings.ThemeID)
 	now := nowText()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO user_settings (user_id, default_pane_font_size, default_theme, theme_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO user_settings (user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
   default_theme = excluded.default_theme,
   theme_id = excluded.theme_id,
-  updated_at = excluded.updated_at`, settings.UserID, settings.DefaultPaneFontSize, settings.DefaultTheme, settings.ThemeID, now, now)
+  deskbar_button_enabled = excluded.deskbar_button_enabled,
+  updated_at = excluded.updated_at`, settings.UserID, settings.DefaultPaneFontSize, settings.DefaultTheme, settings.ThemeID, settings.DeskbarButtonEnabled, now, now)
 	if err != nil {
 		return fmt.Errorf("save user settings: %w", err)
 	}

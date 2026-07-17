@@ -19,11 +19,18 @@ This is an important operational boundary:
 - The `-users` roster and named sessions separate workspace state; they do not
   verify identity or prevent one connected user from selecting another user.
 - The HTTP API can execute shell commands and read, write, copy, move, or
-  delete files available to the Tessera process.
+  delete files available to the Tessera process. Audio clients can also select
+  host paths, proxy HTTP(S) audio URLs, and link live Terminal processes.
 - The default listener is `127.0.0.1`, which limits access to the host machine.
 - Binding to `0.0.0.0` exposes Tessera to the network. Do this only on a
   trusted, appropriately isolated network whose users are allowed to control
   the host machine.
+- Tessera rejects cross-origin browser mutations, ignores forwarding headers
+  from untrusted peers, applies security response headers, rate-limits API
+  requests by client IP, and can optionally record redacted mutation/Terminal
+  audit events.
+  These controls reduce common HTTP risks but do not authenticate a client or
+  authorize what it may do.
 - Tessera does not currently terminate TLS. Do not expose it directly to the
   public internet.
 
@@ -62,6 +69,14 @@ Useful flags:
 -tray bool      enable native tray controls when supported
 -users string   comma-separated local workspace roster
 -web string     serve SPA assets from a directory instead of the embedded copy
+-audio-capture-helper string  external terminal audio capture helper
+-audio-encoder string         LAME-compatible encoder override
+-trusted-proxy value          trusted immediate proxy IP/CIDR (repeatable)
+-rate-limit int               API requests per client per minute (default 600)
+-rate-burst int               per-client API burst (default 120)
+-audit-log bool               persist redacted audit events (default false)
+-audit-retention-days int     enabled audit retention in days (default 30)
+-max-upload-size int          maximum bytes per File Browser upload (default 1073741824)
 ```
 
 For example:
@@ -70,6 +85,48 @@ For example:
 go run ./cmd/tessera -addr 127.0.0.1:7331 -db .\tessera.sqlite3 -web .\web
 go run ./cmd/tessera -users alice,bob,carol
 ```
+
+## HTTP hardening and reverse proxies
+
+Localhost and trusted-intranet access by DNS name or literal IPv4/IPv6 address
+work without additional flags. Browser mutations must have either no `Origin`
+(for non-browser tools) or an `Origin` exactly matching the request scheme,
+host, and port. Terminal WebSocket handshakes use the same rule.
+
+Forwarding headers are ignored unless the immediate TCP peer is explicitly
+trusted. For a reverse proxy on the same host, for example:
+
+```powershell
+go run ./cmd/tessera -addr 127.0.0.1:7331 -trusted-proxy 127.0.0.1
+```
+
+`-trusted-proxy` accepts an exact IP or CIDR and may be repeated. Trusted peers
+must send one unambiguous RFC `Forwarded` header or one
+`X-Forwarded-For` address with optional `X-Forwarded-Host` and
+`X-Forwarded-Proto`; mixed or multi-hop values are rejected. Trust only a
+proxy that overwrites client-supplied forwarding headers.
+
+The in-memory rate limiter applies to API requests and Terminal handshakes. A
+negative `-rate-limit` or `-rate-burst` disables it. Audit persistence is off
+by default; enable it explicitly with `-audit-log`. When enabled, records
+contain request metadata for mutations and Terminal connection attempts, never
+query strings, bodies, command text, file contents, cookies, or tokens. The
+retention defaults to 30 days and a negative `-audit-retention-days` disables
+persistence even when the toggle is on.
+
+The console also reports each distinct client once per Tessera process using
+its resolved IP address and a short, process-salted fingerprint. The fingerprint
+distinguishes browsers sharing an address without printing their full
+User-Agent, and it changes whenever Tessera restarts.
+
+Security headers include a Content Security Policy, frame blocking, MIME
+sniffing protection, a restrictive referrer and permissions policy, and a
+short HSTS lifetime when Tessera knows the request arrived over HTTPS. HSTS is
+not emitted for ordinary localhost or intranet HTTP access.
+
+These controls do not make direct public hosting safe. Authentication,
+authorization, TLS termination, filesystem roots, and command policies remain
+required before exposing Tessera to untrusted networks.
 
 ## Workspace model
 
@@ -87,7 +144,46 @@ Current pane types:
 - **Text Editor:** a file-oriented CodeMirror editor with tabs, save/save-as,
   per-tab state, and syntax highlighting for supported file extensions.
 - **File Browser:** host filesystem navigation with open, copy, move, paste,
-  and delete operations. Supported text files open in a Text Editor pane.
+  delete, streamed upload, and attachment download operations. Upload accepts
+  multiple files, reports progress, supports drag-and-drop, and confirms before
+  replacing an existing regular file. Supported text files open in a Text
+  Editor pane.
+- **Audio:** a view of the host-wide shared audio station. It can play a host
+  file, proxy a direct HTTP(S) audio response, or capture audio rendered by a
+  linked Terminal process tree. Transport controls are shared; browser volume
+  and mute are local to each listener.
+
+## Shared audio station
+
+The Audio pane is available from the window-type menu, workspace menu, and
+command palette (`NA`). Any connected client can replace the source or control
+Play, Pause, Stop, and file seeking; the latest valid command wins. The source
+and file position survive a restart, but Tessera always restarts paused.
+
+File sources must be absolute host paths. URL sources must be direct HTTP(S)
+audio responses; playlists, HLS/DASH, metadata extraction, and artwork are not
+handled. Terminal sources work only when the selected Terminal pane or one of
+its descendant processes actually renders audio. A controller-only CLI that
+talks to a player outside that process tree will be silent. Protected/DRM audio
+may also be unavailable, and Tessera does not try to bypass that boundary.
+
+Terminal capture requires both the bundled LAME companion and a separately
+installed platform capture helper. Tessera resolves the helper from
+`-audio-capture-helper`, beside the Tessera executable, then from `PATH`. The
+helper executable is named `tessera-audio-capture` (with the usual `.exe` on
+Windows) and must implement:
+
+```text
+tessera-audio-capture capture --pid <pid> --include-tree \
+  --format s16le --sample-rate 48000 --channels 2
+```
+
+Its stdout is raw interleaved 48 kHz stereo signed 16-bit little-endian PCM.
+Its stderr is NDJSON containing `ready`, `warning`, and `error` events. Windows
+helpers require process-loopback support (Windows 10 build 20348 or later),
+Linux helpers require PipeWire, and macOS helpers require ScreenCaptureKit audio
+permission. FreeBSD/OpenBSD retain file and URL playback but report Terminal
+capture as unsupported. The optional helper is not installed by self-update.
 
 Workspace behavior includes:
 
@@ -100,6 +196,8 @@ Workspace behavior includes:
 - Cycle active panes with `Ctrl+]` and `Ctrl+[`.
 - Choose a theme, default pane font size, and per-session background image.
 - Persist the active pane and complete workspace document to SQLite.
+- Detect loss of the server connection and present Reconnect and Refresh Page
+  actions. Recovery is confirmed before the current session route is reloaded.
 
 ## Users and named sessions
 
@@ -184,6 +282,7 @@ go test ./...
 go vet ./...
 node --check web/app.js
 node --test web/text-editor-language.test.mjs
+node --test web/server-connection.test.mjs
 ```
 
 The Go tests cover store migrations and persistence, session lifecycle,
@@ -200,16 +299,27 @@ immutable; append a new migration instead of editing an existing one.
 
 Pushing a `v*` tag runs the GitHub Actions release workflow and publishes:
 
+- `tessera-freebsd-amd64`
 - `tessera-linux-amd64`
+- `tessera-openbsd-amd64`
 - `tessera-windows-amd64.exe`
 - `tessera-darwin-amd64`
 - `tessera-darwin-arm64`
+- `tessera-lame-linux-amd64`
+- `tessera-lame-windows-amd64.exe`
+- `tessera-lame-darwin-amd64`
+- `tessera-lame-darwin-arm64`
+- `lame-3.100.tar.gz` and `LICENSE.LAME.txt`
 
-Linux and Windows builds use `CGO_ENABLED=0`. macOS Intel and ARM builds run on
-native macOS runners with `CGO_ENABLED=1` for tray support.
+FreeBSD, Linux, OpenBSD, and Windows builds use `CGO_ENABLED=0`. The BSD and
+Linux builds run server-only without tray support. macOS Intel and ARM builds
+run on native macOS runners with `CGO_ENABLED=1` for tray support.
 
-The in-app updater checks the latest GitHub Release, downloads the asset that
-matches the current operating system and architecture, swaps the executable,
-and restarts Tessera. The current updater uses anonymous GitHub Releases API
-access, so the repository and release assets must be reachable without private
-repository credentials.
+The in-app updater checks the latest GitHub Release, downloads the Tessera and
+LAME assets matching the current operating system and architecture, installs
+them as one rollback-capable transaction, and restarts Tessera. A new Tessera
+binary installed by a legacy updater can fetch its exact-version LAME companion
+on the first Terminal capture attempt. LAME 3.100 is distributed under the LGPL;
+the release includes its license and corresponding pinned source archive.
+Anonymous GitHub Releases API access is used, so release assets must be
+reachable without private repository credentials.

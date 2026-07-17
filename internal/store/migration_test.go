@@ -39,6 +39,14 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 		"x", "y", "width", "height", "z_index", "position", "created_at",
 		"updated_at",
 	})
+	assertTableColumns(t, st.db, "audio_station", []string{
+		"id", "source_kind", "source_value", "workspace_id", "pane_id",
+		"position_seconds", "source_version", "state_version", "updated_at",
+	})
+	assertTableColumns(t, st.db, "audit_events", []string{
+		"id", "occurred_at", "request_id", "client_ip", "method", "path",
+		"status", "outcome", "duration_ms",
+	})
 	for _, table := range []string{"command_runs", "workspace_backgrounds", "user_settings"} {
 		exists, err := st.tableExists(ctx, table)
 		if err != nil {
@@ -48,6 +56,10 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 			t.Fatalf("table %s was not created", table)
 		}
 	}
+	assertTableColumns(t, st.db, "user_settings", []string{
+		"user_id", "default_pane_font_size", "default_theme", "theme_id",
+		"deskbar_button_enabled", "created_at", "updated_at",
+	})
 	if err := st.Close(); err != nil {
 		t.Fatalf("close fresh store: %v", err)
 	}
@@ -135,10 +147,11 @@ func TestUnversionedCurrentSchemaAdoptionPreservesNamedSessions(t *testing.T) {
 		t.Fatalf("create second session: %v", err)
 	}
 	if err := st.SaveUserSettings(ctx, &UserSettings{
-		UserID:              "alice",
-		DefaultPaneFontSize: 18,
-		DefaultTheme:        "studio",
-		ThemeID:             "hacker",
+		UserID:               "alice",
+		DefaultPaneFontSize:  18,
+		DefaultTheme:         "studio",
+		ThemeID:              "hacker",
+		DeskbarButtonEnabled: true,
 	}); err != nil {
 		t.Fatalf("save user settings: %v", err)
 	}
@@ -180,7 +193,7 @@ func TestUnversionedCurrentSchemaAdoptionPreservesNamedSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load adopted settings: %v", err)
 	}
-	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" {
+	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" || !settings.DeskbarButtonEnabled {
 		t.Fatalf("adopted settings changed: %+v", settings)
 	}
 }

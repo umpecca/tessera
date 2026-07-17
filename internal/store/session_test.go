@@ -54,7 +54,7 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		t.Fatalf("deleted session lookup error = %v", err)
 	}
 
-	settings := &UserSettings{UserID: "alice", DefaultPaneFontSize: 18, DefaultTheme: "studio", ThemeID: "hacker"}
+	settings := &UserSettings{UserID: "alice", DefaultPaneFontSize: 18, DefaultTheme: "studio", ThemeID: "hacker", DeskbarButtonEnabled: false}
 	if err := st.SaveUserSettings(ctx, settings); err != nil {
 		t.Fatalf("save settings: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load settings: %v", err)
 	}
-	if loaded.DefaultPaneFontSize != 18 || loaded.DefaultTheme != "studio" || loaded.ThemeID != "hacker" {
+	if loaded.DefaultPaneFontSize != 18 || loaded.DefaultTheme != "studio" || loaded.ThemeID != "hacker" || loaded.DeskbarButtonEnabled {
 		t.Fatalf("loaded settings = %+v", loaded)
 	}
 }
@@ -160,7 +160,7 @@ VALUES ('alice', 'alice', 18, 'studio', 'hacker', '2026-01-01', '2026-01-02');`)
 	if err != nil {
 		t.Fatalf("load migrated settings: %v", err)
 	}
-	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" {
+	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" || !settings.DeskbarButtonEnabled {
 		t.Fatalf("migrated settings = %+v", settings)
 	}
 }

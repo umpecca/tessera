@@ -3,9 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -156,13 +154,5 @@ func queryInt(r *http.Request, name string, fallback int) int {
 }
 
 func sameOriginWebSocket(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-	parsed, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(parsed.Host, r.Host)
+	return requestOriginAllowed(r)
 }

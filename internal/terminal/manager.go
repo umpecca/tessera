@@ -13,6 +13,7 @@ type Manager struct {
 	mu              sync.Mutex
 	sessions        map[string]*ManagedSession
 	scrollbackLimit int
+	closeHandler    func(workspaceID, paneID string)
 }
 
 type ManagedSession struct {
@@ -109,6 +110,41 @@ func (m *Manager) Terminate(workspaceID, paneID string) {
 	}
 }
 
+// ProcessID returns the root shell process for a live terminal pane. Capture
+// helpers use this PID as the root of the audio-producing process tree.
+func (m *Manager) ProcessID(workspaceID, paneID string) (int, bool) {
+	if m == nil || paneID == "" {
+		return 0, false
+	}
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	m.mu.Lock()
+	session := m.sessions[sessionKey(workspaceID, paneID)]
+	m.mu.Unlock()
+	if session == nil || session.isClosed() {
+		return 0, false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.session == nil {
+		return 0, false
+	}
+	pid := session.session.PID()
+	return pid, pid > 0
+}
+
+// SetCloseHandler installs the host lifecycle callback used by the global
+// audio station. Tessera owns one station, so one handler is sufficient.
+func (m *Manager) SetCloseHandler(handler func(workspaceID, paneID string)) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.closeHandler = handler
+	m.mu.Unlock()
+}
+
 func (m *Manager) TerminateWorkspace(workspaceID string) {
 	if m == nil {
 		return
@@ -146,10 +182,16 @@ func (m *Manager) Close() {
 
 func (m *Manager) remove(workspaceID, paneID string, session *ManagedSession) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	key := sessionKey(workspaceID, paneID)
+	removed := false
 	if m.sessions[key] == session {
 		delete(m.sessions, key)
+		removed = true
+	}
+	handler := m.closeHandler
+	m.mu.Unlock()
+	if removed && handler != nil {
+		handler(workspaceID, paneID)
 	}
 }
 

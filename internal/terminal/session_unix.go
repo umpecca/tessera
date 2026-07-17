@@ -44,6 +44,13 @@ func (p *unixPty) Write(buf []byte) (int, error) {
 	return p.file.Write(buf)
 }
 
+func (p *unixPty) PID() int {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
 func (p *unixPty) Resize(cols, rows int) error {
 	return pty.Setsize(p.file, &pty.Winsize{
 		Cols: uint16(cols),

@@ -38,6 +38,10 @@ func (p *windowsPty) Write(buf []byte) (int, error) {
 	return p.pty.Write(buf)
 }
 
+func (p *windowsPty) PID() int {
+	return p.pty.Pid()
+}
+
 func (p *windowsPty) Resize(cols, rows int) error {
 	return p.pty.Resize(cols, rows)
 }

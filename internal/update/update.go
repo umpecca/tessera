@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,9 +32,10 @@ type Updater struct {
 	// executable, after which os.Executable would report the ".old" path.
 	exePath string
 
-	restart     chan struct{}
-	restartOnce sync.Once
-	mu          sync.Mutex
+	restart       chan struct{}
+	restartOnce   sync.Once
+	mu            sync.Mutex
+	beforeInstall func() error
 }
 
 func New(repo string) (*Updater, error) {
@@ -71,6 +73,10 @@ type CheckResult struct {
 	assetURL  string
 	assetName string
 	assetSize int64
+
+	companionURL  string
+	companionName string
+	companionSize int64
 }
 
 type releaseAsset struct {
@@ -124,15 +130,26 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 	}
 
 	wanted := assetName()
+	companionWanted := companionAssetName()
 	for _, asset := range rel.Assets {
 		if asset.Name == wanted {
 			result.assetURL = asset.BrowserDownloadURL
 			result.assetName = asset.Name
 			result.assetSize = asset.Size
-			return result, nil
+		}
+		if needsCompanion() && asset.Name == companionWanted {
+			result.companionURL = asset.BrowserDownloadURL
+			result.companionName = asset.Name
+			result.companionSize = asset.Size
 		}
 	}
-	return nil, fmt.Errorf("release %s has no asset named %q", rel.TagName, wanted)
+	if result.assetURL == "" {
+		return nil, fmt.Errorf("release %s has no asset named %q", rel.TagName, wanted)
+	}
+	if needsCompanion() && result.companionURL == "" {
+		return nil, fmt.Errorf("release %s has no companion asset named %q", rel.TagName, companionWanted)
+	}
+	return result, nil
 }
 
 // Apply re-checks the latest release, downloads the matching asset, and swaps
@@ -153,19 +170,36 @@ func (u *Updater) Apply(ctx context.Context) (*CheckResult, error) {
 	}
 
 	newPath := u.exePath + ".new"
-	if err := u.download(ctx, result, newPath); err != nil {
+	if err := u.downloadAsset(ctx, result.assetURL, result.assetName, result.assetSize, newPath); err != nil {
 		_ = os.Remove(newPath)
 		return nil, err
 	}
-	if err := u.swap(newPath); err != nil {
+	companionNewPath := ""
+	if needsCompanion() {
+		companionNewPath = u.companionPath() + ".new"
+		if err := u.downloadAsset(ctx, result.companionURL, result.companionName, result.companionSize, companionNewPath); err != nil {
+			_ = os.Remove(newPath)
+			_ = os.Remove(companionNewPath)
+			return nil, err
+		}
+	}
+	if u.beforeInstall != nil {
+		if err := u.beforeInstall(); err != nil {
+			_ = os.Remove(newPath)
+			_ = os.Remove(companionNewPath)
+			return nil, fmt.Errorf("prepare update: %w", err)
+		}
+	}
+	if err := u.installPair(newPath, companionNewPath); err != nil {
 		_ = os.Remove(newPath)
+		_ = os.Remove(companionNewPath)
 		return nil, err
 	}
 	return result, nil
 }
 
-func (u *Updater) download(ctx context.Context, result *CheckResult, dest string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, result.assetURL, nil)
+func (u *Updater) downloadAsset(ctx context.Context, assetURL, name string, size int64, dest string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
 	if err != nil {
 		return err
 	}
@@ -174,11 +208,11 @@ func (u *Updater) download(ctx context.Context, result *CheckResult, dest string
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", result.assetName, err)
+		return fmt.Errorf("download %s: %w", name, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: %s", result.assetName, resp.Status)
+		return fmt.Errorf("download %s: %s", name, resp.Status)
 	}
 
 	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
@@ -192,11 +226,11 @@ func (u *Updater) download(ctx context.Context, result *CheckResult, dest string
 	if err != nil {
 		return fmt.Errorf("write %s: %w", dest, err)
 	}
-	if result.assetSize > 0 && written != result.assetSize {
-		return fmt.Errorf("download %s: got %d bytes, expected %d", result.assetName, written, result.assetSize)
+	if size > 0 && written != size {
+		return fmt.Errorf("download %s: got %d bytes, expected %d", name, written, size)
 	}
 	if written == 0 {
-		return fmt.Errorf("download %s: empty asset", result.assetName)
+		return fmt.Errorf("download %s: empty asset", name)
 	}
 	return nil
 }
@@ -205,24 +239,146 @@ func (u *Updater) download(ctx context.Context, result *CheckResult, dest string
 // running executable but can rename it, so the running exe moves aside to
 // ".old" first; a failure after that rolls it back.
 func (u *Updater) swap(newPath string) error {
-	if runtime.GOOS == "windows" {
-		oldPath := u.exePath + ".old"
-		_ = os.Remove(oldPath)
-		if err := os.Rename(u.exePath, oldPath); err != nil {
-			return fmt.Errorf("move current executable aside: %w", err)
-		}
-		if err := os.Rename(newPath, u.exePath); err != nil {
-			if rollback := os.Rename(oldPath, u.exePath); rollback != nil {
-				return fmt.Errorf("install new executable: %w (rollback failed: %v)", err, rollback)
-			}
-			return fmt.Errorf("install new executable: %w", err)
-		}
-		return nil
-	}
-	if err := os.Rename(newPath, u.exePath); err != nil {
+	installed, err := installFile(newPath, u.exePath)
+	if err != nil {
 		return fmt.Errorf("install new executable: %w", err)
 	}
-	return os.Chmod(u.exePath, 0o755)
+	if runtime.GOOS != "windows" {
+		installed.commit()
+	}
+	return nil
+}
+
+type installedFile struct {
+	destination string
+	backup      string
+	hadPrevious bool
+}
+
+func installFile(newPath, destination string) (*installedFile, error) {
+	installed := &installedFile{destination: destination, backup: destination + ".old"}
+	_ = os.Remove(installed.backup)
+	if _, err := os.Stat(destination); err == nil {
+		if err := os.Rename(destination, installed.backup); err != nil {
+			return nil, err
+		}
+		installed.hadPrevious = true
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.Rename(newPath, destination); err != nil {
+		installed.rollback()
+		return nil, err
+	}
+	if err := os.Chmod(destination, 0o755); err != nil {
+		installed.rollback()
+		return nil, err
+	}
+	return installed, nil
+}
+
+func (installed *installedFile) rollback() {
+	if installed == nil {
+		return
+	}
+	_ = os.Remove(installed.destination)
+	if installed.hadPrevious {
+		_ = os.Rename(installed.backup, installed.destination)
+	}
+}
+
+func (installed *installedFile) commit() {
+	if installed != nil && installed.hadPrevious {
+		_ = os.Remove(installed.backup)
+	}
+}
+
+func (u *Updater) installPair(executableNew, companionNew string) error {
+	var companion *installedFile
+	var err error
+	if companionNew != "" {
+		companion, err = installFile(companionNew, u.companionPath())
+		if err != nil {
+			return fmt.Errorf("install encoder companion: %w", err)
+		}
+	}
+	executable, err := installFile(executableNew, u.exePath)
+	if err != nil {
+		companion.rollback()
+		return fmt.Errorf("install new executable: %w", err)
+	}
+	companion.commit()
+	if runtime.GOOS != "windows" {
+		executable.commit()
+	}
+	return nil
+}
+
+// SetBeforeInstall registers a short hook used by the server to stop a live
+// encoder before the updater replaces its executable.
+func (u *Updater) SetBeforeInstall(hook func() error) {
+	u.beforeInstall = hook
+}
+
+// EnsureCompanion repairs a legacy binary-only upgrade by fetching the LAME
+// asset from the exact release matching the running Tessera version.
+func (u *Updater) EnsureCompanion(ctx context.Context) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !needsCompanion() || normalizeVersion(version.Version) == "dev" {
+		return nil
+	}
+	if info, err := os.Stat(u.companionPath()); err == nil && !info.IsDir() {
+		return nil
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/releases/tags/%s", u.APIBase, u.Repo, url.PathEscape(version.Version))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "tessera-updater")
+	client := &http.Client{Timeout: 15 * time.Second}
+	response, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch exact release: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch exact release: %s", response.Status)
+	}
+	var rel release
+	if err := json.NewDecoder(response.Body).Decode(&rel); err != nil {
+		return fmt.Errorf("decode exact release: %w", err)
+	}
+	wanted := companionAssetName()
+	for _, asset := range rel.Assets {
+		if asset.Name != wanted {
+			continue
+		}
+		newPath := u.companionPath() + ".new"
+		if err := u.downloadAsset(ctx, asset.BrowserDownloadURL, asset.Name, asset.Size, newPath); err != nil {
+			_ = os.Remove(newPath)
+			return err
+		}
+		if u.beforeInstall != nil {
+			if err := u.beforeInstall(); err != nil {
+				_ = os.Remove(newPath)
+				return err
+			}
+		}
+		installed, err := installFile(newPath, u.companionPath())
+		if err != nil {
+			_ = os.Remove(newPath)
+			return err
+		}
+		installed.commit()
+		return nil
+	}
+	return fmt.Errorf("release %s has no companion asset named %q", version.Version, wanted)
+}
+
+func (u *Updater) companionPath() string {
+	return filepath.Join(filepath.Dir(u.exePath), companionAssetName())
 }
 
 // RestartRequested is closed once an update has been applied and the process
@@ -258,4 +414,16 @@ func assetName() string {
 		ext = ".exe"
 	}
 	return fmt.Sprintf("tessera-%s-%s%s", runtime.GOOS, runtime.GOARCH, ext)
+}
+
+func companionAssetName() string {
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+	return fmt.Sprintf("tessera-lame-%s-%s%s", runtime.GOOS, runtime.GOARCH, ext)
+}
+
+func needsCompanion() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "darwin"
 }

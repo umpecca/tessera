@@ -26,6 +26,15 @@ func main() {
 	webDir := flag.String("web", "", "serve the SPA from this directory instead of embedded assets")
 	usersFlag := flag.String("users", "", "comma-separated user roster; enables the user selection screen and a separate workspace per user")
 	tray := flag.Bool("tray", desktop.TraySupported(), "show Start, Stop, Configure, and Exit controls in the system tray")
+	audioCaptureHelper := flag.String("audio-capture-helper", "", "process-audio capture helper path (defaults to the executable directory or PATH)")
+	audioEncoder := flag.String("audio-encoder", "", "LAME-compatible encoder path (defaults to the bundled sidecar or PATH)")
+	var trustedProxies stringListFlag
+	flag.Var(&trustedProxies, "trusted-proxy", "trusted immediate proxy IP or CIDR; repeat or use a comma-separated list")
+	rateLimit := flag.Int("rate-limit", 600, "maximum API requests per client per minute; negative disables")
+	rateBurst := flag.Int("rate-burst", 120, "maximum per-client API request burst; negative disables")
+	auditLog := flag.Bool("audit-log", false, "persist redacted security audit events")
+	auditRetention := flag.Int("audit-retention-days", 30, "audit-event retention in days when -audit-log is enabled; negative disables")
+	maxUploadSize := flag.Int64("max-upload-size", server.DefaultMaxUploadBytes, "maximum bytes per File Browser upload")
 	flag.Parse()
 
 	users := parseUsers(*usersFlag)
@@ -42,11 +51,19 @@ func main() {
 	}
 
 	controller := desktop.NewController(server.Options{
-		Addr:    *addr,
-		DBPath:  *dbPath,
-		WebDir:  *webDir,
-		Users:   users,
-		Updater: updater,
+		Addr:               *addr,
+		DBPath:             *dbPath,
+		WebDir:             *webDir,
+		Users:              users,
+		Updater:            updater,
+		AudioCaptureHelper: *audioCaptureHelper,
+		AudioEncoder:       *audioEncoder,
+		TrustedProxies:     trustedProxies,
+		RateLimitPerMinute: *rateLimit,
+		RateLimitBurst:     *rateBurst,
+		AuditEnabled:       *auditLog,
+		AuditRetentionDays: *auditRetention,
+		MaxUploadBytes:     *maxUploadSize,
 	})
 	if err := controller.Start(context.Background()); err != nil {
 		log.Fatalf("start server: %v", err)
@@ -100,6 +117,21 @@ func main() {
 			log.Fatalf("spawn updated executable: %v", err)
 		}
 	}
+}
+
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			*f = append(*f, part)
+		}
+	}
+	return nil
 }
 
 // parseUsers splits the -users flag into a trimmed, de-duplicated roster,

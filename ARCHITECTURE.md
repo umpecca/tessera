@@ -48,12 +48,15 @@ tessera/
     file_operations.go         # copy, move, and delete
     background.go              # workspace background image API
     update.go                  # self-update API
+    audio.go                   # shared audio state, SSE, ranges and URL proxy
+    security.go                # origins, proxy trust, headers, limits and audit
     static.go                  # embedded SPA and history fallback
   internal/store/
     store.go                   # SQLite open and embedded migration runner
     workspace.go               # workspaces, panes, and command-run persistence
     session.go                 # session CRUD and per-user settings
     workspace_background.go    # image BLOB persistence
+    audit.go                   # redacted HTTP security-event persistence
   internal/runs/
     manager.go                 # command lifecycle, transcript updates, subscribers
   internal/shell/
@@ -62,6 +65,8 @@ tessera/
   internal/terminal/
     manager.go                 # session ownership, replay, and teardown
     session*.go                # ConPTY and Unix PTY implementations
+  internal/audio/
+    manager.go                 # shared station and capture/encode fan-out
   internal/update/
     update.go                  # GitHub release check, binary swap, restart request
   internal/version/
@@ -78,7 +83,7 @@ tessera/
     assets/                    # fonts, application icons, and pane icons
   migrations/
     embed.go                   # embeds the ordered SQL sequence
-    001_*.sql ... 025_*.sql    # append-only application schema migrations
+    001_*.sql ... 026_*.sql    # append-only application schema migrations
   tasks/                       # small implementation task records
   .github/workflows/
     release.yml                # tested multi-platform tagged releases
@@ -99,6 +104,10 @@ flowchart LR
   API <--> FS["Host filesystem"]
   API <--> RUNS["Shell command manager"]
   API <--> PTY["PTY terminal manager"]
+  API <--> AUDIO["Shared audio station"]
+  AUDIO --> CAPTURE["Optional process capture helper"]
+  CAPTURE --> LAME["LAME MP3 sidecar"]
+  LAME --> BROWSER
   RUNS <--> OS["Operating-system processes"]
   PTY <--> OS
   API -. update check .-> GH["GitHub Releases"]
@@ -119,6 +128,9 @@ Primary data flows:
 6. File Browser and Text Editor panes call filesystem APIs using host paths.
 7. Destroying a named session stops that session's commands and terminals before
    deleting its persisted workspace.
+8. Every Audio pane subscribes to one host-wide station over SSE. File streams
+   use HTTP ranges, URL streams are proxied per listener, and one Terminal
+   helper/encoder pipeline fans MP3 out through bounded listener queues.
 
 ## Technology Used
 
@@ -166,11 +178,17 @@ Current pane types:
   highlighting selected by file extension.
 - **File Browser:** directory navigation and file copy, move, delete, paste, and
   supported-text-file open behavior.
+- **Audio:** controls and listens to one host-wide source. Global transport state
+  is synchronized by SSE while volume, mute, and autoplay recovery are local to
+  each browser.
 
 The SPA also implements overlapping window geometry, active-pane and z-order
 state, minimize/maximize/dock/restore behavior, the Deskbar, command palette,
 settings, themes, background images, user selection, named-session management,
-and route/history synchronization.
+route/history synchronization, and client/server connection recovery. A
+low-frequency health monitor opens one recovery dialog after consecutive
+failures; restored connections reload only after user confirmation, except an
+explicit Reconnect action which verifies health and then reloads.
 
 ### Backend Services
 
@@ -207,6 +225,13 @@ GET/POST/PATCH/DELETE /api/users/{user}/sessions/...
 GET/PUT /api/users/{user}/settings
 GET/PUT /api/workspace/{session}
 GET/PUT/DELETE /api/workspace/{session}/background
+GET /api/files/download?path=...
+POST /api/files/upload?directory=...&name=...&overwrite=0|1
+GET /api/audio/state
+PUT /api/audio/source
+POST /api/audio/control
+GET /api/audio/events
+GET/HEAD /api/audio/stream?sourceVersion=N
 ```
 
 #### Command Run Manager
@@ -234,6 +259,26 @@ Technologies: ConPTY, Unix PTYs, Gorilla WebSocket.
 
 Deployment: In-process inside the Tessera Host.
 
+#### Shared Audio Manager
+
+Name: Host-wide Audio Station
+
+Description: Persists one selected file, URL, or Terminal source; resolves
+latest-command-wins transport state; emits complete SSE snapshots; invalidates
+stale source versions; and supervises one process-capture-to-MP3 pipeline.
+
+Terminal capture starts an external `tessera-audio-capture` helper against the
+selected PTY shell PID and its descendants. The helper normalizes output to 48
+kHz stereo s16le PCM. Tessera waits ten seconds for its NDJSON `ready` event,
+pipes PCM into the pinned 192 kbps LAME sidecar, and disconnects slow listeners
+whose bounded queues fill. Cancellation requests graceful termination and
+force-kills remaining processes after two seconds. Helper/encoder failure pauses
+the station, closes listeners, and remains isolated from file/URL playback.
+
+Deployment: The manager is in-process. LAME is a release companion installed by
+the updater. Platform capture helpers are optional, separately installed
+executables because they carry OS-specific APIs and permissions.
+
 #### Filesystem API
 
 Name: Filesystem API
@@ -258,13 +303,19 @@ Technologies: Go platform files and getlantern/systray on supported platforms.
 
 Deployment: Compiled into the main executable.
 
+File Browser transfers use streamed request/response bodies. Uploads are
+bounded by `-max-upload-size`, staged beside the destination, and moved into
+place only after the complete body is accepted. Downloads use `ServeContent`
+for attachment metadata and byte-range support.
+
 #### Self-Updater
 
 Name: GitHub Release Updater
 
-Description: Checks the latest release, selects the exact OS/architecture asset,
-downloads it, swaps the current executable, requests shutdown, and launches the
-replacement.
+Description: Checks the latest release, selects exact Tessera and LAME
+OS/architecture assets, stops live capture, installs both transactionally with
+rollback, requests shutdown, and launches the replacement. It can bootstrap a
+missing exact-version LAME companion after an upgrade from a legacy updater.
 
 Technologies: GitHub Releases REST API and Go HTTP/file APIs.
 
@@ -293,6 +344,12 @@ Key Schemas/Collections:
 - `workspace_backgrounds`: background image MIME type and BLOB data.
 - `user_settings`: default theme and font settings shared across a user's
   sessions.
+- `audio_station`: host-wide selected source, paused file position, and monotonic
+  source/state versions. Playing state is deliberately not restored.
+- `audit_events`: optional, bounded-retention request metadata for
+  state-changing API requests and Terminal connection attempts. Persistence is
+  disabled by default. Records exclude query strings, bodies, command text,
+  file contents, cookies, and tokens.
 
 Numbered files under `migrations/` are the single source of truth for the
 application schema and are embedded into the executable. `internal/store/store.go`
@@ -324,6 +381,9 @@ into an application-owned storage hierarchy.
   controls its lifecycle on desktop platforms.
 - **GitHub Releases API:** supplies version metadata and release binaries for
   self-update. No GitHub token is currently configured.
+- **Audio capture helper:** optional per-platform executable using Windows
+  process loopback, PipeWire process routing, or ScreenCaptureKit. It receives a
+  PTY root PID and returns normalized PCM under a small stdout/stderr protocol.
 
 ## Deployment & Infrastructure
 
@@ -334,13 +394,20 @@ Key Services Used: A local TCP listener, a local SQLite file, host processes,
 and optional GitHub Releases access.
 
 CI/CD Pipeline: `.github/workflows/release.yml` runs on `v*` tags. It builds and
-tests Linux amd64 and Windows amd64 with `CGO_ENABLED=0`, plus macOS Intel and
-ARM with `CGO_ENABLED=1`. The resulting assets are published to one GitHub
-Release and retain the names expected by the self-updater.
+tests the Tessera platform matrix, builds pinned LAME 3.100 companions for
+Windows amd64, Linux amd64, and both macOS architectures, and publishes the LAME
+license plus corresponding source archive. Optional native capture helpers are
+installed and versioned independently from automatic updates.
 
 Monitoring & Logging: Go standard logging writes lifecycle and failure messages
-to stderr or the platform process output. Command output belongs to worksheet
-transcripts or terminal streams. There is no centralized telemetry service.
+to stderr or the platform process output. When explicitly enabled, SQLite
+stores redacted audit metadata for mutations and Terminal connection attempts
+with configurable retention.
+The HTTP security middleware writes one stdout connection line per distinct
+resolved-IP/User-Agent identity. It exposes the IP and a short process-salted
+fingerprint, not the User-Agent or request data.
+Command output belongs to worksheet transcripts or terminal streams. There is
+no centralized telemetry service.
 
 ## Security Considerations
 
@@ -361,8 +428,20 @@ Key Security Tools/Practices:
 - Bind to `127.0.0.1` by default.
 - Treat `0.0.0.0` or any non-loopback binding as trusted-network-only.
 - Do not expose Tessera directly to the public internet.
+- Require exact same-origin browser mutations and Terminal WebSocket
+  handshakes while retaining origin-less access for local non-browser clients.
+- Ignore forwarding headers unless the immediate peer matches an explicitly
+  configured exact IP or CIDR; reject ambiguous or multi-hop forwarded values.
+- Apply CSP, frame blocking, MIME sniffing protection, referrer and permissions
+  policies, and HTTPS-only HSTS.
+- Rate-limit API requests per derived client IP with bounded in-memory state.
+- Optionally persist redacted security audit events with bounded retention;
+  persistence is disabled by default.
 - Treat API reachability as permission to execute commands and access host files
   with the Tessera process's privileges.
+- Treat audio URL proxying, host-path selection, Terminal PID selection, and
+  shared transport control as equally trusted capabilities. URL proxying can
+  reach network resources visible to the host.
 - Reject cross-origin terminal WebSocket connections. This is defense in depth,
   not authentication.
 - Scope process teardown by workspace so deleting one session does not terminate
@@ -377,8 +456,8 @@ Planned security direction:
    filesystem, command, terminal, update, and administrative operation.
 3. Define explicit roles/capabilities and ownership rules instead of inferring
    access from a client-supplied user or session identifier.
-4. Add CSRF protection and consistent HTTP origin validation for state-changing
-   requests.
+4. Bind the existing origin checks to authenticated sessions with CSRF tokens
+   for state-changing requests.
 5. Add configurable filesystem roots and command-execution policies for
    deployments that should not expose the entire host account.
 6. Support TLS through native configuration or a documented trusted reverse
@@ -414,6 +493,7 @@ go test ./...
 go vet ./...
 node --check web/app.js
 node --test web/text-editor-language.test.mjs
+node --test web/server-connection.test.mjs
 ```
 
 The release workflow also rebuilds committed frontend bundles with esbuild and
@@ -443,7 +523,7 @@ runs the Go test suite on every target runner.
 - **CWD:** Current working directory used by a pane's command or terminal.
 - **NDJSON:** Newline-delimited JSON used to stream command events.
 - **Pane:** A movable workspace window containing a worksheet, terminal, text
-  editor, or file browser.
+  editor, file browser, or shared audio controls.
 - **PTY:** Pseudo-terminal backing an interactive terminal pane.
 - **Session:** A named, persisted desktop owned by one configured user entry.
 - **SPA:** Single-page application served by the Tessera host.

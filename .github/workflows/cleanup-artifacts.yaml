@@ -1,0 +1,42 @@
+name: Cleanup old artifacts
+
+on:
+  # Run automatically once per day
+  schedule:
+    - cron: "0 6 * * *"
+
+  # Also allow manual execution
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Keep only the newest 5 artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Finding artifacts older than the newest 5..."
+
+          gh api \
+            --paginate \
+            "repos/${REPOSITORY}/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | [.created_at, .id, .name] | @tsv' |
+            sort -r |
+            tail -n +6 |
+            while IFS=$'\t' read -r created_at artifact_id artifact_name; do
+              echo "Deleting: ${artifact_name} (${created_at})"
+
+              gh api \
+                --method DELETE \
+                "repos/${REPOSITORY}/actions/artifacts/${artifact_id}"
+            done
