@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Make self-update recovery wait for the expected new server version, tolerate
+  a dropped restart acknowledgement, and restore the reconnect modal instead
+  of leaving the browser client locked in a stale restarting state.
 - Fix LAME 3.100's native MinGW `langinfo.h` regression with the historical
   MSYS2 source patch and an executable version check in the release job.
 - Stabilize the Windows run-manager persistence test by waiting on the run's

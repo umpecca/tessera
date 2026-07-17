@@ -1522,6 +1522,9 @@ input {
 
 .terminal-container canvas {
   display: block;
+  /* Terminal grids use whole character cells. Split the fractional-cell
+     remainder evenly instead of leaving all of it on the right. */
+  margin-inline: auto;
 }
 
 .window-title::selection {

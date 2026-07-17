@@ -40,6 +40,12 @@ func (a *API) selfUpdate(w http.ResponseWriter, r *http.Request) {
 			"currentVersion": result.CurrentVersion,
 			"latestVersion":  result.LatestVersion,
 		})
+		// Put the restart acknowledgement on the wire before main begins a
+		// graceful shutdown. The client can still recover from a lost response,
+		// but flushing makes that the exceptional path.
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
 		a.Updater.RequestRestart()
 	default:
 		methodNotAllowed(w, "GET, POST")

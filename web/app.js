@@ -22,6 +22,7 @@ import {
 } from "./vendor/codemirror.js?v=syntax-highlighting-1";
 import { textEditorLanguageID } from "./text-editor-language.mjs";
 import { nextServerConnectionState } from "./server-connection.mjs";
+import { isExpectedServerVersion } from "./server-update.mjs";
 
 const board = document.querySelector("#board");
 const tabHeight = 24;
@@ -3796,7 +3797,7 @@ function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
 
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
-    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-1").then(async (module) => {
+    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-links-1").then(async (module) => {
       await module.init();
       return module;
     });
@@ -3811,7 +3812,7 @@ async function startTerminal(rect) {
 
   rect.terminalContainer.textContent = "Starting terminal...";
   try {
-    const { FitAddon, Terminal } = await loadGhosttyModule();
+    const { FitAddon, Terminal, WrappedHTTPLinkProvider } = await loadGhosttyModule();
     if (!rect.terminalContainer || rect.kind !== "terminal") {
       return;
     }
@@ -3832,6 +3833,7 @@ async function startTerminal(rect) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(rect.terminalContainer);
+    term.registerLinkProvider(new WrappedHTTPLinkProvider(term));
     fit.fit();
     fit.observeResize();
     // ghostty focuses itself inside open(); hand focus back to the active
@@ -3996,7 +3998,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
 }
 
 function terminalShouldReportMouse(term, event) {
-  if (event.shiftKey) {
+  if (event.shiftKey || event.ctrlKey || event.metaKey) {
     return false;
   }
   try {
@@ -5664,6 +5666,7 @@ async function runServerUpdate() {
   }
 
   showUpdateStatus(`Updating ${check.currentVersion} → ${check.latestVersion} — downloading...`, { busy: true });
+  let updatePostError = null;
   try {
     const response = await fetch("/api/update", { method: "POST" });
     const body = await response.json();
@@ -5678,20 +5681,44 @@ async function runServerUpdate() {
     serverUpdateRestarting = true;
     hideServerConnectionModal();
   } catch (error) {
-    showUpdateStatus(`Update failed: ${error.message}`, { closable: true });
-    return;
+    // Shutdown can close the request after installation but before the JSON
+    // acknowledgement arrives. The new server version is authoritative.
+    updatePostError = error;
+    serverUpdateRestarting = true;
+    hideServerConnectionModal();
   }
 
-  showUpdateStatus("Restarting server...", { busy: true });
+  showUpdateStatus(updatePostError
+    ? "The update connection closed. Waiting for the updated server..."
+    : "Restarting server...", { busy: true });
   const deadline = Date.now() + 60000;
+  let lastHealth = null;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     try {
-      const response = await fetch("/api/health", { signal: AbortSignal.timeout(2000), cache: "no-store" });
+      const cacheBuster = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const response = await fetch(`/api/health?update=${encodeURIComponent(cacheBuster)}`, {
+        signal: AbortSignal.timeout(2000),
+        cache: "no-store",
+      });
       if (response.ok) {
         const health = await response.json();
+        lastHealth = health;
+        // The old process can answer while graceful shutdown is still in
+        // progress. Do not reload until the replacement identifies itself.
+        if (!isExpectedServerVersion(health, check.latestVersion)) {
+          continue;
+        }
+        serverUpdateRestarting = false;
+        serverConnectionState = { failures: 0, state: "" };
         showUpdateStatus(`Updated to ${health.version || check.latestVersion} — reloading...`, { busy: true });
-        setTimeout(() => window.location.reload(), 800);
+        window.setTimeout(() => window.location.reload(), 800);
+        // If navigation is blocked or stalls, restore an actionable client UI
+        // instead of leaving the locked update dialog on screen indefinitely.
+        window.setTimeout(() => {
+          hideServerUpdateModal();
+          showServerConnectionModal("restored");
+        }, 5000);
         return;
       }
     } catch {
@@ -5699,7 +5726,15 @@ async function runServerUpdate() {
     }
   }
   serverUpdateRestarting = false;
-  showUpdateStatus("The server did not come back within a minute. Reload the page manually once it is up.", { closable: true });
+  if (lastHealth) {
+    showUpdateStatus(
+      `The server restarted as ${lastHealth.version || "an unknown version"}; expected ${check.latestVersion}.`,
+      { closable: true },
+    );
+    return;
+  }
+  showUpdateStatus("The server did not come back within a minute. Use Reconnect once it is running.", { closable: true });
+  await checkServerConnection({ force: true });
 }
 
 // Every action the workspace menu offers, flattened into searchable commands,

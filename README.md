@@ -185,6 +185,42 @@ Linux helpers require PipeWire, and macOS helpers require ScreenCaptureKit audio
 permission. FreeBSD/OpenBSD retain file and URL playback but report Terminal
 capture as unsupported. The optional helper is not installed by self-update.
 
+### LAME encoder companion
+
+For a manual installation, place the encoder for the host platform beside the
+Tessera executable. Keep the release asset name unchanged so Tessera can find
+it automatically:
+
+| Platform | Tessera executable | Encoder companion |
+| --- | --- | --- |
+| Windows x64 | `tessera-windows-amd64.exe` | `tessera-lame-windows-amd64.exe` |
+| macOS Intel | `tessera-darwin-amd64` | `tessera-lame-darwin-amd64` |
+| macOS Apple silicon | `tessera-darwin-arm64` | `tessera-lame-darwin-arm64` |
+
+On macOS, mark both downloaded files executable:
+
+```bash
+chmod +x tessera-darwin-* tessera-lame-darwin-*
+```
+
+The encoder may instead be stored elsewhere and selected explicitly:
+
+```powershell
+# Windows
+.\tessera-windows-amd64.exe -audio-encoder C:\path\to\lame.exe
+```
+
+```bash
+# macOS
+./tessera-darwin-arm64 -audio-encoder /path/to/lame
+```
+
+Without an override, Tessera checks for the exact platform asset name beside
+its executable, then `tessera-lame` and `lame` beside it and on `PATH`. The
+in-app updater installs the matching platform companion automatically. The
+encoder converts captured PCM to MP3; it does not replace the separately
+installed capture helper described above.
+
 Workspace behavior includes:
 
 - Drag empty space to create a pane; move and resize panes directly.
@@ -296,6 +332,62 @@ order using SQLite `PRAGMA user_version`. Treat applied migration files as
 immutable; append a new migration instead of editing an existing one.
 
 ## Releases and self-update
+
+### Building all encoder artifacts in GitHub Actions
+
+The release workflow builds the Windows x64, macOS Intel, and macOS Apple
+silicon encoders on their matching GitHub-hosted runners. Nothing from the
+Windows or macOS toolchain needs to be installed on the computer that pushes
+the repository. Ensure Actions are enabled for the repository, then either:
+
+- Push `main` to build the artifacts and download them from that workflow run.
+- Push a `v*` tag to build them and attach them to a GitHub Release.
+
+For example, after choosing the next version:
+
+```powershell
+git push origin main
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The Windows job provisions an MSYS2 MINGW64 environment, builds the pinned
+LAME 3.100 source with the repository's MinGW compatibility patch, and verifies
+the resulting `.exe`. The two macOS jobs compile natively on Intel and Apple
+silicon runners. Their outputs are named exactly as listed below.
+
+### Building an encoder locally
+
+GitHub Actions is the simplest way to obtain every architecture. To reproduce
+one build locally, use a machine with that target architecture.
+
+On Windows x64, install [MSYS2](https://www.msys2.org/), open its **MINGW64**
+shell, and install the packages used by CI:
+
+```bash
+pacman -Syu
+pacman -S --needed autoconf automake libtool make patch tar mingw-w64-x86_64-gcc
+```
+
+If the update asks you to close the shell, reopen **MINGW64** and run the second
+command again. Then follow the `encoder-windows` commands in the
+[release workflow](.github/workflows/release.yml). They download the pinned
+source, apply the
+[MinGW compatibility patch](.github/patches/lame-3.100-mingw-langinfo.patch),
+build it, and copy the result to `tessera-lame-windows-amd64.exe`. Use the
+MINGW64 shell—not a plain MSYS shell—so the result is a native Windows
+executable.
+
+On macOS, install Apple's command-line developer tools and run the commands
+from the matching encoder job in the same workflow:
+
+```bash
+xcode-select --install
+```
+
+Build on an Intel Mac for `tessera-lame-darwin-amd64`, or on an Apple silicon
+Mac for `tessera-lame-darwin-arm64`. Cross-compiling is not required by the
+release process because GitHub Actions uses native runners for both.
 
 Pushing a `v*` tag runs the GitHub Actions release workflow and publishes:
 
