@@ -115,12 +115,13 @@ jobs:
   encoder-windows:
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
           install: >-
-            autoconf automake libtool make tar
+            autoconf automake libtool make patch tar
             mingw-w64-x86_64-gcc
       - name: Build pinned LAME 3.100
         shell: msys2 {0}
@@ -129,13 +130,14 @@ jobs:
             https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz \
             --output lame-3.100.tar.gz
           tar -xzf lame-3.100.tar.gz
-          cd lame-3.100
-          ac_cv_header_langinfo_h=no \
-            ./configure --disable-shared --enable-static --disable-nls
-          if grep -Eq '^[[:space:]]*#define[[:space:]]+HAVE_LANGINFO_H[[:space:]]+1' config.h; then
-            echo "LAME configure incorrectly enabled langinfo.h for native MinGW" >&2
+          patch --directory=lame-3.100 --strip=1 \
+            < .github/patches/lame-3.100-mingw-langinfo.patch
+          if grep -Eq 'langinfo\.h|nl_langinfo\(CODESET\)' lame-3.100/frontend/parse.c; then
+            echo "LAME MinGW patch left POSIX langinfo code in parse.c" >&2
             exit 1
           fi
+          cd lame-3.100
+          ./configure --disable-shared --enable-static --disable-nls
           make -j2
           ./frontend/lame.exe --version
           cp frontend/lame.exe ../tessera-lame-windows-amd64.exe
