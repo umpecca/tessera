@@ -130,8 +130,14 @@ jobs:
             --output lame-3.100.tar.gz
           tar -xzf lame-3.100.tar.gz
           cd lame-3.100
-          ./configure --disable-shared --enable-static
+          ac_cv_header_langinfo_h=no \
+            ./configure --disable-shared --enable-static --disable-nls
+          if grep -Eq '^[[:space:]]*#define[[:space:]]+HAVE_LANGINFO_H[[:space:]]+1' config.h; then
+            echo "LAME configure incorrectly enabled langinfo.h for native MinGW" >&2
+            exit 1
+          fi
           make -j2
+          ./frontend/lame.exe --version
           cp frontend/lame.exe ../tessera-lame-windows-amd64.exe
       - uses: actions/upload-artifact@v4
         with:

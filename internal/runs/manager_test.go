@@ -60,17 +60,21 @@ func TestManagerPersistsOutputAfterSubscriberLeaves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start run: %v", err)
 	}
+	manager.mu.Lock()
+	run := manager.runs[runID]
+	manager.mu.Unlock()
+	if run == nil {
+		t.Fatalf("run %s was not registered", runID)
+	}
 	unsubscribe()
 
-	deadline := time.Now().Add(6 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(manager.ActiveRuns(store.DefaultWorkspaceID)) == 0 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
+	select {
+	case <-run.done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("run %s was still active after deadline", runID)
 	}
 	if len(manager.ActiveRuns(store.DefaultWorkspaceID)) != 0 {
-		t.Fatalf("run %s was still active after deadline", runID)
+		t.Fatalf("run %s completed but remained active", runID)
 	}
 
 	loaded, err := st.LoadWorkspace(ctx, store.DefaultWorkspaceID)

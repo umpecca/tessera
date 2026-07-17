@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix native Windows LAME builds by disabling false `langinfo.h` detection and
+  adding generated-config and executable version checks to the release job.
+- Stabilize the Windows run-manager persistence test by waiting on the run's
+  completion signal with adequate shared-runner process-startup headroom.
 - Dismiss the File Browser upload progress row shortly after successful
   completion while keeping failed-transfer summaries visible.
 - Add streamed multi-file upload, drag-and-drop progress, overwrite
