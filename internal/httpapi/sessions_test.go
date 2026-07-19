@@ -74,7 +74,11 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 		t.Fatalf("delete final session status = %d, body = %s", response.Code, response.Body.String())
 	}
 
-	settings := map[string]any{"defaultPaneFontSize": 18, "defaultTheme": "studio", "themeId": "hacker", "deskbarButtonEnabled": false}
+	settings := map[string]any{
+		"defaultPaneFontSize": 18, "defaultTheme": "studio", "themeId": "hacker",
+		"deskbarButtonEnabled": false, "terminalWheelSensitivity": 0.5,
+		"editorWheelSensitivity": 2.0,
+	}
 	response = request(http.MethodPut, "/api/users/alice/settings", settings)
 	if response.Code != http.StatusOK {
 		t.Fatalf("save settings status = %d, body = %s", response.Code, response.Body.String())
@@ -89,5 +93,8 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	}
 	if loadedSettings.DeskbarButtonEnabled {
 		t.Fatalf("deskbar button setting was not persisted: %+v", loadedSettings)
+	}
+	if loadedSettings.TerminalWheelSensitivity != 0.5 || loadedSettings.EditorWheelSensitivity != 2 {
+		t.Fatalf("wheel sensitivity settings were not persisted: %+v", loadedSettings)
 	}
 }

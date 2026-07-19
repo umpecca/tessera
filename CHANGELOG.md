@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reconnect unexpectedly closed Terminal WebSockets with capped backoff,
+  independently from the server-health recovery dialog.
+
+- Add independent per-user Terminal and editor wheel sensitivity controls,
+  applied immediately across terminal scrollback/TUI input and Worksheet/Text
+  Editor scrolling.
 - Make self-update recovery wait for the expected new server version, tolerate
   a dropped restart acknowledgement, and restore the reconnect modal instead
   of leaving the browser client locked in a stale restarting state.

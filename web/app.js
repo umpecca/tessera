@@ -23,6 +23,12 @@ import {
 import { textEditorLanguageID } from "./text-editor-language.mjs";
 import { nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion } from "./server-update.mjs";
+import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
+import {
+  normalizeWheelSensitivity,
+  wheelDeltaUnits,
+  wheelSensitivityOptions,
+} from "./wheel-sensitivity.mjs";
 
 const board = document.querySelector("#board");
 const tabHeight = 24;
@@ -89,6 +95,8 @@ const maximumFileBrowserSidebarWidth = 480;
 let fileBrowserSidebarResizeDrag = null;
 let defaultPaneFontSize = fallbackPaneFontSize;
 let deskbarButtonEnabled = true;
+let terminalWheelSensitivity = 1;
+let editorWheelSensitivity = 1;
 let audioStationState = null;
 let audioStationEvents = null;
 let audioStationReconnectTimer = null;
@@ -210,6 +218,16 @@ function setDefaultTheme(id) {
 
 function setDefaultPaneFontSize(fontSize) {
   defaultPaneFontSize = normalizePaneFontSize(fontSize);
+  scheduleUserSettingsSave();
+}
+
+function setWheelSensitivity(kind, value) {
+  const normalized = normalizeWheelSensitivity(value);
+  if (kind === "terminal") {
+    terminalWheelSensitivity = normalized;
+  } else {
+    editorWheelSensitivity = normalized;
+  }
   scheduleUserSettingsSave();
 }
 
@@ -364,6 +382,8 @@ async function loadUserSettings() {
   defaultPaneFontSize = normalizePaneFontSize(settings.defaultPaneFontSize);
   defaultTheme = themes[settings.defaultTheme] ? settings.defaultTheme : defaultThemeID;
   deskbarButtonEnabled = settings.deskbarButtonEnabled !== false;
+  terminalWheelSensitivity = normalizeWheelSensitivity(settings.terminalWheelSensitivity);
+  editorWheelSensitivity = normalizeWheelSensitivity(settings.editorWheelSensitivity);
   applyTheme(settings.themeId || defaultTheme, { save: false });
   updateDeskbar();
 }
@@ -2617,6 +2637,7 @@ function mountWorksheetEditor(rect) {
     extensions: editorExtensions,
     parent: rect.body,
   });
+  attachEditorWheelSensitivity(rect.editor);
   rect.editor.dom.addEventListener("pointerdown", (event) => startWorksheetLineSelection(event, rect));
   updateWorksheetEditorModeUI(rect);
 }
@@ -2677,8 +2698,26 @@ function mountTextEditor(rect, options = {}) {
     ],
     parent: editorHost,
   });
+  attachEditorWheelSensitivity(rect.editor);
   renderTextEditorTabs(rect);
   updateTextEditorFileUI(rect);
+}
+
+function attachEditorWheelSensitivity(editor) {
+  const scroller = editor?.scrollDOM;
+  if (!scroller) {
+    return;
+  }
+  scroller.addEventListener("wheel", (event) => {
+    if (editorWheelSensitivity === 1 || event.deltaY === 0) {
+      return;
+    }
+    const lineHeight = editor.defaultLineHeight || 20;
+    const pageLines = Math.max(1, scroller.clientHeight / lineHeight);
+    const lines = wheelDeltaUnits(event.deltaY, event.deltaMode, lineHeight, pageLines);
+    event.preventDefault();
+    scroller.scrollTop += lines * lineHeight * editorWheelSensitivity;
+  }, { passive: false });
 }
 
 function renderTextEditorTabs(rect) {
@@ -3501,7 +3540,14 @@ async function saveUserSettings() {
   const response = await fetch(userAPIPath("settings"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ defaultPaneFontSize, defaultTheme, themeId: themeID, deskbarButtonEnabled }),
+    body: JSON.stringify({
+      defaultPaneFontSize,
+      defaultTheme,
+      themeId: themeID,
+      deskbarButtonEnabled,
+      terminalWheelSensitivity,
+      editorWheelSensitivity,
+    }),
   });
   if (!response.ok) {
     throw new Error(`save user settings failed: ${response.status}`);
@@ -3842,43 +3888,17 @@ async function startTerminal(rect) {
       setActivePane(activeRect, { focusEditor: true });
     }
 
-    const socket = new WebSocket(terminalWebSocketURL(rect, term.cols, term.rows));
-    socket.binaryType = "arraybuffer";
     const dataDisposable = term.onData((data) => {
-      sendTerminalInput(socket, data);
+      sendTerminalInput(rect.terminal?.socket, data);
     });
     const resizeDisposable = term.onResize(({ cols, rows }) => {
-      sendTerminalResize(socket, cols, rows);
+      sendTerminalResize(rect.terminal?.socket, cols, rows);
     });
-    const mouseBridge = attachTerminalMouseBridge(rect, term, socket);
-
-    socket.addEventListener("open", () => {
-      setPaneCwd(rect, rect.cwd, { silent: true });
-      sendTerminalResize(socket, term.cols, term.rows);
-      // Only the active pane's terminal may take focus when it comes up;
-      // otherwise whichever terminal connects last steals it (e.g. when a
-      // session load starts several terminals at once).
-      if (activeRect === rect) {
-        term.focus();
-      }
-    });
-    socket.addEventListener("message", (event) => {
-      if (typeof event.data === "string") {
-        term.write(event.data);
-        return;
-      }
-      term.write(new Uint8Array(event.data));
-    });
-    socket.addEventListener("close", () => {
-      if (rect.terminal?.socket === socket) {
-        term.write("\r\n[tessera terminal disconnected]\r\n");
-      }
-    });
-    socket.addEventListener("error", () => {
-      term.write("\r\n[tessera terminal connection error]\r\n");
-    });
-
-    rect.terminal = { term, fit, socket, dataDisposable, resizeDisposable, mouseBridge };
+    rect.terminal = {
+      term, fit, socket: null, dataDisposable, resizeDisposable, mouseBridge: null,
+      reconnectTimer: null, reconnectAttempts: 0,
+    };
+    connectTerminalSocket(rect);
     requestTerminalFit(rect);
   } catch (error) {
     console.warn(error);
@@ -3886,6 +3906,64 @@ async function startTerminal(rect) {
       rect.terminalContainer.textContent = error.message || "Terminal failed to start";
     }
   }
+}
+
+function connectTerminalSocket(rect) {
+  const terminalState = rect?.terminal;
+  if (!terminalState?.term || rect.kind !== "terminal") {
+    return;
+  }
+  terminalState.reconnectTimer = null;
+  const { term } = terminalState;
+  const socket = new WebSocket(terminalWebSocketURL(rect, term.cols, term.rows));
+  socket.binaryType = "arraybuffer";
+  terminalState.socket = socket;
+  terminalState.mouseBridge?.dispose?.();
+  terminalState.mouseBridge = attachTerminalMouseBridge(rect, term, socket);
+
+  socket.addEventListener("open", () => {
+    if (rect.terminal?.socket !== socket) {
+      return;
+    }
+    terminalState.reconnectAttempts = 0;
+    setPaneCwd(rect, rect.cwd, { silent: true });
+    sendTerminalResize(socket, term.cols, term.rows);
+    // Only the active pane's terminal may take focus when it comes up;
+    // otherwise whichever terminal connects last steals it.
+    if (activeRect === rect) {
+      term.focus();
+    }
+  });
+  socket.addEventListener("message", (event) => {
+    if (rect.terminal?.socket !== socket) {
+      return;
+    }
+    if (typeof event.data === "string") {
+      term.write(event.data);
+      return;
+    }
+    term.write(new Uint8Array(event.data));
+  });
+  socket.addEventListener("close", () => {
+    if (rect.terminal?.socket === socket) {
+      scheduleTerminalReconnect(rect, terminalState);
+    }
+  });
+}
+
+function scheduleTerminalReconnect(rect, terminalState) {
+  if (terminalState.reconnectTimer !== null) {
+    return;
+  }
+  const delay = terminalReconnectDelay(terminalState.reconnectAttempts);
+  terminalState.reconnectAttempts += 1;
+  terminalState.term.write(`\r\n[tessera terminal disconnected; reconnecting in ${Math.ceil(delay / 1000)}s]\r\n`);
+  terminalState.reconnectTimer = window.setTimeout(() => {
+    terminalState.reconnectTimer = null;
+    if (rect.terminal === terminalState) {
+      connectTerminalSocket(rect);
+    }
+  }, delay);
 }
 
 function attachTerminalMouseBridge(rect, term, socket) {
@@ -3896,6 +3974,19 @@ function attachTerminalMouseBridge(rect, term, socket) {
 
   let activePointerID = null;
   let activeButtonCode = null;
+  let wheelRemainder = 0;
+  let wheelDirection = 0;
+
+  const scaledDiscreteWheelSteps = (baseSteps, direction) => {
+    if (direction !== wheelDirection) {
+      wheelRemainder = 0;
+      wheelDirection = direction;
+    }
+    const scaled = baseSteps * terminalWheelSensitivity + wheelRemainder;
+    const steps = Math.min(20, Math.floor(scaled));
+    wheelRemainder = scaled - Math.floor(scaled);
+    return steps;
+  };
 
   const onPointerDown = (event) => {
     const buttonCode = terminalMouseButtonCode(event.button);
@@ -3963,18 +4054,44 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 
   const onWheel = (event) => {
-    if (!terminalShouldReportMouse(term, event)) {
+    if (event.deltaY === 0) {
       return false;
     }
-    const position = terminalMousePosition(term, container, event);
-    if (!position || event.deltaY === 0) {
+
+    const direction = event.deltaY < 0 ? -1 : 1;
+    if (terminalShouldReportMouse(term, event)) {
+      const position = terminalMousePosition(term, container, event);
+      if (!position) {
+        return false;
+      }
+      const buttonCode = direction < 0 ? 64 : 65;
+      const baseSteps = Math.min(5, Math.max(1, Math.round(Math.abs(event.deltaY) / 40)));
+      const steps = terminalWheelSensitivity === 1
+        ? baseSteps
+        : scaledDiscreteWheelSteps(baseSteps, direction);
+      for (let index = 0; index < steps; index += 1) {
+        sendTerminalMouseSequence(socket, terminalMouseEventCode(buttonCode, event), position, "M");
+      }
+      return true;
+    }
+
+    if (terminalWheelSensitivity === 1) {
       return false;
     }
-    const buttonCode = event.deltaY < 0 ? 64 : 65;
-    const steps = Math.min(5, Math.max(1, Math.round(Math.abs(event.deltaY) / 40)));
-    for (let index = 0; index < steps; index += 1) {
-      sendTerminalMouseSequence(socket, terminalMouseEventCode(buttonCode, event), position, "M");
+
+    if (term.wasmTerm?.isAlternateScreen?.()) {
+      const baseSteps = Math.min(5, Math.abs(Math.round(event.deltaY / 33)));
+      const steps = scaledDiscreteWheelSteps(baseSteps, direction);
+      const sequence = direction < 0 ? "\x1B[A" : "\x1B[B";
+      for (let index = 0; index < steps; index += 1) {
+        term.input(sequence, true);
+      }
+      return true;
     }
+
+    const lineHeight = term.renderer?.getMetrics?.().height || 20;
+    const lines = wheelDeltaUnits(event.deltaY, event.deltaMode, lineHeight, term.rows);
+    term.scrollLines(lines * terminalWheelSensitivity);
     return true;
   };
 
@@ -4069,13 +4186,13 @@ function terminalWebSocketURL(rect, cols, rows) {
 }
 
 function sendTerminalInput(socket, data) {
-  if (socket.readyState === WebSocket.OPEN) {
+  if (socket?.readyState === WebSocket.OPEN) {
     socket.send(terminalTextEncoder.encode(data));
   }
 }
 
 function sendTerminalResize(socket, cols, rows) {
-  if (socket.readyState !== WebSocket.OPEN) {
+  if (socket?.readyState !== WebSocket.OPEN) {
     return;
   }
   socket.send(JSON.stringify({
@@ -4107,6 +4224,10 @@ function disposeTerminal(rect, options = {}) {
   }
   const terminalState = rect.terminal;
   rect.terminal = null;
+  if (terminalState.reconnectTimer !== null) {
+    window.clearTimeout(terminalState.reconnectTimer);
+    terminalState.reconnectTimer = null;
+  }
   if (options.closeServer) {
     closeServerTerminal(rect);
   }
@@ -5000,7 +5121,7 @@ function renderSettingsModal() {
   settingsModal.replaceChildren();
 
   const panel = document.createElement("section");
-  panel.className = "settings-panel";
+  panel.className = "settings-panel settings-main-panel";
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-modal", "true");
   panel.setAttribute("aria-labelledby", "settings-title");
@@ -5027,6 +5148,20 @@ function renderSettingsModal() {
       renderSettingsModal();
     }),
     renderCurrentPaneFontRow(),
+  ]));
+  content.appendChild(renderSettingsSection("Scroll wheel", [
+    renderSettingsWheelRow(
+      "Terminal",
+      "Controls terminal scrollback and wheel input in full-screen terminal apps.",
+      terminalWheelSensitivity,
+      (next) => setWheelSensitivity("terminal", next),
+    ),
+    renderSettingsWheelRow(
+      "Editor",
+      "Controls Worksheet and Text Editor scrolling.",
+      editorWheelSensitivity,
+      (next) => setWheelSensitivity("editor", next),
+    ),
   ]));
   content.appendChild(renderSettingsSection("Theme", [
     renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
@@ -5215,6 +5350,32 @@ function renderSettingsThemeRow(labelText, description, value, onChange) {
     option.value = id;
     option.textContent = theme.label;
     option.selected = id === value;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => onChange(select.value));
+  row.append(label, select);
+  return row;
+}
+
+function renderSettingsWheelRow(labelText, description, value, onChange) {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = labelText;
+  const detail = document.createElement("span");
+  detail.textContent = description;
+  label.append(name, detail);
+
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", `${labelText} wheel speed`);
+  for (const multiplier of wheelSensitivityOptions) {
+    const option = document.createElement("option");
+    option.value = String(multiplier);
+    option.textContent = multiplier === 1 ? "1.0×" : `${multiplier}×`;
+    option.selected = multiplier === value;
     select.appendChild(option);
   }
   select.addEventListener("change", () => onChange(select.value));

@@ -230,10 +230,13 @@ Workspace behavior includes:
 - Use `Ctrl+K`/`Cmd+K` to search commands, pane types, sessions, themes, and
   open windows.
 - Cycle active panes with `Ctrl+]` and `Ctrl+[`.
-- Choose a theme, default pane font size, and per-session background image.
+- Choose a theme, default pane font size, per-session background image, and
+  independent Terminal and editor wheel-scroll speeds.
 - Persist the active pane and complete workspace document to SQLite.
 - Detect loss of the server connection and present Reconnect and Refresh Page
   actions. Recovery is confirmed before the current session route is reloaded.
+- Reconnect an unexpectedly closed Terminal WebSocket automatically without
+  treating that pane transport failure as a server outage.
 
 ## Users and named sessions
 

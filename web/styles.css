@@ -2344,6 +2344,17 @@ input {
   padding: 14px;
 }
 
+.settings-main-panel {
+  max-height: calc(100dvh - 48px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.settings-main-panel > .settings-content {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .settings-section {
   display: grid;
   gap: 6px;

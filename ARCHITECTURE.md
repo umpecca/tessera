@@ -189,6 +189,8 @@ route/history synchronization, and client/server connection recovery. A
 low-frequency health monitor opens one recovery dialog after consecutive
 failures; restored connections reload only after user confirmation, except an
 explicit Reconnect action which verifies health and then reloads.
+Per-user settings also carry independent wheel sensitivity multipliers for
+Terminal panes and CodeMirror-based Worksheet/Text Editor panes.
 
 ### Backend Services
 
