@@ -123,7 +123,7 @@ func commandForPlatform(ctx context.Context, command string) *exec.Cmd {
 			"exit \"$__tessera_exit_code\"\n"
 		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", script)
 	}
-	hideConsoleWindow(cmd)
+	configureCommand(cmd)
 	return cmd
 }
 

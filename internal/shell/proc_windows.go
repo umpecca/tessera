@@ -12,6 +12,6 @@ import (
 // (tessera-desktop). Command stdio is piped, so no console is ever needed.
 const createNoWindow = 0x08000000
 
-func hideConsoleWindow(cmd *exec.Cmd) {
+func configureCommand(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 }

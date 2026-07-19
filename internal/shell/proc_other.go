@@ -1,7 +1,7 @@
-//go:build !windows
+//go:build !windows && !darwin && !freebsd && !linux && !openbsd
 
 package shell
 
 import "os/exec"
 
-func hideConsoleWindow(cmd *exec.Cmd) {}
+func configureCommand(cmd *exec.Cmd) {}
