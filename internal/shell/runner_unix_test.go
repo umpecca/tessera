@@ -13,7 +13,7 @@ func TestRunnerCancellationTerminatesChildProcesses(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	events := (&Runner{}).Run(ctx, RunRequest{
 		RunID:   "run-cancel-test",
-		Command: "printf 'ready\\n'\nsleep 10",
+		Command: "sleep 10 &\nchild=$!\nprintf 'ready\\n'\nwait \"$child\"",
 		Cwd:     t.TempDir(),
 	})
 

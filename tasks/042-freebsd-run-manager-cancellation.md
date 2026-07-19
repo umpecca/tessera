@@ -41,6 +41,9 @@ stop workspace one: context deadline exceeded
 - Added a Unix-only regression test that waits for a shell command to start a
   ten-second child, cancels it, and requires the event stream to close within
   two seconds.
+- The test starts the child in the background before emitting its readiness
+  marker, avoiding a macOS race where cancellation could occur before the
+  child joined the command process group.
 - Passed focused shell/run-manager tests, the full Go suite, `go vet ./...`,
   `git diff --check`, and FreeBSD/OpenBSD amd64 compile checks for the shell test
   package.
