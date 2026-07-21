@@ -48,6 +48,7 @@
  */
 :root {
   --tessera-font: "Fira Code", monospace;
+  --oled-window-border-size: 10px;
 
   /*"Tessera Swiss", Arial, Helvetica, sans-serif;*/
 
@@ -506,7 +507,7 @@
 }
 
 :root[data-theme="oled-terminal"] .rectangle {
-  border-width: 10px;
+  border-width: var(--oled-window-border-size);
   border-color: rgba(180, 180, 180, 0.22);
 }
 
@@ -534,61 +535,61 @@
   border-width: 0;
 }
 
-/* OLED panes hide the title tab and use a 10px visible border. Keep the
+/* OLED panes hide the title tab and use the configured visible border. Keep the
    invisible resize targets on that border instead of in the hidden tab area,
    so every visible edge consistently resizes before generic pane dragging can
    see the pointer event. */
 :root[data-theme="oled-terminal"] .resize-edge-n {
-  top: -10px;
+  top: calc(0px - var(--oled-window-border-size));
   right: 0;
   left: 0;
-  height: 10px;
+  height: var(--oled-window-border-size);
 }
 
 :root[data-theme="oled-terminal"] .resize-edge-e {
   top: 0;
-  right: -10px;
+  right: calc(0px - var(--oled-window-border-size));
   bottom: 0;
-  width: 10px;
+  width: var(--oled-window-border-size);
 }
 
 :root[data-theme="oled-terminal"] .resize-edge-w {
   top: 0;
   bottom: 0;
-  left: -10px;
-  width: 10px;
+  left: calc(0px - var(--oled-window-border-size));
+  width: var(--oled-window-border-size);
 }
 
 :root[data-theme="oled-terminal"] .resize-edge-s {
   right: 0;
-  bottom: -10px;
+  bottom: calc(0px - var(--oled-window-border-size));
   left: 0;
-  height: 10px;
+  height: var(--oled-window-border-size);
 }
 
 :root[data-theme="oled-terminal"] .resize-handle {
-  width: 20px;
-  height: 20px;
+  width: calc(var(--oled-window-border-size) + var(--oled-window-border-size));
+  height: calc(var(--oled-window-border-size) + var(--oled-window-border-size));
 }
 
 :root[data-theme="oled-terminal"] .handle-nw {
-  top: -10px;
-  left: -10px;
+  top: calc(0px - var(--oled-window-border-size));
+  left: calc(0px - var(--oled-window-border-size));
 }
 
 :root[data-theme="oled-terminal"] .handle-ne {
-  top: -10px;
-  right: -10px;
+  top: calc(0px - var(--oled-window-border-size));
+  right: calc(0px - var(--oled-window-border-size));
 }
 
 :root[data-theme="oled-terminal"] .handle-se {
-  right: -10px;
-  bottom: -10px;
+  right: calc(0px - var(--oled-window-border-size));
+  bottom: calc(0px - var(--oled-window-border-size));
 }
 
 :root[data-theme="oled-terminal"] .handle-sw {
-  bottom: -10px;
-  left: -10px;
+  bottom: calc(0px - var(--oled-window-border-size));
+  left: calc(0px - var(--oled-window-border-size));
 }
 
 :root[data-theme="oled-terminal"] .window-status {

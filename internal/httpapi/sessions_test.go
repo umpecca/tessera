@@ -77,7 +77,7 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	settings := map[string]any{
 		"defaultPaneFontSize": 18, "defaultTheme": "studio", "themeId": "hacker",
 		"deskbarButtonEnabled": false, "terminalWheelSensitivity": 0.5,
-		"editorWheelSensitivity": 2.0,
+		"editorWheelSensitivity": 2.0, "oledWindowBorderSize": 16,
 	}
 	response = request(http.MethodPut, "/api/users/alice/settings", settings)
 	if response.Code != http.StatusOK {
@@ -96,5 +96,8 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	}
 	if loadedSettings.TerminalWheelSensitivity != 0.5 || loadedSettings.EditorWheelSensitivity != 2 {
 		t.Fatalf("wheel sensitivity settings were not persisted: %+v", loadedSettings)
+	}
+	if loadedSettings.OLEDWindowBorderSize != 16 {
+		t.Fatalf("OLED window border size was not persisted: %+v", loadedSettings)
 	}
 }

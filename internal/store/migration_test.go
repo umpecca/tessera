@@ -59,7 +59,7 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 	assertTableColumns(t, st.db, "user_settings", []string{
 		"user_id", "default_pane_font_size", "default_theme", "theme_id",
 		"deskbar_button_enabled", "terminal_wheel_sensitivity",
-		"editor_wheel_sensitivity", "created_at", "updated_at",
+		"editor_wheel_sensitivity", "oled_window_border_size", "created_at", "updated_at",
 	})
 	if err := st.Close(); err != nil {
 		t.Fatalf("close fresh store: %v", err)
@@ -195,7 +195,7 @@ func TestUnversionedCurrentSchemaAdoptionPreservesNamedSessions(t *testing.T) {
 		t.Fatalf("load adopted settings: %v", err)
 	}
 	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" || !settings.DeskbarButtonEnabled ||
-		settings.TerminalWheelSensitivity != 1 || settings.EditorWheelSensitivity != 1 {
+		settings.TerminalWheelSensitivity != 1.5 || settings.EditorWheelSensitivity != 1.5 || settings.OLEDWindowBorderSize != 10 {
 		t.Fatalf("adopted settings changed: %+v", settings)
 	}
 }

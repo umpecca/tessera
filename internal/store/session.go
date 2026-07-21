@@ -32,13 +32,22 @@ type UserSettings struct {
 	DeskbarButtonEnabled     bool    `json:"deskbarButtonEnabled"`
 	TerminalWheelSensitivity float64 `json:"terminalWheelSensitivity"`
 	EditorWheelSensitivity   float64 `json:"editorWheelSensitivity"`
+	OLEDWindowBorderSize     int     `json:"oledWindowBorderSize"`
 }
 
-const defaultWheelSensitivity = 1.0
+const defaultWheelSensitivity = 1.5
+const defaultOLEDWindowBorderSize = 10
 
 func normalizeWheelSensitivity(value float64) float64 {
 	if value < 0.25 || value > 4 {
 		return defaultWheelSensitivity
+	}
+	return value
+}
+
+func normalizeOLEDWindowBorderSize(value int) int {
+	if value < 1 || value > 20 {
+		return defaultOLEDWindowBorderSize
 	}
 	return value
 }
@@ -258,21 +267,22 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 	var settings UserSettings
 	err := s.db.QueryRowContext(ctx, `
 SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled,
-       terminal_wheel_sensitivity, editor_wheel_sensitivity
+       terminal_wheel_sensitivity, editor_wheel_sensitivity, oled_window_border_size
 FROM user_settings
 WHERE user_id = ?`, userID).Scan(
 		&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme,
 		&settings.ThemeID, &settings.DeskbarButtonEnabled,
-		&settings.TerminalWheelSensitivity, &settings.EditorWheelSensitivity)
+		&settings.TerminalWheelSensitivity, &settings.EditorWheelSensitivity,
+		&settings.OLEDWindowBorderSize)
 	if errors.Is(err, sql.ErrNoRows) {
 		now := nowText()
 		if _, err := s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
-  editor_wheel_sensitivity, created_at, updated_at
+  editor_wheel_sensitivity, oled_window_border_size, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, now, now); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, defaultOLEDWindowBorderSize, now, now); err != nil {
 			return nil, fmt.Errorf("create user settings: %w", err)
 		}
 		return s.LoadUserSettings(ctx, userID)
@@ -285,6 +295,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID
 	settings.ThemeID = normalizeThemeID(settings.ThemeID)
 	settings.TerminalWheelSensitivity = normalizeWheelSensitivity(settings.TerminalWheelSensitivity)
 	settings.EditorWheelSensitivity = normalizeWheelSensitivity(settings.EditorWheelSensitivity)
+	settings.OLEDWindowBorderSize = normalizeOLEDWindowBorderSize(settings.OLEDWindowBorderSize)
 	return &settings, nil
 }
 
@@ -300,14 +311,15 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 	settings.ThemeID = normalizeThemeID(settings.ThemeID)
 	settings.TerminalWheelSensitivity = normalizeWheelSensitivity(settings.TerminalWheelSensitivity)
 	settings.EditorWheelSensitivity = normalizeWheelSensitivity(settings.EditorWheelSensitivity)
+	settings.OLEDWindowBorderSize = normalizeOLEDWindowBorderSize(settings.OLEDWindowBorderSize)
 	now := nowText()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
-  editor_wheel_sensitivity, created_at, updated_at
+  editor_wheel_sensitivity, oled_window_border_size, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
   default_theme = excluded.default_theme,
@@ -315,9 +327,11 @@ ON CONFLICT(user_id) DO UPDATE SET
   deskbar_button_enabled = excluded.deskbar_button_enabled,
   terminal_wheel_sensitivity = excluded.terminal_wheel_sensitivity,
   editor_wheel_sensitivity = excluded.editor_wheel_sensitivity,
+  oled_window_border_size = excluded.oled_window_border_size,
   updated_at = excluded.updated_at`, settings.UserID, settings.DefaultPaneFontSize,
 		settings.DefaultTheme, settings.ThemeID, settings.DeskbarButtonEnabled,
-		settings.TerminalWheelSensitivity, settings.EditorWheelSensitivity, now, now)
+		settings.TerminalWheelSensitivity, settings.EditorWheelSensitivity,
+		settings.OLEDWindowBorderSize, now, now)
 	if err != nil {
 		return fmt.Errorf("save user settings: %w", err)
 	}

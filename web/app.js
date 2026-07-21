@@ -25,6 +25,13 @@ import { nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion } from "./server-update.mjs";
 import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
 import {
+  defaultOLEDBorderSize,
+  maximumOLEDBorderSize,
+  minimumOLEDBorderSize,
+  normalizeOLEDBorderSize,
+} from "./oled-border-size.mjs";
+import {
+  defaultWheelSensitivity,
   normalizeWheelSensitivity,
   wheelDeltaUnits,
   wheelSensitivityOptions,
@@ -95,8 +102,9 @@ const maximumFileBrowserSidebarWidth = 480;
 let fileBrowserSidebarResizeDrag = null;
 let defaultPaneFontSize = fallbackPaneFontSize;
 let deskbarButtonEnabled = true;
-let terminalWheelSensitivity = 1;
-let editorWheelSensitivity = 1;
+let terminalWheelSensitivity = defaultWheelSensitivity;
+let editorWheelSensitivity = defaultWheelSensitivity;
+let oledWindowBorderSize = defaultOLEDBorderSize;
 let audioStationState = null;
 let audioStationEvents = null;
 let audioStationReconnectTimer = null;
@@ -229,6 +237,14 @@ function setWheelSensitivity(kind, value) {
     editorWheelSensitivity = normalized;
   }
   scheduleUserSettingsSave();
+}
+
+function setOLEDWindowBorderSize(value, { save = true } = {}) {
+  oledWindowBorderSize = normalizeOLEDBorderSize(value);
+  document.documentElement.style.setProperty("--oled-window-border-size", `${oledWindowBorderSize}px`);
+  if (save) {
+    scheduleUserSettingsSave();
+  }
 }
 
 function applyTheme(id, { save = true } = {}) {
@@ -384,6 +400,7 @@ async function loadUserSettings() {
   deskbarButtonEnabled = settings.deskbarButtonEnabled !== false;
   terminalWheelSensitivity = normalizeWheelSensitivity(settings.terminalWheelSensitivity);
   editorWheelSensitivity = normalizeWheelSensitivity(settings.editorWheelSensitivity);
+  setOLEDWindowBorderSize(settings.oledWindowBorderSize, { save: false });
   applyTheme(settings.themeId || defaultTheme, { save: false });
   updateDeskbar();
 }
@@ -3547,6 +3564,7 @@ async function saveUserSettings() {
       deskbarButtonEnabled,
       terminalWheelSensitivity,
       editorWheelSensitivity,
+      oledWindowBorderSize,
     }),
   });
   if (!response.ok) {
@@ -5166,6 +5184,7 @@ function renderSettingsModal() {
   content.appendChild(renderSettingsSection("Theme", [
     renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
     renderSettingsThemeRow("Current", "Applied across this user's sessions immediately.", themeID, (next) => applyTheme(next)),
+    renderSettingsOLEDWindowBorderRow(),
   ]));
   content.appendChild(renderSettingsSection("Background", [
     renderSettingsBackgroundRow(),
@@ -5354,6 +5373,44 @@ function renderSettingsThemeRow(labelText, description, value, onChange) {
   }
   select.addEventListener("change", () => onChange(select.value));
   row.append(label, select);
+  return row;
+}
+
+function renderSettingsOLEDWindowBorderRow() {
+  const row = document.createElement("div");
+  row.className = "settings-row";
+  const label = document.createElement("div");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "OLED border";
+  const detail = document.createElement("span");
+  detail.textContent = "Window border size used by the OLED Terminal theme.";
+  label.append(name, detail);
+
+  const control = document.createElement("div");
+  control.className = "settings-font-control";
+  const decreaseButton = document.createElement("button");
+  decreaseButton.type = "button";
+  decreaseButton.textContent = "−";
+  decreaseButton.setAttribute("aria-label", "Decrease OLED window border size");
+  decreaseButton.disabled = oledWindowBorderSize <= minimumOLEDBorderSize;
+  decreaseButton.addEventListener("click", () => {
+    setOLEDWindowBorderSize(oledWindowBorderSize - 1);
+    renderSettingsModal();
+  });
+  const size = document.createElement("output");
+  size.textContent = `${oledWindowBorderSize}px`;
+  const increaseButton = document.createElement("button");
+  increaseButton.type = "button";
+  increaseButton.textContent = "+";
+  increaseButton.setAttribute("aria-label", "Increase OLED window border size");
+  increaseButton.disabled = oledWindowBorderSize >= maximumOLEDBorderSize;
+  increaseButton.addEventListener("click", () => {
+    setOLEDWindowBorderSize(oledWindowBorderSize + 1);
+    renderSettingsModal();
+  });
+  control.append(decreaseButton, size, increaseButton);
+  row.append(label, control);
   return row;
 }
 

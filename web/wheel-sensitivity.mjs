@@ -1,4 +1,4 @@
-export const defaultWheelSensitivity = 1;
+export const defaultWheelSensitivity = 1.5;
 export const wheelSensitivityOptions = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
 
 export function normalizeWheelSensitivity(value) {
@@ -17,4 +17,3 @@ export function wheelDeltaUnits(delta, deltaMode, lineSize, pageSize) {
   }
   return delta / lineSize;
 }
-

@@ -9,7 +9,7 @@ import (
 )
 
 func trayIcon() []byte {
-	icon, err := fs.ReadFile(web.Files, "assets/icon-192.png")
+	icon, err := fs.ReadFile(web.Files, "assets/tessera-app-icon-192.png")
 	if err != nil {
 		return nil
 	}

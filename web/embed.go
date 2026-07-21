@@ -7,5 +7,5 @@ import "embed"
 // app. Build inputs (codemirror-entry.js, terminal-entry.js) are excluded;
 // run `npm run build:web` before `go build` when the vendor bundles change.
 //
-//go:embed index.html app.js styles.css text-editor-language.mjs server-connection.mjs server-update.mjs terminal-reconnect.mjs wheel-sensitivity.mjs vendor assets
+//go:embed index.html manifest.webmanifest app.js styles.css text-editor-language.mjs server-connection.mjs server-update.mjs terminal-reconnect.mjs wheel-sensitivity.mjs oled-border-size.mjs vendor assets
 var Files embed.FS
