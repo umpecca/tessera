@@ -24,6 +24,7 @@ import { textEditorLanguageID } from "./text-editor-language.mjs";
 import { nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion } from "./server-update.mjs";
 import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
+import { isTerminalPasteShortcut, terminalNavigationSequence } from "./terminal-keyboard.mjs";
 import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
@@ -3897,6 +3898,21 @@ async function startTerminal(rect) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(rect.terminalContainer);
+    term.attachCustomKeyEventHandler((event) => {
+      if (isTerminalPasteShortcut(event)) {
+        void applyTerminalMenuAction("paste", rect);
+        return true;
+      }
+      const sequence = terminalNavigationSequence(event, {
+        applicationCursorKeys: term.getMode?.(1, false),
+        applicationKeypad: term.getMode?.(66, false),
+      });
+      if (!sequence) {
+        return false;
+      }
+      sendTerminalInput(rect.terminal?.socket, sequence);
+      return true;
+    });
     term.registerLinkProvider(new WrappedHTTPLinkProvider(term));
     fit.fit();
     fit.observeResize();

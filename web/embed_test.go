@@ -9,7 +9,7 @@ import (
 )
 
 func TestTopLevelBrowserAssetsAreEmbedded(t *testing.T) {
-	for _, name := range []string{"manifest.webmanifest", "oled-border-size.mjs"} {
+	for _, name := range []string{"manifest.webmanifest", "oled-border-size.mjs", "terminal-keyboard.mjs"} {
 		if _, err := fs.Stat(Files, name); err != nil {
 			t.Errorf("embedded asset %q: %v", name, err)
 		}
