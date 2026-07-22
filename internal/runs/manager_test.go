@@ -95,7 +95,7 @@ func TestManagerPersistsOutputAfterSubscriberLeaves(t *testing.T) {
 
 func TestStopWorkspaceDoesNotCancelOtherWorkspace(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	st, err := store.Open(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
