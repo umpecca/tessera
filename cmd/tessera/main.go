@@ -114,7 +114,7 @@ func main() {
 
 	if bool(restart) {
 		if err := updater.SpawnReplacement(); err != nil {
-			log.Fatalf("spawn updated executable: %v", err)
+			log.Fatalf("restart updated executable: %v", err)
 		}
 	}
 }

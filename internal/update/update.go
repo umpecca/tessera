@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -393,15 +392,12 @@ func (u *Updater) RequestRestart() {
 	u.restartOnce.Do(func() { close(u.restart) })
 }
 
-// SpawnReplacement starts the updated executable with the same arguments.
-// The caller must have released the listen socket (via Shutdown) first. If
-// Tessera runs under a supervisor, this briefly overlaps with the exiting
-// process; acceptable for interactive use.
+// SpawnReplacement transfers control to the updated executable with the same
+// arguments. The caller must have released the listen socket and other process
+// resources via graceful shutdown first. Unix replaces the current process in
+// place; Windows starts and releases a replacement process.
 func (u *Updater) SpawnReplacement() error {
-	cmd := exec.Command(u.exePath, os.Args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Start()
+	return restartReplacement(u.exePath, os.Args[1:])
 }
 
 func normalizeVersion(v string) string {

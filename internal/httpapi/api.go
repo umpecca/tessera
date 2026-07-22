@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"sync"
 
 	"tessera/internal/audio"
 	"tessera/internal/runs"
@@ -33,6 +34,9 @@ type API struct {
 	// MaxUploadBytes limits one streamed File Browser upload. Values at or below
 	// zero use DefaultMaxUploadBytes.
 	MaxUploadBytes int64
+
+	browserProxyOnce sync.Once
+	browserProxy     *browserProxyManager
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -55,6 +59,9 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/upload", a.uploadFile)
 	mux.HandleFunc("/api/files", a.fileOperations)
 	mux.HandleFunc("/api/update", a.selfUpdate)
+	mux.HandleFunc("/api/browser-proxy", a.browserProxyControl)
+	mux.HandleFunc("/api/browser-proxy/", a.browserProxyControl)
+	mux.HandleFunc("/browser-proxy/", a.browserProxyRequest)
 	mux.HandleFunc("/", a.staticFiles())
 }
 

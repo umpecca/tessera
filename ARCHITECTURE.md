@@ -120,8 +120,11 @@ Primary data flows:
    session.
 2. The SPA loads the workspace document and renders its panes.
 3. Client-side edits and geometry changes are debounced into whole-workspace
-   saves. The server preserves buffers owned by active command runs to prevent
-   stale client saves from overwriting streamed transcript output.
+   saves. Each document carries an opaque revision, and SQLite conditionally
+   replaces it only when the submitted revision is current. A reconnecting
+   browser revalidates before resuming autosave; conflicts pause saving until
+   the latest document is reloaded. The server also preserves buffers owned by
+   active command runs to protect streamed transcript output.
 4. Worksheet commands are sent to the run manager. Output is streamed as NDJSON,
    persisted into the pane transcript, and available for subscriber reattachment.
 5. Terminal panes attach through WebSocket to session-scoped PTY processes.
@@ -178,6 +181,12 @@ Current pane types:
   highlighting selected by file extension.
 - **File Browser:** directory navigation and file copy, move, delete, paste, and
   supported-text-file open behavior.
+- **Browser:** sandboxed loopback development-server view using an ephemeral,
+  capability-addressed path proxy on Tessera's existing listener. The proxy
+  rewrites common root-relative HTTP and WebSocket traffic and strips Tessera
+  cookies before forwarding. A client-only help dialog is shared by the Browser
+  toolbar's network icon and the command palette; it validates and launches a
+  loopback address without adding discovery or port-scanning APIs.
 - **Audio:** controls and listens to one host-wide source. Global transport state
   is synchronized by SSE while volume, mute, and autoplay recovery are local to
   each browser.
@@ -316,8 +325,11 @@ Name: GitHub Release Updater
 
 Description: Checks the latest release, selects exact Tessera and LAME
 OS/architecture assets, stops live capture, installs both transactionally with
-rollback, requests shutdown, and launches the replacement. It can bootstrap a
-missing exact-version LAME companion after an upgrade from a legacy updater.
+rollback, and requests a graceful shutdown. After shutdown, Unix platforms
+`exec` the replacement in place so relaunch does not depend on a supervisor;
+Windows starts the replacement and releases the child process before exiting.
+It can bootstrap a missing exact-version LAME companion after an upgrade from
+a legacy updater.
 
 Technologies: GitHub Releases REST API and Go HTTP/file APIs.
 
@@ -444,6 +456,8 @@ Key Security Tools/Practices:
 - Treat audio URL proxying, host-path selection, Terminal PID selection, and
   shared transport control as equally trusted capabilities. URL proxying can
   reach network resources visible to the host.
+- Restrict Browser pane proxy sessions to dial-validated loopback addresses;
+  never turn the path proxy into a general host-network proxy.
 - Reject cross-origin terminal WebSocket connections. This is defense in depth,
   not authentication.
 - Scope process teardown by workspace so deleting one session does not terminate

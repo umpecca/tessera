@@ -148,6 +148,14 @@ Current pane types:
   multiple files, reports progress, supports drag-and-drop, and confirms before
   replacing an existing regular file. Supported text files open in a Text
   Editor pane.
+- **Browser:** a sandboxed view of an HTTP(S) development server on the Tessera
+  host. Enter a loopback address such as `localhost:5000`; Tessera forwards the
+  page, assets, forms, fetches, redirects, and hot-reload WebSockets through its
+  existing listener without exposing the development-server port. Service
+  workers, strict origin assumptions, and complex authentication may require
+  project-specific configuration. Open **Browse Local Port Help** from the
+  command palette (`BL`) or use the network icon in a Browser pane for an
+  interactive guide and launcher.
 - **Audio:** a view of the host-wide shared audio station. It can play a host
   file, proxy a direct HTTP(S) audio response, or capture audio rendered by a
   linked Terminal process tree. Transport controls are shared; browser volume
@@ -233,6 +241,8 @@ Workspace behavior includes:
 - Choose a theme, default pane font size, per-session background image, and
   independent Terminal and editor wheel-scroll speeds.
 - Persist the active pane and complete workspace document to SQLite.
+- Reject stale whole-workspace saves from older tabs or reconnecting computers;
+  autosave pauses and offers to reload when a newer revision already exists.
 - Detect loss of the server connection and present Reconnect and Refresh Page
   actions. Recovery is confirmed before the current session route is reloaded.
 - Reconnect an unexpectedly closed Terminal WebSocket automatically without
@@ -412,9 +422,11 @@ run on native macOS runners with `CGO_ENABLED=1` for tray support.
 
 The in-app updater checks the latest GitHub Release, downloads the Tessera and
 LAME assets matching the current operating system and architecture, installs
-them as one rollback-capable transaction, and restarts Tessera. A new Tessera
-binary installed by a legacy updater can fetch its exact-version LAME companion
-on the first Terminal capture attempt. LAME 3.100 is distributed under the LGPL;
-the release includes its license and corresponding pinned source archive.
-Anonymous GitHub Releases API access is used, so release assets must be
-reachable without private repository credentials.
+them as one rollback-capable transaction, and restarts Tessera without requiring
+a service manager or watchdog. macOS and other Unix builds replace the stopped
+process in place; Windows releases a newly launched replacement process. A new
+Tessera binary installed by a legacy updater can fetch its exact-version LAME
+companion on the first Terminal capture attempt. LAME 3.100 is distributed under
+the LGPL; the release includes its license and corresponding pinned source
+archive. Anonymous GitHub Releases API access is used, so release assets must
+be reachable without private repository credentials.

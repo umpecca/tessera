@@ -1,0 +1,1 @@
+ALTER TABLE panes ADD COLUMN browser_url TEXT NOT NULL DEFAULT '';

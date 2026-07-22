@@ -30,12 +30,12 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 	assertTableColumns(t, st.db, "workspaces", []string{
 		"id", "owner_id", "name", "active_pane_id", "layout_json",
 		"background_mode", "default_pane_font_size", "default_theme",
-		"theme_id", "last_opened_at", "created_at", "updated_at",
+		"theme_id", "last_opened_at", "created_at", "updated_at", "revision",
 	})
 	assertTableColumns(t, st.db, "panes", []string{
 		"id", "workspace_id", "kind", "title", "buffer_text", "editor_mode",
 		"font_size", "cwd", "last_export_path", "editor_tabs",
-		"file_browser_sidebar_width", "is_full", "restore_box", "minimized",
+		"file_browser_sidebar_width", "browser_url", "is_full", "restore_box", "minimized",
 		"x", "y", "width", "height", "z_index", "position", "created_at",
 		"updated_at",
 	})

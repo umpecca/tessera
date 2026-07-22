@@ -13,8 +13,11 @@ import (
 
 const DefaultWorkspaceID = "default"
 
+var ErrWorkspaceConflict = errors.New("workspace has changed since it was loaded")
+
 type Workspace struct {
 	ID           string          `json:"id"`
+	Revision     string          `json:"revision"`
 	OwnerID      string          `json:"ownerId,omitempty"`
 	Name         string          `json:"name"`
 	ActivePaneID string          `json:"activePaneId"`
@@ -43,6 +46,7 @@ type Pane struct {
 	LastExportPath          string `json:"lastExportPath"`
 	EditorTabs              string `json:"editorTabs"`
 	FileBrowserSidebarWidth int    `json:"fileBrowserSidebarWidth"`
+	BrowserURL              string `json:"browserUrl"`
 	IsFull                  bool   `json:"isFull"`
 	RestoreBox              string `json:"restoreBox"`
 	Minimized               bool   `json:"minimized"`
@@ -97,9 +101,9 @@ func (s *Store) LoadWorkspace(ctx context.Context, id string) (*Workspace, error
 	var ws Workspace
 	var layoutText string
 	err := s.db.QueryRowContext(ctx, `
-	SELECT id, owner_id, name, active_pane_id, layout_json, background_mode, default_pane_font_size, default_theme, theme_id, last_opened_at
+	SELECT id, revision, owner_id, name, active_pane_id, layout_json, background_mode, default_pane_font_size, default_theme, theme_id, last_opened_at
 FROM workspaces
-WHERE id = ?`, id).Scan(&ws.ID, &ws.OwnerID, &ws.Name, &ws.ActivePaneID, &layoutText, &ws.BackgroundMode, &ws.DefaultPaneFontSize, &ws.DefaultTheme, &ws.ThemeID, &ws.LastOpenedAt)
+WHERE id = ?`, id).Scan(&ws.ID, &ws.Revision, &ws.OwnerID, &ws.Name, &ws.ActivePaneID, &layoutText, &ws.BackgroundMode, &ws.DefaultPaneFontSize, &ws.DefaultTheme, &ws.ThemeID, &ws.LastOpenedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +117,7 @@ WHERE id = ?`, id).Scan(&ws.ID, &ws.OwnerID, &ws.Name, &ws.ActivePaneID, &layout
 	ws.ThemeID = normalizeThemeID(ws.ThemeID)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, is_full, restore_box, minimized, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ?
 ORDER BY position ASC, created_at ASC`, id)
@@ -124,7 +128,7 @@ ORDER BY position ASC, created_at ASC`, id)
 
 	for rows.Next() {
 		var pane Pane
-		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.FileBrowserSidebarWidth, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
+		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.FileBrowserSidebarWidth, &pane.BrowserURL, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
 			return nil, fmt.Errorf("scan pane: %w", err)
 		}
 		if pane.Kind == "" {
@@ -163,10 +167,10 @@ func (s *Store) LoadPane(ctx context.Context, workspaceID, paneID string) (*Pane
 	}
 	var pane Pane
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, is_full, restore_box, minimized, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ? AND id = ?`, workspaceID, paneID).Scan(
-		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.FileBrowserSidebarWidth, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
+		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.FileBrowserSidebarWidth, &pane.BrowserURL, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
 	if err != nil {
 		return nil, err
 	}
@@ -212,22 +216,48 @@ func (s *Store) SaveWorkspace(ctx context.Context, ws *Workspace) error {
 	defer tx.Rollback()
 
 	now := nowText()
+	nextRevision := newID()
 	if ws.LastOpenedAt == "" {
 		ws.LastOpenedAt = now
 	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO workspaces (id, owner_id, name, active_pane_id, layout_json, background_mode, default_pane_font_size, default_theme, theme_id, last_opened_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-  active_pane_id = excluded.active_pane_id,
-  layout_json = excluded.layout_json,
-  background_mode = excluded.background_mode,
-  default_pane_font_size = excluded.default_pane_font_size,
-  default_theme = excluded.default_theme,
-  theme_id = excluded.theme_id,
-  updated_at = excluded.updated_at`,
-		ws.ID, ws.OwnerID, ws.Name, ws.ActivePaneID, string(ws.Layout), ws.BackgroundMode, ws.DefaultPaneFontSize, ws.DefaultTheme, ws.ThemeID, ws.LastOpenedAt, now, now); err != nil {
-		return fmt.Errorf("upsert workspace: %w", err)
+	if ws.Revision == "" {
+		result, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO workspaces (id, revision, owner_id, name, active_pane_id, layout_json, background_mode, default_pane_font_size, default_theme, theme_id, last_opened_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ws.ID, nextRevision, ws.OwnerID, ws.Name, ws.ActivePaneID, string(ws.Layout), ws.BackgroundMode, ws.DefaultPaneFontSize, ws.DefaultTheme, ws.ThemeID, ws.LastOpenedAt, now, now)
+		if err != nil {
+			return fmt.Errorf("insert workspace: %w", err)
+		}
+		inserted, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("check workspace insert: %w", err)
+		}
+		if inserted == 0 {
+			return ErrWorkspaceConflict
+		}
+	} else {
+		result, err := tx.ExecContext(ctx, `
+UPDATE workspaces SET
+  active_pane_id = ?,
+  layout_json = ?,
+  background_mode = ?,
+  default_pane_font_size = ?,
+  default_theme = ?,
+  theme_id = ?,
+  revision = ?,
+  updated_at = ?
+WHERE id = ? AND revision = ?`,
+			ws.ActivePaneID, string(ws.Layout), ws.BackgroundMode, ws.DefaultPaneFontSize, ws.DefaultTheme, ws.ThemeID, nextRevision, now, ws.ID, ws.Revision)
+		if err != nil {
+			return fmt.Errorf("update workspace: %w", err)
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("check workspace update: %w", err)
+		}
+		if updated == 0 {
+			return ErrWorkspaceConflict
+		}
 	}
 
 	seen := make(map[string]bool, len(ws.Panes))
@@ -255,8 +285,8 @@ ON CONFLICT(id) DO UPDATE SET
 		seen[pane.ID] = true
 
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   kind = excluded.kind,
   title = excluded.title,
@@ -267,6 +297,7 @@ ON CONFLICT(id) DO UPDATE SET
   last_export_path = excluded.last_export_path,
   editor_tabs = excluded.editor_tabs,
   file_browser_sidebar_width = excluded.file_browser_sidebar_width,
+  browser_url = excluded.browser_url,
   is_full = excluded.is_full,
   restore_box = excluded.restore_box,
   minimized = excluded.minimized,
@@ -277,7 +308,7 @@ ON CONFLICT(id) DO UPDATE SET
   z_index = excluded.z_index,
   position = excluded.position,
   updated_at = excluded.updated_at`,
-			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.FileBrowserSidebarWidth, pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now); err != nil {
+			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.FileBrowserSidebarWidth, pane.BrowserURL, pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now); err != nil {
 			return fmt.Errorf("upsert pane %s: %w", pane.ID, err)
 		}
 	}
@@ -312,6 +343,7 @@ ON CONFLICT(id) DO UPDATE SET
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit workspace: %w", err)
 	}
+	ws.Revision = nextRevision
 	return nil
 }
 

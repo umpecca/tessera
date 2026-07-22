@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -36,6 +37,7 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 		Cwd:            defaultCwd,
 		LastExportPath: filepath.Join(defaultCwd, "first.txt"),
 		EditorTabs:     `{"active":0,"tabs":[{"path":"first.txt","text":"pwd\noutput\n"}]}`,
+		BrowserURL:     "http://localhost:5000/",
 		Minimized:      true,
 		X:              11,
 		Y:              22,
@@ -89,6 +91,9 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	if loaded.Panes[0].EditorTabs == "" {
 		t.Fatal("first pane editor tabs were not persisted")
 	}
+	if loaded.Panes[0].BrowserURL != "http://localhost:5000/" {
+		t.Fatalf("first pane browser URL = %q", loaded.Panes[0].BrowserURL)
+	}
 	if loaded.Panes[0].EditorMode != "normal" {
 		t.Fatalf("first pane editor mode = %q, want normal", loaded.Panes[0].EditorMode)
 	}
@@ -117,6 +122,70 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	}
 	if len(empty.Panes) != 0 {
 		t.Fatalf("empty pane count = %d, want 0", len(empty.Panes))
+	}
+}
+
+func TestWorkspaceRevisionRejectsStaleSaveAndStaysScoped(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.LoadDefaultWorkspace(ctx, ""); err != nil {
+		t.Fatalf("create default workspace: %v", err)
+	}
+	firstClient, err := st.LoadWorkspace(ctx, DefaultWorkspaceID)
+	if err != nil {
+		t.Fatalf("load first client: %v", err)
+	}
+	staleClient, err := st.LoadWorkspace(ctx, DefaultWorkspaceID)
+	if err != nil {
+		t.Fatalf("load stale client: %v", err)
+	}
+	if firstClient.Revision == "" || staleClient.Revision != firstClient.Revision {
+		t.Fatalf("initial revisions = %q and %q", firstClient.Revision, staleClient.Revision)
+	}
+
+	firstClient.Panes = []Pane{{ID: "pane-new", Title: "New state", Width: 320, Height: 200}}
+	firstClient.Layout = json.RawMessage(`{"panes":["pane-new"]}`)
+	initialRevision := firstClient.Revision
+	if err := st.SaveWorkspace(ctx, firstClient); err != nil {
+		t.Fatalf("save first client: %v", err)
+	}
+	if firstClient.Revision == initialRevision {
+		t.Fatal("successful save did not advance revision")
+	}
+
+	staleClient.Panes = []Pane{{ID: "pane-stale", Title: "Stale state", Width: 320, Height: 200}}
+	staleClient.Layout = json.RawMessage(`{"panes":["pane-stale"]}`)
+	if err := st.SaveWorkspace(ctx, staleClient); !errors.Is(err, ErrWorkspaceConflict) {
+		t.Fatalf("stale save error = %v, want workspace conflict", err)
+	}
+	loaded, err := st.LoadWorkspace(ctx, DefaultWorkspaceID)
+	if err != nil {
+		t.Fatalf("reload winning workspace: %v", err)
+	}
+	if len(loaded.Panes) != 1 || loaded.Panes[0].ID != "pane-new" || loaded.Revision != firstClient.Revision {
+		t.Fatalf("stale save changed winning workspace: %+v", loaded)
+	}
+
+	independent := &Workspace{ID: "other", Name: "Other", Layout: json.RawMessage(`{"panes":[]}`)}
+	if err := st.SaveWorkspace(ctx, independent); err != nil {
+		t.Fatalf("create independent workspace: %v", err)
+	}
+	independentRevision := independent.Revision
+	loaded.ActivePaneID = "pane-new"
+	if err := st.SaveWorkspace(ctx, loaded); err != nil {
+		t.Fatalf("save default workspace again: %v", err)
+	}
+	independentReloaded, err := st.LoadWorkspace(ctx, "other")
+	if err != nil {
+		t.Fatalf("reload independent workspace: %v", err)
+	}
+	if independentReloaded.Revision != independentRevision {
+		t.Fatalf("independent revision changed from %q to %q", independentRevision, independentReloaded.Revision)
 	}
 }
 
@@ -158,6 +227,7 @@ func TestPreservePaneBuffersKeepsRunningPaneTranscript(t *testing.T) {
 
 	incoming := &Workspace{
 		ID:           DefaultWorkspaceID,
+		Revision:     ws.Revision,
 		Name:         "Default",
 		ActivePaneID: "pane-other",
 		Layout:       ws.Layout,

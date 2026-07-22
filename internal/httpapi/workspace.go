@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -62,11 +63,14 @@ func (a *API) workspaceDocument(w http.ResponseWriter, r *http.Request, id strin
 				return
 			}
 		}
-		if err := a.Store.SaveWorkspace(r.Context(), &ws); err != nil {
+		if err := a.Store.SaveWorkspace(r.Context(), &ws); errors.Is(err, store.ErrWorkspaceConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		} else if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "saved", "revision": ws.Revision})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPut)
 	}

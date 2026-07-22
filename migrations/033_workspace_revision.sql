@@ -1,0 +1,1 @@
+ALTER TABLE workspaces ADD COLUMN revision TEXT NOT NULL DEFAULT '';

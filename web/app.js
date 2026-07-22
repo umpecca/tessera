@@ -26,6 +26,13 @@ import { isExpectedServerVersion } from "./server-update.mjs";
 import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
 import { isTerminalPasteShortcut, terminalNavigationSequence } from "./terminal-keyboard.mjs";
 import {
+  browseLocalPortHelpCommand,
+  browserHelpAddress,
+  browserLocalPortExamples,
+  normalizeBrowserAddress,
+} from "./browser-pane.mjs";
+import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
+import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
   minimumOLEDBorderSize,
@@ -65,6 +72,11 @@ let fileBrowserFilePath = "";
 let paneFileClipboard = null;
 let editorClipboardText = "";
 let workspaceID = "default";
+let workspaceRevision = "";
+let workspaceSaveSuspended = false;
+let workspaceNeedsRevalidation = false;
+let workspaceSavePromise = null;
+let workspaceSaveQueued = false;
 let multiUser = false;
 let userRoster = [];
 let currentUser = null;
@@ -654,6 +666,7 @@ const normalWorksheetEditorMode = "normal";
 const fileBrowserPaneKind = "file-browser";
 const textEditorPaneKind = "text-editor";
 const audioPaneKind = "audio";
+const browserPaneKind = "browser";
 const textEditorFileExtensions = new Set([
   ".txt", ".md", ".markdown", ".log", ".csv", ".tsv",
   ".json", ".jsonc", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
@@ -884,6 +897,11 @@ serverConnectionModal.className = "settings-modal server-connection-modal";
 serverConnectionModal.hidden = true;
 document.body.appendChild(serverConnectionModal);
 
+const workspaceConflictModal = document.createElement("div");
+workspaceConflictModal.className = "settings-modal workspace-conflict-modal";
+workspaceConflictModal.hidden = true;
+document.body.appendChild(workspaceConflictModal);
+
 const helpModal = document.createElement("div");
 helpModal.className = "settings-modal help-modal";
 helpModal.hidden = true;
@@ -989,6 +1007,7 @@ window.addEventListener("pointerup", finishInteraction);
 window.addEventListener("pointercancel", finishInteraction);
 window.addEventListener("resize", hideAllMenus);
 window.addEventListener("popstate", () => void handleSessionHistoryNavigation());
+window.addEventListener("message", handleBrowserPaneMessage);
 
 applyTheme(themeID, { save: false });
 void startApp()
@@ -1190,8 +1209,11 @@ function createRectangle(x, y, width, height, options = {}) {
     fontSizeDecreaseButton: null,
     fontSizeIncreaseButton: null,
     filePathInput: null,
+    browserStatusInput: null,
     fileBrowserView: null,
     fileBrowserRequestID: 0,
+    browserUrl: options.browserUrl || "",
+    browser: null,
     audio: null,
     isFull: Boolean(options.isFull),
     minimized: Boolean(options.minimized),
@@ -1369,6 +1391,8 @@ function createRectangle(x, y, width, height, options = {}) {
     ? "path"
     : rect.kind === textEditorPaneKind
       ? "file"
+      : rect.kind === browserPaneKind
+        ? "url"
       : rect.kind === audioPaneKind
         ? "station"
       : "cwd";
@@ -1378,6 +1402,8 @@ function createRectangle(x, y, width, height, options = {}) {
   cwdInput.type = "text";
   cwdInput.value = rect.kind === textEditorPaneKind
     ? rect.lastExportPath
+    : rect.kind === browserPaneKind
+      ? rect.browserUrl
     : rect.kind === audioPaneKind
       ? "Shared across clients"
       : rect.cwd;
@@ -1385,6 +1411,8 @@ function createRectangle(x, y, width, height, options = {}) {
     ? "loading..."
     : rect.kind === textEditorPaneKind
       ? "untitled"
+      : rect.kind === browserPaneKind
+        ? "localhost:5000"
       : rect.kind === audioPaneKind
         ? "Shared across clients"
       : "host default";
@@ -1394,11 +1422,13 @@ function createRectangle(x, y, width, height, options = {}) {
     ? "Current folder"
     : rect.kind === textEditorPaneKind
       ? "Editor file"
+      : rect.kind === browserPaneKind
+        ? "Browser address"
       : rect.kind === audioPaneKind
         ? "Shared audio station"
       : "Pane working directory");
   cwdInput.addEventListener("pointerdown", (event) => {
-    if (rect.kind === fileBrowserPaneKind || rect.kind === audioPaneKind) {
+    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === audioPaneKind) {
       return;
     }
     event.preventDefault();
@@ -1412,7 +1442,7 @@ function createRectangle(x, y, width, height, options = {}) {
     }
   });
   cwdInput.addEventListener("keydown", (event) => {
-    if (rect.kind === fileBrowserPaneKind || rect.kind === audioPaneKind) {
+    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === audioPaneKind) {
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -1439,6 +1469,8 @@ function createRectangle(x, y, width, height, options = {}) {
       ? "File browser"
       : rect.kind === textEditorPaneKind
         ? "Text editor"
+      : rect.kind === browserPaneKind
+        ? "Browser"
       : rect.kind === audioPaneKind
         ? "Audio station"
       : rect.kind === "pending"
@@ -1486,7 +1518,9 @@ function createRectangle(x, y, width, height, options = {}) {
   element.appendChild(status);
   if (rect.kind === textEditorPaneKind) {
     rect.filePathInput = cwdInput;
-  } else if (rect.kind !== audioPaneKind) {
+  } else if (rect.kind === browserPaneKind) {
+    rect.browserStatusInput = cwdInput;
+  } else if (rect.kind !== browserPaneKind && rect.kind !== audioPaneKind) {
     rect.cwdInput = cwdInput;
   }
   setPaneCwd(rect, rect.cwd, { silent: true });
@@ -1504,6 +1538,8 @@ function createRectangle(x, y, width, height, options = {}) {
     mountPaneFileBrowser(rect);
   } else if (rect.kind === textEditorPaneKind) {
     mountTextEditor(rect);
+  } else if (rect.kind === browserPaneKind) {
+    mountBrowserPane(rect);
   } else if (rect.kind === audioPaneKind) {
     mountAudioPane(rect);
   } else {
@@ -1553,6 +1589,186 @@ function createRectangle(x, y, width, height, options = {}) {
   nextZIndex = Math.max(nextZIndex, rect.zIndex + 1);
   updateDeskbar();
   return rect;
+}
+
+function mountBrowserPane(rect) {
+  rect.body.classList.add("is-browser");
+  const pane = document.createElement("div");
+  pane.className = "browser-pane";
+  const toolbar = document.createElement("div");
+  toolbar.className = "browser-toolbar";
+  const back = browserToolbarButton("\u2190", "Back");
+  const forward = browserToolbarButton("\u2192", "Forward");
+  const reload = browserToolbarButton("\u21bb", "Reload");
+  const address = document.createElement("input");
+  address.className = "browser-address";
+  address.type = "text";
+  address.placeholder = "localhost:5000";
+  address.value = rect.browserUrl;
+  address.spellcheck = false;
+  address.setAttribute("aria-label", "Browser address");
+  const localPortHelp = browserNetworkHelpButton();
+  const openExternal = browserToolbarButton("\u2197", "Open externally");
+  const message = document.createElement("div");
+  message.className = "browser-message";
+  message.textContent = rect.browserUrl ? "Connecting..." : "Enter a loopback development-server address.";
+  const frame = document.createElement("iframe");
+  frame.className = "browser-frame";
+  frame.title = rect.title;
+  frame.hidden = true;
+  frame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-popups allow-downloads");
+  frame.setAttribute("referrerpolicy", "no-referrer");
+
+  rect.browser = { pane, address, frame, message, sessionID: "" };
+  back.addEventListener("click", () => frame.contentWindow?.postMessage("tessera-browser-back", "*"));
+  forward.addEventListener("click", () => frame.contentWindow?.postMessage("tessera-browser-forward", "*"));
+  reload.addEventListener("click", () => {
+    if (rect.browser?.sessionID) {
+      frame.contentWindow?.postMessage("tessera-browser-reload", "*");
+    } else if (rect.browserUrl) {
+      void navigateBrowserPane(rect, rect.browserUrl);
+    }
+  });
+  localPortHelp.addEventListener("click", () => openBrowserPortHelp(rect));
+  openExternal.addEventListener("click", () => {
+    if (rect.browserUrl) {
+      window.open(rect.browserUrl, "_blank", "noopener,noreferrer");
+    }
+  });
+  address.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void navigateBrowserPane(rect, address.value);
+    }
+  });
+
+  toolbar.append(back, forward, reload, address, localPortHelp, openExternal);
+  pane.append(toolbar, message, frame);
+  rect.body.appendChild(pane);
+  if (rect.browserUrl) {
+    void navigateBrowserPane(rect, rect.browserUrl);
+  }
+}
+
+function browserToolbarButton(label, title) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "browser-toolbar-button";
+  button.textContent = label;
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  return button;
+}
+
+function browserNetworkHelpButton() {
+  const button = browserToolbarButton("", "Browse local port help");
+  button.classList.add("browser-toolbar-icon");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const links = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  links.setAttribute("d", "M12 12 5 5m7 7 7-7m-7 7v7");
+  links.setAttribute("fill", "none");
+  links.setAttribute("stroke", "currentColor");
+  links.setAttribute("stroke-width", "1.8");
+  links.setAttribute("stroke-linecap", "round");
+  for (const [cx, cy] of [[5, 5], [19, 5], [12, 12], [12, 19]]) {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    node.setAttribute("cx", String(cx));
+    node.setAttribute("cy", String(cy));
+    node.setAttribute("r", "2.2");
+    node.setAttribute("fill", "var(--pane-bg)");
+    node.setAttribute("stroke", "currentColor");
+    node.setAttribute("stroke-width", "1.8");
+    svg.appendChild(node);
+  }
+  svg.prepend(links);
+  button.appendChild(svg);
+  return button;
+}
+
+async function navigateBrowserPane(rect, value) {
+  const browser = rect?.browser;
+  if (!browser) {
+    return;
+  }
+  const normalized = normalizeBrowserAddress(value);
+  if (!normalized) {
+    browser.message.textContent = "Use a loopback HTTP address such as localhost:5000.";
+    browser.message.classList.add("is-error");
+    browser.message.hidden = false;
+    browser.frame.hidden = true;
+    return;
+  }
+  browser.address.value = normalized;
+  browser.message.textContent = `Connecting to ${normalized}...`;
+  browser.message.classList.remove("is-error");
+  browser.message.hidden = false;
+  browser.frame.hidden = true;
+  try {
+    const response = await fetch("/api/browser-proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: normalized }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `browser proxy failed: ${response.status}`);
+    }
+    const previousSessionID = browser.sessionID;
+    browser.sessionID = data.id;
+    rect.browserUrl = data.url || normalized;
+    browser.address.value = rect.browserUrl;
+    if (rect.browserStatusInput) {
+      rect.browserStatusInput.value = rect.browserUrl;
+    }
+    browser.frame.src = data.path;
+    browser.frame.hidden = false;
+    browser.message.hidden = true;
+    scheduleWorkspaceSave();
+    if (previousSessionID && previousSessionID !== browser.sessionID) {
+      void fetch(`/api/browser-proxy/${encodeURIComponent(previousSessionID)}`, { method: "DELETE" });
+    }
+  } catch (error) {
+    browser.message.textContent = error.message || "Could not open development server.";
+    browser.message.classList.add("is-error");
+    browser.message.hidden = false;
+    browser.frame.hidden = true;
+  }
+}
+
+function handleBrowserPaneMessage(event) {
+  if (event.data?.type !== "tessera-browser-location" || typeof event.data.url !== "string") {
+    return;
+  }
+  const rect = rectangles.find((candidate) => candidate.kind === browserPaneKind && candidate.browser?.frame.contentWindow === event.source);
+  if (!rect) {
+    return;
+  }
+  const normalized = normalizeBrowserAddress(event.data.url);
+  if (!normalized) {
+    return;
+  }
+  rect.browserUrl = normalized;
+  rect.browser.address.value = normalized;
+  if (rect.browserStatusInput) {
+    rect.browserStatusInput.value = normalized;
+  }
+  scheduleWorkspaceSave();
+}
+
+function disposeBrowserPane(rect) {
+  const browser = rect?.browser;
+  if (!browser) {
+    return;
+  }
+  const sessionID = browser.sessionID;
+  browser.sessionID = "";
+  browser.frame.src = "about:blank";
+  rect.browser = null;
+  if (sessionID) {
+    void fetch(`/api/browser-proxy/${encodeURIComponent(sessionID)}`, { method: "DELETE" });
+  }
 }
 
 function readAudioVolume() {
@@ -3454,6 +3670,11 @@ async function loadWorkspace() {
     }
     const workspace = await response.json();
     workspaceID = workspace.id || "default";
+    workspaceRevision = workspace.revision || "";
+    workspaceSaveSuspended = false;
+    workspaceNeedsRevalidation = false;
+    workspaceSaveQueued = false;
+    workspaceConflictModal.hidden = true;
     applyWorkspaceBackground(Boolean(workspace.hasBackground), workspace.backgroundVersion || "", workspace.backgroundMode);
     clearRectanglesForLoad();
 
@@ -3470,6 +3691,7 @@ async function loadWorkspace() {
         lastExportPath: pane.lastExportPath,
         editorTabs: pane.editorTabs,
         fileBrowserSidebarWidth: pane.fileBrowserSidebarWidth,
+        browserUrl: pane.browserUrl,
         zIndex: pane.zIndex || 0,
         minimized: Boolean(pane.minimized),
         isFull: Boolean(pane.isFull),
@@ -3504,6 +3726,7 @@ function clearRectanglesForLoad() {
   stopRunStreams();
   for (const rect of rectangles.splice(0)) {
     disposeTerminal(rect);
+    disposeBrowserPane(rect);
     if (rect.audio) {
       rect.audio.element.pause();
       rect.audio.element.removeAttribute("src");
@@ -3528,12 +3751,17 @@ function clearRectanglesForLoad() {
 }
 
 function scheduleWorkspaceSave() {
-  if (isLoadingWorkspace) {
+  if (isLoadingWorkspace || workspaceSaveSuspended) {
+    return;
+  }
+  if (workspaceNeedsRevalidation) {
+    workspaceSaveQueued = true;
+    setWorkspaceStatus("saving", "Waiting to reconnect...");
     return;
   }
   setWorkspaceStatus("saving", "Saving...");
   window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(saveWorkspace, 250);
+  saveTimer = window.setTimeout(() => void saveWorkspace(), 250);
 }
 
 function scheduleUserSettingsSave() {
@@ -3584,7 +3812,7 @@ async function flushAllPersistence() {
 }
 
 async function flushWorkspaceSave() {
-  if (isLoadingWorkspace) {
+  if (isLoadingWorkspace || workspaceSaveSuspended || workspaceNeedsRevalidation) {
     return;
   }
   window.clearTimeout(saveTimer);
@@ -3593,6 +3821,30 @@ async function flushWorkspaceSave() {
 }
 
 async function saveWorkspace() {
+  if (isLoadingWorkspace || workspaceSaveSuspended) {
+    return;
+  }
+  if (workspaceNeedsRevalidation) {
+    workspaceSaveQueued = true;
+    return;
+  }
+  if (workspaceSavePromise) {
+    workspaceSaveQueued = true;
+    return workspaceSavePromise;
+  }
+  workspaceSavePromise = performWorkspaceSave();
+  try {
+    await workspaceSavePromise;
+  } finally {
+    workspaceSavePromise = null;
+    if (workspaceSaveQueued && !workspaceSaveSuspended && !workspaceNeedsRevalidation) {
+      workspaceSaveQueued = false;
+      await saveWorkspace();
+    }
+  }
+}
+
+async function performWorkspaceSave() {
   const revision = ++saveRevision;
   window.clearTimeout(saveTimer);
   saveTimer = null;
@@ -3609,6 +3861,7 @@ async function saveWorkspace() {
     lastExportPath: rect.kind === "terminal" ? "" : (rect.lastExportPath || ""),
     editorTabs: rect.kind === textEditorPaneKind ? serializedTextEditorTabs(rect) : "",
     fileBrowserSidebarWidth: rect.kind === fileBrowserPaneKind ? rect.fileBrowserSidebarWidth : defaultFileBrowserSidebarWidth,
+    browserUrl: rect.kind === browserPaneKind ? rect.browserUrl : "",
     x: rect.x,
     y: rect.y,
     width: rect.width,
@@ -3630,6 +3883,7 @@ async function saveWorkspace() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: workspaceID,
+        revision: workspaceRevision,
         name: currentSessionName || "Default",
         activePaneId: savedRectangles.some((rect) => rect.id === activePaneID) ? activePaneID : "",
         backgroundMode: workspaceBackgroundMode,
@@ -3637,9 +3891,16 @@ async function saveWorkspace() {
         panes,
       }),
     });
+    const data = await response.json().catch(() => ({}));
+    const outcome = workspaceSaveOutcome(workspaceRevision, response.status, data.revision);
+    if (outcome.suspended) {
+      showWorkspaceConflict();
+      return;
+    }
     if (!response.ok) {
       throw new Error(`save workspace failed: ${response.status}`);
     }
+    workspaceRevision = outcome.revision;
     if (revision === saveRevision && saveTimer === null) {
       setWorkspaceStatus("saved", "Saved");
     }
@@ -3648,6 +3909,90 @@ async function saveWorkspace() {
       console.warn(error);
       setWorkspaceStatus("error", "Save failed", error.message || "Workspace save failed");
     }
+  }
+}
+
+function showWorkspaceConflict() {
+  workspaceSaveSuspended = true;
+  workspaceNeedsRevalidation = false;
+  workspaceSaveQueued = false;
+  window.clearTimeout(saveTimer);
+  saveTimer = null;
+  setWorkspaceStatus("error", "Newer workspace available", "Reload to use the workspace saved by another browser");
+  serverConnectionModal.hidden = true;
+  workspaceConflictModal.replaceChildren();
+
+  const panel = document.createElement("section");
+  panel.className = "settings-panel workspace-conflict-panel";
+  panel.setAttribute("role", "alertdialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "workspace-conflict-title");
+  panel.setAttribute("aria-describedby", "workspace-conflict-status");
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "workspace-conflict-title";
+  title.textContent = "Newer Workspace Available";
+  titleBar.appendChild(title);
+
+  const content = document.createElement("div");
+  content.className = "settings-content";
+  const status = document.createElement("p");
+  status.id = "workspace-conflict-status";
+  status.className = "workspace-conflict-status";
+  status.textContent = "Another browser saved this workspace after this page loaded. Autosave is paused so this older copy cannot overwrite it.";
+  content.appendChild(status);
+
+  const actions = document.createElement("div");
+  actions.className = "rename-window-actions";
+  const reloadButton = document.createElement("button");
+  reloadButton.type = "button";
+  reloadButton.className = "settings-background-button server-connection-primary";
+  reloadButton.textContent = "Reload Latest Workspace";
+  reloadButton.addEventListener("click", () => window.location.reload());
+  actions.appendChild(reloadButton);
+
+  panel.append(titleBar, content, actions);
+  workspaceConflictModal.appendChild(panel);
+  workspaceConflictModal.hidden = false;
+  reloadButton.focus();
+}
+
+function markWorkspaceDisconnected() {
+  if (workspaceSaveSuspended || isLoadingWorkspace) {
+    return;
+  }
+  workspaceNeedsRevalidation = true;
+  if (saveTimer !== null) {
+    workspaceSaveQueued = true;
+    window.clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+}
+
+async function revalidateWorkspaceRevision() {
+  if (workspaceSaveSuspended || !workspaceNeedsRevalidation) {
+    return !workspaceSaveSuspended;
+  }
+  try {
+    const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceID)}`, { cache: "no-store" });
+    if (!response.ok) {
+      return false;
+    }
+    const workspace = await response.json();
+    if (!workspaceRevisionMatches(workspaceRevision, workspace.revision || "")) {
+      showWorkspaceConflict();
+      return false;
+    }
+    workspaceNeedsRevalidation = false;
+    if (workspaceSaveQueued) {
+      workspaceSaveQueued = false;
+      scheduleWorkspaceSave();
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -4300,6 +4645,8 @@ function defaultPaneTitle(kind) {
       ? "File Browser"
     : kind === textEditorPaneKind
       ? "Text Editor"
+      : kind === browserPaneKind
+        ? "Browser"
       : kind === audioPaneKind
         ? "Audio"
       : kind === "worksheet"
@@ -4541,6 +4888,17 @@ function renderWorkspaceMenu() {
     createWorksheetPane(point.x, point.y);
   });
   workspaceMenu.appendChild(worksheetButton);
+
+  const browserButton = document.createElement("button");
+  browserButton.type = "button";
+  browserButton.textContent = "New Browser";
+  browserButton.className = "is-command";
+  browserButton.addEventListener("click", () => {
+    const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
+    hideWorkspaceMenu();
+    createBrowserPane(point.x, point.y);
+  });
+  workspaceMenu.appendChild(browserButton);
 
   const audioButton = document.createElement("button");
   audioButton.type = "button";
@@ -5217,9 +5575,149 @@ function openHelpModal() {
   window.requestAnimationFrame(() => helpModal.querySelector("button")?.focus());
 }
 
+function openBrowserPortHelp(rect = null) {
+  hideDeskbar();
+  renderBrowserPortHelp(rect?.kind === browserPaneKind ? rect : null);
+  helpModal.hidden = false;
+  window.requestAnimationFrame(() => helpModal.querySelector(".browser-port-help-address")?.focus());
+}
+
 function hideHelpModal() {
   helpModal.hidden = true;
   helpModal.replaceChildren();
+}
+
+function renderBrowserPortHelp(targetRect) {
+  helpModal.replaceChildren();
+
+  const panel = document.createElement("section");
+  panel.className = "settings-panel help-panel browser-port-help-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "browser-port-help-title");
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "browser-port-help-title";
+  title.textContent = "Browse a Local Port";
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "settings-close";
+  closeButton.textContent = "X";
+  closeButton.setAttribute("aria-label", "Close local port help");
+  closeButton.addEventListener("click", hideHelpModal);
+  titleBar.append(title, closeButton);
+
+  const content = document.createElement("div");
+  content.className = "settings-content help-content browser-port-help-content";
+  const introduction = document.createElement("p");
+  introduction.className = "browser-port-help-introduction";
+  introduction.textContent = "Open an HTTP development server running on the Tessera host inside a sandboxed Browser pane. Tessera relays it; Tessera does not start the server.";
+  content.appendChild(introduction);
+
+  const launchForm = document.createElement("form");
+  launchForm.className = "browser-port-help-launch";
+  const launchLabel = document.createElement("label");
+  launchLabel.htmlFor = "browser-port-help-address";
+  launchLabel.textContent = "Local address";
+  const address = document.createElement("input");
+  address.id = "browser-port-help-address";
+  address.className = "browser-port-help-address";
+  address.type = "text";
+  address.spellcheck = false;
+  address.value = browserHelpAddress(targetRect?.browserUrl);
+  address.placeholder = "localhost:5000";
+  const openButton = document.createElement("button");
+  openButton.type = "submit";
+  openButton.className = "settings-background-button browser-port-help-open";
+  openButton.textContent = "Open in Browser";
+  const validation = document.createElement("div");
+  validation.className = "browser-port-help-validation";
+  validation.setAttribute("role", "alert");
+  validation.hidden = true;
+  launchForm.append(launchLabel, address, openButton, validation);
+  launchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const normalized = normalizeBrowserAddress(address.value);
+    if (!normalized) {
+      validation.textContent = "Enter a loopback HTTP address such as localhost:5000.";
+      validation.hidden = false;
+      address.setAttribute("aria-invalid", "true");
+      address.focus();
+      return;
+    }
+    validation.hidden = true;
+    address.removeAttribute("aria-invalid");
+    let destination = targetRect;
+    if (!destination || !rectangles.includes(destination) || !destination.browser) {
+      const point = paneSpawnPoint();
+      destination = createBrowserPane(point.x, point.y);
+    }
+    hideHelpModal();
+    void navigateBrowserPane(destination, normalized);
+  });
+  content.appendChild(launchForm);
+
+  const quickStart = document.createElement("section");
+  quickStart.className = "settings-section";
+  const quickStartTitle = document.createElement("h3");
+  quickStartTitle.textContent = "Quick start";
+  const steps = document.createElement("ol");
+  steps.className = "browser-port-help-steps";
+  for (const text of [
+    "Start an HTTP development server on the same machine as Tessera.",
+    "Enter localhost:<port> or an explicit loopback HTTP/HTTPS URL.",
+    "Tessera opens it through a temporary path on its existing listener.",
+  ]) {
+    const step = document.createElement("li");
+    step.textContent = text;
+    steps.appendChild(step);
+  }
+  quickStart.append(quickStartTitle, steps);
+  content.appendChild(quickStart);
+
+  const examples = document.createElement("section");
+  examples.className = "settings-section";
+  const examplesTitle = document.createElement("h3");
+  examplesTitle.textContent = "Server examples";
+  const exampleList = document.createElement("div");
+  exampleList.className = "browser-port-help-examples";
+  for (const example of browserLocalPortExamples) {
+    const row = document.createElement("div");
+    row.className = "browser-port-help-example";
+    const label = document.createElement("strong");
+    label.textContent = example.label;
+    const command = document.createElement("code");
+    command.textContent = example.command;
+    const useButton = document.createElement("button");
+    useButton.type = "button";
+    useButton.className = "settings-background-button";
+    useButton.textContent = `Use ${example.address}`;
+    useButton.addEventListener("click", () => {
+      address.value = example.address;
+      validation.hidden = true;
+      address.removeAttribute("aria-invalid");
+      address.focus();
+    });
+    row.append(label, command, useButton);
+    exampleList.appendChild(row);
+  }
+  examples.append(examplesTitle, exampleList);
+  content.appendChild(examples);
+
+  content.appendChild(renderHelpSection("Network boundary", [
+    ["localhost / 127.0.0.1", "The app remains local to the Tessera host; remote access goes through Tessera's existing listener."],
+    ["0.0.0.0", "The development server may already be directly reachable from other machines on the network."],
+    ["Additional ports", "Tessera opens no new listening port; it uses a randomized path on its current HTTP address."],
+  ]));
+  content.appendChild(renderHelpSection("Compatibility notes", [
+    ["Usually works", "Relative assets, forms, fetch, XHR, WebSockets, EventSource, and same-origin redirects."],
+    ["May need app changes", "Cookie authentication, service workers, strict origin checks, cross-origin redirects, and unusual URL construction."],
+  ]));
+
+  panel.append(titleBar, content);
+  helpModal.appendChild(panel);
 }
 
 function renderHelpModal() {
@@ -5655,6 +6153,7 @@ function handleBrowserOffline() {
   if (serverUpdateRestarting) {
     return;
   }
+  markWorkspaceDisconnected();
   serverConnectionState = nextServerConnectionState(serverConnectionState, {
     healthy: false,
     online: false,
@@ -5714,6 +6213,18 @@ async function checkServerConnection({ manual = false, force = false } = {}) {
     force,
   });
 
+  if (!healthy && serverConnectionState.state) {
+    markWorkspaceDisconnected();
+  }
+  if (healthy && workspaceNeedsRevalidation) {
+    const current = await revalidateWorkspaceRevision();
+    if (!current) {
+      return true;
+    }
+  }
+  if (workspaceSaveSuspended) {
+    return healthy;
+  }
   if (healthy && manual) {
     showServerConnectionModal("restored", { reloading: true });
     window.setTimeout(() => window.location.reload(), 250);
@@ -5726,7 +6237,7 @@ async function checkServerConnection({ manual = false, force = false } = {}) {
 }
 
 function showServerConnectionModal(state, { reloading = false } = {}) {
-  if (serverUpdateRestarting) {
+  if (serverUpdateRestarting || workspaceSaveSuspended) {
     return;
   }
   serverConnectionModal.replaceChildren();
@@ -5976,6 +6487,10 @@ async function runServerUpdate() {
 function buildPaletteCommands() {
   const commands = [];
   commands.push({ id: "help", label: "Help", hint: "shortcuts and commands", run: () => openHelpModal() });
+  commands.push({ ...browseLocalPortHelpCommand, run: () => {
+    const active = getActivePane();
+    openBrowserPortHelp(active?.kind === browserPaneKind ? active : null);
+  } });
   commands.push({ id: "window-list", label: "Window List", hint: "Ctrl+L", run: () => openWindowList() });
   commands.push({
     id: "deskbar-button-toggle",
@@ -6016,6 +6531,10 @@ function buildPaletteCommands() {
   commands.push({ id: "new-text-editor", label: "New Text Editor", hint: "create", run: () => {
     const point = paneSpawnPoint();
     createTextEditorPane(point.x, point.y);
+  } });
+  commands.push({ id: "new-browser", label: "New Browser", hint: "localhost development server", run: () => {
+    const point = paneSpawnPoint();
+    createBrowserPane(point.x, point.y);
   } });
   commands.push({ id: "new-audio", label: "New Audio", hint: "create", run: () => {
     const point = paneSpawnPoint();
@@ -6091,10 +6610,12 @@ function buildPaletteCommands() {
 // a "fixed set" can't cover an unbounded, runtime-dependent list.
 const paletteShortcutCodes = {
   "help": "HP",
+  "browse-local-port-help": "BL",
   "new-terminal": "NN",
   "new-worksheet": "NW",
   "new-file-browser": "NF",
   "new-text-editor": "NE",
+  "new-browser": "NB",
   "new-audio": "NA",
   "next-window": "NX",
   "previous-window": "PW",
@@ -6268,6 +6789,7 @@ function renderWindowTypeMenu() {
     ["terminal", "Terminal"],
     [fileBrowserPaneKind, "File Browser"],
     [textEditorPaneKind, "Text Editor"],
+    [browserPaneKind, "Browser"],
     [audioPaneKind, "Audio"],
   ];
   for (const [kind, label] of actions) {
@@ -6287,7 +6809,7 @@ function finalizePendingRectangle(rect, kind) {
   if (!rect || rect.kind !== "pending" || !rectangles.includes(rect)) {
     return;
   }
-  const paneKind = kind === "terminal" || kind === fileBrowserPaneKind || kind === textEditorPaneKind || kind === audioPaneKind
+  const paneKind = kind === "terminal" || kind === fileBrowserPaneKind || kind === textEditorPaneKind || kind === browserPaneKind || kind === audioPaneKind
     ? kind
     : "worksheet";
   const box = rectangleBox(rect);
@@ -6314,6 +6836,8 @@ function workspaceMenuLabel(rect) {
       ? " [files]"
       : rect.kind === textEditorPaneKind
         ? " [editor]"
+      : rect.kind === browserPaneKind
+        ? " [browser]"
       : rect.kind === audioPaneKind
         ? " [audio]"
       : "";
@@ -6373,6 +6897,18 @@ function createAudioPane(x, y) {
   setRectangle(rect, rect);
   setActivePane(rect, { raise: true });
   scheduleWorkspaceSave();
+}
+
+function createBrowserPane(x, y) {
+  const rect = createRectangle(x, Math.max(y, tabHeight), 720, 480, {
+    kind: browserPaneKind,
+  });
+  clampIntoBoard(rect);
+  setRectangle(rect, rect);
+  setActivePane(rect, { raise: true, focusEditor: true });
+  rect.browser?.address.focus();
+  scheduleWorkspaceSave();
+  return rect;
 }
 
 // A cascading spawn point for panes created without a click location (from
@@ -7393,6 +7929,7 @@ function destroyRectangle(rect, options = {}) {
     delete board.dataset.activePaneId;
   }
   disposeTerminal(rect, { closeServer: options.closeServerTerminal });
+  disposeBrowserPane(rect);
   if (rect.audio) {
     rect.audio.element.pause();
     rect.audio.element.removeAttribute("src");

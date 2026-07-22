@@ -1,6 +1,16 @@
 package httpapi
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"tessera/internal/store"
+)
 
 func TestParseWorkspacePath(t *testing.T) {
 	cases := []struct {
@@ -49,5 +59,67 @@ func TestUserAllowed(t *testing.T) {
 	}
 	if multi.userAllowed("carol") {
 		t.Error("multi-user mode should reject users outside the roster")
+	}
+}
+
+func TestWorkspaceDocumentRejectsStaleRevision(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	first, err := st.LoadDefaultWorkspace(ctx, "")
+	if err != nil {
+		t.Fatalf("load first workspace copy: %v", err)
+	}
+	stale, err := st.LoadWorkspace(ctx, store.DefaultWorkspaceID)
+	if err != nil {
+		t.Fatalf("load stale workspace copy: %v", err)
+	}
+	api := &API{Store: st}
+
+	putWorkspace := func(ws *store.Workspace) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(ws)
+		if err != nil {
+			t.Fatalf("marshal workspace: %v", err)
+		}
+		request := httptest.NewRequest(http.MethodPut, "/api/workspace/default", bytes.NewReader(body))
+		response := httptest.NewRecorder()
+		api.workspaceDocument(response, request, store.DefaultWorkspaceID)
+		return response
+	}
+
+	first.Panes = []store.Pane{{ID: "pane-new", Title: "New state", Width: 320, Height: 200}}
+	first.Layout = json.RawMessage(`{"panes":["pane-new"]}`)
+	winner := putWorkspace(first)
+	if winner.Code != http.StatusOK {
+		t.Fatalf("winning save status = %d, want %d: %s", winner.Code, http.StatusOK, winner.Body.String())
+	}
+	var result struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.NewDecoder(winner.Body).Decode(&result); err != nil {
+		t.Fatalf("decode winning response: %v", err)
+	}
+	if result.Revision == "" || result.Revision == stale.Revision {
+		t.Fatalf("winning revision = %q, want a new non-empty revision", result.Revision)
+	}
+
+	stale.Panes = []store.Pane{{ID: "pane-stale", Title: "Stale state", Width: 320, Height: 200}}
+	stale.Layout = json.RawMessage(`{"panes":["pane-stale"]}`)
+	conflict := putWorkspace(stale)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("stale save status = %d, want %d: %s", conflict.Code, http.StatusConflict, conflict.Body.String())
+	}
+
+	loaded, err := st.LoadWorkspace(ctx, store.DefaultWorkspaceID)
+	if err != nil {
+		t.Fatalf("reload workspace: %v", err)
+	}
+	if len(loaded.Panes) != 1 || loaded.Panes[0].ID != "pane-new" || loaded.Revision != result.Revision {
+		t.Fatalf("stale request changed winning workspace: %+v", loaded)
 	}
 }
