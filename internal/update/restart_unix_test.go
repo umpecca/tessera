@@ -56,10 +56,14 @@ func TestSpawnReplacementExecsWithArgumentsEnvironmentAndWorkingDirectory(t *tes
 	if err != nil {
 		t.Fatalf("read replacement output: %v", err)
 	}
+	resolvedWorkDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatalf("resolve working directory: %v", err)
+	}
 	wantLines := []string{
 		"argument=" + runArgument,
 		"marker=preserved",
-		"working_directory=" + workDir,
+		"working_directory=" + resolvedWorkDir,
 	}
 	for _, want := range wantLines {
 		if !strings.Contains(string(output), want+"\n") {

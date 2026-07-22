@@ -47,3 +47,6 @@ on the failed relaunch observed on macOS.
   architecture guide.
 - Verified focused updater and lifecycle tests, the macOS ARM64 test build,
   `go test ./...`, and `git diff --check`.
+- Corrected the Unix working-directory assertion to compare the physical path,
+  accounting for macOS's `/var` to `/private/var` filesystem alias while still
+  verifying that `exec` preserves the same directory.
