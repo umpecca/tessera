@@ -29,7 +29,11 @@ import {
   isTerminalPasteShortcut,
   terminalNavigationSequence,
 } from "./terminal-keyboard.mjs";
-import { TerminalMousePress, terminalMouseMessage } from "./terminal-input.mjs";
+import {
+  TerminalMousePress,
+  clearTerminalSelectionStartedDuringGesture,
+  terminalMouseMessage,
+} from "./terminal-input.mjs";
 import { defaultTerminalTERM, normalizeTerminalTERM } from "./terminal-settings.mjs";
 import {
   defaultTerminalFont,
@@ -4417,6 +4421,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   }
 
   const activePress = new TerminalMousePress();
+  let selectionAtReportedPress = null;
   let wheelRemainder = 0;
   let wheelDirection = 0;
 
@@ -4432,6 +4437,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 
   const onPointerDown = (event) => {
+    selectionAtReportedPress = null;
     if (event.button === 2 && !terminalShouldReportMouse(term, event)) {
       // ghostty-web's selection manager handles every mouse-down. Cancel the
       // compatibility mouse event so a secondary click cannot replace the
@@ -4446,6 +4452,11 @@ function attachTerminalMouseBridge(rect, term, socket) {
     const position = terminalMousePosition(term, container, event);
     if (!position) {
       return;
+    }
+    try {
+      selectionAtReportedPress = Boolean(term.hasSelection?.());
+    } catch {
+      selectionAtReportedPress = null;
     }
     stopTerminalMouseEvent(event);
     hideFloatingMenus();
@@ -4519,6 +4530,12 @@ function attachTerminalMouseBridge(rect, term, socket) {
       // secondary click. Finish the already-forwarded press here so the TUI
       // cannot remain latched if that pointerup is suppressed.
       finishTerminalPointer(event, null);
+      // ghostty-web can misinterpret a macOS secondary-click compatibility
+      // event as a local left-button drag. Remove only a selection created
+      // during this TUI-owned gesture, preserving any selection that predated
+      // the click and preserving the normal right-click report to the TUI.
+      clearTerminalSelectionStartedDuringGesture(term, selectionAtReportedPress);
+      selectionAtReportedPress = null;
       stopTerminalMouseEvent(event);
       return;
     }

@@ -335,11 +335,13 @@ Name: GitHub Release Updater
 
 Description: Checks the latest release, selects exact Tessera and LAME
 OS/architecture assets, stops live capture, installs both transactionally with
-rollback, and requests a graceful shutdown. After shutdown, Unix platforms
-`exec` the replacement in place so relaunch does not depend on a supervisor;
-Windows starts the replacement and releases the child process before exiting.
-It can bootstrap a missing exact-version LAME companion after an upgrade from
-a legacy updater.
+rollback, and requests a graceful shutdown. After shutdown, it starts the
+replacement independently from the old process and passes a one-use readiness
+marker. The old process exits only after the replacement has bound its server
+and acknowledged startup; Unix successors run in a new session so terminal or
+macOS application cleanup cannot terminate them. Startup errors are returned
+through the same handoff and logged by the parent. The updater can bootstrap a
+missing exact-version LAME companion after an upgrade from a legacy updater.
 
 Technologies: GitHub Releases REST API and Go HTTP/file APIs.
 

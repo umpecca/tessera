@@ -23,6 +23,11 @@ import (
 
 const defaultAPIBase = "https://api.github.com"
 
+const (
+	replacementReadyEnvironment = "TESSERA_UPDATE_READY_FILE"
+	replacementReadyTimeout     = 30 * time.Second
+)
+
 type Updater struct {
 	Repo    string // e.g. "umpecca/tessera"
 	APIBase string // GitHub API base; TESSERA_UPDATE_API overrides for testing
@@ -392,12 +397,93 @@ func (u *Updater) RequestRestart() {
 	u.restartOnce.Do(func() { close(u.restart) })
 }
 
-// SpawnReplacement transfers control to the updated executable with the same
-// arguments. The caller must have released the listen socket and other process
-// resources via graceful shutdown first. Unix replaces the current process in
-// place; Windows starts and releases a replacement process.
+// SpawnReplacement starts the updated executable with the same arguments and
+// waits for it to acknowledge that the server started. The caller must release
+// the listen socket and other process resources via graceful shutdown first.
 func (u *Updater) SpawnReplacement() error {
-	return restartReplacement(u.exePath, os.Args[1:])
+	return u.spawnReplacement(replacementReadyTimeout)
+}
+
+func (u *Updater) spawnReplacement(timeout time.Duration) error {
+	ready, err := os.CreateTemp("", "tessera-update-ready-*")
+	if err != nil {
+		return fmt.Errorf("create replacement readiness marker: %w", err)
+	}
+	readyPath := ready.Name()
+	if err := ready.Close(); err != nil {
+		_ = os.Remove(readyPath)
+		return fmt.Errorf("close replacement readiness marker: %w", err)
+	}
+	if err := os.Remove(readyPath); err != nil {
+		return fmt.Errorf("prepare replacement readiness marker: %w", err)
+	}
+	defer os.Remove(readyPath)
+
+	env := environmentWithout(os.Environ(), replacementReadyEnvironment)
+	env = append(env, replacementReadyEnvironment+"="+readyPath)
+	if err := restartReplacement(u.exePath, os.Args[1:], env); err != nil {
+		return fmt.Errorf("start replacement: %w", err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if marker, err := os.ReadFile(readyPath); err == nil {
+			message := strings.TrimSpace(string(marker))
+			if message == "ready" {
+				return nil
+			}
+			if detail, ok := strings.CutPrefix(message, "error\n"); ok {
+				return fmt.Errorf("replacement failed to start: %s", detail)
+			}
+			return fmt.Errorf("replacement wrote an invalid readiness marker")
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("read replacement readiness marker: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("replacement did not report ready within %s", timeout)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// SignalReplacementReady acknowledges a self-update handoff after the new
+// server has successfully started. It is a no-op during an ordinary launch.
+func SignalReplacementReady() error {
+	return signalReplacement("ready\n")
+}
+
+// SignalReplacementFailure reports a server startup error to the stopped
+// parent so it can fail the update handoff immediately with useful context.
+func SignalReplacementFailure(startErr error) error {
+	if startErr == nil {
+		return nil
+	}
+	return signalReplacement("error\n" + startErr.Error() + "\n")
+}
+
+func signalReplacement(message string) error {
+	readyPath := os.Getenv(replacementReadyEnvironment)
+	if readyPath == "" {
+		return nil
+	}
+	if err := os.Unsetenv(replacementReadyEnvironment); err != nil {
+		return fmt.Errorf("clear replacement readiness environment: %w", err)
+	}
+	if err := os.WriteFile(readyPath, []byte(message), 0o600); err != nil {
+		return fmt.Errorf("write replacement readiness marker: %w", err)
+	}
+	return nil
+}
+
+func environmentWithout(env []string, name string) []string {
+	prefix := name + "="
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func normalizeVersion(v string) string {

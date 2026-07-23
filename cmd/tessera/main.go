@@ -66,7 +66,13 @@ func main() {
 		MaxUploadBytes:     *maxUploadSize,
 	})
 	if err := controller.Start(context.Background()); err != nil {
+		if signalErr := update.SignalReplacementFailure(err); signalErr != nil {
+			log.Printf("signal update restart failure: %v", signalErr)
+		}
 		log.Fatalf("start server: %v", err)
+	}
+	if err := update.SignalReplacementReady(); err != nil {
+		log.Printf("signal update restart readiness: %v", err)
 	}
 
 	log.Printf("Tessera listening at %s", controller.URL())

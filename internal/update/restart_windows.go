@@ -10,8 +10,9 @@ import (
 // Windows cannot replace the current process image. Start the installed binary
 // after graceful shutdown, then release its process handle so the replacement
 // is not tied to cleanup of the exiting updater process.
-func restartReplacement(exePath string, args []string) error {
+func restartReplacement(exePath string, args, env []string) error {
 	cmd := exec.Command(exePath, args...)
+	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

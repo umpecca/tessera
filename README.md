@@ -450,10 +450,14 @@ run on native macOS runners with `CGO_ENABLED=1` for tray support.
 The in-app updater checks the latest GitHub Release, downloads the Tessera and
 LAME assets matching the current operating system and architecture, installs
 them as one rollback-capable transaction, and restarts Tessera without requiring
-a service manager or watchdog. macOS and other Unix builds replace the stopped
-process in place; Windows releases a newly launched replacement process. A new
-Tessera binary installed by a legacy updater can fetch its exact-version LAME
-companion on the first Terminal capture attempt. LAME 3.100 is distributed under
-the LGPL; the release includes its license and corresponding pinned source
-archive. Anonymous GitHub Releases API access is used, so release assets must
-be reachable without private repository credentials.
+a service manager or watchdog. After the old server releases its listener,
+sessions, audio processes, and database, every desktop platform starts the
+replacement as an independent process. The old process remains alive until the
+replacement confirms that its server started; startup failures are returned to
+the old process and logged instead of treating process creation as a successful
+restart. A new Tessera binary installed by a legacy updater can fetch its
+exact-version LAME companion on the first Terminal capture attempt. LAME 3.100
+is distributed under the LGPL; the release includes its license and
+corresponding pinned source archive. Anonymous GitHub Releases API access is
+used, so release assets must be reachable without private repository
+credentials.

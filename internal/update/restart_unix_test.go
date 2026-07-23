@@ -9,16 +9,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestSpawnReplacementExecsWithArgumentsEnvironmentAndWorkingDirectory(t *testing.T) {
+func TestSpawnReplacementStartsDetachedChildWithArgumentsEnvironmentAndWorkingDirectory(t *testing.T) {
 	if os.Getenv("TESSERA_RESTART_TEST_HELPER") == "1" {
 		u := &Updater{exePath: os.Getenv("TESSERA_RESTART_TEST_EXECUTABLE")}
 		if err := u.SpawnReplacement(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
-		os.Exit(3) // An in-place exec must never return on success.
+		os.Exit(0)
 	}
 
 	dir := t.TempDir()
@@ -34,12 +35,13 @@ func TestSpawnReplacementExecsWithArgumentsEnvironmentAndWorkingDirectory(t *tes
   printf 'marker=%s\n' "$TESSERA_RESTART_TEST_MARKER"
   printf 'working_directory=%s\n' "$(pwd)"
 } > "$TESSERA_RESTART_TEST_OUTPUT"
+printf 'ready\n' > "$TESSERA_UPDATE_READY_FILE"
 `
 	if err := os.WriteFile(replacementPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write replacement: %v", err)
 	}
 
-	const runArgument = "-test.run=^TestSpawnReplacementExecsWithArgumentsEnvironmentAndWorkingDirectory$"
+	const runArgument = "-test.run=^TestSpawnReplacementStartsDetachedChildWithArgumentsEnvironmentAndWorkingDirectory$"
 	cmd := exec.Command(os.Args[0], runArgument)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
@@ -72,9 +74,9 @@ func TestSpawnReplacementExecsWithArgumentsEnvironmentAndWorkingDirectory(t *tes
 	}
 }
 
-func TestSpawnReplacementReturnsExecError(t *testing.T) {
+func TestSpawnReplacementReturnsStartError(t *testing.T) {
 	u := &Updater{exePath: filepath.Join(t.TempDir(), "missing-tessera")}
-	if err := u.SpawnReplacement(); err == nil {
+	if err := u.spawnReplacement(time.Second); err == nil {
 		t.Fatal("SpawnReplacement returned nil for a missing executable")
 	}
 }

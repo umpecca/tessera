@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TerminalMousePress, terminalMouseMessage } from "./terminal-input.mjs";
+import {
+  TerminalMousePress,
+  clearTerminalSelectionStartedDuringGesture,
+  terminalMouseMessage,
+} from "./terminal-input.mjs";
 
 test("terminal mouse input is tagged separately from ordinary binary input", () => {
   const sequence = "\x1b[<32;53;17M";
@@ -45,4 +49,35 @@ test("terminal mouse state ignores another pointer and supports forced release",
     buttonCode: 2,
     position: { col: 20, row: 2 },
   });
+});
+
+test("reported context menu clears only a selection started during its gesture", () => {
+  let selected = true;
+  let clears = 0;
+  const term = {
+    hasSelection: () => selected,
+    clearSelection: () => {
+      selected = false;
+      clears += 1;
+    },
+  };
+
+  assert.equal(clearTerminalSelectionStartedDuringGesture(term, false), true);
+  assert.equal(clears, 1);
+
+  selected = true;
+  assert.equal(clearTerminalSelectionStartedDuringGesture(term, true), false);
+  assert.equal(clearTerminalSelectionStartedDuringGesture(term, null), false);
+  assert.equal(clears, 1);
+});
+
+test("reported context menu selection cleanup tolerates unsupported terminals", () => {
+  assert.equal(clearTerminalSelectionStartedDuringGesture(null, false), false);
+  assert.equal(clearTerminalSelectionStartedDuringGesture({}, false), false);
+  assert.equal(clearTerminalSelectionStartedDuringGesture({
+    hasSelection() {
+      throw new Error("disposed");
+    },
+    clearSelection() {},
+  }, false), false);
 });

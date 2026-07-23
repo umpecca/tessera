@@ -2,6 +2,22 @@ export function terminalMouseMessage(data) {
   return JSON.stringify({ type: "mouse", data });
 }
 
+export function clearTerminalSelectionStartedDuringGesture(term, hadSelection) {
+  if (hadSelection !== false || typeof term?.hasSelection !== "function"
+      || typeof term?.clearSelection !== "function") {
+    return false;
+  }
+  try {
+    if (!term.hasSelection()) {
+      return false;
+    }
+    term.clearSelection();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class TerminalMousePress {
   constructor() {
     this.pointerID = null;

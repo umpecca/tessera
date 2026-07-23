@@ -2,6 +2,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,39 @@ func TestCompanionAssetName(t *testing.T) {
 	}
 	if got := companionAssetName(); got != want {
 		t.Errorf("companionAssetName() = %q, want %q", got, want)
+	}
+}
+
+func TestReplacementReadinessSignals(t *testing.T) {
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	t.Setenv(replacementReadyEnvironment, readyPath)
+	if err := SignalReplacementReady(); err != nil {
+		t.Fatalf("signal ready: %v", err)
+	}
+	marker, err := os.ReadFile(readyPath)
+	if err != nil {
+		t.Fatalf("read ready marker: %v", err)
+	}
+	if string(marker) != "ready\n" {
+		t.Fatalf("ready marker = %q", marker)
+	}
+	if got := os.Getenv(replacementReadyEnvironment); got != "" {
+		t.Fatalf("%s remained set to %q", replacementReadyEnvironment, got)
+	}
+}
+
+func TestReplacementFailureSignalIncludesStartupError(t *testing.T) {
+	readyPath := filepath.Join(t.TempDir(), "failure")
+	t.Setenv(replacementReadyEnvironment, readyPath)
+	if err := SignalReplacementFailure(errors.New("listen address unavailable")); err != nil {
+		t.Fatalf("signal failure: %v", err)
+	}
+	marker, err := os.ReadFile(readyPath)
+	if err != nil {
+		t.Fatalf("read failure marker: %v", err)
+	}
+	if string(marker) != "error\nlisten address unavailable\n" {
+		t.Fatalf("failure marker = %q", marker)
 	}
 }
 
