@@ -25,8 +25,8 @@ func (p *writeTestPTY) Wait() error              { return nil }
 
 func TestManagedSessionScrollbackReplayAndSubscribe(t *testing.T) {
 	session := &ManagedSession{
-		subscribers:     map[chan []byte]struct{}{},
-		scrollbackLimit: 5,
+		subscribers: map[chan []byte]struct{}{},
+		scrollback:  scrollbackBuffer{limit: 5},
 	}
 
 	session.publish([]byte("hello"))
@@ -52,8 +52,8 @@ func TestManagedSessionScrollbackReplayAndSubscribe(t *testing.T) {
 
 func TestManagedSessionFinishClosesSubscribers(t *testing.T) {
 	session := &ManagedSession{
-		subscribers:     map[chan []byte]struct{}{},
-		scrollbackLimit: defaultScrollbackLimit,
+		subscribers: map[chan []byte]struct{}{},
+		scrollback:  scrollbackBuffer{limit: defaultScrollbackLimit},
 	}
 
 	_, events, unsubscribe := session.subscribe()

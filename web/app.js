@@ -1025,6 +1025,7 @@ board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
 document.addEventListener("keydown", hideMenusOnEscape);
 document.addEventListener("keydown", handlePaneKeyboardShortcuts, { capture: true });
+document.addEventListener("visibilitychange", updateTerminalDocumentVisibility);
 window.addEventListener("pointermove", continueInteraction);
 window.addEventListener("pointerup", finishInteraction);
 window.addEventListener("pointercancel", finishInteraction);
@@ -3256,9 +3257,33 @@ function setTerminalCursorBlink(rect, blink) {
     if (term.renderer) {
       term.renderer.cursorVisible = blink;
     }
+    term.setRenderContinuous?.(blink && !rect.minimized);
+    term.requestRender?.();
   } catch {
     // Terminal not fully initialized yet; ignore.
   }
+}
+
+function updateTerminalRenderState(rect) {
+  const term = rect?.kind === "terminal" ? rect.terminal?.term : null;
+  if (!term) {
+    return;
+  }
+  const paused = Boolean(rect.minimized);
+  term.setRenderPaused?.(paused);
+  term.setRenderContinuous?.(!paused && activeRect === rect);
+  if (!paused) {
+    term.requestRender?.();
+  }
+}
+
+function updateTerminalDocumentVisibility() {
+  if (!ghosttyModulePromise) {
+    return;
+  }
+  void ghosttyModulePromise
+    .then((module) => module.setTerminalDocumentVisible?.(!document.hidden))
+    .catch(() => {});
 }
 
 function getActivePane() {
@@ -4233,9 +4258,10 @@ function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
 
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
-    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-rendering-1").then(async (module) => {
+    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-rendering-2").then(async (module) => {
       await module.init();
       installTerminalBlockRenderer(module.CanvasRenderer, module.CellFlags);
+      module.setTerminalDocumentVisible?.(!document.hidden);
       return module;
     });
   }
@@ -4307,6 +4333,7 @@ async function startTerminal(rect) {
       term, fit, socket: null, dataDisposable, resizeDisposable, mouseBridge: null,
       reconnectTimer: null, reconnectAttempts: 0,
     };
+    updateTerminalRenderState(rect);
     connectTerminalSocket(rect);
     requestTerminalFit(rect);
   } catch (error) {
@@ -7343,6 +7370,7 @@ function setMinimized(rect, on) {
   }
   rect.minimized = next;
   rect.element.classList.toggle("is-minimized", next);
+  updateTerminalRenderState(rect);
   if (next) {
     rect.element.setAttribute("aria-hidden", "true");
   } else {

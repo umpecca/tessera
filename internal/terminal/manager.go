@@ -17,17 +17,16 @@ type Manager struct {
 }
 
 type ManagedSession struct {
-	manager         *Manager
-	workspaceID     string
-	paneID          string
-	session         *Session
-	subscribers     map[chan []byte]struct{}
-	scrollback      []byte
-	scrollbackLimit int
-	closed          atomic.Bool
-	closeOnce       sync.Once
-	mu              sync.Mutex
-	mouseModes      mouseModeTracker
+	manager     *Manager
+	workspaceID string
+	paneID      string
+	session     *Session
+	subscribers map[chan []byte]struct{}
+	scrollback  scrollbackBuffer
+	closed      atomic.Bool
+	closeOnce   sync.Once
+	mu          sync.Mutex
+	mouseModes  mouseModeTracker
 }
 
 func NewManager() *Manager {
@@ -67,12 +66,12 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 		return nil, nil, nil, nil, err
 	}
 	managed := &ManagedSession{
-		manager:         m,
-		workspaceID:     workspaceID,
-		paneID:          paneID,
-		session:         session,
-		subscribers:     map[chan []byte]struct{}{},
-		scrollbackLimit: m.scrollbackLimit,
+		manager:     m,
+		workspaceID: workspaceID,
+		paneID:      paneID,
+		session:     session,
+		subscribers: map[chan []byte]struct{}{},
+		scrollback:  scrollbackBuffer{limit: m.scrollbackLimit},
 	}
 
 	m.mu.Lock()
@@ -261,6 +260,8 @@ func (s *ManagedSession) readLoop() {
 	for {
 		n, err := s.session.Read(buf)
 		if n > 0 {
+			// The PTY reuses buf on the next read. Give scrollback and
+			// subscribers an immutable chunk they can retain safely.
 			chunk := append([]byte(nil), buf[:n]...)
 			s.publish(chunk)
 		}
@@ -277,7 +278,7 @@ func (s *ManagedSession) readLoop() {
 func (s *ManagedSession) subscribe() ([]byte, <-chan []byte, func()) {
 	ch := make(chan []byte, 128)
 	s.mu.Lock()
-	replay := append([]byte(nil), s.scrollback...)
+	replay := s.scrollback.replay()
 	if s.isClosed() {
 		close(ch)
 		s.mu.Unlock()
@@ -306,10 +307,7 @@ func (s *ManagedSession) publish(chunk []byte) {
 	}
 	s.mu.Lock()
 	s.mouseModes.consume(chunk)
-	s.scrollback = append(s.scrollback, chunk...)
-	if s.scrollbackLimit > 0 && len(s.scrollback) > s.scrollbackLimit {
-		s.scrollback = append([]byte(nil), s.scrollback[len(s.scrollback)-s.scrollbackLimit:]...)
-	}
+	s.scrollback.append(chunk)
 	for ch := range s.subscribers {
 		select {
 		case ch <- chunk:
