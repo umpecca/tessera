@@ -64,12 +64,26 @@ function hasModifier(event) {
 }
 
 export function isTerminalPasteShortcut(event) {
-  return Boolean(event
-    && event.key === "Insert"
-    && event.shiftKey
-    && !event.altKey
-    && !event.ctrlKey
-    && !event.metaKey);
+  if (!event || event.altKey) {
+    return false;
+  }
+  const key = event.key?.toLowerCase();
+  return Boolean(
+    (key === "v" && event.metaKey && !event.ctrlKey && !event.shiftKey)
+    || (key === "v" && event.ctrlKey && event.shiftKey && !event.metaKey)
+    || (event.key === "Insert" && event.shiftKey && !event.ctrlKey && !event.metaKey)
+  );
+}
+
+export function isTerminalCopyShortcut(event) {
+  if (!event || event.altKey) {
+    return false;
+  }
+  const key = event.key?.toLowerCase();
+  return Boolean(
+    (key === "c" && event.metaKey && !event.ctrlKey && !event.shiftKey)
+    || (key === "c" && event.ctrlKey && event.shiftKey && !event.metaKey)
+  );
 }
 
 // ghostty-web maps KeyboardEvent.code, which identifies the physical key. Use

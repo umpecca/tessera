@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isTerminalPasteShortcut, terminalNavigationSequence } from "./terminal-keyboard.mjs";
+import {
+  isTerminalCopyShortcut,
+  isTerminalPasteShortcut,
+  terminalNavigationSequence,
+} from "./terminal-keyboard.mjs";
 
 test("encodes unmodified logical navigation from physical numpad keys", () => {
   const cases = [
@@ -67,10 +71,27 @@ test("leaves ordinary numpad input, dedicated keys, and modified application-key
   assert.equal(terminalNavigationSequence(null), null);
 });
 
-test("recognizes only unmodified Shift+Insert as terminal paste", () => {
+test("recognizes terminal paste shortcuts", () => {
   assert.equal(isTerminalPasteShortcut({ key: "Insert", shiftKey: true }), true);
+  assert.equal(isTerminalPasteShortcut({ key: "v", metaKey: true }), true);
+  assert.equal(isTerminalPasteShortcut({ key: "V", metaKey: true }), true);
+  assert.equal(isTerminalPasteShortcut({ key: "v", ctrlKey: true, shiftKey: true }), true);
   assert.equal(isTerminalPasteShortcut({ key: "Insert", shiftKey: true, ctrlKey: true }), false);
+  assert.equal(isTerminalPasteShortcut({ key: "v", ctrlKey: true }), false);
+  assert.equal(isTerminalPasteShortcut({ key: "v", metaKey: true, shiftKey: true }), false);
+  assert.equal(isTerminalPasteShortcut({ key: "v", metaKey: true, altKey: true }), false);
   assert.equal(isTerminalPasteShortcut({ key: "Insert" }), false);
   assert.equal(isTerminalPasteShortcut({ key: "Delete", shiftKey: true }), false);
   assert.equal(isTerminalPasteShortcut(null), false);
+});
+
+test("recognizes terminal copy shortcuts without consuming Ctrl+C", () => {
+  assert.equal(isTerminalCopyShortcut({ key: "c", metaKey: true }), true);
+  assert.equal(isTerminalCopyShortcut({ key: "C", metaKey: true }), true);
+  assert.equal(isTerminalCopyShortcut({ key: "c", ctrlKey: true, shiftKey: true }), true);
+  assert.equal(isTerminalCopyShortcut({ key: "c", ctrlKey: true }), false);
+  assert.equal(isTerminalCopyShortcut({ key: "c", metaKey: true, shiftKey: true }), false);
+  assert.equal(isTerminalCopyShortcut({ key: "c", metaKey: true, altKey: true }), false);
+  assert.equal(isTerminalCopyShortcut({ key: "v", metaKey: true }), false);
+  assert.equal(isTerminalCopyShortcut(null), false);
 });

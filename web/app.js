@@ -24,7 +24,11 @@ import { textEditorLanguageID } from "./text-editor-language.mjs";
 import { nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion } from "./server-update.mjs";
 import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
-import { isTerminalPasteShortcut, terminalNavigationSequence } from "./terminal-keyboard.mjs";
+import {
+  isTerminalCopyShortcut,
+  isTerminalPasteShortcut,
+  terminalNavigationSequence,
+} from "./terminal-keyboard.mjs";
 import { terminalMouseMessage } from "./terminal-input.mjs";
 import { defaultTerminalTERM, normalizeTerminalTERM } from "./terminal-settings.mjs";
 import {
@@ -4300,6 +4304,10 @@ async function startTerminal(rect) {
     term.loadAddon(fit);
     term.open(rect.terminalContainer);
     term.attachCustomKeyEventHandler((event) => {
+      if (isTerminalCopyShortcut(event)) {
+        void applyTerminalMenuAction("copy", rect);
+        return true;
+      }
       if (isTerminalPasteShortcut(event)) {
         void applyTerminalMenuAction("paste", rect);
         return true;
@@ -4425,6 +4433,13 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 
   const onPointerDown = (event) => {
+    if (event.button === 2 && !terminalShouldReportMouse(term, event)) {
+      // ghostty-web's selection manager handles every mouse-down. Cancel the
+      // compatibility mouse event so a secondary click cannot replace the
+      // selection that Tessera's context-menu Copy action is about to read.
+      stopTerminalMouseEvent(event);
+      return;
+    }
     const buttonCode = terminalMouseButtonCode(event.button);
     if (buttonCode == null || !terminalShouldReportMouse(term, event)) {
       return;
@@ -4869,7 +4884,6 @@ function openTerminalMenu(event, rect) {
   event.preventDefault();
   event.stopPropagation();
   setActivePane(rect, { raise: true });
-  rect.terminal?.term?.focus();
   hideDockMenu();
   hideEditorMenu();
   hideWorkspaceMenu();
@@ -7483,9 +7497,9 @@ async function applyTerminalMenuAction(action, rect) {
     return;
   }
 
-  term.focus();
-
   if (action === "copy") {
+    // Read first: focusing a contenteditable canvas terminal can alter the
+    // browser/terminal selection on some WebKit builds.
     const text = term.getSelection?.() || "";
     if (text) {
       await writeClipboardText(text);
@@ -7495,6 +7509,7 @@ async function applyTerminalMenuAction(action, rect) {
   }
 
   if (action === "paste") {
+    term.focus();
     const text = await readClipboardText();
     if (text) {
       term.paste?.(text);

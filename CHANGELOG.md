@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve Terminal selections when opening the context menu and support
+  `Cmd+C`/`Cmd+V`, `Ctrl+Shift+C`/`Ctrl+Shift+V`, and `Shift+Insert` clipboard
+  shortcuts without intercepting terminal `Ctrl+C`.
 - Reconnect unexpectedly closed Terminal WebSockets with capped backoff,
   independently from the server-health recovery dialog.
 

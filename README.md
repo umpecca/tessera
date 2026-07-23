@@ -181,6 +181,10 @@ of font glyphs. This keeps fractional blocks and quadrant art joined without
 the seams that browser font rasterization can introduce. Shade characters
 remain font-rendered.
 
+Copy selected terminal text with `Cmd+C` on macOS or `Ctrl+Shift+C` elsewhere.
+Paste with `Cmd+V`, `Ctrl+Shift+V`, or `Shift+Insert`. Unmodified `Ctrl+C`
+continues to send an interrupt to the terminal process.
+
 ## Shared audio station
 
 The Audio pane is available from the window-type menu, workspace menu, and
