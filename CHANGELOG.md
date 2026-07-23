@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Always pair forwarded Terminal mouse presses with releases, including when a
+  TUI changes mouse mode or macOS interrupts a secondary click with a context
+  menu, preventing applications such as Fresh from remaining visually latched.
 - Preserve Terminal selections when opening the context menu and support
   `Cmd+C`/`Cmd+V`, `Ctrl+Shift+C`/`Ctrl+Shift+V`, and `Shift+Insert` clipboard
   shortcuts without intercepting terminal `Ctrl+C`.

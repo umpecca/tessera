@@ -29,7 +29,7 @@ import {
   isTerminalPasteShortcut,
   terminalNavigationSequence,
 } from "./terminal-keyboard.mjs";
-import { terminalMouseMessage } from "./terminal-input.mjs";
+import { TerminalMousePress, terminalMouseMessage } from "./terminal-input.mjs";
 import { defaultTerminalTERM, normalizeTerminalTERM } from "./terminal-settings.mjs";
 import {
   defaultTerminalFont,
@@ -4416,8 +4416,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
     return null;
   }
 
-  let activePointerID = null;
-  let activeButtonCode = null;
+  const activePress = new TerminalMousePress();
   let wheelRemainder = 0;
   let wheelDirection = 0;
 
@@ -4452,52 +4451,74 @@ function attachTerminalMouseBridge(rect, term, socket) {
     hideFloatingMenus();
     setActivePane(rect, { raise: true });
     term.focus();
-    activePointerID = event.pointerId;
-    activeButtonCode = buttonCode;
+    activePress.begin(event.pointerId, buttonCode, position);
     container.setPointerCapture?.(event.pointerId);
     sendTerminalMouseSequence(socket, terminalMouseEventCode(buttonCode, event), position, "M");
   };
 
+  const finishTerminalPointer = (event, pointerID = event.pointerId) => {
+    const position = event.type === "pointercancel" || event.type === "lostpointercapture"
+      ? null
+      : terminalMousePosition(term, container, event);
+    const release = activePress.finish(pointerID, position);
+    if (!release) {
+      return false;
+    }
+    stopTerminalMouseEvent(event);
+    if (release.position) {
+      sendTerminalMouseSequence(
+        socket,
+        terminalMouseEventCode(release.buttonCode, event),
+        release.position,
+        "m",
+      );
+    }
+    if (container.hasPointerCapture?.(release.pointerID)) {
+      container.releasePointerCapture(release.pointerID);
+    }
+    return true;
+  };
+
   const onPointerMove = (event) => {
-    if (activePointerID !== event.pointerId || activeButtonCode == null || event.buttons === 0 || !terminalShouldReportMouse(term, event)) {
+    if (!activePress.matches(event.pointerId)) {
+      return;
+    }
+    if (event.buttons === 0) {
+      finishTerminalPointer(event);
       return;
     }
     const position = terminalMousePosition(term, container, event);
     if (!position) {
       return;
     }
+    activePress.update(event.pointerId, position);
     stopTerminalMouseEvent(event);
-    sendTerminalMouseSequence(socket, terminalMouseEventCode(activeButtonCode + 32, event), position, "M");
+    sendTerminalMouseSequence(
+      socket,
+      terminalMouseEventCode(activePress.buttonCode + 32, event),
+      position,
+      "M",
+    );
   };
 
   const onPointerUp = (event) => {
-    if (activePointerID !== event.pointerId || activeButtonCode == null || !terminalShouldReportMouse(term, event)) {
-      if (activePointerID === event.pointerId) {
-        container.releasePointerCapture?.(event.pointerId);
-      }
-      activePointerID = null;
-      activeButtonCode = null;
-      return;
-    }
-    const position = terminalMousePosition(term, container, event);
-    stopTerminalMouseEvent(event);
-    if (position) {
-      sendTerminalMouseSequence(socket, terminalMouseEventCode(activeButtonCode, event), position, "m");
-    }
-    container.releasePointerCapture?.(event.pointerId);
-    activePointerID = null;
-    activeButtonCode = null;
+    finishTerminalPointer(event);
   };
 
   const onPointerCancel = (event) => {
-    if (activePointerID === event.pointerId) {
-      activePointerID = null;
-      activeButtonCode = null;
-    }
+    finishTerminalPointer(event);
+  };
+
+  const onLostPointerCapture = (event) => {
+    finishTerminalPointer(event);
   };
 
   const onContextMenu = (event) => {
     if (terminalShouldReportMouse(term, event)) {
+      // macOS may show contextmenu before delivering pointerup for a
+      // secondary click. Finish the already-forwarded press here so the TUI
+      // cannot remain latched if that pointerup is suppressed.
+      finishTerminalPointer(event, null);
       stopTerminalMouseEvent(event);
       return;
     }
@@ -4550,6 +4571,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   container.addEventListener("pointermove", onPointerMove, { capture: true });
   container.addEventListener("pointerup", onPointerUp, { capture: true });
   container.addEventListener("pointercancel", onPointerCancel, { capture: true });
+  container.addEventListener("lostpointercapture", onLostPointerCapture, { capture: true });
   container.addEventListener("contextmenu", onContextMenu, { capture: true });
   term.attachCustomWheelEventHandler?.(onWheel);
 
@@ -4559,6 +4581,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
       container.removeEventListener("pointermove", onPointerMove, { capture: true });
       container.removeEventListener("pointerup", onPointerUp, { capture: true });
       container.removeEventListener("pointercancel", onPointerCancel, { capture: true });
+      container.removeEventListener("lostpointercapture", onLostPointerCapture, { capture: true });
       container.removeEventListener("contextmenu", onContextMenu, { capture: true });
       term.attachCustomWheelEventHandler?.(null);
     },

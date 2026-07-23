@@ -1,12 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { terminalMouseMessage } from "./terminal-input.mjs";
+import { TerminalMousePress, terminalMouseMessage } from "./terminal-input.mjs";
 
 test("terminal mouse input is tagged separately from ordinary binary input", () => {
   const sequence = "\x1b[<32;53;17M";
   assert.deepEqual(JSON.parse(terminalMouseMessage(sequence)), {
     type: "mouse",
     data: sequence,
+  });
+});
+
+test("terminal mouse press returns one matching release", () => {
+  const press = new TerminalMousePress();
+  press.begin(7, 2, { col: 10, row: 4 });
+  assert.equal(press.matches(7), true);
+  assert.equal(press.update(7, { col: 12, row: 5 }), true);
+  assert.deepEqual(press.finish(7, { col: 13, row: 6 }), {
+    pointerID: 7,
+    buttonCode: 2,
+    position: { col: 13, row: 6 },
+  });
+  assert.equal(press.finish(7), null);
+});
+
+test("terminal mouse cancellation reuses the last valid position", () => {
+  const press = new TerminalMousePress();
+  press.begin(9, 0, { col: 3, row: 8 });
+  assert.equal(press.update(9, { col: 4, row: 9 }), true);
+  assert.deepEqual(press.finish(9), {
+    pointerID: 9,
+    buttonCode: 0,
+    position: { col: 4, row: 9 },
+  });
+});
+
+test("terminal mouse state ignores another pointer and supports forced release", () => {
+  const press = new TerminalMousePress();
+  press.begin(11, 2, { col: 20, row: 2 });
+  assert.equal(press.update(12, { col: 1, row: 1 }), false);
+  assert.equal(press.finish(12), null);
+  assert.deepEqual(press.finish(null), {
+    pointerID: 11,
+    buttonCode: 2,
+    position: { col: 20, row: 2 },
   });
 });
