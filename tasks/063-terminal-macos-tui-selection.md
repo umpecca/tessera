@@ -15,6 +15,11 @@ from leaving ghostty-web's local selection layer latched across the terminal.
   context-menu gesture.
 - Preserve any local terminal selection that existed before the gesture.
 - Tolerate terminal disposal or renderer versions without selection APIs.
+- When Safari supplies a pointer-originated `contextmenu` event without a
+  preceding secondary-button pointer event, report exactly one complete
+  right-click to the mouse-aware TUI.
+- Do not duplicate the right-click in browsers that deliver the conventional
+  pointer-down/context-menu sequence.
 
 ## Implementation
 
@@ -24,6 +29,11 @@ from leaving ghostty-web's local selection layer latched across the terminal.
   forwarded press and clear the renderer only if a new local selection appeared
   during that gesture.
 - Keep the existing modifier override and TUI mouse routing unchanged.
+- Track recent forwarded presses and synthesize a right-button press/release
+  only for Safari's context-menu-only secondary-click sequence.
+- Capture the pre-gesture selection state from WebKit's compatibility
+  `mousedown` path when the corresponding PointerEvent is absent, allowing the
+  context-menu handler to remove only the selection created by that gesture.
 
 ## Verification
 
@@ -34,7 +44,7 @@ from leaving ghostty-web's local selection layer latched across the terminal.
 
 ## Verification results
 
-- `node --test web/*.test.mjs` (58 tests passed)
+- `node --test web/*.test.mjs` (61 tests passed)
 - `node --check web/app.js`
 - `node --check web/terminal-input.mjs`
 - `npm run build:web`

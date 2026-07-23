@@ -5,9 +5,10 @@
 - Keep the old self-update process alive until a detached replacement confirms
   its server started, and report successor startup failures through the
   handoff instead of silently exiting after process creation.
-- Prevent macOS secondary clicks forwarded to mouse-aware Terminal apps from
-  leaving a new ghostty-web selection latched, without reserving right-click
-  or removing an existing local selection.
+- Normalize Safari's context-menu-only macOS secondary clicks into one complete
+  right-click for mouse-aware Terminal apps, while preventing latched
+  ghostty-web selection without reserving right-click or removing an existing
+  local selection.
 - Always pair forwarded Terminal mouse presses with releases, including when a
   TUI changes mouse mode or macOS interrupts a secondary click with a context
   menu, preventing applications such as Fresh from remaining visually latched.

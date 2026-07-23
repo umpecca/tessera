@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  TerminalContextMenuFallback,
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
   terminalMouseMessage,
@@ -80,4 +81,25 @@ test("reported context menu selection cleanup tolerates unsupported terminals", 
     },
     clearSelection() {},
   }, false), false);
+});
+
+test("Safari context-menu-only gesture requests one terminal mouse fallback", () => {
+  const fallback = new TerminalContextMenuFallback();
+  assert.equal(fallback.needsFallback(2, 5000), true);
+});
+
+test("context menu does not duplicate a recent reported secondary press", () => {
+  const fallback = new TerminalContextMenuFallback();
+  fallback.notePress(2, 5000);
+  assert.equal(fallback.needsFallback(2, 5050), false);
+  assert.equal(fallback.needsFallback(2, 5060), true);
+});
+
+test("context menu ignores stale or non-secondary reported presses", () => {
+  const fallback = new TerminalContextMenuFallback(1000);
+  fallback.notePress(2, 5000);
+  assert.equal(fallback.needsFallback(2, 7000), true);
+
+  fallback.notePress(0, 8000);
+  assert.equal(fallback.needsFallback(2, 8050), true);
 });

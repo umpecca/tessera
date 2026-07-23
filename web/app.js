@@ -30,6 +30,7 @@ import {
   terminalNavigationSequence,
 } from "./terminal-keyboard.mjs";
 import {
+  TerminalContextMenuFallback,
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
   terminalMouseMessage,
@@ -4421,6 +4422,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   }
 
   const activePress = new TerminalMousePress();
+  const contextMenuFallback = new TerminalContextMenuFallback();
   let selectionAtReportedPress = null;
   let wheelRemainder = 0;
   let wheelDirection = 0;
@@ -4458,6 +4460,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
     } catch {
       selectionAtReportedPress = null;
     }
+    contextMenuFallback.notePress(buttonCode, event.timeStamp);
     stopTerminalMouseEvent(event);
     hideFloatingMenus();
     setActivePane(rect, { raise: true });
@@ -4465,6 +4468,20 @@ function attachTerminalMouseBridge(rect, term, socket) {
     activePress.begin(event.pointerId, buttonCode, position);
     container.setPointerCapture?.(event.pointerId);
     sendTerminalMouseSequence(socket, terminalMouseEventCode(buttonCode, event), position, "M");
+  };
+
+  const onMouseDown = (event) => {
+    if (selectionAtReportedPress !== null || !terminalShouldReportMouse(term, event)) {
+      return;
+    }
+    // WebKit can deliver a compatibility mousedown even when it omits the
+    // corresponding PointerEvent. Capture the pre-gesture selection state
+    // before ghostty-web's canvas listener can start a local selection.
+    try {
+      selectionAtReportedPress = Boolean(term.hasSelection?.());
+    } catch {
+      selectionAtReportedPress = null;
+    }
   };
 
   const finishTerminalPointer = (event, pointerID = event.pointerId) => {
@@ -4530,6 +4547,18 @@ function attachTerminalMouseBridge(rect, term, socket) {
       // secondary click. Finish the already-forwarded press here so the TUI
       // cannot remain latched if that pointerup is suppressed.
       finishTerminalPointer(event, null);
+      if (event.button === 2 && contextMenuFallback.needsFallback(2, event.timeStamp)) {
+        // Safari on macOS may emit only contextmenu for a trackpad secondary
+        // click. In that case report one complete right-click to the TUI. A
+        // recent pointerdown suppresses this fallback in browsers that deliver
+        // the normal pointer sequence.
+        const position = terminalMousePosition(term, container, event);
+        if (position) {
+          const buttonCode = terminalMouseEventCode(2, event);
+          sendTerminalMouseSequence(socket, buttonCode, position, "M");
+          sendTerminalMouseSequence(socket, buttonCode, position, "m");
+        }
+      }
       // ghostty-web can misinterpret a macOS secondary-click compatibility
       // event as a local left-button drag. Remove only a selection created
       // during this TUI-owned gesture, preserving any selection that predated
@@ -4585,6 +4614,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 
   container.addEventListener("pointerdown", onPointerDown, { capture: true });
+  container.addEventListener("mousedown", onMouseDown, { capture: true });
   container.addEventListener("pointermove", onPointerMove, { capture: true });
   container.addEventListener("pointerup", onPointerUp, { capture: true });
   container.addEventListener("pointercancel", onPointerCancel, { capture: true });
@@ -4595,6 +4625,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   return {
     dispose() {
       container.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      container.removeEventListener("mousedown", onMouseDown, { capture: true });
       container.removeEventListener("pointermove", onPointerMove, { capture: true });
       container.removeEventListener("pointerup", onPointerUp, { capture: true });
       container.removeEventListener("pointercancel", onPointerCancel, { capture: true });

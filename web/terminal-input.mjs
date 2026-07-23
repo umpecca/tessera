@@ -18,6 +18,29 @@ export function clearTerminalSelectionStartedDuringGesture(term, hadSelection) {
   }
 }
 
+export class TerminalContextMenuFallback {
+  constructor(maxAgeMilliseconds = 1000) {
+    this.maxAgeMilliseconds = maxAgeMilliseconds;
+    this.buttonCode = null;
+    this.timeStamp = null;
+  }
+
+  notePress(buttonCode, timeStamp) {
+    this.buttonCode = buttonCode;
+    this.timeStamp = timeStamp;
+  }
+
+  needsFallback(buttonCode, timeStamp) {
+    const age = this.timeStamp === null ? Number.POSITIVE_INFINITY : timeStamp - this.timeStamp;
+    const sawMatchingPress = this.buttonCode === buttonCode
+      && age >= 0
+      && age <= this.maxAgeMilliseconds;
+    this.buttonCode = null;
+    this.timeStamp = null;
+    return !sawMatchingPress;
+  }
+}
+
 export class TerminalMousePress {
   constructor() {
     this.pointerID = null;
