@@ -58,7 +58,8 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		UserID: "alice", DefaultPaneFontSize: 18, DefaultTheme: "studio",
 		ThemeID: "hacker", DeskbarButtonEnabled: false,
 		TerminalWheelSensitivity: 0.5, EditorWheelSensitivity: 2,
-		OLEDWindowBorderSize: 16,
+		OLEDWindowBorderSize: 16, TerminalTERM: "xterm-ghostty", TerminalFont: "fira-code",
+		TerminalColorMode: "light",
 	}
 	if err := st.SaveUserSettings(ctx, settings); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -68,8 +69,47 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		t.Fatalf("load settings: %v", err)
 	}
 	if loaded.DefaultPaneFontSize != 18 || loaded.DefaultTheme != "studio" || loaded.ThemeID != "hacker" || loaded.DeskbarButtonEnabled ||
-		loaded.TerminalWheelSensitivity != 0.5 || loaded.EditorWheelSensitivity != 2 || loaded.OLEDWindowBorderSize != 16 {
+		loaded.TerminalWheelSensitivity != 0.5 || loaded.EditorWheelSensitivity != 2 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalColorMode != "light" {
 		t.Fatalf("loaded settings = %+v", loaded)
+	}
+}
+
+func TestTerminalFontNormalization(t *testing.T) {
+	if got := NormalizeTerminalFont("fira-code"); got != "fira-code" {
+		t.Fatalf("NormalizeTerminalFont(fira-code) = %q", got)
+	}
+	for _, value := range []string{"", "JetBrains Mono", "url(evil)"} {
+		if got := NormalizeTerminalFont(value); got != DefaultTerminalFont {
+			t.Errorf("NormalizeTerminalFont(%q) = %q, want %q", value, got, DefaultTerminalFont)
+		}
+	}
+}
+
+func TestTerminalColorModeNormalization(t *testing.T) {
+	if got := NormalizeTerminalColorMode("light"); got != "light" {
+		t.Fatalf("NormalizeTerminalColorMode(light) = %q", got)
+	}
+	for _, value := range []string{"", "system", "Light", "dark;drop"} {
+		if got := NormalizeTerminalColorMode(value); got != DefaultTerminalColorMode {
+			t.Errorf("NormalizeTerminalColorMode(%q) = %q, want %q", value, got, DefaultTerminalColorMode)
+		}
+	}
+}
+
+func TestTerminalTERMNormalization(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  string
+	}{
+		{value: " xterm-ghostty ", want: "xterm-ghostty"},
+		{value: "screen_256color+custom", want: "screen_256color+custom"},
+		{value: "", want: DefaultTerminalTERM},
+		{value: "-xterm", want: DefaultTerminalTERM},
+		{value: "xterm;echo nope", want: DefaultTerminalTERM},
+	} {
+		if got := NormalizeTerminalTERM(test.value); got != test.want {
+			t.Errorf("NormalizeTerminalTERM(%q) = %q, want %q", test.value, got, test.want)
+		}
 	}
 }
 

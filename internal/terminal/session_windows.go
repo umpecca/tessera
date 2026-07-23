@@ -13,7 +13,7 @@ type windowsPty struct {
 	pty *conpty.ConPty
 }
 
-func startPlatformPty(cwd string, cols, rows int) (platformPty, error) {
+func startPlatformPty(cwd, _ string, cols, rows int) (platformPty, error) {
 	command := os.Getenv("TESSERA_TERMINAL_SHELL")
 	if command == "" {
 		command = "powershell.exe -NoLogo"

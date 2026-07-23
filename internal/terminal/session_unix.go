@@ -5,6 +5,7 @@ package terminal
 import (
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/creack/pty"
 )
@@ -14,7 +15,7 @@ type unixPty struct {
 	cmd  *exec.Cmd
 }
 
-func startPlatformPty(cwd string, cols, rows int) (platformPty, error) {
+func startPlatformPty(cwd, terminalTerm string, cols, rows int) (platformPty, error) {
 	shell := os.Getenv("TESSERA_TERMINAL_SHELL")
 	if shell == "" {
 		shell = os.Getenv("SHELL")
@@ -24,7 +25,7 @@ func startPlatformPty(cwd string, cols, rows int) (platformPty, error) {
 	}
 	cmd := exec.Command(shell)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = terminalEnvironment(os.Environ(), terminalTerm)
 
 	file, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: uint16(cols),
@@ -34,6 +35,16 @@ func startPlatformPty(cwd string, cols, rows int) (platformPty, error) {
 		return nil, err
 	}
 	return &unixPty{file: file, cmd: cmd}, nil
+}
+
+func terminalEnvironment(environment []string, terminalTerm string) []string {
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, "TERM=") {
+			result = append(result, entry)
+		}
+	}
+	return append(result, "TERM="+terminalTerm)
 }
 
 func (p *unixPty) Read(buf []byte) (int, error) {

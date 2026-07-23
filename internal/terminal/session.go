@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	defaultCols = 80
-	defaultRows = 24
+	defaultCols         = 80
+	defaultRows         = 24
+	defaultTerminalTERM = "xterm-256color"
 )
 
 type Session struct {
@@ -22,7 +23,7 @@ type platformPty interface {
 	Wait() error
 }
 
-func Start(cwd string, cols, rows int) (*Session, error) {
+func Start(cwd, terminalTerm string, cols, rows int) (*Session, error) {
 	if cols < 2 {
 		cols = defaultCols
 	}
@@ -32,8 +33,11 @@ func Start(cwd string, cols, rows int) (*Session, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
+	if terminalTerm == "" {
+		terminalTerm = defaultTerminalTERM
+	}
 
-	pty, err := startPlatformPty(cwd, cols, rows)
+	pty, err := startPlatformPty(cwd, terminalTerm, cols, rows)
 	if err != nil {
 		return nil, err
 	}

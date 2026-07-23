@@ -4,14 +4,31 @@ import (
 	"encoding/json"
 	"image/png"
 	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 )
 
 func TestTopLevelBrowserAssetsAreEmbedded(t *testing.T) {
-	for _, name := range []string{"manifest.webmanifest", "browser-pane.mjs", "oled-border-size.mjs", "terminal-keyboard.mjs", "workspace-concurrency.mjs"} {
+	for _, name := range []string{"manifest.webmanifest", "browser-pane.mjs", "oled-border-size.mjs", "terminal-input.mjs", "terminal-keyboard.mjs", "terminal-settings.mjs", "workspace-concurrency.mjs"} {
 		if _, err := fs.Stat(Files, name); err != nil {
 			t.Errorf("embedded asset %q: %v", name, err)
+		}
+	}
+}
+
+func TestAppModuleImportsAreEmbedded(t *testing.T) {
+	app, err := fs.ReadFile(Files, "app.js")
+	if err != nil {
+		t.Fatalf("read embedded app.js: %v", err)
+	}
+
+	importPattern := regexp.MustCompile(`from\s+"\.\/([^"]+)"`)
+	for _, match := range importPattern.FindAllSubmatch(app, -1) {
+		name := string(match[1])
+		name, _, _ = strings.Cut(name, "?")
+		if _, err := fs.Stat(Files, name); err != nil {
+			t.Errorf("app.js import %q is not embedded: %v", name, err)
 		}
 	}
 }

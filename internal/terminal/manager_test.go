@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"io"
 	"testing"
 )
@@ -13,6 +14,14 @@ func (p *pidTestPTY) Resize(int, int) error          { return nil }
 func (p *pidTestPTY) Close() error                   { return nil }
 func (p *pidTestPTY) PID() int                       { return p.pid }
 func (p *pidTestPTY) Wait() error                    { return nil }
+
+type writeTestPTY struct{ bytes.Buffer }
+
+func (p *writeTestPTY) Read([]byte) (int, error) { return 0, io.EOF }
+func (p *writeTestPTY) Resize(int, int) error    { return nil }
+func (p *writeTestPTY) Close() error             { return nil }
+func (p *writeTestPTY) PID() int                 { return 1 }
+func (p *writeTestPTY) Wait() error              { return nil }
 
 func TestManagedSessionScrollbackReplayAndSubscribe(t *testing.T) {
 	session := &ManagedSession{
@@ -96,5 +105,60 @@ func TestProcessIDAndCloseHandlerFollowLivePane(t *testing.T) {
 		}
 	default:
 		t.Fatal("close callback was not invoked")
+	}
+}
+
+func TestManagedSessionGatesTaggedMouseInputFromPTYModes(t *testing.T) {
+	pty := &writeTestPTY{}
+	managed := &ManagedSession{
+		session:     &Session{pty: pty},
+		subscribers: map[chan []byte]struct{}{},
+	}
+	mouse := []byte("\x1b[<32;53;17M")
+
+	if n, err := managed.WriteMouse(mouse); err != nil || n != len(mouse) {
+		t.Fatalf("disabled WriteMouse = (%d, %v), want (%d, nil)", n, err, len(mouse))
+	}
+	if pty.Len() != 0 {
+		t.Fatalf("disabled mouse input reached PTY: %q", pty.String())
+	}
+
+	managed.publish([]byte("\x1b[?10"))
+	managed.publish([]byte("02;1006h"))
+	if _, err := managed.WriteMouse(mouse); err != nil {
+		t.Fatalf("enabled WriteMouse: %v", err)
+	}
+	if got := pty.String(); got != string(mouse) {
+		t.Fatalf("enabled mouse input = %q, want %q", got, mouse)
+	}
+
+	managed.publish([]byte("\x1b[?1002"))
+	managed.publish([]byte("l"))
+	if _, err := managed.WriteMouse(mouse); err != nil {
+		t.Fatalf("disabled WriteMouse after reset: %v", err)
+	}
+	if got := pty.String(); got != string(mouse) {
+		t.Fatalf("stale mouse input reached PTY: %q", got)
+	}
+
+	keyboard := []byte("echo still works\r")
+	if _, err := managed.Write(keyboard); err != nil {
+		t.Fatalf("ordinary Write: %v", err)
+	}
+	if got, want := pty.String(), string(mouse)+string(keyboard); got != want {
+		t.Fatalf("PTY input = %q, want %q", got, want)
+	}
+}
+
+func TestMouseModeTrackerKeepsOtherTrackingModesEnabled(t *testing.T) {
+	var tracker mouseModeTracker
+	tracker.consume([]byte("\x1b[?1000;1003h"))
+	tracker.consume([]byte("\x1b[?1000l"))
+	if !tracker.enabled() {
+		t.Fatal("disabling one DEC mode disabled another active mouse mode")
+	}
+	tracker.consume([]byte("\x1b[?1003l"))
+	if tracker.enabled() {
+		t.Fatal("mouse tracking remained enabled after every tracking mode was reset")
 	}
 }

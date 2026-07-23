@@ -78,6 +78,8 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 		"defaultPaneFontSize": 18, "defaultTheme": "studio", "themeId": "hacker",
 		"deskbarButtonEnabled": false, "terminalWheelSensitivity": 0.5,
 		"editorWheelSensitivity": 2.0, "oledWindowBorderSize": 16,
+		"terminalTerm": "xterm-ghostty", "terminalFont": "fira-code",
+		"terminalColorMode": "light",
 	}
 	response = request(http.MethodPut, "/api/users/alice/settings", settings)
 	if response.Code != http.StatusOK {
@@ -99,5 +101,14 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	}
 	if loadedSettings.OLEDWindowBorderSize != 16 {
 		t.Fatalf("OLED window border size was not persisted: %+v", loadedSettings)
+	}
+	if loadedSettings.TerminalTERM != "xterm-ghostty" {
+		t.Fatalf("terminal TERM setting was not persisted: %+v", loadedSettings)
+	}
+	if loadedSettings.TerminalFont != "fira-code" {
+		t.Fatalf("terminal font setting was not persisted: %+v", loadedSettings)
+	}
+	if loadedSettings.TerminalColorMode != "light" {
+		t.Fatalf("terminal color mode setting was not persisted: %+v", loadedSettings)
 	}
 }

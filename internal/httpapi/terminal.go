@@ -13,6 +13,7 @@ type terminalClientMessage struct {
 	Type string `json:"type"`
 	Cols int    `json:"cols"`
 	Rows int    `json:"rows"`
+	Data string `json:"data"`
 }
 
 func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +60,16 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	session, replay, events, unsubscribe, err := a.Terminals.Attach(workspaceID, paneID, r.URL.Query().Get("cwd"), cols, rows)
+	ownerID, err := a.Store.SessionOwner(r.Context(), workspaceID)
+	if err != nil {
+		ownerID = workspaceID
+	}
+	settings, err := a.Store.LoadUserSettings(r.Context(), ownerID)
+	if err != nil {
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\n[tessera terminal failed: "+err.Error()+"]\r\n"))
+		return
+	}
+	session, replay, events, unsubscribe, err := a.Terminals.Attach(workspaceID, paneID, r.URL.Query().Get("cwd"), settings.TerminalTERM, cols, rows)
 	if err != nil {
 		_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\n[tessera terminal failed: "+err.Error()+"]\r\n"))
 		return
@@ -107,7 +117,9 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 				_, _ = session.Write(payload)
 				continue
 			}
-			if message.Type == "resize" {
+			if message.Type == "mouse" {
+				_, _ = session.WriteMouse([]byte(message.Data))
+			} else if message.Type == "resize" {
 				_ = session.Resize(message.Cols, message.Rows)
 			} else if message.Type == "close" {
 				a.Terminals.Terminate(workspaceID, paneID)

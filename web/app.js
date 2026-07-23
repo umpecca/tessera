@@ -25,6 +25,23 @@ import { nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion } from "./server-update.mjs";
 import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
 import { isTerminalPasteShortcut, terminalNavigationSequence } from "./terminal-keyboard.mjs";
+import { terminalMouseMessage } from "./terminal-input.mjs";
+import { defaultTerminalTERM, normalizeTerminalTERM } from "./terminal-settings.mjs";
+import {
+  defaultTerminalFont,
+  loadTerminalFont,
+  normalizeTerminalFont,
+  terminalFontFamily,
+  terminalFonts,
+} from "./terminal-font.mjs";
+import {
+  defaultTerminalColorMode,
+  normalizeTerminalColorMode,
+  recreateOpenTerminalViews,
+  terminalColorModes,
+  terminalColorTheme,
+} from "./terminal-colors.mjs";
+import { installTerminalBlockRenderer } from "./terminal-block-renderer.mjs";
 import {
   browseLocalPortHelpCommand,
   browserHelpAddress,
@@ -118,6 +135,9 @@ let deskbarButtonEnabled = true;
 let terminalWheelSensitivity = defaultWheelSensitivity;
 let editorWheelSensitivity = defaultWheelSensitivity;
 let oledWindowBorderSize = defaultOLEDBorderSize;
+let terminalTerm = defaultTerminalTERM;
+let terminalFont = defaultTerminalFont;
+let terminalColorMode = defaultTerminalColorMode;
 let audioStationState = null;
 let audioStationEvents = null;
 let audioStationReconnectTimer = null;
@@ -128,54 +148,22 @@ let serverHealthMonitorTimer = null;
 let serverHealthProbe = null;
 let serverUpdateRestarting = false;
 
-// Terminal canvas colors cannot use CSS variables, so each theme carries its
-// own set. Everything else themes through styles.css.
 const defaultThemeID = "next-tessera";
 const themes = {
   "next-tessera": {
     label: "Next Tessera",
-    terminal: {
-      background: "#000000",
-      foreground: "#e5e1d5",
-      cursor: "#f4df45",
-      selectionBackground: "#284461",
-    },
   },
   studio: {
     label: "Studio",
-    terminal: {
-      background: "#000000",
-      foreground: "#d8dee6",
-      cursor: "#7fb2e6",
-      selectionBackground: "#3a5578",
-    },
   },
   hacker: {
     label: "Hacker",
-    terminal: {
-      background: "#000000",
-      foreground: "#e5e1d5",
-      cursor: "#59ffa1",
-      selectionBackground: "#0f4d27",
-    },
   },
   "dark-professional": {
     label: "Dark Professional",
-    terminal: {
-      background: "#10131a",
-      foreground: "#d6dce4",
-      cursor: "#8fb4dd",
-      selectionBackground: "#33506e",
-    },
   },
   "oled-terminal": {
     label: "OLED Terminal",
-    terminal: {
-      background: "#000000",
-      foreground: "#b8b8b8",
-      cursor: "#d0d0d0",
-      selectionBackground: "#343434",
-    },
   },
 };
 let defaultTheme = defaultThemeID;
@@ -258,6 +246,38 @@ function setOLEDWindowBorderSize(value, { save = true } = {}) {
   if (save) {
     scheduleUserSettingsSave();
   }
+}
+
+function setTerminalTERM(value) {
+  terminalTerm = normalizeTerminalTERM(value);
+  scheduleUserSettingsSave();
+}
+
+async function setTerminalFont(value, { save = true } = {}) {
+  terminalFont = normalizeTerminalFont(value);
+  if (save) {
+    scheduleUserSettingsSave();
+  }
+  const terminalPanes = rectangles.filter((rect) => rect.kind === "terminal" && rect.terminal?.term);
+  await Promise.all([...new Set(terminalPanes.map((rect) => rect.fontSize))]
+    .map((fontSize) => loadTerminalFont(document.fonts, terminalFont, fontSize)));
+  const family = terminalFontFamily(terminalFont);
+  for (const rect of terminalPanes) {
+    rect.terminal.term.options.fontFamily = family;
+    requestTerminalFit(rect);
+  }
+}
+
+async function setTerminalColorMode(value, { save = true } = {}) {
+  const nextMode = normalizeTerminalColorMode(value);
+  if (nextMode === terminalColorMode) {
+    return;
+  }
+  terminalColorMode = nextMode;
+  if (save) {
+    scheduleUserSettingsSave();
+  }
+  await recreateOpenTerminalViews(rectangles, disposeTerminal, startTerminal);
 }
 
 function applyTheme(id, { save = true } = {}) {
@@ -413,6 +433,9 @@ async function loadUserSettings() {
   deskbarButtonEnabled = settings.deskbarButtonEnabled !== false;
   terminalWheelSensitivity = normalizeWheelSensitivity(settings.terminalWheelSensitivity);
   editorWheelSensitivity = normalizeWheelSensitivity(settings.editorWheelSensitivity);
+  terminalTerm = normalizeTerminalTERM(settings.terminalTerm);
+  terminalFont = normalizeTerminalFont(settings.terminalFont);
+  terminalColorMode = normalizeTerminalColorMode(settings.terminalColorMode);
   setOLEDWindowBorderSize(settings.oledWindowBorderSize, { save: false });
   applyTheme(settings.themeId || defaultTheme, { save: false });
   updateDeskbar();
@@ -3794,6 +3817,9 @@ async function saveUserSettings() {
       terminalWheelSensitivity,
       editorWheelSensitivity,
       oledWindowBorderSize,
+      terminalTerm,
+      terminalFont,
+      terminalColorMode,
     }),
   });
   if (!response.ok) {
@@ -4207,8 +4233,9 @@ function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
 
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
-    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-links-1").then(async (module) => {
+    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-rendering-1").then(async (module) => {
       await module.init();
+      installTerminalBlockRenderer(module.CanvasRenderer, module.CellFlags);
       return module;
     });
   }
@@ -4222,21 +4249,24 @@ async function startTerminal(rect) {
 
   rect.terminalContainer.textContent = "Starting terminal...";
   try {
-    const { FitAddon, Terminal, WrappedHTTPLinkProvider } = await loadGhosttyModule();
+    const modulePromise = loadGhosttyModule();
+    await loadTerminalFont(document.fonts, terminalFont, rect.fontSize);
+    const { FitAddon, Terminal, WrappedHTTPLinkProvider } = await modulePromise;
     if (!rect.terminalContainer || rect.kind !== "terminal") {
       return;
     }
 
     rect.terminalContainer.replaceChildren();
-    // The renderer cannot retheme a live terminal, so pin the container
-    // background to the canvas colors chosen at start time.
-    const terminalTheme = themes[themeID].terminal;
+    // ANSI assigns color roles rather than RGB values. The terminal's neutral
+    // light/dark mode supplies an xterm-compatible palette independently from
+    // Tessera's decorative workspace theme.
+    const terminalTheme = terminalColorTheme(terminalColorMode);
     rect.terminalContainer.style.background = terminalTheme.background;
     const term = new Terminal({
       cols: 80,
       rows: 24,
       fontSize: rect.fontSize,
-      fontFamily: tesseraMonoFontFamily,
+      fontFamily: terminalFontFamily(terminalFont),
       cursorBlink: activeRect === rect,
       theme: { ...terminalTheme },
     });
@@ -4543,7 +4573,10 @@ function terminalMousePosition(term, container, event) {
 }
 
 function sendTerminalMouseSequence(socket, code, position, finalByte) {
-  sendTerminalInput(socket, `\x1b[<${code};${position.col};${position.row}${finalByte}`);
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  socket.send(terminalMouseMessage(`\x1b[<${code};${position.col};${position.row}${finalByte}`));
 }
 
 function stopTerminalMouseEvent(event) {
@@ -5555,6 +5588,11 @@ function renderSettingsModal() {
       (next) => setWheelSensitivity("editor", next),
     ),
   ]));
+  content.appendChild(renderSettingsSection("Terminal", [
+    renderSettingsTerminalFontRow(),
+    renderSettingsTerminalColorModeRow(),
+    renderSettingsTerminalTERMRow(),
+  ]));
   content.appendChild(renderSettingsSection("Theme", [
     renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
     renderSettingsThemeRow("Current", "Applied across this user's sessions immediately.", themeID, (next) => applyTheme(next)),
@@ -5950,6 +5988,85 @@ function renderSettingsWheelRow(labelText, description, value, onChange) {
     select.appendChild(option);
   }
   select.addEventListener("change", () => onChange(select.value));
+  row.append(label, select);
+  return row;
+}
+
+function renderSettingsTerminalTERMRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "TERM";
+  const detail = document.createElement("span");
+  detail.textContent = "Terminal capability name used by new terminal sessions. Existing terminals keep their current value.";
+  label.append(name, detail);
+
+  const input = document.createElement("input");
+  input.className = "settings-text-input";
+  input.type = "text";
+  input.maxLength = 64;
+  input.spellcheck = false;
+  input.autocapitalize = "none";
+  input.setAttribute("aria-label", "Terminal TERM value");
+  input.value = terminalTerm;
+  input.addEventListener("change", () => {
+    setTerminalTERM(input.value);
+    input.value = terminalTerm;
+  });
+  row.append(label, input);
+  return row;
+}
+
+function renderSettingsTerminalFontRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Font";
+  const detail = document.createElement("span");
+  detail.textContent = "Font used by terminal panes. Changes apply to open terminals immediately.";
+  label.append(name, detail);
+
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", "Terminal font");
+  for (const [id, font] of Object.entries(terminalFonts)) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = font.label;
+    option.selected = id === terminalFont;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => void setTerminalFont(select.value));
+  row.append(label, select);
+  return row;
+}
+
+function renderSettingsTerminalColorModeRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Colors";
+  const detail = document.createElement("span");
+  detail.textContent = "Neutral xterm colors, independent of the workspace theme.";
+  label.append(name, detail);
+
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", "Terminal color mode");
+  for (const [id, mode] of Object.entries(terminalColorModes)) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = mode.label;
+    option.selected = id === terminalColorMode;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => void setTerminalColorMode(select.value));
   row.append(label, select);
   return row;
 }

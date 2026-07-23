@@ -546,6 +546,17 @@
   height: var(--oled-window-border-size);
 }
 
+/* JetBrains Mono is the desktop Ghostty default used by Tessera terminals.
+ * The variable Google Fonts face supplies regular through bold weights and is
+ * stored locally so terminal startup never depends on a CDN. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/assets/JetBrainsMono-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+}
+
 :root[data-theme="oled-terminal"] .resize-edge-e {
   top: 0;
   right: calc(0px - var(--oled-window-border-size));
@@ -2677,6 +2688,23 @@ input {
 }
 
 .settings-theme-select:focus {
+  outline: 1px dotted var(--focus-outline);
+  outline-offset: -3px;
+}
+
+.settings-text-input {
+  width: 172px;
+  height: 26px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  padding: 1px 7px;
+  background: var(--pane-bg);
+  color: var(--text);
+  font: 12px var(--tessera-font, monospace);
+}
+
+.settings-text-input:focus {
   outline: 1px dotted var(--focus-outline);
   outline-offset: -3px;
 }

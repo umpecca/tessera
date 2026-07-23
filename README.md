@@ -161,6 +161,26 @@ Current pane types:
   linked Terminal process tree. Transport controls are shared; browser volume
   and mute are local to each listener.
 
+### Terminal appearance
+
+Terminal panes use the locally bundled JetBrains Mono font by default. Choose
+JetBrains Mono or Fira Code under **Settings → Terminal → Font**; the per-user
+choice is persisted and applies immediately to open panes. Tessera waits for
+the regular and bold faces before creating a terminal so the canvas starts
+with stable character-cell measurements.
+
+Choose **Dark** or **Light** under **Settings → Terminal → Colors**. Both modes
+use the conventional xterm RGB values for indexed colors 0–15 and leave
+256-color and 24-bit application output unmodified; only the neutral default
+foreground, background, cursor, and selection colors change. Terminal colors
+are independent of Tessera's workspace theme. ANSI defines the indexed color
+roles but does not assign exact RGB values to them.
+
+Solid Unicode block elements are drawn as pixel-aligned cell geometry instead
+of font glyphs. This keeps fractional blocks and quadrant art joined without
+the seams that browser font rasterization can introduce. Shade characters
+remain font-rendered.
+
 ## Shared audio station
 
 The Audio pane is available from the window-type menu, workspace menu, and
@@ -265,9 +285,12 @@ Sessions have stable routes of the form:
 ```
 
 Browser Back/Forward switches session routes. Each session owns its panes,
-background, running commands, and terminals; theme and default font settings
-are shared at the user level. Destroying a session stops only that session's
-running commands and terminals, and the final session cannot be deleted.
+background, running commands, and terminals; theme, default font, terminal
+color mode, and terminal `TERM` settings are shared at the user level. The
+`TERM` value applies when a new terminal process is created; existing
+terminals keep their original environment. Destroying a session stops only
+that session's running commands and terminals, and the final session cannot be
+deleted.
 
 The selected user is remembered in browser storage. This is convenience and
 state separation only, not authentication or authorization.

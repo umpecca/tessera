@@ -27,6 +27,7 @@ type ManagedSession struct {
 	closed          atomic.Bool
 	closeOnce       sync.Once
 	mu              sync.Mutex
+	mouseModes      mouseModeTracker
 }
 
 func NewManager() *Manager {
@@ -36,7 +37,7 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) Attach(workspaceID, paneID, cwd string, cols, rows int) (*ManagedSession, []byte, <-chan []byte, func(), error) {
+func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, rows int) (*ManagedSession, []byte, <-chan []byte, func(), error) {
 	if m == nil {
 		return nil, nil, nil, nil, errors.New("terminal manager is not available")
 	}
@@ -61,7 +62,7 @@ func (m *Manager) Attach(workspaceID, paneID, cwd string, cols, rows int) (*Mana
 		return existing, replay, ch, unsubscribe, nil
 	}
 
-	session, err := Start(cwd, cols, rows)
+	session, err := Start(cwd, terminalTerm, cols, rows)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -208,6 +209,25 @@ func (s *ManagedSession) Write(p []byte) (int, error) {
 	return session.Write(p)
 }
 
+// WriteMouse forwards a browser-generated mouse report only while the PTY's
+// latest output says a DEC mouse tracking mode is enabled. Browser mouse input
+// is tagged separately so ordinary keyboard input and pasted escape sequences
+// are never filtered by this race guard.
+func (s *ManagedSession) WriteMouse(p []byte) (int, error) {
+	if s == nil {
+		return 0, io.ErrClosedPipe
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.isClosed() || s.session == nil {
+		return 0, io.ErrClosedPipe
+	}
+	if !s.mouseModes.enabled() {
+		return len(p), nil
+	}
+	return s.session.Write(p)
+}
+
 func (s *ManagedSession) Resize(cols, rows int) error {
 	if s == nil {
 		return io.ErrClosedPipe
@@ -285,6 +305,7 @@ func (s *ManagedSession) publish(chunk []byte) {
 		return
 	}
 	s.mu.Lock()
+	s.mouseModes.consume(chunk)
 	s.scrollback = append(s.scrollback, chunk...)
 	if s.scrollbackLimit > 0 && len(s.scrollback) > s.scrollbackLimit {
 		s.scrollback = append([]byte(nil), s.scrollback[len(s.scrollback)-s.scrollbackLimit:]...)

@@ -33,10 +33,16 @@ type UserSettings struct {
 	TerminalWheelSensitivity float64 `json:"terminalWheelSensitivity"`
 	EditorWheelSensitivity   float64 `json:"editorWheelSensitivity"`
 	OLEDWindowBorderSize     int     `json:"oledWindowBorderSize"`
+	TerminalTERM             string  `json:"terminalTerm"`
+	TerminalFont             string  `json:"terminalFont"`
+	TerminalColorMode        string  `json:"terminalColorMode"`
 }
 
 const defaultWheelSensitivity = 1.5
 const defaultOLEDWindowBorderSize = 10
+const DefaultTerminalTERM = "xterm-256color"
+const DefaultTerminalFont = "jetbrains-mono"
+const DefaultTerminalColorMode = "dark"
 
 func normalizeWheelSensitivity(value float64) float64 {
 	if value < 0.25 || value > 4 {
@@ -50,6 +56,43 @@ func normalizeOLEDWindowBorderSize(value int) int {
 		return defaultOLEDWindowBorderSize
 	}
 	return value
+}
+
+// NormalizeTerminalTERM accepts conventional terminfo names while excluding
+// whitespace, control characters, and shell syntax from the persisted value.
+func NormalizeTerminalTERM(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 64 {
+		return DefaultTerminalTERM
+	}
+	for index, char := range value {
+		isAlphaNumeric := char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9'
+		if index == 0 && !isAlphaNumeric {
+			return DefaultTerminalTERM
+		}
+		if !isAlphaNumeric && char != '-' && char != '_' && char != '.' && char != '+' {
+			return DefaultTerminalTERM
+		}
+	}
+	return value
+}
+
+func NormalizeTerminalFont(value string) string {
+	switch value {
+	case "jetbrains-mono", "fira-code":
+		return value
+	default:
+		return DefaultTerminalFont
+	}
+}
+
+func NormalizeTerminalColorMode(value string) string {
+	switch value {
+	case "dark", "light":
+		return value
+	default:
+		return DefaultTerminalColorMode
+	}
 }
 
 func normalizeSessionName(name string) (string, error) {
@@ -267,22 +310,25 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 	var settings UserSettings
 	err := s.db.QueryRowContext(ctx, `
 SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled,
-       terminal_wheel_sensitivity, editor_wheel_sensitivity, oled_window_border_size
+       terminal_wheel_sensitivity, editor_wheel_sensitivity, oled_window_border_size,
+       terminal_term, terminal_font, terminal_color_mode
 FROM user_settings
 WHERE user_id = ?`, userID).Scan(
 		&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme,
 		&settings.ThemeID, &settings.DeskbarButtonEnabled,
 		&settings.TerminalWheelSensitivity, &settings.EditorWheelSensitivity,
-		&settings.OLEDWindowBorderSize)
+		&settings.OLEDWindowBorderSize, &settings.TerminalTERM, &settings.TerminalFont,
+		&settings.TerminalColorMode)
 	if errors.Is(err, sql.ErrNoRows) {
 		now := nowText()
 		if _, err := s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
-  editor_wheel_sensitivity, oled_window_border_size, created_at, updated_at
+  editor_wheel_sensitivity, oled_window_border_size, terminal_term, terminal_font,
+  terminal_color_mode, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, defaultOLEDWindowBorderSize, now, now); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalColorMode, now, now); err != nil {
 			return nil, fmt.Errorf("create user settings: %w", err)
 		}
 		return s.LoadUserSettings(ctx, userID)
@@ -296,6 +342,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThem
 	settings.TerminalWheelSensitivity = normalizeWheelSensitivity(settings.TerminalWheelSensitivity)
 	settings.EditorWheelSensitivity = normalizeWheelSensitivity(settings.EditorWheelSensitivity)
 	settings.OLEDWindowBorderSize = normalizeOLEDWindowBorderSize(settings.OLEDWindowBorderSize)
+	settings.TerminalTERM = NormalizeTerminalTERM(settings.TerminalTERM)
+	settings.TerminalFont = NormalizeTerminalFont(settings.TerminalFont)
+	settings.TerminalColorMode = NormalizeTerminalColorMode(settings.TerminalColorMode)
 	return &settings, nil
 }
 
@@ -312,14 +361,18 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 	settings.TerminalWheelSensitivity = normalizeWheelSensitivity(settings.TerminalWheelSensitivity)
 	settings.EditorWheelSensitivity = normalizeWheelSensitivity(settings.EditorWheelSensitivity)
 	settings.OLEDWindowBorderSize = normalizeOLEDWindowBorderSize(settings.OLEDWindowBorderSize)
+	settings.TerminalTERM = NormalizeTerminalTERM(settings.TerminalTERM)
+	settings.TerminalFont = NormalizeTerminalFont(settings.TerminalFont)
+	settings.TerminalColorMode = NormalizeTerminalColorMode(settings.TerminalColorMode)
 	now := nowText()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
-  editor_wheel_sensitivity, oled_window_border_size, created_at, updated_at
+  editor_wheel_sensitivity, oled_window_border_size, terminal_term, terminal_font,
+  terminal_color_mode, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
   default_theme = excluded.default_theme,
@@ -328,10 +381,14 @@ ON CONFLICT(user_id) DO UPDATE SET
   terminal_wheel_sensitivity = excluded.terminal_wheel_sensitivity,
   editor_wheel_sensitivity = excluded.editor_wheel_sensitivity,
   oled_window_border_size = excluded.oled_window_border_size,
+  terminal_term = excluded.terminal_term,
+  terminal_font = excluded.terminal_font,
+  terminal_color_mode = excluded.terminal_color_mode,
   updated_at = excluded.updated_at`, settings.UserID, settings.DefaultPaneFontSize,
 		settings.DefaultTheme, settings.ThemeID, settings.DeskbarButtonEnabled,
 		settings.TerminalWheelSensitivity, settings.EditorWheelSensitivity,
-		settings.OLEDWindowBorderSize, now, now)
+		settings.OLEDWindowBorderSize, settings.TerminalTERM, settings.TerminalFont,
+		settings.TerminalColorMode, now, now)
 	if err != nil {
 		return fmt.Errorf("save user settings: %w", err)
 	}

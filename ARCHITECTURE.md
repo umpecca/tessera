@@ -199,7 +199,17 @@ low-frequency health monitor opens one recovery dialog after consecutive
 failures; restored connections reload only after user confirmation, except an
 explicit Reconnect action which verifies health and then reloads.
 Per-user settings also carry independent wheel sensitivity multipliers for
-Terminal panes and CodeMirror-based Worksheet/Text Editor panes.
+Terminal panes and CodeMirror-based Worksheet/Text Editor panes, the selected
+terminal font and color mode, and the validated `TERM` capability name used
+when new Unix terminal PTYs are created. JetBrains Mono is bundled and selected
+by default, with Fira Code retained as an alternative. Terminal creation waits
+for the selected regular and bold faces before Ghostty Web measures the canvas
+cells. Neutral light and dark terminal modes share an explicit xterm base-16
+palette and remain independent of workspace themes; changing the mode rebuilds
+the browser view and reconnects to the existing managed PTY. A Tessera-owned
+renderer extension draws solid Unicode block elements as pixel-aligned
+rectangles while ordinary and shade glyphs remain on Ghostty Web's normal text
+path.
 
 ### Backend Services
 
@@ -356,7 +366,8 @@ Key Schemas/Collections:
 - `command_runs`: command text, before/after working directories, status, exit
   code, and timestamps.
 - `workspace_backgrounds`: background image MIME type and BLOB data.
-- `user_settings`: default theme and font settings shared across a user's
+- `user_settings`: default theme, editor and terminal fonts, terminal color
+  mode, terminal `TERM`, and interaction settings shared across a user's
   sessions.
 - `audio_station`: host-wide selected source, paused file position, and monotonic
   source/state versions. Playing state is deliberately not restored.
