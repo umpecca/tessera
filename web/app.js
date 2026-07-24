@@ -58,7 +58,7 @@ import {
   normalizeBrowserAddress,
 } from "./browser-pane.mjs";
 import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
-import { paneNeedsRaise } from "./pane-activation.mjs";
+import { focusPane, paneNeedsRaise } from "./pane-activation.mjs";
 import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
@@ -1084,7 +1084,7 @@ function startMoving(event, rect) {
   event.preventDefault();
   event.stopPropagation();
   hideFloatingMenus();
-  setActivePane(rect, { raise: true });
+  setActivePane(rect, { raise: true, focusEditor: true });
 
   const point = boardPoint(event);
   interaction = {
@@ -1110,7 +1110,7 @@ function startResizing(event, rect, handle) {
   event.stopPropagation();
   hideFloatingMenus();
   clearFullState(rect);
-  setActivePane(rect, { raise: true });
+  setActivePane(rect, { raise: true, focusEditor: true });
 
   const point = boardPoint(event);
   interaction = {
@@ -3139,11 +3139,7 @@ function setActivePane(rect, options = {}) {
     rect.element.style.zIndex = String(rect.zIndex);
   }
   if (options.focusEditor) {
-    if (rect.kind === "terminal") {
-      rect.terminal?.term?.focus();
-    } else {
-      rect.editor?.focus();
-    }
+    focusPane(rect);
   } else if (options.focusElement) {
     rect.element.focus({ preventScroll: true });
   }
@@ -6275,9 +6271,13 @@ function openCommandPalette() {
 }
 
 function hideCommandPalette() {
+  const restorePaneFocus = !commandPalette.hidden && commandPalette.contains(document.activeElement);
   commandPalette.hidden = true;
   window.clearTimeout(paletteCodeInvokeTimer);
   paletteCodeInvokeTimer = null;
+  if (restorePaneFocus) {
+    restorePaneFocusAfterOverlayDismiss(commandPalette);
+  }
 }
 
 function toggleWindowList() {
@@ -6299,7 +6299,20 @@ function openWindowList() {
 }
 
 function hideWindowList() {
+  const restorePaneFocus = !windowList.hidden && windowList.contains(document.activeElement);
   windowList.hidden = true;
+  if (restorePaneFocus) {
+    restorePaneFocusAfterOverlayDismiss(windowList);
+  }
+}
+
+function restorePaneFocusAfterOverlayDismiss(overlay) {
+  window.requestAnimationFrame(() => {
+    const focused = document.activeElement;
+    if (overlay.hidden && (overlay.contains(focused) || focused === document.body)) {
+      focusPane(getActivePane());
+    }
+  });
 }
 
 function renderWindowList() {

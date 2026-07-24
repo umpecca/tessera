@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep the visually active window synchronized with real keyboard focus across
+  every pane type, window navigation, drag/resize activation, and palette or
+  window-list dismissal.
 - Avoid redundant workspace saves when clicking an already-active, frontmost
   pane while still persisting real active-pane and stacking-order changes.
 - Keep the old self-update process alive until a detached replacement confirms
