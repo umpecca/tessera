@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -84,45 +85,110 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	exitTray := make(chan struct{}, 1)
-	type shutdownReason bool
-	const restartForUpdate shutdownReason = true
-	shutdown := make(chan shutdownReason, 1)
+	shutdown := make(chan struct{}, 1)
 	var restartCh <-chan struct{}
 	if updater != nil {
 		restartCh = updater.RestartRequested()
 	}
 
 	go func() {
-		select {
-		case <-stop:
-			shutdown <- false
-		case <-restartCh:
-			log.Printf("restarting for update")
-			shutdown <- restartForUpdate
-		case <-exitTray:
-			shutdown <- false
-		}
-		if useTray {
-			desktop.QuitTray()
+		for {
+			select {
+			case <-stop:
+				shutdown <- struct{}{}
+				if useTray {
+					desktop.QuitTray()
+				}
+				return
+			case <-restartCh:
+				log.Printf("restarting for update")
+				// The macOS tray loop runs on the main thread and is not a
+				// reliable prerequisite for lifecycle progress: systray.Quit
+				// can remove the tray item without returning from RunTray.
+				// Complete the handoff here, then terminate the stopped host.
+				if err := restartUpdatedServer(controller.Stop, controller.Start, updater.SpawnReplacement); err != nil {
+					log.Printf("restart updated executable: %v", err)
+					restartCh = nil
+					continue
+				}
+				log.Printf("updated server reported ready")
+				os.Exit(0)
+			case <-exitTray:
+				shutdown <- struct{}{}
+				if useTray {
+					desktop.QuitTray()
+				}
+				return
+			}
 		}
 	}()
 
 	if useTray {
-		desktop.RunTray(controller, func() { exitTray <- struct{}{} })
+		var trayUpdate func(context.Context) (bool, error)
+		if updater != nil {
+			trayUpdate = newTrayUpdateAction(updater)
+		}
+		desktop.RunTray(controller, trayUpdate, func() { exitTray <- struct{}{} })
 	}
-	restart := <-shutdown
+	<-shutdown
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := controller.Stop(shutdownCtx); err != nil {
 		log.Printf("server shutdown: %v", err)
 	}
+}
 
-	if bool(restart) {
-		if err := updater.SpawnReplacement(); err != nil {
-			log.Fatalf("restart updated executable: %v", err)
+type trayUpdater interface {
+	Apply(context.Context) (*update.CheckResult, error)
+	RequestRestart()
+}
+
+func newTrayUpdateAction(updater trayUpdater) func(context.Context) (bool, error) {
+	return func(ctx context.Context) (bool, error) {
+		result, err := updater.Apply(ctx)
+		if err != nil {
+			return false, err
 		}
+		if !result.UpdateAvailable {
+			return false, nil
+		}
+		updater.RequestRestart()
+		return true, nil
 	}
+}
+
+func restartUpdatedServer(
+	stopServer func(context.Context) error,
+	startServer func(context.Context) error,
+	spawnReplacement func() error,
+) error {
+	log.Printf("stopping server for update")
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 5*time.Second)
+	stopErr := stopServer(stopCtx)
+	cancelStop()
+	if stopErr == nil {
+		log.Printf("server stopped for update")
+		log.Printf("starting updated executable")
+		if err := spawnReplacement(); err == nil {
+			return nil
+		} else {
+			stopErr = fmt.Errorf("start replacement: %w", err)
+		}
+	} else {
+		stopErr = fmt.Errorf("stop current server: %w", stopErr)
+	}
+
+	// The executable has already been installed, but this process still has the
+	// previous image in memory. Bring its server back if handoff fails so the
+	// browser is not left permanently offline and the failure remains visible.
+	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 5*time.Second)
+	recoveryErr := startServer(recoveryCtx)
+	cancelRecovery()
+	if recoveryErr != nil {
+		return fmt.Errorf("%v; restore current server: %w", stopErr, recoveryErr)
+	}
+	return fmt.Errorf("%v; current server restored", stopErr)
 }
 
 type stringListFlag []string

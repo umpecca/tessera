@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/getlantern/systray"
@@ -17,8 +18,8 @@ func TraySupported() bool {
 
 // RunTray runs the native notification-area menu. It blocks until QuitTray is
 // called. The exit callback should begin the application's normal shutdown.
-func RunTray(controller *Controller, exit func()) {
-	systray.Run(func() { setupTray(controller, exit) }, func() {})
+func RunTray(controller *Controller, update updateAction, exit func()) {
+	systray.Run(func() { setupTray(controller, update, exit) }, func() {})
 }
 
 // QuitTray ends the native event loop. It is safe to call after an Exit click,
@@ -27,7 +28,7 @@ func QuitTray() {
 	systray.Quit()
 }
 
-func setupTray(controller *Controller, exit func()) {
+func setupTray(controller *Controller, runUpdate updateAction, exit func()) {
 	if icon := trayIcon(); len(icon) > 0 {
 		systray.SetIcon(icon)
 	}
@@ -39,6 +40,10 @@ func setupTray(controller *Controller, exit func()) {
 	start := systray.AddMenuItem("Start", "Start the Tessera server")
 	stop := systray.AddMenuItem("Stop", "Stop the Tessera server")
 	configure := systray.AddMenuItem("Configure...", "Open Tessera in your browser")
+	var update *systray.MenuItem
+	if runUpdate != nil {
+		update = systray.AddMenuItem(trayUpdateTitle, "Check for and install a Tessera update")
+	}
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Exit", "Stop Tessera and exit")
 
@@ -81,6 +86,25 @@ func setupTray(controller *Controller, exit func()) {
 			refresh()
 		}
 	}()
+	if update != nil {
+		go func() {
+			for range update.ClickedCh {
+				update.Disable()
+				update.SetTitle(trayUpdateCheckingTitle)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				restarting, err := runUpdate(ctx)
+				cancel()
+				state := trayUpdateFinishedState(restarting, err)
+				update.SetTitle(state.title)
+				if state.enabled {
+					update.Enable()
+				}
+				if err != nil {
+					log.Printf("tray update: %v", err)
+				}
+			}
+		}()
+	}
 	go func() {
 		for range quit.ClickedCh {
 			exit()

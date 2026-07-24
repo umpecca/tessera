@@ -1,6 +1,6 @@
 # Task 064: Self-update relaunch regression
 
-Status: in progress
+Status: complete
 
 Fix the self-update lifecycle when Tessera successfully downloads and installs
 the replacement executable, shuts down the running server, but does not bring
@@ -47,10 +47,20 @@ the updated server back online.
   standard streams while removing stale handoff variables before launch.
 - Updated Windows and Unix subprocess tests to require the readiness
   acknowledgement and verify the detached successor launch context.
+- Identified the remaining macOS failure from its last emitted phase:
+  `systray.Quit` removed the tray item but did not return control from
+  `RunTray`, so the main goroutine never reached server shutdown or successor
+  launch.
+- Moved the complete update handoff onto the restart-listener goroutine and
+  terminate the old host only after the successor reports ready, removing the
+  native tray loop from the update critical path.
+- Restore the current in-memory server if shutdown or replacement startup
+  fails, keeping the browser reachable with an actionable log message.
 
 ## Verification results
 
-- `go test ./internal/update ./cmd/tessera`
+- `go test ./internal/update ./cmd/tessera`, including tray-independent
+  lifecycle ordering and failed-handoff recovery
 - Linux amd64 updater test cross-compile
 - macOS arm64 updater test cross-compile
 - `go test ./...`

@@ -302,8 +302,10 @@ state separation only, not authentication or authorization.
 ## Desktop and platform behavior
 
 On Windows and macOS, Tessera normally adds a notification-area icon. Its menu
-can start and stop the local server, open Tessera in the default browser, or
-exit cleanly. Pass `-tray=false` for server-only/headless use.
+can start and stop the local server, open Tessera in the default browser, check
+for and install an update, or exit cleanly. The Update item reports checking,
+up-to-date, failure/retry, and restarting states without blocking the native
+tray menu. Pass `-tray=false` for server-only/headless use.
 
 Linux releases run server-only without a tray, keeping the executable CGO-free
 and avoiding GTK/AppIndicator dependencies. macOS tray builds use CGO. Windows

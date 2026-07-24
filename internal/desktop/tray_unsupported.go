@@ -10,7 +10,7 @@ func TraySupported() bool {
 }
 
 // RunTray is a no-op on server-only platforms.
-func RunTray(_ *Controller, _ func()) {}
+func RunTray(_ *Controller, _ updateAction, _ func()) {}
 
 // QuitTray is a no-op on server-only platforms.
 func QuitTray() {}

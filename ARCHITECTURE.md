@@ -317,8 +317,9 @@ permissions. There is currently no configured root-directory sandbox.
 Name: Desktop Controller
 
 Description: Starts and stops the local server and opens its URL in the default
-browser. Windows and macOS builds expose these actions through a tray menu;
-Linux uses the server lifecycle without a tray.
+browser. Windows and macOS builds expose these actions through a tray menu and
+add a non-blocking Update action when the self-updater is available; Linux uses
+the server lifecycle without a tray.
 
 Technologies: Go platform files and getlantern/systray on supported platforms.
 
@@ -340,8 +341,10 @@ replacement independently from the old process and passes a one-use readiness
 marker. The old process exits only after the replacement has bound its server
 and acknowledged startup; Unix successors run in a new session so terminal or
 macOS application cleanup cannot terminate them. Startup errors are returned
-through the same handoff and logged by the parent. The updater can bootstrap a
-missing exact-version LAME companion after an upgrade from a legacy updater.
+through the same handoff and logged by the parent. The restart coordinator runs
+outside the native tray event loop so macOS tray teardown cannot block server
+shutdown or replacement launch. The updater can bootstrap a missing
+exact-version LAME companion after an upgrade from a legacy updater.
 
 Technologies: GitHub Releases REST API and Go HTTP/file APIs.
 

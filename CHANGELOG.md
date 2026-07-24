@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add an Update action to the Windows and macOS tray menu with checking,
+  up-to-date, failure/retry, and restarting states wired to the verified
+  self-update lifecycle.
 - Keep the visually active window synchronized with real keyboard focus across
   every pane type, window navigation, drag/resize activation, and palette or
   window-list dismissal.
@@ -9,7 +12,9 @@
   pane while still persisting real active-pane and stacking-order changes.
 - Keep the old self-update process alive until a detached replacement confirms
   its server started, and report successor startup failures through the
-  handoff instead of silently exiting after process creation.
+  handoff instead of silently exiting after process creation. Run this handoff
+  independently of the macOS tray event loop, which may not return after
+  removing its tray item.
 - Normalize Safari's context-menu-only macOS secondary clicks into one complete
   right-click for mouse-aware Terminal apps, while preventing latched
   ghostty-web selection without reserving right-click or removing an existing
