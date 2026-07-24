@@ -15,21 +15,21 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest
-            goos: freebsd
-            goarch: amd64
-            cgo: "0"
-            ext: ""
+          # - runner: ubuntu-latest
+          #   goos: freebsd
+          #   goarch: amd64
+          #   cgo: "0"
+          #   ext: ""
           - runner: ubuntu-latest
             goos: linux
             goarch: amd64
             cgo: "0"
             ext: ""
-          - runner: macos-15-intel
-            goos: darwin
-            goarch: amd64
-            cgo: "1"
-            ext: ""
+          # - runner: macos-15-intel
+          #   goos: darwin
+          #   goarch: amd64
+          #   cgo: "1"
+          #   ext: ""
           - runner: macos-15
             goos: darwin
             goarch: arm64
@@ -40,11 +40,11 @@ jobs:
             goarch: amd64
             cgo: "0"
             ext: ".exe"
-          - runner: ubuntu-latest
-            goos: openbsd
-            goarch: amd64
-            cgo: "0"
-            ext: ""
+          # - runner: ubuntu-latest
+          #   goos: openbsd
+          #   goarch: amd64
+          #   cgo: "0"
+          #   ext: ""
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
