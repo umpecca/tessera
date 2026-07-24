@@ -58,6 +58,7 @@ import {
   normalizeBrowserAddress,
 } from "./browser-pane.mjs";
 import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
+import { paneNeedsRaise } from "./pane-activation.mjs";
 import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
@@ -3124,6 +3125,7 @@ function setActivePane(rect, options = {}) {
     return;
   }
   const wasActive = activePaneID === rect.id;
+  const needsRaise = Boolean(options.raise) && paneNeedsRaise(rectangles, rect);
   clearActivePaneClass();
   activeRect = rect;
   activePaneID = rect.id;
@@ -3131,7 +3133,7 @@ function setActivePane(rect, options = {}) {
   rect.element.dataset.activePane = "true";
   rect.element.classList.add("is-selected");
   setTerminalCursorBlink(rect, true);
-  if (options.raise) {
+  if (needsRaise) {
     rect.zIndex = nextZIndex;
     nextZIndex += 1;
     rect.element.style.zIndex = String(rect.zIndex);
@@ -3145,7 +3147,7 @@ function setActivePane(rect, options = {}) {
   } else if (options.focusElement) {
     rect.element.focus({ preventScroll: true });
   }
-  if (!wasActive || options.raise) {
+  if (!wasActive || needsRaise) {
     scheduleWorkspaceSave();
   }
   updateDeskbar();

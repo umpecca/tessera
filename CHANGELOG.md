@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Avoid redundant workspace saves when clicking an already-active, frontmost
+  pane while still persisting real active-pane and stacking-order changes.
 - Keep the old self-update process alive until a detached replacement confirms
   its server started, and report successor startup failures through the
   handoff instead of silently exiting after process creation.

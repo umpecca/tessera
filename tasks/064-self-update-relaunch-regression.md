@@ -1,6 +1,6 @@
 # Task 064: Self-update relaunch regression
 
-Status: complete
+Status: in progress
 
 Fix the self-update lifecycle when Tessera successfully downloads and installs
 the replacement executable, shuts down the running server, but does not bring
