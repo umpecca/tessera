@@ -6,7 +6,19 @@ import {
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
   terminalMouseMessage,
+  terminalPasteText,
 } from "./terminal-input.mjs";
+
+test("pasted text keeps its content but never its own bracketed paste markers", () => {
+  assert.equal(terminalPasteText("plain text"), "plain text");
+  assert.equal(terminalPasteText("first\nsecond\r\nthird"), "first\nsecond\r\nthird");
+  assert.equal(
+    terminalPasteText("safe\x1b[201~rm -rf /\x1b[200~more"),
+    "saferm -rf /more",
+  );
+  assert.equal(terminalPasteText(""), "");
+  assert.equal(terminalPasteText(null), "");
+});
 
 test("terminal mouse input is tagged separately from ordinary binary input", () => {
   const sequence = "\x1b[<32;53;17M";

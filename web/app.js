@@ -34,6 +34,7 @@ import {
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
   terminalMouseMessage,
+  terminalPasteText,
 } from "./terminal-input.mjs";
 import { defaultTerminalTERM, normalizeTerminalTERM } from "./terminal-settings.mjs";
 import {
@@ -51,6 +52,7 @@ import {
   terminalColorTheme,
 } from "./terminal-colors.mjs";
 import { installTerminalBlockRenderer } from "./terminal-block-renderer.mjs";
+import { TerminalOSC52Filter } from "./terminal-osc52.mjs";
 import {
   browseLocalPortHelpCommand,
   browserHelpAddress,
@@ -4422,7 +4424,8 @@ async function startTerminal(rect) {
     });
     rect.terminal = {
       term, fit, socket: null, dataDisposable, resizeDisposable, mouseBridge: null,
-      reconnectTimer: null, reconnectAttempts: 0,
+      pasteBridge: attachTerminalPasteBridge(rect, term),
+      reconnectTimer: null, reconnectAttempts: 0, osc52: null,
       sentCols: 0, sentRows: 0,
     };
     updateTerminalRenderState(rect);
@@ -4451,6 +4454,8 @@ function connectTerminalSocket(rect) {
   terminalState.sentRows = 0;
   terminalState.mouseBridge?.dispose?.();
   terminalState.mouseBridge = attachTerminalMouseBridge(rect, term, socket);
+  // A half-received sequence belongs to the connection that was sending it.
+  terminalState.osc52 = new TerminalOSC52Filter();
 
   socket.addEventListener("open", () => {
     if (rect.terminal?.socket !== socket) {
@@ -4469,11 +4474,16 @@ function connectTerminalSocket(rect) {
     if (rect.terminal?.socket !== socket) {
       return;
     }
-    if (typeof event.data === "string") {
-      term.write(event.data);
-      return;
+    const payload = typeof event.data === "string" ? event.data : new Uint8Array(event.data);
+    // A TUI's copy reaches the operator through OSC 52, which ghostty-web
+    // would swallow, so those sequences are taken out of the stream here.
+    const filtered = terminalState.osc52.write(payload);
+    for (const text of filtered.clipboard) {
+      void applyTerminalClipboardWrite(text);
     }
-    term.write(new Uint8Array(event.data));
+    if (filtered.data !== null) {
+      term.write(filtered.data);
+    }
   });
   socket.addEventListener("close", () => {
     if (rect.terminal?.socket === socket) {
@@ -4495,6 +4505,41 @@ function scheduleTerminalReconnect(rect, terminalState) {
       connectTerminalSocket(rect);
     }
   }, delay);
+}
+
+// ghostty-web's own paste listener passes the clipboard text to the PTY the
+// same way it passes typing, so an application never learns that a paste
+// happened: no bracketed paste, and a TUI editor records the text as a run of
+// single keystrokes, which its undo then walks back one character at a time.
+// This listener sits on the pane body, so the capture phase reaches it before
+// the container listener ghostty-web installed, and pastes through the terminal
+// instead — which wraps the text whenever the application asked for bracketed
+// paste.
+function attachTerminalPasteBridge(rect, term) {
+  const host = rect.terminalContainer?.parentElement;
+  if (!host) {
+    return null;
+  }
+
+  const onPaste = (event) => {
+    if (!rect.terminalContainer?.contains(event.target)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const text = terminalPasteText(event.clipboardData?.getData("text/plain") || "");
+    if (text) {
+      term.paste(text);
+    }
+  };
+
+  host.addEventListener("paste", onPaste, { capture: true });
+
+  return {
+    dispose() {
+      host.removeEventListener("paste", onPaste, { capture: true });
+    },
+  };
 }
 
 function attachTerminalMouseBridge(rect, term, socket) {
@@ -4828,6 +4873,7 @@ function disposeTerminal(rect, options = {}) {
   terminalState.dataDisposable?.dispose?.();
   terminalState.resizeDisposable?.dispose?.();
   terminalState.mouseBridge?.dispose?.();
+  terminalState.pasteBridge?.dispose?.();
   terminalState.fit?.dispose?.();
   terminalState.fit = null;
   terminalState.term?.dispose?.();
@@ -7624,7 +7670,10 @@ async function applyEditorMenuAction(action, rect) {
 
   if (action === "cut") {
     const text = selectedEditorText(rect.editor);
-    if (text && await writeClipboardText(text)) {
+    if (text) {
+      // Cut even when the system clipboard refuses the write: Tessera's own
+      // buffer holds the text, so nothing is lost.
+      await writeClipboardText(text);
       rect.editor.dispatch(rect.editor.state.replaceSelection(""));
     }
     rect.editor.focus();
@@ -8179,6 +8228,9 @@ function selectedEditorText(editor) {
     .join("\n");
 }
 
+// Returns whether the text reached the real system clipboard. Tessera's own
+// buffer is updated either way, so pasting back inside Tessera still works
+// when the browser refuses the write.
 async function writeClipboardText(text) {
   editorClipboardText = text;
   if (navigator.clipboard?.writeText) {
@@ -8189,8 +8241,29 @@ async function writeClipboardText(text) {
       // Fall through to the synchronous copy fallback below.
     }
   }
-  copyTextWithHiddenField(text);
-  return true;
+  return copyTextWithHiddenField(text);
+}
+
+// OSC 52 copies arrive from the PTY rather than from a keystroke, and a
+// browser that requires a user gesture — or an unfocused window — will refuse
+// the write. Say so once rather than leaving the operator to discover it by
+// pasting something stale into another application.
+let terminalClipboardWrites = Promise.resolve();
+
+function applyTerminalClipboardWrite(text) {
+  terminalClipboardWrites = terminalClipboardWrites
+    .then(async () => {
+      if (await writeClipboardText(text)) {
+        return;
+      }
+      setWorkspaceStatus(
+        "error",
+        "Clipboard blocked",
+        "A Terminal program copied text, but this browser would not write the system clipboard. The text is available to Tessera's own Paste.",
+      );
+    })
+    .catch(() => {});
+  return terminalClipboardWrites;
 }
 
 // True when the last read could not reach the real clipboard and fell back to
@@ -8216,6 +8289,9 @@ async function readClipboardText() {
 }
 
 function copyTextWithHiddenField(text) {
+  // Selecting the field takes focus, and an OSC 52 copy can land while a TUI
+  // has the keyboard, so give focus back where it was.
+  const previouslyFocused = document.activeElement;
   const field = document.createElement("textarea");
   field.value = text;
   field.setAttribute("readonly", "");
@@ -8231,6 +8307,9 @@ function copyTextWithHiddenField(text) {
     copied = false;
   }
   field.remove();
+  if (previouslyFocused && typeof previouslyFocused.focus === "function") {
+    previouslyFocused.focus();
+  }
   return copied;
 }
 

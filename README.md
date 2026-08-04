@@ -187,10 +187,23 @@ or with `Ctrl+Shift+V` or `Shift+Insert`. Unmodified `Ctrl+C` continues to send
 an interrupt to the terminal process.
 
 The platform paste key is handled by the browser's paste event, so it works
-without clipboard permission and on insecure origins. `Ctrl+Shift+V` and
+without clipboard permission and on insecure origins. Tessera takes that event
+itself and pastes through the terminal, so an application that asked for
+bracketed paste receives the text as one paste rather than as typing — which is
+what lets a TUI editor undo a paste in a single step. `Ctrl+Shift+V` and
 `Shift+Insert` read the clipboard directly instead, which some browsers refuse;
 when that happens Tessera pastes its own last copy and says so in the workspace
 status rather than pasting silently.
+
+A full-screen terminal program has no browser selection to copy, so it reaches
+the clipboard with OSC 52 (`ESC ] 52 ; c ; <base64> BEL`). Tessera takes those
+sequences out of the terminal stream and writes the text to the system
+clipboard, which is what makes a copy inside an editor such as Fresh, Vim, or
+Helix available to other applications on the machine running the browser. A
+browser that refuses the write leaves the text on Tessera's own Paste and
+reports "Clipboard blocked". OSC 52 clipboard *reads* are ignored and never
+answered: replying would let any program running in a Terminal pane read the
+operator's clipboard.
 
 ## Shared audio station
 

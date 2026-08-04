@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Paste into a Terminal pane as a paste rather than as typing: the browser's
+  paste event is now handled by Tessera and applied through the terminal, so
+  applications that enabled bracketed paste receive the text bracketed and can
+  undo a paste in one step. Bracketed paste markers inside the pasted text are
+  removed.
+- Copy out of a full-screen terminal program: OSC 52 clipboard writes are
+  filtered out of the terminal stream and put on the system clipboard, so a copy
+  inside a TUI editor can be pasted into other applications. Clipboard read
+  requests are swallowed rather than answered.
 - Fix pasting from another application into a Terminal pane: the platform's
   paste key is left to the browser's paste event, which ghostty-web reads
   without needing clipboard permission, instead of being consumed in favour of a

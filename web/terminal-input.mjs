@@ -2,6 +2,17 @@ export function terminalMouseMessage(data) {
   return JSON.stringify({ type: "mouse", data });
 }
 
+// Bracketed paste wraps pasted text in `ESC [ 200~` and `ESC [ 201~` so an
+// application can tell it apart from typing. Clipboard text carrying those
+// markers would close the bracket early and leave the rest of the paste looking
+// like keystrokes, so they are dropped before the text is handed over.
+export function terminalPasteText(text) {
+  if (typeof text !== "string") {
+    return "";
+  }
+  return text.replace(/\x1b\[20[01]~/g, "");
+}
+
 export function clearTerminalSelectionStartedDuringGesture(term, hadSelection) {
   if (hadSelection !== false || typeof term?.hasSelection !== "function"
       || typeof term?.clearSelection !== "function") {
