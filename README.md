@@ -186,6 +186,20 @@ Paste with the platform's own paste key — `Cmd+V` on macOS, `Ctrl+V` elsewhere
 or with `Ctrl+Shift+V` or `Shift+Insert`. Unmodified `Ctrl+C` continues to send
 an interrupt to the terminal process.
 
+These are the terminal's own clipboard, not the running program's. A full-screen
+program keeps its own selection and its own copy and paste keys — `^C` and `^V`
+in Fresh, for instance — and those keys reach it: on macOS `Ctrl+V` arrives as
+`^V` rather than being taken for a paste, since `Command` is the paste key
+there. `Command` with a letter is a menu accelerator and is not sent to the
+terminal at all, so `Cmd+S` in a full-screen editor does nothing instead of
+typing an `s`.
+
+A mouse-aware program owns unmodified dragging, so dragging inside one moves
+that program's cursor rather than selecting terminal text. Hold `Shift` (or
+`Ctrl`, or `Cmd`) while dragging to select on the terminal's own layer instead,
+then copy as usual. A copy that finds nothing selected reports "Nothing to
+copy" in the workspace status rather than doing nothing silently.
+
 The platform paste key is handled by the browser's paste event, so it works
 without clipboard permission and on insecure origins. Tessera takes that event
 itself and pastes through the terminal, so an application that asked for

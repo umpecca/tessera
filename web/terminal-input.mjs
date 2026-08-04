@@ -13,6 +13,19 @@ export function terminalPasteText(text) {
   return text.replace(/\x1b\[20[01]~/g, "");
 }
 
+// What to tell the operator when a copy found nothing to copy.
+//
+// A mouse-aware application owns unmodified dragging, so inside one there is
+// no terminal selection unless the operator held the override modifier — and
+// nothing on screen says that modifier exists. The application's own selection
+// is not the terminal's to read either; that text reaches the clipboard only
+// when the application copies it itself, over OSC 52.
+export function emptyTerminalCopyGuidance(mouseTracking) {
+  return mouseTracking
+    ? "Nothing is selected. Hold Shift while dragging to select inside a full-screen program, or use that program's own copy key."
+    : "Nothing is selected. Drag across the terminal to select text first.";
+}
+
 export function clearTerminalSelectionStartedDuringGesture(term, hadSelection) {
   if (hadSelection !== false || typeof term?.hasSelection !== "function"
       || typeof term?.clearSelection !== "function") {

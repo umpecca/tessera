@@ -5,9 +5,22 @@ import {
   TerminalContextMenuFallback,
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
+  emptyTerminalCopyGuidance,
   terminalMouseMessage,
   terminalPasteText,
 } from "./terminal-input.mjs";
+
+test("an empty copy inside a mouse-aware program names both ways to copy", () => {
+  const inside = emptyTerminalCopyGuidance(true);
+  // The override modifier is the only way to select there, and it is invisible.
+  assert.match(inside, /Shift/);
+  assert.match(inside, /own copy key/);
+
+  const outside = emptyTerminalCopyGuidance(false);
+  // Ordinary dragging already selects, so the override would be misleading.
+  assert.doesNotMatch(outside, /Shift/);
+  assert.match(outside, /Drag/);
+});
 
 test("pasted text keeps its content but never its own bracketed paste markers", () => {
   assert.equal(terminalPasteText("plain text"), "plain text");

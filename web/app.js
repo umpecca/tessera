@@ -26,13 +26,16 @@ import { isExpectedServerVersion } from "./server-update.mjs";
 import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
 import {
   isTerminalCopyShortcut,
+  terminalControlSequence,
   terminalNavigationSequence,
   terminalPasteSource,
+  terminalShouldSwallowCommandKey,
 } from "./terminal-keyboard.mjs";
 import {
   TerminalContextMenuFallback,
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
+  emptyTerminalCopyGuidance,
   terminalMouseMessage,
   terminalPasteText,
 } from "./terminal-input.mjs";
@@ -4116,14 +4119,20 @@ async function revalidateWorkspaceRevision() {
   }
 }
 
-function setWorkspaceStatus(state, text, title = "") {
+const savedStatusHideMs = 3000;
+
+// A status that reports a condition the operator has to act on stays up until
+// something replaces it. One that only narrates a moment — a save, or a copy
+// that had nothing to copy — takes an autoHideMs and clears itself.
+function setWorkspaceStatus(state, text, title = "", options = {}) {
+  const autoHideMs = options.autoHideMs ?? (state === "saved" ? savedStatusHideMs : 0);
   // Dragging a window calls this every pointer move with the same "Saving..."
   // arguments, so skip the DOM writes when nothing about the status changed.
-  // A hidden status still needs re-showing, and "saved" needs its hide timer
-  // re-armed, so both fall through.
+  // A hidden status still needs re-showing, and one that auto-hides needs its
+  // timer re-armed, so both fall through.
   if (
     !workspaceStatus.hidden
-    && state !== "saved"
+    && !autoHideMs
     && workspaceStatus.dataset.state === state
     && workspaceStatus.textContent === text
     && workspaceStatus.title === (title || text)
@@ -4136,13 +4145,15 @@ function setWorkspaceStatus(state, text, title = "") {
   workspaceStatus.dataset.state = state;
   workspaceStatus.textContent = text;
   workspaceStatus.title = title || text;
-  if (state === "saved") {
+  if (autoHideMs) {
     workspaceStatusHideTimer = window.setTimeout(() => {
-      if (workspaceStatus.dataset.state === "saved") {
+      // Anything that replaced this status owns the strip now, and clears the
+      // timer on its way in; this only guards against a stale firing.
+      if (workspaceStatus.dataset.state === state && workspaceStatus.textContent === text) {
         workspaceStatus.hidden = true;
       }
       workspaceStatusHideTimer = null;
-    }, 3000);
+    }, autoHideMs);
   }
 }
 
@@ -4395,6 +4406,16 @@ async function startTerminal(rect) {
       }
       if (pasteSource === "clipboard") {
         void applyTerminalMenuAction("paste", rect);
+        return true;
+      }
+      const controlSequence = terminalControlSequence(event, { appleKeyboard: appleKeyboardLayout });
+      if (controlSequence) {
+        sendTerminalInput(rect.terminal?.socket, controlSequence);
+        return true;
+      }
+      // Swallowing beats ghostty-web's encoder falling back to the bare
+      // character and typing it into the application.
+      if (terminalShouldSwallowCommandKey(event)) {
         return true;
       }
       const sequence = terminalNavigationSequence(event, {
@@ -7717,6 +7738,8 @@ async function applyTerminalMenuAction(action, rect) {
     const text = term.getSelection?.() || "";
     if (text) {
       await writeClipboardText(text);
+    } else {
+      reportEmptyTerminalCopy(term);
     }
     term.focus();
     return;
@@ -7731,6 +7754,25 @@ async function applyTerminalMenuAction(action, rect) {
     reportClipboardFallback(appleKeyboardLayout ? "Cmd+V" : "Ctrl+V");
     term.focus();
   }
+}
+
+const emptyCopyStatusHideMs = 4000;
+
+// A copy that found no selection did nothing at all, and the keystroke that
+// asked for it was consumed either way. Say so, and name the way to make a
+// selection, rather than leaving the key looking broken.
+function reportEmptyTerminalCopy(term) {
+  let mouseTracking = false;
+  try {
+    mouseTracking = Boolean(term?.hasMouseTracking?.());
+  } catch {
+    mouseTracking = false;
+  }
+  setWorkspaceStatus("error", "Nothing to copy", emptyTerminalCopyGuidance(mouseTracking), {
+    // Nothing is broken and nothing needs answering — the next copy either
+    // works or says this again, so it should not sit in the corner.
+    autoHideMs: emptyCopyStatusHideMs,
+  });
 }
 
 // This browser refused to read the clipboard, so whatever was pasted came from
@@ -8228,6 +8270,25 @@ function selectedEditorText(editor) {
     .join("\n");
 }
 
+// Chrome leaves clipboard.writeText() pending — neither resolved nor rejected —
+// while its window does not hold focus. An OSC 52 copy hits that easily, since
+// it arrives over the terminal socket rather than from a keystroke, and awaiting
+// it forever loses the copy with no error to report and stalls every write
+// queued behind it. Give up instead and take the fallback path.
+const clipboardWriteTimeoutMs = 1500;
+
+// Resolves true when the promise settled in time and false when it did not. A
+// rejection still propagates, so a refused write stays distinguishable from a
+// stalled one.
+function settledWithin(promise, milliseconds) {
+  let timer = null;
+  const expiry = new Promise((resolve) => {
+    timer = window.setTimeout(() => resolve(false), milliseconds);
+  });
+  return Promise.race([promise.then(() => true), expiry])
+    .finally(() => window.clearTimeout(timer));
+}
+
 // Returns whether the text reached the real system clipboard. Tessera's own
 // buffer is updated either way, so pasting back inside Tessera still works
 // when the browser refuses the write.
@@ -8235,8 +8296,9 @@ async function writeClipboardText(text) {
   editorClipboardText = text;
   if (navigator.clipboard?.writeText) {
     try {
-      await navigator.clipboard.writeText(text);
-      return true;
+      if (await settledWithin(navigator.clipboard.writeText(text), clipboardWriteTimeoutMs)) {
+        return true;
+      }
     } catch {
       // Fall through to the synchronous copy fallback below.
     }

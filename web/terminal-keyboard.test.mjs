@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   isTerminalCopyShortcut,
+  terminalControlSequence,
   terminalNavigationSequence,
   terminalPasteSource,
+  terminalShouldSwallowCommandKey,
 } from "./terminal-keyboard.mjs";
 
 test("encodes unmodified logical navigation from physical numpad keys", () => {
@@ -101,6 +103,49 @@ test("ignores keystrokes that are not paste requests", () => {
   assert.equal(terminalPasteSource(null, apple), null);
   // Plain Ctrl+V on macOS is not a paste shortcut there.
   assert.equal(terminalPasteSource({ key: "v", ctrlKey: true }, apple), null);
+});
+
+test("encodes Ctrl+V as ^V on an Apple keyboard, where it is not the paste accelerator", () => {
+  assert.equal(terminalControlSequence({ key: "v", ctrlKey: true }, apple), "\x16");
+  assert.equal(terminalControlSequence({ key: "V", ctrlKey: true }, apple), "\x16");
+  assert.equal(terminalControlSequence({ key: "v", code: "KeyV", ctrlKey: true }, apple), "\x16");
+});
+
+test("leaves Ctrl+V alone where it is the paste accelerator", () => {
+  // Off macOS this is the browser's paste event, which must not be consumed.
+  assert.equal(terminalControlSequence({ key: "v", ctrlKey: true }), null);
+  assert.equal(terminalControlSequence({ key: "v", code: "KeyV", ctrlKey: true }, {}), null);
+});
+
+test("encodes no control sequence for other keystrokes", () => {
+  // Ctrl+Shift+V is Tessera's own clipboard paste, and Ctrl+C already reaches
+  // ghostty-web's encoder as ^C.
+  assert.equal(terminalControlSequence({ key: "v", ctrlKey: true, shiftKey: true }, apple), null);
+  assert.equal(terminalControlSequence({ key: "v", ctrlKey: true, metaKey: true }, apple), null);
+  assert.equal(terminalControlSequence({ key: "v", ctrlKey: true, altKey: true }, apple), null);
+  assert.equal(terminalControlSequence({ key: "v", metaKey: true }, apple), null);
+  assert.equal(terminalControlSequence({ key: "c", ctrlKey: true }, apple), null);
+  assert.equal(terminalControlSequence({ key: "v" }, apple), null);
+  assert.equal(terminalControlSequence(null, apple), null);
+});
+
+test("swallows bare Command keystrokes that would otherwise type their character", () => {
+  for (const key of ["s", "z", "a", "f", "x", "S"]) {
+    assert.equal(terminalShouldSwallowCommandKey({ key, metaKey: true }), true);
+  }
+});
+
+test("leaves keystrokes the Command key does not turn into stray input", () => {
+  // Multi-character keys never reach the encoder's character fallback.
+  assert.equal(terminalShouldSwallowCommandKey({ key: "Enter", metaKey: true }), false);
+  assert.equal(terminalShouldSwallowCommandKey({ key: "Backspace", metaKey: true }), false);
+  assert.equal(terminalShouldSwallowCommandKey({ key: "ArrowLeft", metaKey: true }), false);
+  // Control and Option combinations are encoded normally.
+  assert.equal(terminalShouldSwallowCommandKey({ key: "s", ctrlKey: true }), false);
+  assert.equal(terminalShouldSwallowCommandKey({ key: "s", metaKey: true, ctrlKey: true }), false);
+  assert.equal(terminalShouldSwallowCommandKey({ key: "s", metaKey: true, altKey: true }), false);
+  assert.equal(terminalShouldSwallowCommandKey({ key: "s" }), false);
+  assert.equal(terminalShouldSwallowCommandKey(null), false);
 });
 
 test("recognizes terminal copy shortcuts without consuming Ctrl+C", () => {

@@ -102,6 +102,40 @@ export function terminalPasteSource(event, options = {}) {
   return null;
 }
 
+// Control codes for keystrokes ghostty-web drops instead of encoding.
+//
+// Its key handler returns early for Ctrl+V so the browser can deliver a paste
+// event, which is right where Ctrl is the paste accelerator. On an Apple
+// keyboard it is not — Command is — so the early return leaves Ctrl+V dead:
+// nothing pastes, and the application never receives ^V either. Terminal.app
+// sends it, and a TUI editor that binds paste to ^V needs it, so Tessera
+// encodes it here. Every other Ctrl+letter already reaches the encoder.
+export function terminalControlSequence(event, options = {}) {
+  if (!event || !options.appleKeyboard) {
+    return null;
+  }
+  if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+    return null;
+  }
+  const isV = event.key?.toLowerCase() === "v" || event.code === "KeyV";
+  return isV ? "\x16" : null;
+}
+
+// Command is a menu accelerator on macOS, never terminal input: Terminal.app
+// sends nothing to the PTY for Cmd+S. ghostty-web's key encoder drops the
+// Super modifier and falls back to the key's own character, so Cmd+S types a
+// bare "s" into whatever is running — Cmd+S in a TUI editor writes into the
+// document instead of saving it. Consume those keystrokes instead.
+//
+// Only single-character keys reach that fallback, and the combinations Tessera
+// binds itself (Cmd+C, Cmd+V) are resolved before this is consulted.
+export function terminalShouldSwallowCommandKey(event) {
+  if (!event || !event.metaKey || event.ctrlKey || event.altKey) {
+    return false;
+  }
+  return event.key?.length === 1;
+}
+
 export function isTerminalCopyShortcut(event) {
   if (!event || event.altKey) {
     return false;

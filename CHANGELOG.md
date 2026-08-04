@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Fix `Ctrl+V` in a Terminal pane on macOS, where it reached neither the
+  clipboard nor the application. It now arrives as `^V`, so a full-screen
+  program that binds paste to `^V` receives it, matching Terminal.app. `Cmd+V`
+  still pastes through the browser's paste event.
+- Stop `Cmd`+letter typing its bare character into a Terminal pane on macOS.
+  `Cmd+S` in a TUI editor inserted an `s` into the document instead of doing
+  nothing; Command is a menu accelerator, and those keystrokes are now consumed.
+- Stop losing an OSC 52 copy behind a browser clipboard permission prompt.
+  Chrome leaves `clipboard.writeText()` pending — neither resolved nor rejected
+  — until the prompt is answered, and a copy from a full-screen program arrives
+  over the terminal socket with no keystroke attached, so it raises one. Tessera
+  waited on that forever: the copy vanished with no error, and every later
+  terminal copy queued behind it was never attempted. Writes now give up after
+  1.5 seconds and take the fallback path, which lands the copy on the system
+  clipboard without the prompt being answered at all, or reports "Clipboard
+  blocked" when it cannot.
+- Report "Nothing to copy" when a terminal copy finds no selection, instead of
+  consuming the keystroke and doing nothing. Inside a mouse-aware program the
+  message names both ways to copy there — hold `Shift` while dragging to select
+  on the terminal's own layer, or use the program's own copy key. It clears
+  itself after a few seconds, since nothing is broken and nothing needs
+  answering. The Shift override is now documented in the README as well.
 - Paste into a Terminal pane as a paste rather than as typing: the browser's
   paste event is now handled by Tessera and applied through the terminal, so
   applications that enabled bracketed paste receive the text bracketed and can
