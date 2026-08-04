@@ -26,8 +26,8 @@ import { isExpectedServerVersion } from "./server-update.mjs";
 import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
 import {
   isTerminalCopyShortcut,
-  isTerminalPasteShortcut,
   terminalNavigationSequence,
+  terminalPasteSource,
 } from "./terminal-keyboard.mjs";
 import {
   TerminalContextMenuFallback,
@@ -59,6 +59,8 @@ import {
 } from "./browser-pane.mjs";
 import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
 import { focusPane, paneNeedsRaise } from "./pane-activation.mjs";
+import { paneContentFields } from "./pane-content-sync.mjs";
+import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
 import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
@@ -699,7 +701,17 @@ const normalWorksheetEditorMode = "normal";
 const fileBrowserPaneKind = "file-browser";
 const textEditorPaneKind = "text-editor";
 const audioPaneKind = "audio";
+// Which modifier the platform pastes with, since that decides whether the
+// browser will deliver a paste event on its own. userAgentData is the modern
+// signal; navigator.platform is deprecated but still the only one in some
+// builds, and the user agent string is the last resort.
+const appleKeyboardLayout = /mac|iphone|ipad/i.test(
+  navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || "",
+);
+
 const browserPaneKind = "browser";
+// Window-management keystrokes a browser pane's iframe may relay to the app.
+const browserPaneRelayedKeys = new Set(["[", "]", "BracketLeft", "BracketRight", "k", "K", "l", "L", "F7", "F9", "F10"]);
 const textEditorFileExtensions = new Set([
   ".txt", ".md", ".markdown", ".log", ".csv", ".tsv",
   ".json", ".jsonc", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
@@ -1772,6 +1784,10 @@ async function navigateBrowserPane(rect, value) {
 }
 
 function handleBrowserPaneMessage(event) {
+  if (event.data?.type === "tessera-browser-key") {
+    handleBrowserPaneShortcut(event);
+    return;
+  }
   if (event.data?.type !== "tessera-browser-location" || typeof event.data.url !== "string") {
     return;
   }
@@ -1789,6 +1805,34 @@ function handleBrowserPaneMessage(event) {
     rect.browserStatusInput.value = normalized;
   }
   scheduleWorkspaceSave();
+}
+
+// Keystrokes typed while a browser pane's iframe holds focus never reach this
+// document, so the proxy bootstrap relays the window-management ones here.
+function handleBrowserPaneShortcut(event) {
+  if (!serverConnectionModal.hidden) {
+    return;
+  }
+  const keys = event.data;
+  const rect = rectangles.find((candidate) => candidate.kind === browserPaneKind && candidate.browser?.frame.contentWindow === event.source);
+  if (!rect) {
+    return;
+  }
+  // Page content can post anything, so only the non-destructive window
+  // shortcuts are honored from an iframe.
+  if (!browserPaneRelayedKeys.has(keys.key) && !browserPaneRelayedKeys.has(keys.code)) {
+    return;
+  }
+  const shortcut = paneShortcutAction(keys);
+  if (!shortcut) {
+    return;
+  }
+  // The iframe swallowed the click that focused it, so make sure the shortcut
+  // acts on the pane the keystroke actually came from.
+  if (getActivePane() !== rect) {
+    setActivePane(rect, { raise: false });
+  }
+  shortcut.run();
 }
 
 function disposeBrowserPane(rect) {
@@ -3779,6 +3823,9 @@ async function loadWorkspace() {
 
 function clearRectanglesForLoad() {
   stopRunStreams();
+  // Whatever is loaded next is the server's copy, not the content this browser
+  // last pushed, so the next save carries its documents again.
+  savedPaneContent = new Map();
   for (const rect of rectangles.splice(0)) {
     disposeTerminal(rect);
     disposeBrowserPane(rect);
@@ -3902,22 +3949,34 @@ async function saveWorkspace() {
   }
 }
 
+// The pane content this browser has already stored on the server, by pane id.
+// Rebuilt from each successful save, so a failed or conflicting save resends
+// everything it was carrying.
+let savedPaneContent = new Map();
+
+function paneContent(rect) {
+  return {
+    bufferText: rect.kind === "terminal" ? "" : rect.text,
+    editorTabs: rect.kind === textEditorPaneKind ? serializedTextEditorTabs(rect) : "",
+  };
+}
+
 async function performWorkspaceSave() {
   const revision = ++saveRevision;
   window.clearTimeout(saveTimer);
   saveTimer = null;
   setWorkspaceStatus("saving", "Saving...");
   const savedRectangles = rectangles.filter((rect) => rect.kind !== "pending");
+  const contentByPaneID = new Map(savedRectangles.map((rect) => [rect.id, paneContent(rect)]));
   const panes = savedRectangles.map((rect, index) => ({
     id: rect.id,
     title: rect.title,
     kind: rect.kind,
-    bufferText: rect.kind === "terminal" ? "" : rect.text,
+    ...paneContentFields(contentByPaneID.get(rect.id), savedPaneContent.get(rect.id)),
     editorMode: rect.kind === "worksheet" ? rect.editorMode : "",
     fontSize: rect.kind === "terminal" || rect.kind === "worksheet" || rect.kind === textEditorPaneKind ? rect.fontSize : defaultPaneFontSize,
     cwd: rect.cwd || "",
     lastExportPath: rect.kind === "terminal" ? "" : (rect.lastExportPath || ""),
-    editorTabs: rect.kind === textEditorPaneKind ? serializedTextEditorTabs(rect) : "",
     fileBrowserSidebarWidth: rect.kind === fileBrowserPaneKind ? rect.fileBrowserSidebarWidth : defaultFileBrowserSidebarWidth,
     browserUrl: rect.kind === browserPaneKind ? rect.browserUrl : "",
     x: rect.x,
@@ -3959,6 +4018,7 @@ async function performWorkspaceSave() {
       throw new Error(`save workspace failed: ${response.status}`);
     }
     workspaceRevision = outcome.revision;
+    savedPaneContent = contentByPaneID;
     if (revision === saveRevision && saveTimer === null) {
       setWorkspaceStatus("saved", "Saved");
     }
@@ -4055,6 +4115,19 @@ async function revalidateWorkspaceRevision() {
 }
 
 function setWorkspaceStatus(state, text, title = "") {
+  // Dragging a window calls this every pointer move with the same "Saving..."
+  // arguments, so skip the DOM writes when nothing about the status changed.
+  // A hidden status still needs re-showing, and "saved" needs its hide timer
+  // re-armed, so both fall through.
+  if (
+    !workspaceStatus.hidden
+    && state !== "saved"
+    && workspaceStatus.dataset.state === state
+    && workspaceStatus.textContent === text
+    && workspaceStatus.title === (title || text)
+  ) {
+    return;
+  }
   window.clearTimeout(workspaceStatusHideTimer);
   workspaceStatusHideTimer = null;
   workspaceStatus.hidden = false;
@@ -4311,7 +4384,14 @@ async function startTerminal(rect) {
         void applyTerminalMenuAction("copy", rect);
         return true;
       }
-      if (isTerminalPasteShortcut(event)) {
+      // Returning true tells ghostty-web the key was handled, which also calls
+      // preventDefault(). Doing that for the platform's paste accelerator would
+      // cancel the browser's paste event that ghostty-web itself listens for.
+      const pasteSource = terminalPasteSource(event, { appleKeyboard: appleKeyboardLayout });
+      if (pasteSource === "native") {
+        return false;
+      }
+      if (pasteSource === "clipboard") {
         void applyTerminalMenuAction("paste", rect);
         return true;
       }
@@ -4337,12 +4417,13 @@ async function startTerminal(rect) {
     const dataDisposable = term.onData((data) => {
       sendTerminalInput(rect.terminal?.socket, data);
     });
-    const resizeDisposable = term.onResize(({ cols, rows }) => {
-      sendTerminalResize(rect.terminal?.socket, cols, rows);
+    const resizeDisposable = term.onResize(() => {
+      sendTerminalGridSize(rect.terminal);
     });
     rect.terminal = {
       term, fit, socket: null, dataDisposable, resizeDisposable, mouseBridge: null,
       reconnectTimer: null, reconnectAttempts: 0,
+      sentCols: 0, sentRows: 0,
     };
     updateTerminalRenderState(rect);
     connectTerminalSocket(rect);
@@ -4365,6 +4446,9 @@ function connectTerminalSocket(rect) {
   const socket = new WebSocket(terminalWebSocketURL(rect, term.cols, term.rows));
   socket.binaryType = "arraybuffer";
   terminalState.socket = socket;
+  // A new connection has not been told any size yet.
+  terminalState.sentCols = 0;
+  terminalState.sentRows = 0;
   terminalState.mouseBridge?.dispose?.();
   terminalState.mouseBridge = attachTerminalMouseBridge(rect, term, socket);
 
@@ -4374,7 +4458,7 @@ function connectTerminalSocket(rect) {
     }
     terminalState.reconnectAttempts = 0;
     setPaneCwd(rect, rect.cwd, { silent: true });
-    sendTerminalResize(socket, term.cols, term.rows);
+    sendTerminalGridSize(terminalState);
     // Only the active pane's terminal may take focus when it comes up;
     // otherwise whichever terminal connects last steals it.
     if (activeRect === rect) {
@@ -4714,28 +4798,14 @@ function sendTerminalInput(socket, data) {
   }
 }
 
-function sendTerminalResize(socket, cols, rows) {
-  if (socket?.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  socket.send(JSON.stringify({
-    type: "resize",
-    cols,
-    rows,
-  }));
-}
+const terminalFits = new TerminalFitScheduler();
 
 function requestTerminalFit(rect) {
-  if (!rect?.terminal?.fit) {
-    return;
-  }
-  window.requestAnimationFrame(() => {
-    if (!rect.terminal?.fit) {
-      return;
-    }
-    rect.terminal.fit.fit();
-    sendTerminalResize(rect.terminal.socket, rect.terminal.term.cols, rect.terminal.term.rows);
-  });
+  terminalFits.request(rect?.terminal);
+}
+
+function sendTerminalGridSize(terminalState) {
+  terminalFits.sendGridSize(terminalState);
 }
 
 function disposeTerminal(rect, options = {}) {
@@ -4751,6 +4821,7 @@ function disposeTerminal(rect, options = {}) {
     window.clearTimeout(terminalState.reconnectTimer);
     terminalState.reconnectTimer = null;
   }
+  terminalFits.cancel(terminalState);
   if (options.closeServer) {
     closeServerTerminal(rect);
   }
@@ -4758,6 +4829,7 @@ function disposeTerminal(rect, options = {}) {
   terminalState.resizeDisposable?.dispose?.();
   terminalState.mouseBridge?.dispose?.();
   terminalState.fit?.dispose?.();
+  terminalState.fit = null;
   terminalState.term?.dispose?.();
   if (terminalState.socket?.readyState === WebSocket.OPEN || terminalState.socket?.readyState === WebSocket.CONNECTING) {
     terminalState.socket.close();
@@ -6308,6 +6380,12 @@ function hideWindowList() {
 
 function restorePaneFocusAfterOverlayDismiss(overlay) {
   window.requestAnimationFrame(() => {
+    // One overlay can hand off to another in the same tick (running Window
+    // List from the command palette). The overlay that is still open owns
+    // keyboard focus, so returning it to the pane would swallow its arrow keys.
+    if (!commandPalette.hidden || !windowList.hidden) {
+      return;
+    }
     const focused = document.activeElement;
     if (overlay.hidden && (overlay.contains(focused) || focused === document.body)) {
       focusPane(getActivePane());
@@ -7558,6 +7636,7 @@ async function applyEditorMenuAction(action, rect) {
     if (text) {
       rect.editor.dispatch(rect.editor.state.replaceSelection(text));
     }
+    reportClipboardFallback(appleKeyboardLayout ? "Cmd+V" : "Ctrl+V");
     rect.editor.focus();
     return;
   }
@@ -7600,8 +7679,24 @@ async function applyTerminalMenuAction(action, rect) {
     if (text) {
       term.paste?.(text);
     }
+    reportClipboardFallback(appleKeyboardLayout ? "Cmd+V" : "Ctrl+V");
     term.focus();
   }
+}
+
+// This browser refused to read the clipboard, so whatever was pasted came from
+// Tessera's own last copy rather than the system clipboard. Say so instead of
+// letting stale text look like a normal paste.
+function reportClipboardFallback(acceleratorName) {
+  if (!clipboardReadFellBack) {
+    return;
+  }
+  clipboardReadFellBack = false;
+  setWorkspaceStatus(
+    "error",
+    "Clipboard blocked",
+    `This browser would not read the clipboard, so Tessera's own last copy was used. Use ${acceleratorName} to paste from the system clipboard.`,
+  );
 }
 
 async function openFileIntoEditor(rect, path) {
@@ -8098,7 +8193,13 @@ async function writeClipboardText(text) {
   return true;
 }
 
+// True when the last read could not reach the real clipboard and fell back to
+// whatever Tessera itself last copied. Callers surface that, so a blocked read
+// never looks like a successful paste of someone else's text.
+let clipboardReadFellBack = false;
+
 async function readClipboardText() {
+  clipboardReadFellBack = false;
   if (navigator.clipboard?.readText) {
     try {
       return await navigator.clipboard.readText();
@@ -8107,7 +8208,11 @@ async function readClipboardText() {
     }
   }
   const pastedText = pasteTextWithHiddenField();
-  return pastedText === null ? editorClipboardText : pastedText;
+  if (pastedText !== null) {
+    return pastedText;
+  }
+  clipboardReadFellBack = true;
+  return editorClipboardText;
 }
 
 function copyTextWithHiddenField(text) {
@@ -8206,63 +8311,52 @@ function handlePaneKeyboardShortcuts(event) {
     return;
   }
 
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "l" || event.key === "L")) {
-    event.preventDefault();
+  const shortcut = paneShortcutAction(event);
+  if (!shortcut) {
+    return;
+  }
+  event.preventDefault();
+  if (!shortcut.propagate) {
     event.stopPropagation();
-    toggleWindowList();
-    return;
   }
+  shortcut.run();
+}
 
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "k" || event.key === "K")) {
-    event.preventDefault();
-    event.stopPropagation();
-    toggleCommandPalette();
-    return;
-  }
+// Resolves a keystroke to its window-management action. Shared by the
+// document-level handler and by keystrokes relayed out of browser-pane
+// iframes, which never reach this document on their own.
+function paneShortcutAction(keys) {
+  const primary = (keys.ctrlKey || keys.metaKey) && !keys.altKey && !keys.shiftKey;
+  const alt = keys.altKey && !keys.ctrlKey && !keys.metaKey && !keys.shiftKey;
 
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "Enter") {
-    event.preventDefault();
-    runPaneCommand(getActivePane());
-    return;
+  if (primary && (keys.key === "l" || keys.key === "L")) {
+    return { run: toggleWindowList };
   }
-
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "Backspace" || event.code === "Backspace")) {
-    event.preventDefault();
-    event.stopPropagation();
-    destroyActivePane();
-    return;
+  if (primary && (keys.key === "k" || keys.key === "K")) {
+    return { run: toggleCommandPalette };
   }
-
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "]" || event.code === "BracketRight")) {
-    event.preventDefault();
-    event.stopPropagation();
-    focusAdjacentPane(1);
-    return;
+  if (primary && keys.key === "Enter") {
+    return { run: () => runPaneCommand(getActivePane()), propagate: true };
   }
-
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "[" || event.code === "BracketLeft")) {
-    event.preventDefault();
-    event.stopPropagation();
-    focusAdjacentPane(-1);
-    return;
+  if (primary && (keys.key === "Backspace" || keys.code === "Backspace")) {
+    return { run: destroyActivePane };
   }
-
-  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "F10") {
-    event.preventDefault();
-    toggleFullRestore(getActivePane());
-    return;
+  if (primary && (keys.key === "]" || keys.code === "BracketRight")) {
+    return { run: () => focusAdjacentPane(1) };
   }
-
-  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "F9") {
-    event.preventDefault();
-    toggleMinimize(getActivePane());
-    return;
+  if (primary && (keys.key === "[" || keys.code === "BracketLeft")) {
+    return { run: () => focusAdjacentPane(-1) };
   }
-
-  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "F7") {
-    event.preventDefault();
-    toggleArrangeWindows();
+  if (alt && keys.key === "F10") {
+    return { run: () => toggleFullRestore(getActivePane()), propagate: true };
   }
+  if (alt && keys.key === "F9") {
+    return { run: () => toggleMinimize(getActivePane()), propagate: true };
+  }
+  if (alt && keys.key === "F7") {
+    return { run: toggleArrangeWindows, propagate: true };
+  }
+  return null;
 }
 
 function focusAdjacentPane(direction) {

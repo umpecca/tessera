@@ -318,6 +318,8 @@ const logicalURL=()=>targetOrigin+location.pathname.slice(prefix.length)+locatio
 const report=()=>parent.postMessage({type:"tessera-browser-location",url:logicalURL()},"*");
 addEventListener("message",event=>{if(event.source!==parent)return;if(event.data==="tessera-browser-back")history.back();else if(event.data==="tessera-browser-forward")history.forward();else if(event.data==="tessera-browser-reload")location.reload();});
 addEventListener("popstate",report);addEventListener("hashchange",report);addEventListener("load",report);
+const relayKeys=new Set(["[","]","BracketLeft","BracketRight","k","K","l","L","F7","F9","F10"]);
+addEventListener("keydown",event=>{const primary=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey;const alt=event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;if(!primary&&!alt)return;if(!relayKeys.has(event.key)&&!relayKeys.has(event.code))return;event.preventDefault();parent.postMessage({type:"tessera-browser-key",key:event.key,code:event.code,ctrlKey:event.ctrlKey,metaKey:event.metaKey,altKey:event.altKey,shiftKey:event.shiftKey},"*");},true);
 document.addEventListener("click",event=>{const link=event.target.closest&&event.target.closest("a[href]");if(!link||link.target&&link.target!=="_self")return;const next=proxyURL(link.href);if(next!==link.href){event.preventDefault();location.href=next;}},true);
 document.addEventListener("submit",event=>{const form=event.target;if(form&&form.action)form.action=proxyURL(form.action);},true);
 })();</script>`)

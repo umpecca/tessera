@@ -56,6 +56,11 @@ type Pane struct {
 	Height                  int    `json:"height"`
 	ZIndex                  int    `json:"zIndex"`
 	Position                int    `json:"position"`
+	// BufferTextUnchanged and EditorTabsUnchanged let a save skip resending a
+	// pane's documents: the stored copy is kept and BufferText/EditorTabs above
+	// are ignored. They are request-only, so a loaded workspace never sets them.
+	BufferTextUnchanged bool `json:"bufferTextUnchanged,omitempty"`
+	EditorTabsUnchanged bool `json:"editorTabsUnchanged,omitempty"`
 }
 
 func (s *Store) LoadDefaultWorkspace(ctx context.Context, defaultCwd string) (*Workspace, error) {
@@ -290,12 +295,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   kind = excluded.kind,
   title = excluded.title,
-  buffer_text = excluded.buffer_text,
+  buffer_text = CASE WHEN ? THEN panes.buffer_text ELSE excluded.buffer_text END,
   editor_mode = excluded.editor_mode,
   font_size = excluded.font_size,
   cwd = excluded.cwd,
   last_export_path = excluded.last_export_path,
-  editor_tabs = excluded.editor_tabs,
+  editor_tabs = CASE WHEN ? THEN panes.editor_tabs ELSE excluded.editor_tabs END,
   file_browser_sidebar_width = excluded.file_browser_sidebar_width,
   browser_url = excluded.browser_url,
   is_full = excluded.is_full,
@@ -308,7 +313,8 @@ ON CONFLICT(id) DO UPDATE SET
   z_index = excluded.z_index,
   position = excluded.position,
   updated_at = excluded.updated_at`,
-			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.FileBrowserSidebarWidth, pane.BrowserURL, pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now); err != nil {
+			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.FileBrowserSidebarWidth, pane.BrowserURL, pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now,
+			pane.BufferTextUnchanged, pane.EditorTabsUnchanged); err != nil {
 			return fmt.Errorf("upsert pane %s: %w", pane.ID, err)
 		}
 	}
@@ -414,6 +420,7 @@ func (s *Store) PreservePaneBuffers(ctx context.Context, ws *Workspace, paneIDs 
 			return fmt.Errorf("preserve running pane %s: %w", ws.Panes[i].ID, err)
 		}
 		ws.Panes[i].BufferText = pane.BufferText
+		ws.Panes[i].BufferTextUnchanged = false
 		ws.Panes[i].Cwd = pane.Cwd
 		ws.Panes[i].LastExportPath = pane.LastExportPath
 	}

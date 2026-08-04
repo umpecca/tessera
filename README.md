@@ -182,8 +182,15 @@ the seams that browser font rasterization can introduce. Shade characters
 remain font-rendered.
 
 Copy selected terminal text with `Cmd+C` on macOS or `Ctrl+Shift+C` elsewhere.
-Paste with `Cmd+V`, `Ctrl+Shift+V`, or `Shift+Insert`. Unmodified `Ctrl+C`
-continues to send an interrupt to the terminal process.
+Paste with the platform's own paste key — `Cmd+V` on macOS, `Ctrl+V` elsewhere —
+or with `Ctrl+Shift+V` or `Shift+Insert`. Unmodified `Ctrl+C` continues to send
+an interrupt to the terminal process.
+
+The platform paste key is handled by the browser's paste event, so it works
+without clipboard permission and on insecure origins. `Ctrl+Shift+V` and
+`Shift+Insert` read the clipboard directly instead, which some browsers refuse;
+when that happens Tessera pastes its own last copy and says so in the workspace
+status rather than pasting silently.
 
 ## Shared audio station
 

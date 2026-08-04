@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Fix pasting from another application into a Terminal pane: the platform's
+  paste key is left to the browser's paste event, which ghostty-web reads
+  without needing clipboard permission, instead of being consumed in favour of a
+  clipboard read that browsers can deny.
+- Report "Clipboard blocked" when a paste falls back to Tessera's own last copy,
+  rather than silently pasting stale text.
+- Coalesce terminal fits into one per frame while a pane is dragged or resized,
+  and send the terminal's grid size only when it actually changes, instead of a
+  `resize` frame per pointer move.
+- Skip resending pane documents on workspace saves that did not change them, so
+  moving a window no longer rewrites every open editor buffer.
+- Give the Window List keyboard focus when it is opened from the command
+  palette, so its arrow keys select rows instead of reaching the focused
+  Terminal pane.
+- Relay window-management shortcuts (`Ctrl+[`/`Ctrl+]` cycling, `Ctrl+K`,
+  `Ctrl+L`, `Alt+F7`/`F9`/`F10`) out of Browser panes, so they still work while
+  the embedded page holds keyboard focus.
 - Add an Update action to the Windows and macOS tray menu with checking,
   up-to-date, failure/retry, and restarting states wired to the verified
   self-update lifecycle.

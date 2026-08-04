@@ -3,8 +3,8 @@ import test from "node:test";
 
 import {
   isTerminalCopyShortcut,
-  isTerminalPasteShortcut,
   terminalNavigationSequence,
+  terminalPasteSource,
 } from "./terminal-keyboard.mjs";
 
 test("encodes unmodified logical navigation from physical numpad keys", () => {
@@ -71,18 +71,36 @@ test("leaves ordinary numpad input, dedicated keys, and modified application-key
   assert.equal(terminalNavigationSequence(null), null);
 });
 
-test("recognizes terminal paste shortcuts", () => {
-  assert.equal(isTerminalPasteShortcut({ key: "Insert", shiftKey: true }), true);
-  assert.equal(isTerminalPasteShortcut({ key: "v", metaKey: true }), true);
-  assert.equal(isTerminalPasteShortcut({ key: "V", metaKey: true }), true);
-  assert.equal(isTerminalPasteShortcut({ key: "v", ctrlKey: true, shiftKey: true }), true);
-  assert.equal(isTerminalPasteShortcut({ key: "Insert", shiftKey: true, ctrlKey: true }), false);
-  assert.equal(isTerminalPasteShortcut({ key: "v", ctrlKey: true }), false);
-  assert.equal(isTerminalPasteShortcut({ key: "v", metaKey: true, shiftKey: true }), false);
-  assert.equal(isTerminalPasteShortcut({ key: "v", metaKey: true, altKey: true }), false);
-  assert.equal(isTerminalPasteShortcut({ key: "Insert" }), false);
-  assert.equal(isTerminalPasteShortcut({ key: "Delete", shiftKey: true }), false);
-  assert.equal(isTerminalPasteShortcut(null), false);
+const apple = { appleKeyboard: true };
+
+test("leaves the platform paste accelerator to the browser's paste event", () => {
+  // Consuming these would cancel the paste event ghostty-web reads.
+  assert.equal(terminalPasteSource({ key: "v", metaKey: true }, apple), "native");
+  assert.equal(terminalPasteSource({ key: "V", metaKey: true }, apple), "native");
+  assert.equal(terminalPasteSource({ key: "v", code: "KeyV", metaKey: true }, apple), "native");
+  assert.equal(terminalPasteSource({ key: "v", ctrlKey: true }), "native");
+  assert.equal(terminalPasteSource({ key: "V", ctrlKey: true }), "native");
+});
+
+test("reads the clipboard for combinations the browser never reports", () => {
+  assert.equal(terminalPasteSource({ key: "Insert", shiftKey: true }, apple), "clipboard");
+  assert.equal(terminalPasteSource({ key: "Insert", shiftKey: true }), "clipboard");
+  assert.equal(terminalPasteSource({ key: "v", ctrlKey: true, shiftKey: true }, apple), "clipboard");
+  assert.equal(terminalPasteSource({ key: "v", ctrlKey: true, shiftKey: true }), "clipboard");
+  // A Command key away from macOS is nobody's accelerator.
+  assert.equal(terminalPasteSource({ key: "v", metaKey: true }), "clipboard");
+});
+
+test("ignores keystrokes that are not paste requests", () => {
+  assert.equal(terminalPasteSource({ key: "Insert", shiftKey: true, ctrlKey: true }, apple), null);
+  assert.equal(terminalPasteSource({ key: "Insert" }, apple), null);
+  assert.equal(terminalPasteSource({ key: "Delete", shiftKey: true }, apple), null);
+  assert.equal(terminalPasteSource({ key: "v", metaKey: true, altKey: true }, apple), null);
+  assert.equal(terminalPasteSource({ key: "v", ctrlKey: true, metaKey: true }, apple), null);
+  assert.equal(terminalPasteSource({ key: "c", metaKey: true }, apple), null);
+  assert.equal(terminalPasteSource(null, apple), null);
+  // Plain Ctrl+V on macOS is not a paste shortcut there.
+  assert.equal(terminalPasteSource({ key: "v", ctrlKey: true }, apple), null);
 });
 
 test("recognizes terminal copy shortcuts without consuming Ctrl+C", () => {

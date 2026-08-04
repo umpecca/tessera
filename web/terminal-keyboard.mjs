@@ -63,16 +63,43 @@ function hasModifier(event) {
   return Boolean(event.shiftKey || event.altKey || event.ctrlKey || event.metaKey);
 }
 
-export function isTerminalPasteShortcut(event) {
+// Where the pasted text has to come from for a given keystroke:
+//
+//   "native"    - the browser fires a paste event for this combination and
+//                 ghostty-web reads it from event.clipboardData, which needs no
+//                 clipboard permission and works on insecure origins. Tessera
+//                 must not intercept these; consuming the key suppresses the
+//                 paste event and nothing arrives.
+//   "clipboard" - no paste event is coming, because the combination is not this
+//                 platform's paste accelerator (Ctrl+Shift+V, Shift+Insert), so
+//                 Tessera reads the clipboard itself.
+//
+// Copy is not symmetric: a canvas terminal has no DOM selection for the browser
+// to copy, so Tessera always handles the copy shortcuts itself.
+export function terminalPasteSource(event, options = {}) {
   if (!event || event.altKey) {
-    return false;
+    return null;
   }
-  const key = event.key?.toLowerCase();
-  return Boolean(
-    (key === "v" && event.metaKey && !event.ctrlKey && !event.shiftKey)
-    || (key === "v" && event.ctrlKey && event.shiftKey && !event.metaKey)
-    || (event.key === "Insert" && event.shiftKey && !event.ctrlKey && !event.metaKey)
-  );
+  if (event.key === "Insert") {
+    return event.shiftKey && !event.ctrlKey && !event.metaKey ? "clipboard" : null;
+  }
+
+  const isV = event.key?.toLowerCase() === "v" || event.code === "KeyV";
+  if (!isV || (event.ctrlKey && event.metaKey)) {
+    return null;
+  }
+  const acceleratorHeld = options.appleKeyboard ? event.metaKey : event.ctrlKey;
+  if (acceleratorHeld && !event.shiftKey) {
+    return "native";
+  }
+  if (event.ctrlKey && event.shiftKey) {
+    return "clipboard";
+  }
+  // A Command key on a non-Apple platform is nobody's paste accelerator.
+  if (event.metaKey && !event.shiftKey && !options.appleKeyboard) {
+    return "clipboard";
+  }
+  return null;
 }
 
 export function isTerminalCopyShortcut(event) {

@@ -305,3 +305,89 @@ func TestAllMinimizedPanesDoNotBecomeActive(t *testing.T) {
 		t.Fatalf("active pane = %q, want none when every pane is minimized", loaded.ActivePaneID)
 	}
 }
+
+func TestUnchangedPaneContentKeepsStoredDocuments(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	ws := &Workspace{
+		ID:   DefaultWorkspaceID,
+		Name: "Default",
+		Panes: []Pane{{
+			ID:         "pane-editor",
+			Title:      "Editor",
+			BufferText: "first draft\n",
+			EditorTabs: `{"active":0,"tabs":[{"path":"draft.txt","text":"first draft\n"}]}`,
+			Width:      400,
+			Height:     300,
+		}},
+	}
+	if err := st.SaveWorkspace(ctx, ws); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+
+	// A geometry-only save omits the documents and flags them unchanged.
+	moved := &Workspace{
+		ID:       DefaultWorkspaceID,
+		Name:     "Default",
+		Revision: ws.Revision,
+		Panes: []Pane{{
+			ID:                  "pane-editor",
+			Title:               "Editor",
+			Width:               640,
+			Height:              480,
+			BufferTextUnchanged: true,
+			EditorTabsUnchanged: true,
+		}},
+	}
+	if err := st.SaveWorkspace(ctx, moved); err != nil {
+		t.Fatalf("save moved workspace: %v", err)
+	}
+
+	loaded, err := st.LoadWorkspace(ctx, DefaultWorkspaceID)
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	pane := loaded.Panes[0]
+	if pane.BufferText != "first draft\n" {
+		t.Fatalf("buffer text = %q, want the stored draft", pane.BufferText)
+	}
+	if pane.EditorTabs != `{"active":0,"tabs":[{"path":"draft.txt","text":"first draft\n"}]}` {
+		t.Fatalf("editor tabs = %q, want the stored tab document", pane.EditorTabs)
+	}
+	if pane.Width != 640 || pane.Height != 480 {
+		t.Fatalf("geometry = %dx%d, want 640x480", pane.Width, pane.Height)
+	}
+	if pane.BufferTextUnchanged || pane.EditorTabsUnchanged {
+		t.Fatalf("loaded pane reported request-only flags: %+v", pane)
+	}
+
+	// A later save with content replaces the stored documents.
+	edited := &Workspace{
+		ID:       DefaultWorkspaceID,
+		Name:     "Default",
+		Revision: loaded.Revision,
+		Panes: []Pane{{
+			ID:         "pane-editor",
+			Title:      "Editor",
+			BufferText: "second draft\n",
+			EditorTabs: `{"active":0,"tabs":[{"path":"draft.txt","text":"second draft\n"}]}`,
+			Width:      640,
+			Height:     480,
+		}},
+	}
+	if err := st.SaveWorkspace(ctx, edited); err != nil {
+		t.Fatalf("save edited workspace: %v", err)
+	}
+	loaded, err = st.LoadWorkspace(ctx, DefaultWorkspaceID)
+	if err != nil {
+		t.Fatalf("reload workspace: %v", err)
+	}
+	if loaded.Panes[0].BufferText != "second draft\n" {
+		t.Fatalf("buffer text = %q, want the edited draft", loaded.Panes[0].BufferText)
+	}
+}
