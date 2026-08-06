@@ -1626,6 +1626,96 @@ input {
   user-select: text;
 }
 
+/* Shown when a terminal's socket closes. It floats over the pane rather
+   than writing into the scrollback, so the buffer survives the outage; the
+   title attribute carries the detail for anyone who wants it. */
+.terminal-status-badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  padding: 0;
+  background: var(--chrome-bg);
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+  z-index: 7;
+}
+
+/* Nothing left to bring forward, so the badge goes back to being a label. */
+.terminal-status-badge:disabled {
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Only a pane waiting out a backoff pulses. Once the wait reaches the cap,
+   or the state is one no retry will change, the badge goes quiet: blinking
+   forever asks for attention that nothing is going to reward. */
+.terminal-status-badge[data-state="disconnected"]:not(.is-settled),
+.terminal-status-badge[data-state="connecting"] {
+  animation: terminal-status-pulse 1.4s ease-in-out infinite;
+}
+
+.terminal-status-badge[data-state="connecting"] {
+  animation-duration: 0.7s;
+}
+
+.terminal-status-badge[data-state="failed"] {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+}
+
+.terminal-status-badge[data-state="exited"] {
+  color: var(--text-faint);
+}
+
+.terminal-status-badge:not(:disabled):hover,
+.terminal-status-badge:focus-visible {
+  border-color: var(--focus-outline-strong);
+  color: var(--text);
+  animation: none;
+  opacity: 1;
+}
+
+.terminal-status-badge[hidden] {
+  display: none;
+}
+
+.terminal-status-badge svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The power symbol belongs to an exited shell, the broken link to every
+   other way a socket ends. */
+.terminal-status-badge .is-power-icon,
+.terminal-status-badge[data-state="exited"] .is-link-icon {
+  display: none;
+}
+
+.terminal-status-badge[data-state="exited"] .is-power-icon {
+  display: block;
+}
+
+@keyframes terminal-status-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-status-badge[data-state="disconnected"] {
+    animation: none;
+    opacity: 0.9;
+  }
+}
+
 .terminal-container canvas {
   display: block;
   /* Terminal grids use whole character cells. Split the fractional-cell

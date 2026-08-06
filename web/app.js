@@ -23,7 +23,12 @@ import {
 import { textEditorLanguageID } from "./text-editor-language.mjs";
 import { nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion } from "./server-update.mjs";
-import { terminalReconnectDelay } from "./terminal-reconnect.mjs";
+import {
+  terminalCloseOutcome,
+  terminalConnectingStatus,
+  terminalShouldRetry,
+  terminalStatusLabel,
+} from "./terminal-reconnect.mjs";
 import {
   isTerminalCopyShortcut,
   terminalControlSequence,
@@ -63,7 +68,7 @@ import {
   normalizeBrowserAddress,
 } from "./browser-pane.mjs";
 import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
-import { focusPane, paneNeedsRaise } from "./pane-activation.mjs";
+import { activePaneOnLoad, focusPane, paneNeedsRaise } from "./pane-activation.mjs";
 import { paneContentFields } from "./pane-content-sync.mjs";
 import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
 import {
@@ -160,6 +165,11 @@ let audioStationEvents = null;
 let audioStationReconnectTimer = null;
 const audioVolumeStorageKey = "tessera-audio-volume";
 const serverHealthPollInterval = 5000;
+// The browser caps the body of a request asked to outlive its page at 64KB,
+// counted across every such request in flight. Saves stay under it by leaving
+// out pane content the server already has, but an edit large enough to break
+// that ceiling falls back to an ordinary request.
+const maxKeepaliveSaveBytes = 60 * 1024;
 let serverConnectionState = { failures: 0, state: "" };
 let serverHealthMonitorTimer = null;
 let serverHealthProbe = null;
@@ -1052,7 +1062,10 @@ board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
 document.addEventListener("keydown", hideMenusOnEscape);
 document.addEventListener("keydown", handlePaneKeyboardShortcuts, { capture: true });
-document.addEventListener("visibilitychange", updateTerminalDocumentVisibility);
+document.addEventListener("visibilitychange", handleDocumentVisibilityChange);
+// pagehide is the one teardown event that also fires when a tab is discarded
+// or frozen, where unload does not.
+window.addEventListener("pagehide", saveWorkspaceOnExit);
 window.addEventListener("pointermove", continueInteraction);
 window.addEventListener("pointerup", finishInteraction);
 window.addEventListener("pointercancel", finishInteraction);
@@ -1253,6 +1266,9 @@ function createRectangle(x, y, width, height, options = {}) {
     commandSpinner: null,
     terminal: null,
     terminalContainer: null,
+    terminalStatusBadge: null,
+    terminalStatus: null,
+    terminalStatusTimer: null,
     body: null,
     titleInput: null,
     editorModeButton: null,
@@ -3333,6 +3349,24 @@ function updateTerminalRenderState(rect) {
   }
 }
 
+function handleDocumentVisibilityChange() {
+  updateTerminalDocumentVisibility();
+  if (document.hidden) {
+    // A backgrounded tab may be discarded without ever running code again,
+    // so anything scheduled goes out now. This one takes the ordinary path:
+    // the page is still here to read the response and keep its revision in
+    // step, which the exit flush cannot do.
+    void flushWorkspaceSave();
+    return;
+  }
+  // A backgrounded tab has its timers throttled, so a pane that went to
+  // sleep waiting may be well past the moment it meant to try again — and
+  // after a machine suspends, the socket it was holding can be gone without
+  // having said so.
+  resumeTerminalConnections();
+  void checkServerConnection({ force: true });
+}
+
 function updateTerminalDocumentVisibility() {
   if (!ghosttyModulePromise) {
     return;
@@ -3807,11 +3841,7 @@ async function loadWorkspace() {
     reflowDockedPanesForTheme();
 
     nextZIndex = Math.max(nextZIndex, highestZIndex + 1);
-    // A visible full pane owns the app surface after navigation, even if an
-    // older saved active-pane ID points at a window behind it.
-    const activeLoadedRect = rectangles.find((rect) => rect.isFull && !rect.minimized)
-      || rectangles.find((rect) => rect.id === workspace.activePaneId && !rect.minimized)
-      || null;
+    const activeLoadedRect = activePaneOnLoad(rectangles, workspace.activePaneId);
     if (activeLoadedRect) {
       setActivePane(activeLoadedRect, { raise: false, focusEditor: true });
     }
@@ -3930,6 +3960,37 @@ async function flushWorkspaceSave() {
   await saveWorkspace();
 }
 
+// A scheduled save lives in a timer, and a page that goes away takes the timer
+// with it: the pane you just focused, moved or renamed is lost, and the next
+// load restores the state from before it. This is the last moment the page is
+// given to run code, so the request goes out here and is asked to outlive the
+// document rather than awaited, since nothing here will be resumed.
+function saveWorkspaceOnExit() {
+  if (isLoadingWorkspace || workspaceSaveSuspended || workspaceNeedsRevalidation) {
+    return;
+  }
+  // A save already in flight is about to be cancelled along with the page, so
+  // it needs sending again as much as a scheduled one does.
+  if (saveTimer === null && workspaceSavePromise === null) {
+    return;
+  }
+  window.clearTimeout(saveTimer);
+  saveTimer = null;
+  const body = JSON.stringify(workspaceSavePayload().body);
+  void fetch(`/api/workspace/${encodeURIComponent(workspaceID)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body,
+    // Requests that outlive their page are capped, and the cap is shared with
+    // everything else already in flight. A body over it would be rejected
+    // outright, so an oversized save is sent as an ordinary request: it may
+    // not survive the unload, which is still better than not trying. Trimming
+    // it is not an option — a pane whose content is left out of a save is a
+    // pane the server keeps its old copy of.
+    keepalive: body.length <= maxKeepaliveSaveBytes,
+  }).catch(() => {});
+}
+
 async function saveWorkspace() {
   if (isLoadingWorkspace || workspaceSaveSuspended) {
     return;
@@ -3966,11 +4027,11 @@ function paneContent(rect) {
   };
 }
 
-async function performWorkspaceSave() {
-  const revision = ++saveRevision;
-  window.clearTimeout(saveTimer);
-  saveTimer = null;
-  setWorkspaceStatus("saving", "Saving...");
+// workspaceSavePayload builds the request body and the record of what content
+// it carries, both from the state as it stands right now. Building it apart
+// from sending it lets a page on its way out post the same body without any
+// of the awaiting that a closing document will not get to finish.
+function workspaceSavePayload() {
   const savedRectangles = rectangles.filter((rect) => rect.kind !== "pending");
   const contentByPaneID = new Map(savedRectangles.map((rect) => [rect.id, paneContent(rect)]));
   const panes = savedRectangles.map((rect, index) => ({
@@ -3999,19 +4060,32 @@ async function performWorkspaceSave() {
     position: index,
   }));
 
+  return {
+    contentByPaneID,
+    body: {
+      id: workspaceID,
+      revision: workspaceRevision,
+      name: currentSessionName || "Default",
+      activePaneId: savedRectangles.some((rect) => rect.id === activePaneID) ? activePaneID : "",
+      backgroundMode: workspaceBackgroundMode,
+      layout: { panes: panes.map((pane) => pane.id) },
+      panes,
+    },
+  };
+}
+
+async function performWorkspaceSave() {
+  const revision = ++saveRevision;
+  window.clearTimeout(saveTimer);
+  saveTimer = null;
+  setWorkspaceStatus("saving", "Saving...");
+  const { body, contentByPaneID } = workspaceSavePayload();
+
   try {
     const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceID)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: workspaceID,
-        revision: workspaceRevision,
-        name: currentSessionName || "Default",
-        activePaneId: savedRectangles.some((rect) => rect.id === activePaneID) ? activePaneID : "",
-        backgroundMode: workspaceBackgroundMode,
-        layout: { panes: panes.map((pane) => pane.id) },
-        panes,
-      }),
+      body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
     const outcome = workspaceSaveOutcome(workspaceRevision, response.status, data.revision);
@@ -4448,6 +4522,9 @@ async function startTerminal(rect) {
       pasteBridge: attachTerminalPasteBridge(rect, term),
       reconnectTimer: null, reconnectAttempts: 0, osc52: null,
       sentCols: 0, sentRows: 0,
+      // What this pane holds of the server's stream, so a reconnect can ask
+      // for the remainder instead of the whole scrollback.
+      stream: { epoch: "", offset: 0 },
     };
     updateTerminalRenderState(rect);
     connectTerminalSocket(rect);
@@ -4466,6 +4543,11 @@ function connectTerminalSocket(rect) {
     return;
   }
   terminalState.reconnectTimer = null;
+  // A pane that is already reporting trouble says an attempt is under way;
+  // a pane opening its first socket has nothing to report yet.
+  if (rect.terminalStatus) {
+    setTerminalStatus(rect, terminalConnectingStatus(rect.terminalStatus));
+  }
   const { term } = terminalState;
   const socket = new WebSocket(terminalWebSocketURL(rect, term.cols, term.rows));
   socket.binaryType = "arraybuffer";
@@ -4483,6 +4565,7 @@ function connectTerminalSocket(rect) {
       return;
     }
     terminalState.reconnectAttempts = 0;
+    clearTerminalStatus(rect);
     setPaneCwd(rect, rect.cwd, { silent: true });
     sendTerminalGridSize(terminalState);
     // Only the active pane's terminal may take focus when it comes up;
@@ -4495,7 +4578,16 @@ function connectTerminalSocket(rect) {
     if (rect.terminal?.socket !== socket) {
       return;
     }
-    const payload = typeof event.data === "string" ? event.data : new Uint8Array(event.data);
+    // Text carries the server's account of where this connection starts;
+    // everything else is the stream itself.
+    if (typeof event.data === "string") {
+      applyTerminalAttachMessage(rect, terminalState, event.data);
+      return;
+    }
+    const payload = new Uint8Array(event.data);
+    // The position counts raw stream bytes, so it has to be advanced before
+    // the filter takes any of them back out.
+    terminalState.stream.offset += payload.length;
     // A TUI's copy reaches the operator through OSC 52, which ghostty-web
     // would swallow, so those sequences are taken out of the stream here.
     const filtered = terminalState.osc52.write(payload);
@@ -4506,26 +4598,200 @@ function connectTerminalSocket(rect) {
       term.write(filtered.data);
     }
   });
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
     if (rect.terminal?.socket === socket) {
-      scheduleTerminalReconnect(rect, terminalState);
+      handleTerminalSocketClose(rect, terminalState, event);
     }
   });
 }
 
-function scheduleTerminalReconnect(rect, terminalState) {
+// The server opens every connection by saying which stream it is sending and
+// where in that stream the bytes about to arrive belong. A reset means those
+// bytes are a fresh start rather than a continuation, so whatever the pane
+// still shows came from a stream it can no longer be lined up with.
+function applyTerminalAttachMessage(rect, terminalState, data) {
+  let message = null;
+  try {
+    message = JSON.parse(data);
+  } catch {
+    return;
+  }
+  if (message?.type !== "attach") {
+    return;
+  }
+  if (message.reset) {
+    terminalState.term?.reset();
+  }
+  terminalState.stream = {
+    epoch: typeof message.epoch === "string" ? message.epoch : "",
+    offset: Number.isFinite(message.offset) ? message.offset : 0,
+  };
+}
+
+function handleTerminalSocketClose(rect, terminalState, closeEvent) {
   if (terminalState.reconnectTimer !== null) {
     return;
   }
-  const delay = terminalReconnectDelay(terminalState.reconnectAttempts);
+  const outcome = terminalCloseOutcome(closeEvent, {
+    attempt: terminalState.reconnectAttempts,
+    serverReported: !serverConnectionModal.hidden,
+  });
+  // A shell that exited takes its pane with it, the way a terminal emulator
+  // closes a tab. Its session is already gone on the server, so there is
+  // nothing left to tell it about.
+  if (outcome.closesPane) {
+    destroyRectangle(rect);
+    return;
+  }
+  setTerminalStatus(rect, outcome);
+  if (!outcome.reconnect) {
+    return;
+  }
   terminalState.reconnectAttempts += 1;
-  terminalState.term.write(`\r\n[tessera terminal disconnected; reconnecting in ${Math.ceil(delay / 1000)}s]\r\n`);
   terminalState.reconnectTimer = window.setTimeout(() => {
     terminalState.reconnectTimer = null;
     if (rect.terminal === terminalState) {
       connectTerminalSocket(rect);
     }
-  }, delay);
+  }, outcome.delay);
+}
+
+// Brings the pending attempt forward. Whoever asks — a person watching the
+// pane, or a health probe that just got an answer — knows more about the
+// server than the backoff does, so the retry also restarts it: the next
+// automatic wait should be short again, not wherever the cycle had crept to
+// while nobody was looking.
+function retryTerminalNow(rect) {
+  const terminalState = rect?.terminal;
+  if (!terminalState || !terminalShouldRetry(rect.terminalStatus)) {
+    return;
+  }
+  const socket = terminalState.socket;
+  if (socket?.readyState === WebSocket.OPEN) {
+    return;
+  }
+  if (terminalState.reconnectTimer !== null) {
+    window.clearTimeout(terminalState.reconnectTimer);
+    terminalState.reconnectTimer = null;
+  }
+  // A stale attempt is abandoned rather than raced. Its close arrives after
+  // the replacement is already in place, where the socket check in the
+  // handler ignores it.
+  if (socket && socket.readyState === WebSocket.CONNECTING) {
+    socket.close();
+  }
+  terminalState.reconnectAttempts = 0;
+  connectTerminalSocket(rect);
+}
+
+// A pane waiting out its backoff has no way to learn that the server came
+// back: the schedule is the only thing that moves it, and a backgrounded tab
+// does not even run that on time. Anything that does know brings every
+// waiting pane forward at once.
+function resumeTerminalConnections() {
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal") {
+      retryTerminalNow(rect);
+    }
+  }
+}
+
+function setTerminalStatus(rect, status) {
+  rect.terminalStatus = status;
+  stopTerminalStatusCountdown(rect);
+  renderTerminalStatusBadge(rect);
+  if (status?.retryAt) {
+    // Twice a second, so the displayed count is never a stale second behind.
+    rect.terminalStatusTimer = window.setInterval(() => renderTerminalStatusBadge(rect), 500);
+  }
+}
+
+function clearTerminalStatus(rect) {
+  rect.terminalStatus = null;
+  stopTerminalStatusCountdown(rect);
+  renderTerminalStatusBadge(rect);
+}
+
+function stopTerminalStatusCountdown(rect) {
+  if (rect?.terminalStatusTimer) {
+    window.clearInterval(rect.terminalStatusTimer);
+    rect.terminalStatusTimer = null;
+  }
+}
+
+// An outage used to be announced by writing a line into the terminal, which
+// then sat in the scrollback long after the session came back. The badge is
+// pane chrome instead: it hovers over the surface while the socket is down
+// and goes away the moment one reconnects, leaving the buffer untouched.
+function terminalStatusBadge(rect) {
+  if (!rect.body) {
+    return null;
+  }
+  // A rebuilt pane element leaves the old badge detached, so the cached one
+  // only counts while it still belongs to the pane body in front of it.
+  if (rect.terminalStatusBadge?.parentElement === rect.body) {
+    return rect.terminalStatusBadge;
+  }
+  const badge = document.createElement("button");
+  badge.type = "button";
+  badge.className = "terminal-status-badge";
+  badge.hidden = true;
+  badge.setAttribute("role", "status");
+  // A link broken in the middle reads as "disconnected" at badge size,
+  // where a plug's prongs would not; a power symbol says the shell is gone
+  // rather than out of reach. Both are built up front and swapped by state.
+  badge.appendChild(terminalStatusIcon(
+    "is-link-icon",
+    ["M9.5 17H7.5a5 5 0 0 1 0-10h2", "M14.5 7h2a5 5 0 0 1 0 10h-2", "M13.8 9.6l-3.6 4.8"],
+  ));
+  badge.appendChild(terminalStatusIcon(
+    "is-power-icon",
+    ["M12 4.5v7", "M7.8 7.3a6.4 6.4 0 1 0 8.4 0"],
+  ));
+  badge.addEventListener("click", (event) => {
+    event.stopPropagation();
+    retryTerminalNow(rect);
+  });
+  rect.body.appendChild(badge);
+  rect.terminalStatusBadge = badge;
+  return badge;
+}
+
+function terminalStatusIcon(className, paths) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", className);
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of paths) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("stroke-linecap", "round");
+    svg.appendChild(path);
+  }
+  return svg;
+}
+
+function renderTerminalStatusBadge(rect) {
+  const status = rect.terminalStatus?.showBadge ? rect.terminalStatus : null;
+  const badge = status ? terminalStatusBadge(rect) : rect.terminalStatusBadge;
+  if (!badge) {
+    return;
+  }
+  if (!status) {
+    badge.hidden = true;
+    return;
+  }
+  const label = terminalStatusLabel(status, status.retryAt ? status.retryAt - Date.now() : 0);
+  badge.title = label;
+  badge.setAttribute("aria-label", label);
+  badge.dataset.state = status.state;
+  badge.classList.toggle("is-settled", Boolean(status.settled));
+  // Only a pane with an attempt still to come has anything a click can do.
+  badge.disabled = !status.reconnect || status.state === "connecting";
+  badge.hidden = false;
 }
 
 // ghostty-web's own paste listener passes the clipboard text to the PTY the
@@ -4855,6 +5121,14 @@ function terminalWebSocketURL(rect, cols, rows) {
     cols: String(cols || 80),
     rows: String(rows || 24),
   });
+  // Saying what this pane already holds lets the server send only what it
+  // missed. A pane opening for the first time says nothing and is sent the
+  // scrollback in full.
+  const stream = rect.terminal?.stream;
+  if (stream?.epoch) {
+    params.set("resumeEpoch", stream.epoch);
+    params.set("resumeOffset", String(stream.offset));
+  }
   return `${protocol}//${window.location.host}/api/terminal?${params.toString()}`;
 }
 
@@ -4887,6 +5161,7 @@ function disposeTerminal(rect, options = {}) {
     window.clearTimeout(terminalState.reconnectTimer);
     terminalState.reconnectTimer = null;
   }
+  clearTerminalStatus(rect);
   terminalFits.cancel(terminalState);
   if (options.closeServer) {
     closeServerTerminal(rect);
@@ -6558,6 +6833,9 @@ function handleBrowserOnline() {
   if (!serverConnectionModal.hidden) {
     showServerConnectionModal("checking");
   }
+  // The panes do not wait for the probe to confirm what the browser just
+  // said; a failed attempt costs one round trip and reschedules itself.
+  resumeTerminalConnections();
   void checkServerConnection({ force: true });
 }
 
@@ -6595,6 +6873,13 @@ async function checkServerConnection({ manual = false, force = false } = {}) {
   const healthy = await probeServerHealth();
   if (serverUpdateRestarting) {
     return healthy;
+  }
+  // The probe reaches the server over the same network the terminal sockets
+  // use, so an answer after a spell of trouble is the earliest evidence a
+  // waiting pane could act on. Only the recovery is interesting: healthy
+  // polls during ordinary operation move nothing.
+  if (healthy && previousState) {
+    resumeTerminalConnections();
   }
   serverConnectionState = nextServerConnectionState(serverConnectionState, {
     healthy,

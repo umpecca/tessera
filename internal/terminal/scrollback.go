@@ -49,6 +49,28 @@ func (b *scrollbackBuffer) append(chunk []byte) {
 	b.compact()
 }
 
+// tail returns the last n retained bytes, for a client that already holds
+// everything before them. Asking for more than is retained yields all of it.
+func (b *scrollbackBuffer) tail(n int) []byte {
+	if n <= 0 || b.size == 0 {
+		return nil
+	}
+	if n >= b.size {
+		return b.replay()
+	}
+	skip := b.size - n
+	tail := make([]byte, 0, n)
+	for _, chunk := range b.chunks[b.head:] {
+		if skip >= len(chunk) {
+			skip -= len(chunk)
+			continue
+		}
+		tail = append(tail, chunk[skip:]...)
+		skip = 0
+	}
+	return tail
+}
+
 func (b *scrollbackBuffer) replay() []byte {
 	if b.size == 0 {
 		return nil

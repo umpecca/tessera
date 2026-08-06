@@ -5,15 +5,58 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
+
+	"tessera/internal/terminal"
 )
+
+// Application close codes for a terminal websocket. The browser renders
+// these as pane chrome, so a reason travels in the close frame rather than
+// being typed into the terminal, where it would land in the scrollback and
+// outlive the event it describes.
+const (
+	// terminalFailureCloseCode: the terminal could not be attached.
+	terminalFailureCloseCode = 4500
+	// terminalExitedCloseCode: the shell finished on its own. Reconnecting
+	// would only start a different shell, so the browser retires the pane
+	// instead, the way a terminal emulator closes a tab on exit.
+	terminalExitedCloseCode = 4501
+	// terminalExitFailedCloseCode: the shell ended in an error. The pane
+	// stays up carrying the reason, because a pane that simply vanished
+	// would be no way to report a crash.
+	terminalExitFailedCloseCode = 4502
+)
+
+// A close frame payload holds 125 bytes, two of which carry the code.
+const maxTerminalCloseReason = 123
 
 type terminalClientMessage struct {
 	Type string `json:"type"`
 	Cols int    `json:"cols"`
 	Rows int    `json:"rows"`
 	Data string `json:"data"`
+}
+
+// terminalAttachMessage opens every terminal socket. It is the only text
+// message the server sends; everything after it is stream bytes.
+type terminalAttachMessage struct {
+	Type   string `json:"type"`
+	Epoch  string `json:"epoch"`
+	Offset int64  `json:"offset"`
+	Reset  bool   `json:"reset"`
+}
+
+// terminalResumeCursor reads what the client says it already holds. A client
+// that says nothing — an old build, or a pane opening for the first time —
+// asks for the whole scrollback, which is what it used to get every time.
+func terminalResumeCursor(r *http.Request) terminal.Cursor {
+	offset, err := strconv.ParseInt(r.URL.Query().Get("resumeOffset"), 10, 64)
+	if err != nil || offset < 0 {
+		return terminal.Cursor{}
+	}
+	return terminal.Cursor{Epoch: r.URL.Query().Get("resumeEpoch"), Offset: offset}
 }
 
 func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
@@ -66,30 +109,47 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, err := a.Store.LoadUserSettings(r.Context(), ownerID)
 	if err != nil {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\n[tessera terminal failed: "+err.Error()+"]\r\n"))
+		closeTerminalWithFailure(conn, err)
 		return
 	}
-	session, replay, events, unsubscribe, err := a.Terminals.Attach(workspaceID, paneID, r.URL.Query().Get("cwd"), settings.TerminalTERM, cols, rows)
+	session, attachment, err := a.Terminals.Attach(
+		workspaceID, paneID, r.URL.Query().Get("cwd"), settings.TerminalTERM, cols, rows,
+		terminalResumeCursor(r),
+	)
 	if err != nil {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\n[tessera terminal failed: "+err.Error()+"]\r\n"))
+		closeTerminalWithFailure(conn, err)
 		return
 	}
-	defer unsubscribe()
+	defer attachment.Unsubscribe()
 
 	var writeMu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer conn.Close()
-		if len(replay) > 0 {
+		// The stream itself is untyped bytes, so where it starts and whether
+		// it continues what the client already has is said out of band,
+		// before the first of them.
+		writeMu.Lock()
+		err := conn.WriteJSON(terminalAttachMessage{
+			Type:   "attach",
+			Epoch:  attachment.Epoch,
+			Offset: attachment.Offset,
+			Reset:  attachment.Reset,
+		})
+		writeMu.Unlock()
+		if err != nil {
+			return
+		}
+		if len(attachment.Replay) > 0 {
 			writeMu.Lock()
-			err := conn.WriteMessage(websocket.BinaryMessage, replay)
+			err := conn.WriteMessage(websocket.BinaryMessage, attachment.Replay)
 			writeMu.Unlock()
 			if err != nil {
 				return
 			}
 		}
-		for chunk := range events {
+		for chunk := range attachment.Events {
 			if len(chunk) > 0 {
 				writeMu.Lock()
 				writeErr := conn.WriteMessage(websocket.BinaryMessage, chunk)
@@ -98,6 +158,14 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+		}
+		// The stream ends either because the shell finished or because this
+		// handler is tearing the subscription down. Only the first is news
+		// the browser has to hear.
+		if exited, exitErr := session.Exited(); exited {
+			writeMu.Lock()
+			closeTerminalWithExit(conn, exitErr)
+			writeMu.Unlock()
 		}
 	}()
 
@@ -155,6 +223,37 @@ func (a *API) deleteTerminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	a.Terminals.Terminate(workspaceID, paneID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func closeTerminalWithFailure(conn *websocket.Conn, err error) {
+	frame := websocket.FormatCloseMessage(terminalFailureCloseCode, terminalCloseReason("terminal failed", err))
+	_ = conn.WriteMessage(websocket.CloseMessage, frame)
+}
+
+func closeTerminalWithExit(conn *websocket.Conn, err error) {
+	code := terminalExitedCloseCode
+	if err != nil {
+		code = terminalExitFailedCloseCode
+	}
+	frame := websocket.FormatCloseMessage(code, terminalCloseReason("terminal exited", err))
+	_ = conn.WriteMessage(websocket.CloseMessage, frame)
+}
+
+// terminalCloseReason fits an outcome into a close frame. Reasons must stay
+// valid UTF-8, so an oversized one is cut back to a rune boundary rather
+// than at the byte limit.
+func terminalCloseReason(summary string, err error) string {
+	reason := summary
+	if err != nil && err.Error() != "" {
+		reason = summary + ": " + err.Error()
+	}
+	if len(reason) > maxTerminalCloseReason {
+		reason = reason[:maxTerminalCloseReason]
+		for len(reason) > 0 && !utf8.ValidString(reason) {
+			reason = reason[:len(reason)-1]
+		}
+	}
+	return reason
 }
 
 func queryInt(r *http.Request, name string, fallback int) int {

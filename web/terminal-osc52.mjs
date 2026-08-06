@@ -31,9 +31,15 @@ export class TerminalOSC52Filter {
   constructor(maximumPayloadLength = terminalOSC52MaximumPayloadLength) {
     this.maximumPayloadLength = maximumPayloadLength;
     this.state = "text";
-    // Bytes consumed while a sequence still might turn out to be OSC 52. They
-    // are replayed to the terminal the moment it turns out not to be.
-    this.pending = [];
+    // Bytes of a candidate sequence that began in an earlier chunk. They are
+    // replayed to the terminal the moment the candidate turns out not to be
+    // OSC 52. A candidate that began in the chunk being scanned needs no
+    // copy: candidateStart remembers where it started, and abandoning it
+    // just reopens the pass-through run there. Only one of the two is ever
+    // in use, and the common sequence — one that starts and ends inside a
+    // chunk — never touches `pending` at all.
+    this.pending = null;
+    this.candidateStart = -1;
     this.prefixMatched = 0;
     this.payload = [];
     this.payloadOverflowed = false;
@@ -56,14 +62,30 @@ export class TerminalOSC52Filter {
       runStart = null;
     };
     // The candidate was not OSC 52 after all: replay what it consumed and
-    // reread the current byte as ordinary output.
+    // reread the current byte as ordinary output. Bytes still sitting in this
+    // chunk are replayed by reopening the run over them rather than by
+    // copying, which is what keeps escape-dense output cheap.
     const abandon = () => {
-      if (this.pending.length > 0) {
-        pieces.push(binary ? Uint8Array.from(this.pending) : String.fromCharCode(...this.pending));
-        this.pending = [];
+      if (this.candidateStart >= 0) {
+        this.state = "text";
+        runStart = this.candidateStart;
+        this.candidateStart = -1;
+        return;
       }
+      if (this.pending !== null && this.pending.length > 0) {
+        pieces.push(binary ? Uint8Array.from(this.pending) : String.fromCharCode(...this.pending));
+      }
+      this.pending = null;
       this.state = "text";
       runStart = index;
+    };
+    // Records a byte the candidate consumed, but only while the candidate
+    // came from an earlier chunk; otherwise the bytes are still addressable
+    // where they are.
+    const consume = (code) => {
+      if (this.candidateStart < 0) {
+        this.pending.push(code);
+      }
     };
     const finish = () => {
       const text = this.payloadOverflowed ? null : decodeOSC52Payload(this.payload);
@@ -72,18 +94,26 @@ export class TerminalOSC52Filter {
       }
       this.payload = [];
       this.payloadOverflowed = false;
-      this.pending = [];
+      this.pending = null;
+      this.candidateStart = -1;
     };
 
     while (index < length) {
       const code = binary ? chunk[index] : chunk.charCodeAt(index);
 
       if (this.state === "text") {
-        if (code === ESCAPE) {
-          emitRun(index);
-          this.pending = [ESCAPE];
-          this.state = "escape";
+        if (code !== ESCAPE) {
+          // Ordinary output is the bulk of any stream and none of it can
+          // start a sequence, so the scan jumps to the next escape rather
+          // than reading every byte of it.
+          const next = binary ? chunk.indexOf(ESCAPE, index) : chunk.indexOf("\x1b", index);
+          index = next < 0 ? length : next;
+          continue;
         }
+        emitRun(index);
+        this.candidateStart = index;
+        this.pending = null;
+        this.state = "escape";
         index += 1;
         continue;
       }
@@ -93,7 +123,7 @@ export class TerminalOSC52Filter {
           abandon();
           continue;
         }
-        this.pending.push(code);
+        consume(code);
         this.prefixMatched = 0;
         this.state = "prefix";
         index += 1;
@@ -105,14 +135,15 @@ export class TerminalOSC52Filter {
           abandon();
           continue;
         }
-        this.pending.push(code);
+        consume(code);
         this.prefixMatched += 1;
         index += 1;
         if (this.prefixMatched === OSC52_PREFIX.length) {
           // Committed: the rest of this sequence belongs to Tessera, not to
-          // the terminal, so the pending bytes are dropped rather than
+          // the terminal, so the consumed bytes are dropped rather than
           // replayed.
-          this.pending = [];
+          this.pending = null;
+          this.candidateStart = -1;
           this.state = "targets";
         }
         continue;
@@ -179,13 +210,27 @@ export class TerminalOSC52Filter {
           runStart = index;
           continue;
         }
+        // The escape that ended this sequence was consumed bytes ago, so it
+        // has to be carried rather than pointed at.
         this.pending = [ESCAPE];
+        this.candidateStart = -1;
         this.state = "escape";
         continue;
       }
     }
 
     emitRun(length);
+
+    // The chunk is about to go out of scope, so a candidate still pointing
+    // into it has to take its bytes along for the next call.
+    if (this.candidateStart >= 0) {
+      const carried = [];
+      for (let position = this.candidateStart; position < length; position += 1) {
+        carried.push(binary ? chunk[position] : chunk.charCodeAt(position));
+      }
+      this.pending = carried;
+      this.candidateStart = -1;
+    }
 
     return { data: joinChunkPieces(pieces, binary), clipboard };
   }

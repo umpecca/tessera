@@ -61,5 +61,5 @@ func (a *App) Handler() http.Handler {
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)
-	return httpapi.NewSecurityHandler(mux, a.Store, a.Security)
+	return httpapi.NewSecurityHandler(httpapi.NewCompressionHandler(mux), a.Store, a.Security)
 }

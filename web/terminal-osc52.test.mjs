@@ -89,6 +89,60 @@ test("a lone escape or introducer is replayed rather than swallowed", () => {
   assert.equal(writeString(filter, "]11;?\x07").data, "\x1b]11;?\x07");
 });
 
+// A candidate that starts inside a chunk is replayed by pointing back at the
+// bytes; one that arrives split has to carry them. These walk the split
+// through every position of a sequence that turns out not to be OSC 52, since
+// each one hands over at a different point in the parse.
+test("a non-OSC-52 sequence survives a split at any byte", () => {
+  const sequence = "\x1b]11;rgb:0f0f/0f0f/0f0f\x07";
+  for (let split = 1; split < sequence.length; split += 1) {
+    const filter = new TerminalOSC52Filter();
+    const first = writeString(filter, `head${sequence.slice(0, split)}`);
+    const second = writeString(filter, `${sequence.slice(split)}tail`);
+    assert.equal(
+      `${first.data}${second.data}`,
+      `head${sequence}tail`,
+      `split after ${split} byte(s) lost or reordered output`,
+    );
+    assert.deepEqual([...first.clipboard, ...second.clipboard], []);
+  }
+});
+
+test("an OSC 52 write survives a split at any byte", () => {
+  const sequence = `\x1b]52;c;${base64("carried")}\x07`;
+  for (let split = 1; split < sequence.length; split += 1) {
+    const filter = new TerminalOSC52Filter();
+    const first = writeString(filter, `head${sequence.slice(0, split)}`);
+    const second = writeString(filter, `${sequence.slice(split)}tail`);
+    assert.equal(`${first.data}${second.data}`, "headtail", `split after ${split} byte(s) leaked`);
+    assert.deepEqual([...first.clipboard, ...second.clipboard], ["carried"], `split after ${split}`);
+  }
+});
+
+test("a split candidate carries its bytes across binary frames too", () => {
+  const filter = new TerminalOSC52Filter();
+  const first = writeBytes(filter, "before\x1b]5");
+  const second = writeBytes(filter, "1;not us\x07after");
+  assert.equal(first.data, "before");
+  assert.equal(second.data, "\x1b]51;not us\x07after");
+  assert.deepEqual([...first.clipboard, ...second.clipboard], []);
+});
+
+// The scan skips ahead to the next escape; a chunk with none at all must
+// still come back whole.
+test("a chunk with no escapes passes through in one piece", () => {
+  const filter = new TerminalOSC52Filter();
+  const plain = "no escapes here, just ordinary output\r\n".repeat(64);
+  assert.equal(writeString(filter, plain).data, plain);
+  assert.equal(writeBytes(filter, plain).data, plain);
+});
+
+test("an escape as the final byte of a chunk is held, not dropped", () => {
+  const filter = new TerminalOSC52Filter();
+  assert.equal(writeString(filter, "text\x1b").data, "text");
+  assert.equal(writeString(filter, "[0mmore").data, "\x1b[0mmore");
+});
+
 test("every OSC 52 target writes to the one system clipboard", () => {
   const filter = new TerminalOSC52Filter();
   const written = writeString(

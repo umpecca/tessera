@@ -2,6 +2,23 @@ export function paneNeedsRaise(panes, pane) {
   return panes.some((other) => other !== pane && other.zIndex >= pane.zIndex);
 }
 
+// Which pane a freshly loaded workspace should activate. The saved pane is
+// the operator's own last choice, so it wins wherever it can actually be
+// seen. A maximized pane fills the board and hides everything beneath it,
+// so it takes over only when the saved pane is behind it — putting the caret
+// in a window nobody can see would be worse than ignoring the saved choice.
+export function activePaneOnLoad(panes, savedActivePaneID) {
+  const visible = panes.filter((pane) => !pane.minimized);
+  const covering = visible
+    .filter((pane) => pane.isFull)
+    .reduce((top, pane) => (top === null || pane.zIndex > top.zIndex ? pane : top), null);
+  const saved = visible.find((pane) => pane.id === savedActivePaneID) || null;
+  if (saved && (covering === null || saved === covering || saved.zIndex > covering.zIndex)) {
+    return saved;
+  }
+  return covering;
+}
+
 export function focusPane(pane) {
   if (!pane) {
     return false;
