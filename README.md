@@ -86,6 +86,44 @@ go run ./cmd/tessera -addr 127.0.0.1:7331 -db .\tessera.sqlite3 -web .\web
 go run ./cmd/tessera -users alice,bob,carol
 ```
 
+## Install as an Ubuntu service
+
+On an Ubuntu amd64 or ARM64 host, download and run the installer as root:
+
+```bash
+curl --fail --location \
+  https://raw.githubusercontent.com/umpecca/tessera/main/scripts/install-ubuntu.sh \
+  --output install-ubuntu.sh
+sudo bash install-ubuntu.sh
+```
+
+The installer detects the host architecture, downloads the matching binary
+from the latest GitHub Release, and installs it at `/usr/local/bin/tessera`.
+It creates an unprivileged `tessera` system account, stores the SQLite database
+under `/var/lib/tessera`, and enables `tessera.service` at startup. Running the
+installer again downloads the current latest release and restarts the service.
+
+Tessera listens only on `127.0.0.1:7331` by default. From the Ubuntu host, open
+<http://127.0.0.1:7331>. If Ubuntu is running in a VM and you need access from
+the macOS host, use SSH port forwarding instead of exposing Tessera directly:
+
+```bash
+ssh -L 7331:127.0.0.1:7331 your-user@your-ubuntu-vm
+```
+
+Useful service commands:
+
+```bash
+systemctl status tessera.service
+journalctl -u tessera.service -f
+sudo systemctl restart tessera.service
+```
+
+The service sandbox limits Tessera's filesystem access to `/var/lib/tessera`.
+This is intentional because Tessera can execute shell commands and manipulate
+files as its service account. Edit the systemd unit only if you understand that
+security boundary, then run `sudo systemctl daemon-reload` and restart it.
+
 ## HTTP hardening and reverse proxies
 
 Localhost and trusted-intranet access by DNS name or literal IPv4/IPv6 address
@@ -469,6 +507,7 @@ Pushing a `v*` tag runs the GitHub Actions release workflow and publishes:
 
 - `tessera-freebsd-amd64`
 - `tessera-linux-amd64`
+- `tessera-linux-arm64`
 - `tessera-openbsd-amd64`
 - `tessera-windows-amd64.exe`
 - `tessera-darwin-amd64`
