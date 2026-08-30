@@ -22,7 +22,10 @@ func TestRunnerStreamsOutputAndTracksCwd(t *testing.T) {
 		command = "Write-Output hello\nSet-Location .."
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Starting a fresh PowerShell process can be slow on a loaded Windows CI
+	// runner. Keep a deadline so a real process or pipe hang still terminates the
+	// test, but do not turn transient startup pressure into an exit-code failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	var stdout strings.Builder
@@ -43,6 +46,9 @@ func TestRunnerStreamsOutputAndTracksCwd(t *testing.T) {
 				exitCode = *event.Code
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("runner did not finish before the test deadline: %v", err)
 	}
 
 	if !strings.Contains(stdout.String(), "hello") {
