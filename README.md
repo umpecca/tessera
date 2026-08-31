@@ -99,12 +99,15 @@ sudo bash install-ubuntu.sh
 
 The installer detects the host architecture, downloads the matching binary
 from the latest GitHub Release, and installs it at `/usr/local/bin/tessera`.
-It creates an unprivileged `tessera` system account, stores the SQLite database
-under `/var/lib/tessera`, and enables `tessera.service` at startup. It prompts
-for a listen address: press Enter to use the safe `127.0.0.1` default, or enter
-`0.0.0.0` to listen on every network interface. A non-interactive run uses
-`127.0.0.1`. Running the installer again downloads the current latest release,
-asks for the listen address again, and restarts the service.
+It runs the service as the non-root account that invoked `sudo`, uses that
+account's home directory as the service working directory, stores the SQLite
+database under `/var/lib/tessera`, and enables `tessera.service` at startup.
+Run the installer from your normal account with `sudo`; running it directly
+from a root login is rejected because there is no invoking user to select. It
+prompts for a listen address: press Enter to use the safe `127.0.0.1` default,
+or enter `0.0.0.0` to listen on every network interface. A non-interactive run
+uses `127.0.0.1`. Running the installer again downloads the current latest
+release, asks for the listen address again, and restarts the service.
 
 With the default selection, Tessera listens only on `127.0.0.1:7331`. From the
 Ubuntu host, open <http://127.0.0.1:7331>. If Ubuntu is running in a VM and you
@@ -127,10 +130,13 @@ journalctl -u tessera.service -f
 sudo systemctl restart tessera.service
 ```
 
-The service sandbox limits Tessera's filesystem access to `/var/lib/tessera`.
-This is intentional because Tessera can execute shell commands and manipulate
-files as its service account. Edit the systemd unit only if you understand that
-security boundary, then run `sudo systemctl daemon-reload` and restart it.
+Tessera terminals and file operations have the same home-directory access,
+supplementary groups, and existing `sudo` permissions as the account that ran
+the installer. Anyone who can access Tessera can therefore act with that
+account's authority and may be able to obtain root access through `sudo`.
+Keep Tessera restricted to trusted users and networks. Upgrading an older
+installation transfers `/var/lib/tessera` to the invoking user but does not
+automatically delete the old `tessera` system account.
 
 ## HTTP hardening and reverse proxies
 

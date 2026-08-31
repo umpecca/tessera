@@ -3,14 +3,18 @@
 set -Eeuo pipefail
 
 readonly REPOSITORY="umpecca/tessera"
-readonly SERVICE_USER="tessera"
-readonly SERVICE_GROUP="tessera"
 readonly INSTALL_PATH="/usr/local/bin/tessera"
 readonly STATE_DIRECTORY="/var/lib/tessera"
 readonly UNIT_PATH="/etc/systemd/system/tessera.service"
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "error: this installer must run as root (try: sudo $0)" >&2
+  exit 1
+fi
+
+service_user="${SUDO_USER:-}"
+if [[ -z ${service_user} || ${service_user} == "root" ]]; then
+  echo "error: run this installer from a non-root account with sudo (try: sudo bash $0)" >&2
   exit 1
 fi
 
@@ -26,12 +30,27 @@ if [[ ${ID:-} != "ubuntu" ]]; then
   exit 1
 fi
 
-for command in curl getent groupadd install mktemp mv systemctl useradd; do
+for command in chown curl getent id install mktemp mv systemctl; do
   if ! command -v "${command}" >/dev/null 2>&1; then
     echo "error: required command not found: ${command}" >&2
     exit 1
   fi
 done
+
+if ! passwd_entry="$(getent passwd "${service_user}")"; then
+  echo "error: invoking user does not exist: ${service_user}" >&2
+  exit 1
+fi
+
+service_group="$(id -gn "${service_user}")"
+IFS=: read -r _ _ _ _ _ service_home _ <<<"${passwd_entry}"
+if [[ ${service_home} != /* ]]; then
+  echo "error: invoking user has no valid home directory: ${service_user}" >&2
+  exit 1
+fi
+if [[ ! -d ${service_home} ]]; then
+  install -d -m 0750 -o "${service_user}" -g "${service_group}" "${service_home}"
+fi
 
 case "$(uname -m)" in
   x86_64 | amd64)
@@ -87,19 +106,8 @@ if [[ ! -s ${download_path} ]]; then
   exit 1
 fi
 
-if ! getent group "${SERVICE_GROUP}" >/dev/null; then
-  groupadd --system "${SERVICE_GROUP}"
-fi
-
-if ! getent passwd "${SERVICE_USER}" >/dev/null; then
-  useradd --system \
-    --gid "${SERVICE_GROUP}" \
-    --home-dir "${STATE_DIRECTORY}" \
-    --shell /usr/sbin/nologin \
-    "${SERVICE_USER}"
-fi
-
-install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${STATE_DIRECTORY}"
+install -d -m 0750 -o "${service_user}" -g "${service_group}" "${STATE_DIRECTORY}"
+chown -R "${service_user}:${service_group}" "${STATE_DIRECTORY}"
 install -m 0755 -o root -g root "${download_path}" "${install_staging_path}"
 mv -f "${install_staging_path}" "${INSTALL_PATH}"
 
@@ -112,17 +120,14 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=tessera
-Group=tessera
-WorkingDirectory=/var/lib/tessera
+User=${service_user}
+Group=${service_group}
+WorkingDirectory=${service_home}
+Environment=HOME=${service_home}
 ExecStart=/usr/local/bin/tessera -addr ${listen_address}:7331 -db /var/lib/tessera/tessera.sqlite3 -tray=false
 Restart=on-failure
 RestartSec=5s
-NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/tessera
 
 [Install]
 WantedBy=multi-user.target
@@ -144,4 +149,5 @@ if [[ ${listen_address} == "0.0.0.0" ]]; then
 else
   echo "Tessera is installed and running at http://127.0.0.1:7331"
 fi
+echo "The service is running as ${service_user} with home directory ${service_home}."
 echo "View logs with: journalctl -u tessera.service -f"

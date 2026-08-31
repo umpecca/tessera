@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Run Ubuntu service installations as the non-root user that invoked `sudo`,
+  with that user's home-directory access and existing `sudo` permissions,
+  instead of creating an isolated `tessera` system account.
 - Let the Ubuntu installer choose between the safe `127.0.0.1` default and
   listening on every interface at `0.0.0.0`; non-interactive installs retain
   the localhost default.
