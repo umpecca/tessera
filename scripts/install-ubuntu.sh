@@ -46,6 +46,28 @@ case "$(uname -m)" in
     ;;
 esac
 
+listen_address="127.0.0.1"
+if [[ -t 0 ]]; then
+  while true; do
+    if ! read -r -p "Listen address (127.0.0.1 or 0.0.0.0) [127.0.0.1]: " response; then
+      echo >&2
+      echo "error: no listen address selected" >&2
+      exit 1
+    fi
+    case "${response:-127.0.0.1}" in
+      127.0.0.1 | 0.0.0.0)
+        listen_address="${response:-127.0.0.1}"
+        break
+        ;;
+      *)
+        echo "Please enter 127.0.0.1 or 0.0.0.0."
+        ;;
+    esac
+  done
+else
+  echo "No interactive terminal detected; using the safe default listen address 127.0.0.1."
+fi
+
 asset="tessera-linux-${release_arch}"
 download_url="https://github.com/${REPOSITORY}/releases/latest/download/${asset}"
 download_path="$(mktemp --tmpdir tessera-download.XXXXXXXXXX)"
@@ -81,7 +103,7 @@ install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${STATE_DIRECTORY
 install -m 0755 -o root -g root "${download_path}" "${install_staging_path}"
 mv -f "${install_staging_path}" "${INSTALL_PATH}"
 
-cat >"${UNIT_PATH}" <<'UNIT'
+cat >"${UNIT_PATH}" <<UNIT
 [Unit]
 Description=Tessera local-first workspace
 Documentation=https://github.com/umpecca/tessera
@@ -93,7 +115,7 @@ Type=simple
 User=tessera
 Group=tessera
 WorkingDirectory=/var/lib/tessera
-ExecStart=/usr/local/bin/tessera -addr 127.0.0.1:7331 -db /var/lib/tessera/tessera.sqlite3 -tray=false
+ExecStart=/usr/local/bin/tessera -addr ${listen_address}:7331 -db /var/lib/tessera/tessera.sqlite3 -tray=false
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
@@ -116,6 +138,10 @@ if ! systemctl is-active --quiet tessera.service; then
   exit 1
 fi
 
-echo "Tessera is installed and running at http://127.0.0.1:7331"
+if [[ ${listen_address} == "0.0.0.0" ]]; then
+  echo "Tessera is installed and listening on all interfaces at port 7331."
+  echo "Connect using this Ubuntu host's IP address; ensure firewall access is appropriately restricted."
+else
+  echo "Tessera is installed and running at http://127.0.0.1:7331"
+fi
 echo "View logs with: journalctl -u tessera.service -f"
-

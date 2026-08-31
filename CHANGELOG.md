@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Let the Ubuntu installer choose between the safe `127.0.0.1` default and
+  listening on every interface at `0.0.0.0`; non-interactive installs retain
+  the localhost default.
 - Fix `Ctrl+V` in a Terminal pane on macOS, where it reached neither the
   clipboard nor the application. It now arrives as `^V`, so a full-screen
   program that binds paste to `^V` receives it, matching Terminal.app. `Cmd+V`

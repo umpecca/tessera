@@ -100,16 +100,24 @@ sudo bash install-ubuntu.sh
 The installer detects the host architecture, downloads the matching binary
 from the latest GitHub Release, and installs it at `/usr/local/bin/tessera`.
 It creates an unprivileged `tessera` system account, stores the SQLite database
-under `/var/lib/tessera`, and enables `tessera.service` at startup. Running the
-installer again downloads the current latest release and restarts the service.
+under `/var/lib/tessera`, and enables `tessera.service` at startup. It prompts
+for a listen address: press Enter to use the safe `127.0.0.1` default, or enter
+`0.0.0.0` to listen on every network interface. A non-interactive run uses
+`127.0.0.1`. Running the installer again downloads the current latest release,
+asks for the listen address again, and restarts the service.
 
-Tessera listens only on `127.0.0.1:7331` by default. From the Ubuntu host, open
-<http://127.0.0.1:7331>. If Ubuntu is running in a VM and you need access from
-the macOS host, use SSH port forwarding instead of exposing Tessera directly:
+With the default selection, Tessera listens only on `127.0.0.1:7331`. From the
+Ubuntu host, open <http://127.0.0.1:7331>. If Ubuntu is running in a VM and you
+need access from the macOS host, use SSH port forwarding instead of exposing
+Tessera directly:
 
 ```bash
 ssh -L 7331:127.0.0.1:7331 your-user@your-ubuntu-vm
 ```
+
+Choosing `0.0.0.0` makes Tessera reachable through the Ubuntu host's network
+addresses. Only choose it on a trusted network, and restrict port 7331 with the
+host or network firewall as appropriate.
 
 Useful service commands:
 
