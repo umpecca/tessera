@@ -102,6 +102,19 @@ export function terminalPasteSource(event, options = {}) {
   return null;
 }
 
+// Chrome owns Command+V on macOS, but a terminal input listener must not see
+// the keydown itself: some raw-mode TUIs otherwise receive a literal `v` even
+// though the browser shortcut is meant to paste. The caller stops propagation
+// without preventing the default action, so Chrome can still emit its trusted
+// paste event with system-clipboard data.
+export function shouldIsolateMacTerminalPasteKeydown(event, options = {}) {
+  return Boolean(
+    options.appleKeyboard
+    && event?.metaKey
+    && terminalPasteSource(event, options) === "native"
+  );
+}
+
 // Control codes for keystrokes ghostty-web drops instead of encoding.
 //
 // Its key handler returns early for Ctrl+V so the browser can deliver a paste

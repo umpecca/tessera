@@ -12,6 +12,10 @@
   clipboard nor the application. It now arrives as `^V`, so a full-screen
   program that binds paste to `^V` receives it, matching Terminal.app. `Cmd+V`
   still pastes through the browser's paste event.
+- Keep macOS `Cmd+V` from leaking a literal `v` into raw-mode terminal programs
+  such as Claude Code. Tessera now stops that keydown before terminal input
+  handlers see it without cancelling Chrome's trusted paste event; Windows and
+  Linux `Ctrl+V` retain their existing path.
 - Stop `Cmd`+letter typing its bare character into a Terminal pane on macOS.
   `Cmd+S` in a TUI editor inserted an `s` into the document instead of doing
   nothing; Command is a menu accelerator, and those keystrokes are now consumed.

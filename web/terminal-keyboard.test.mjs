@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isTerminalCopyShortcut,
+  shouldIsolateMacTerminalPasteKeydown,
   terminalControlSequence,
   terminalNavigationSequence,
   terminalPasteSource,
@@ -103,6 +104,27 @@ test("ignores keystrokes that are not paste requests", () => {
   assert.equal(terminalPasteSource(null, apple), null);
   // Plain Ctrl+V on macOS is not a paste shortcut there.
   assert.equal(terminalPasteSource({ key: "v", ctrlKey: true }, apple), null);
+});
+
+test("isolates only macOS Command+V before terminal input handlers", () => {
+  assert.equal(shouldIsolateMacTerminalPasteKeydown({ key: "v", metaKey: true }, apple), true);
+  assert.equal(shouldIsolateMacTerminalPasteKeydown({ key: "V", metaKey: true }, apple), true);
+  assert.equal(
+    shouldIsolateMacTerminalPasteKeydown({ key: "v", code: "KeyV", metaKey: true }, apple),
+    true,
+  );
+
+  // Windows/Linux Ctrl+V stays on its existing native-paste path.
+  assert.equal(shouldIsolateMacTerminalPasteKeydown({ key: "v", ctrlKey: true }), false);
+  // Tessera's explicit clipboard paste and macOS ^V remain unchanged.
+  assert.equal(
+    shouldIsolateMacTerminalPasteKeydown({ key: "v", ctrlKey: true, shiftKey: true }, apple),
+    false,
+  );
+  assert.equal(shouldIsolateMacTerminalPasteKeydown({ key: "v", ctrlKey: true }, apple), false);
+  assert.equal(shouldIsolateMacTerminalPasteKeydown({ key: "v", metaKey: true, shiftKey: true }, apple), false);
+  assert.equal(shouldIsolateMacTerminalPasteKeydown({ key: "c", metaKey: true }, apple), false);
+  assert.equal(shouldIsolateMacTerminalPasteKeydown(null, apple), false);
 });
 
 test("encodes Ctrl+V as ^V on an Apple keyboard, where it is not the paste accelerator", () => {

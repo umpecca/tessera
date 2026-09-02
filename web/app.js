@@ -31,6 +31,7 @@ import {
 } from "./terminal-reconnect.mjs";
 import {
   isTerminalCopyShortcut,
+  shouldIsolateMacTerminalPasteKeydown,
   terminalControlSequence,
   terminalNavigationSequence,
   terminalPasteSource,
@@ -4811,6 +4812,19 @@ function attachTerminalPasteBridge(rect, term) {
     return null;
   }
 
+  const onKeyDown = (event) => {
+    if (!rect.terminalContainer?.contains(event.target)) {
+      return;
+    }
+    if (!shouldIsolateMacTerminalPasteKeydown(event, { appleKeyboard: appleKeyboardLayout })) {
+      return;
+    }
+    // Do not preventDefault(): Chrome's default action is what emits the
+    // trusted paste event below. Only keep the physical `v` keydown away from
+    // ghostty-web and the raw-mode application behind it.
+    event.stopImmediatePropagation();
+  };
+
   const onPaste = (event) => {
     if (!rect.terminalContainer?.contains(event.target)) {
       return;
@@ -4823,10 +4837,12 @@ function attachTerminalPasteBridge(rect, term) {
     }
   };
 
+  host.addEventListener("keydown", onKeyDown, { capture: true });
   host.addEventListener("paste", onPaste, { capture: true });
 
   return {
     dispose() {
+      host.removeEventListener("keydown", onKeyDown, { capture: true });
       host.removeEventListener("paste", onPaste, { capture: true });
     },
   };
