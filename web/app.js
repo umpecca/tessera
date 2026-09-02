@@ -71,6 +71,7 @@ import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-conc
 import { activePaneOnLoad, focusPane, paneNeedsRaise } from "./pane-activation.mjs";
 import { paneContentFields } from "./pane-content-sync.mjs";
 import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
+import { TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
 import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
@@ -4515,11 +4516,12 @@ async function startTerminal(rect) {
       sendTerminalInput(rect.terminal?.socket, data);
     });
     const resizeDisposable = term.onResize(() => {
-      sendTerminalGridSize(rect.terminal);
+      requestTerminalGridSize(rect.terminal);
     });
     rect.terminal = {
       term, fit, socket: null, dataDisposable, resizeDisposable, mouseBridge: null,
       pasteBridge: attachTerminalPasteBridge(rect, term),
+      output: new TerminalWriteScheduler((data) => term.write(data)),
       reconnectTimer: null, reconnectAttempts: 0, osc52: null,
       sentCols: 0, sentRows: 0,
       // What this pane holds of the server's stream, so a reconnect can ask
@@ -4595,7 +4597,7 @@ function connectTerminalSocket(rect) {
       void applyTerminalClipboardWrite(text);
     }
     if (filtered.data !== null) {
-      term.write(filtered.data);
+      terminalState.output.enqueue(filtered.data);
     }
   });
   socket.addEventListener("close", (event) => {
@@ -4620,6 +4622,7 @@ function applyTerminalAttachMessage(rect, terminalState, data) {
     return;
   }
   if (message.reset) {
+    terminalState.output?.reset();
     terminalState.term?.reset();
   }
   terminalState.stream = {
@@ -5148,6 +5151,10 @@ function sendTerminalGridSize(terminalState) {
   terminalFits.sendGridSize(terminalState);
 }
 
+function requestTerminalGridSize(terminalState) {
+  terminalFits.requestGridSize(terminalState);
+}
+
 function disposeTerminal(rect, options = {}) {
   if (!rect?.terminal) {
     if (options.closeServer && rect?.kind === "terminal") {
@@ -5170,6 +5177,7 @@ function disposeTerminal(rect, options = {}) {
   terminalState.resizeDisposable?.dispose?.();
   terminalState.mouseBridge?.dispose?.();
   terminalState.pasteBridge?.dispose?.();
+  terminalState.output?.dispose?.();
   terminalState.fit?.dispose?.();
   terminalState.fit = null;
   terminalState.term?.dispose?.();

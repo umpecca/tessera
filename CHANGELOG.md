@@ -48,6 +48,14 @@
 - Coalesce terminal fits into one per frame while a pane is dragged or resized,
   and send the terminal's grid size only when it actually changes, instead of a
   `resize` frame per pointer move.
+- Keep resize-heavy full-screen programs from stalling the Tessera page. The
+  browser terminal still fits live while geometry changes, but the PTY now gets
+  one final grid size after the layout settles instead of redrawing the program
+  for every transient size; initial connections and reconnects remain immediate.
+- Keep verbose commands such as parallel builds from monopolizing the browser
+  thread. Terminal output is now parsed in ordered, bounded turns with regular
+  yields for input, layout, and painting; large reconnect replays are split into
+  small writes instead of entering Ghostty's synchronous parser all at once.
 - Skip resending pane documents on workspace saves that did not change them, so
   moving a window no longer rewrites every open editor buffer.
 - Give the Window List keyboard focus when it is opened from the command
