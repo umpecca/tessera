@@ -85,10 +85,14 @@ jobs:
     strategy:
       matrix:
         include:
-          # - runner: ubuntu-latest
-          #   goos: linux
-          #   goarch: amd64
-          #   ext: ""
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            ext: ""
           # - runner: macos-15-intel
           #   goos: darwin
           #   goarch: amd64
@@ -166,9 +170,19 @@ jobs:
             lame-3.100.tar.gz
             LICENSE.LAME.txt
 
+  installer-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Ubuntu installer
+        run: |
+          bash -n scripts/install-ubuntu.sh
+          bash -n scripts/install-ubuntu.test.sh
+          bash scripts/install-ubuntu.test.sh
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, encoder, encoder-windows, encoder-source]
+    needs: [build, encoder, encoder-windows, encoder-source, installer-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write

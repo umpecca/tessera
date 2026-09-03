@@ -1,3 +1,5 @@
+import { safeCodePointString } from "./unicode-codepoint.mjs";
+
 const httpURLPattern = /\bhttps?:\/\/[^\s<>"'\u0000-\u001f]+/giu;
 const simpleTrailingPunctuation = /[.,;:!?]$/u;
 const closingPairs = {
@@ -12,7 +14,7 @@ function lineCells(line) {
     const cell = line.getCell(x);
     const codepoint = cell?.getCodepoint?.() ?? cell?.getCode?.() ?? 0;
     cells.push({
-      text: codepoint >= 32 ? String.fromCodePoint(codepoint) : " ",
+      text: codepoint >= 32 ? safeCodePointString(codepoint) : " ",
       x,
     });
   }

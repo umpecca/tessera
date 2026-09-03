@@ -2,12 +2,19 @@
 
 ## Unreleased
 
+- Add a right-aligned file-size column to the pane File Browser, with compact
+  IEC units, blank folder sizes, and resilient unavailable metadata handling.
+- Show a centered, Alt+Tab-style window switcher while `Ctrl+[` or `Ctrl+]`
+  cycles through visible windows, including their order and the active title.
 - Run Ubuntu service installations as the non-root user that invoked `sudo`,
   with that user's home-directory access and existing `sudo` permissions,
   instead of creating an isolated `tessera` system account.
 - Let the Ubuntu installer choose between the safe `127.0.0.1` default and
   listening on every interface at `0.0.0.0`; non-interactive installs retain
   the localhost default.
+- Let the Ubuntu installer optionally download the matching pinned LAME MP3
+  encoder with `--with-lame` or an interactive prompt, while skipping it by
+  default and preserving any existing companion when omitted.
 - Fix `Ctrl+V` in a Terminal pane on macOS, where it reached neither the
   clipboard nor the application. It now arrives as `^V`, so a full-screen
   program that binds paste to `^V` receives it, matching Terminal.app. `Cmd+V`
@@ -71,6 +78,12 @@
 - Add an Update action to the Windows and macOS tray menu with checking,
   up-to-date, failure/retry, and restarting states wired to the verified
   self-update lifecycle.
+- Make Update Server service-aware on Ubuntu systemd installations. Tessera
+  opens a foreground Terminal for interactive `sudo`, runs its existing
+  transactional updater in a separate transient systemd unit, preserves the
+  installed unit and listen address, restarts `tessera.service`, and reloads
+  only after the expected version is healthy. The unprivileged HTTP process no
+  longer attempts to replace the root-owned service executable directly.
 - Keep the visually active window synchronized with real keyboard focus across
   every pane type, window navigation, drag/resize activation, and palette or
   window-list dismissal.

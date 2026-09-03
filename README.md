@@ -106,8 +106,24 @@ Run the installer from your normal account with `sudo`; running it directly
 from a root login is rejected because there is no invoking user to select. It
 prompts for a listen address: press Enter to use the safe `127.0.0.1` default,
 or enter `0.0.0.0` to listen on every network interface. A non-interactive run
-uses `127.0.0.1`. Running the installer again downloads the current latest
-release, asks for the listen address again, and restarts the service.
+uses `127.0.0.1`.
+
+Interactive installs also offer the matching optional LAME MP3 encoder and
+default to skipping it. The choice can be made explicitly, including for a
+non-interactive install:
+
+```bash
+sudo bash install-ubuntu.sh --with-lame
+sudo bash install-ubuntu.sh --without-lame
+```
+
+`--with-lame` installs `tessera-lame-linux-amd64` or
+`tessera-lame-linux-arm64` beside Tessera under `/usr/local/bin`. Skipping the
+option does not remove an existing encoder. LAME encodes captured audio to MP3;
+Terminal capture itself still requires the separately installed
+`tessera-audio-capture` helper. Running the installer again downloads the
+current latest release, asks for the interactive choices again unless flags
+are supplied, and restarts the service.
 
 With the default selection, Tessera listens only on `127.0.0.1:7331`. From the
 Ubuntu host, open <http://127.0.0.1:7331>. If Ubuntu is running in a VM and you
@@ -311,6 +327,8 @@ it automatically:
 
 | Platform | Tessera executable | Encoder companion |
 | --- | --- | --- |
+| Linux x64 | `tessera-linux-amd64` | `tessera-lame-linux-amd64` |
+| Linux ARM64 | `tessera-linux-arm64` | `tessera-lame-linux-arm64` |
 | Windows x64 | `tessera-windows-amd64.exe` | `tessera-lame-windows-amd64.exe` |
 | macOS Intel | `tessera-darwin-amd64` | `tessera-lame-darwin-amd64` |
 | macOS Apple silicon | `tessera-darwin-arm64` | `tessera-lame-darwin-arm64` |
@@ -527,6 +545,7 @@ Pushing a `v*` tag runs the GitHub Actions release workflow and publishes:
 - `tessera-darwin-amd64`
 - `tessera-darwin-arm64`
 - `tessera-lame-linux-amd64`
+- `tessera-lame-linux-arm64`
 - `tessera-lame-windows-amd64.exe`
 - `tessera-lame-darwin-amd64`
 - `tessera-lame-darwin-arm64`
@@ -539,12 +558,27 @@ run on native macOS runners with `CGO_ENABLED=1` for tray support.
 The in-app updater checks the latest GitHub Release, downloads the Tessera and
 LAME assets matching the current operating system and architecture, installs
 them as one rollback-capable transaction, and restarts Tessera without requiring
-a service manager or watchdog. After the old server releases its listener,
+manual file replacement. After the old server releases its listener,
 sessions, audio processes, and database, every desktop platform starts the
 replacement as an independent process. The old process remains alive until the
 replacement confirms that its server started; startup failures are returned to
 the old process and logged instead of treating process creation as a successful
-restart. A new Tessera binary installed by a legacy updater can fetch its
+restart.
+
+An Ubuntu installation created by `install-ubuntu.sh` follows a service-aware
+path. **Update Server** checks the release normally, then offers **Open Update
+Terminal**. Tessera opens a foreground Terminal and starts a root transient
+systemd unit; enter the account's `sudo` password there when prompted. The
+transient unit uses the same transactional updater, survives the shutdown of
+the original service cgroup, and asks systemd to restart and verify
+`tessera.service`. The existing unit file, service user, database path, command
+arguments, and listen address are not rewritten. The Terminal disconnects when
+the old service stops, and the page reloads after the expected new version
+answers its health check. If the privileged update fails, inspect
+`journalctl -u 'run-*.service'` and `journalctl -u tessera.service`; rerunning
+`install-ubuntu.sh` from an external shell remains the recovery path.
+
+A new Tessera binary installed by a legacy updater can fetch its
 exact-version LAME companion on the first Terminal capture attempt. LAME 3.100
 is distributed under the LGPL; the release includes its license and
 corresponding pinned source archive. Anonymous GitHub Releases API access is

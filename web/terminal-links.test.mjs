@@ -22,6 +22,21 @@ function terminalWithLines(lines) {
   };
 }
 
+function terminalWithCodepoints(codepoints) {
+  return {
+    buffer: {
+      active: {
+        length: 1,
+        getLine: (y) => y === 0 ? {
+          isWrapped: false,
+          length: codepoints.length,
+          getCell: (x) => ({ getCodepoint: () => codepoints[x] }),
+        } : undefined,
+      },
+    },
+  };
+}
+
 function linksFor(provider, row) {
   let result;
   provider.provideLinks(row, (links) => { result = links; });
@@ -88,4 +103,11 @@ test("drops sentence punctuation but keeps balanced URL parentheses", () => {
 
   assert.equal(links.length, 1);
   assert.equal(links[0].text, "https://example.com/a_(b)");
+});
+
+test("invalid renderer cell code points do not break link detection", () => {
+  const prefix = [..."https://example.com/"].map((character) => character.codePointAt(0));
+  const terminal = terminalWithCodepoints([...prefix, 1789390]);
+
+  assert.doesNotThrow(() => linksFor(new WrappedHTTPLinkProvider(terminal, () => {}), 0));
 });

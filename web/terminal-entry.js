@@ -6,6 +6,10 @@ import {
 } from "ghostty-web";
 
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
+import {
+  PrimaryDeviceAttributesQueryParser,
+  primaryDeviceAttributesResponse,
+} from "./terminal-device-attributes.mjs";
 
 const renderScheduler = new TerminalRenderScheduler();
 
@@ -13,6 +17,11 @@ const renderScheduler = new TerminalRenderScheduler();
 // Adapt that private loop here so the rest of Tessera can use explicit
 // visibility and activity state without depending on Ghostty internals.
 class Terminal extends GhosttyTerminal {
+  constructor(options) {
+    super(options);
+    this.primaryDeviceAttributes = new PrimaryDeviceAttributesQueryParser();
+  }
+
   startRenderLoop() {
     renderScheduler.register(this, () => this.renderScheduledFrame());
   }
@@ -37,11 +46,29 @@ class Terminal extends GhosttyTerminal {
   }
 
   write(data, callback) {
-    super.write(data);
+    const completionOffsets = this.primaryDeviceAttributes.write(data);
+    let start = 0;
+    for (const end of completionOffsets) {
+      // Stop at each complete query so Ghostty-generated replies to neighboring
+      // queries retain their wire order around Tessera's DA1 reply.
+      super.write(data.slice(start, end));
+      // `input(..., true)` emits onData without writing the response to the
+      // screen. Tessera's existing onData bridge sends it to the current PTY.
+      super.input(primaryDeviceAttributesResponse, true);
+      start = end;
+    }
+    if (start < data.length) {
+      super.write(data.slice(start));
+    }
     renderScheduler.request(this);
     if (callback) {
       globalThis.requestAnimationFrame(callback);
     }
+  }
+
+  reset() {
+    this.primaryDeviceAttributes.reset();
+    super.reset();
   }
 
   requestRender() {

@@ -1538,7 +1538,7 @@ input {
 .pane-file-browser-columns,
 .pane-file-browser-entry {
   display: grid;
-  grid-template-columns: minmax(100px, 1fr) 78px;
+  grid-template-columns: minmax(80px, 1fr) 62px 88px;
   min-width: 0;
 }
 
@@ -1593,7 +1593,8 @@ input {
 }
 
 .pane-file-browser-name,
-.pane-file-browser-type {
+.pane-file-browser-type,
+.pane-file-browser-size {
   overflow: hidden;
   padding: 2px 7px;
   text-overflow: ellipsis;
@@ -1603,6 +1604,13 @@ input {
 .pane-file-browser-type {
   border-left: 1px solid var(--divider);
   color: var(--text-faint);
+}
+
+.pane-file-browser-size {
+  border-left: 1px solid var(--divider);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .pane-file-browser-message {
@@ -3274,4 +3282,88 @@ input {
   padding: 10px;
   color: var(--text-faint);
   font-size: 12px;
+}
+
+/* Focus-neutral visual feedback for Ctrl+[ / Ctrl+] window cycling. */
+.window-switcher {
+  position: fixed;
+  inset: 0;
+  z-index: 100004;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--overlay-backdrop);
+  pointer-events: none;
+}
+
+.window-switcher[hidden] {
+  display: none;
+}
+
+.window-switcher-panel {
+  width: min(520px, 100%);
+  border: 2px solid var(--border-panel);
+  background: var(--chrome-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-panel-lo),
+    5px 5px 0 var(--panel-shadow);
+  font-family: var(--tessera-font);
+}
+
+.window-switcher-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 34px;
+  border-bottom: 1px solid var(--divider);
+  padding: 7px 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.window-switcher-position {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.window-switcher-list {
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.window-switcher-item {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  min-height: 32px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.window-switcher-item.is-selected {
+  background: var(--accent-strong-bg);
+  color: var(--accent-strong-text);
+}
+
+.window-switcher-order {
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.window-switcher-item.is-selected .window-switcher-order {
+  color: var(--accent-strong-text);
+  opacity: 0.75;
+}
+
+.window-switcher-name {
+  overflow: hidden;
+  padding-right: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

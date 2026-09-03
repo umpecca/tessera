@@ -22,7 +22,7 @@ import {
 } from "./vendor/codemirror.js?v=syntax-highlighting-1";
 import { textEditorLanguageID } from "./text-editor-language.mjs";
 import { nextServerConnectionState } from "./server-connection.mjs";
-import { isExpectedServerVersion } from "./server-update.mjs";
+import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
 import {
   terminalCloseOutcome,
   terminalConnectingStatus,
@@ -68,9 +68,11 @@ import {
   browserLocalPortExamples,
   normalizeBrowserAddress,
 } from "./browser-pane.mjs";
+import { formatFileSize } from "./file-size.mjs";
 import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
 import { activePaneOnLoad, focusPane, paneNeedsRaise } from "./pane-activation.mjs";
 import { paneContentFields } from "./pane-content-sync.mjs";
+import { adjacentWindowPane, windowSwitcherEntries } from "./window-switcher.mjs";
 import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
 import { TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
 import {
@@ -1042,6 +1044,26 @@ windowList.addEventListener("pointerdown", (event) => {
 });
 windowListPanel.addEventListener("keydown", handleWindowListKeyboard);
 
+const windowSwitcher = document.createElement("div");
+windowSwitcher.className = "window-switcher";
+windowSwitcher.hidden = true;
+const windowSwitcherPanel = document.createElement("section");
+windowSwitcherPanel.className = "window-switcher-panel";
+windowSwitcherPanel.setAttribute("role", "status");
+windowSwitcherPanel.setAttribute("aria-live", "polite");
+const windowSwitcherHeader = document.createElement("div");
+windowSwitcherHeader.className = "window-switcher-header";
+const windowSwitcherTitle = document.createElement("span");
+windowSwitcherTitle.textContent = "Windows";
+const windowSwitcherPosition = document.createElement("span");
+windowSwitcherPosition.className = "window-switcher-position";
+windowSwitcherHeader.append(windowSwitcherTitle, windowSwitcherPosition);
+const windowSwitcherList = document.createElement("div");
+windowSwitcherList.className = "window-switcher-list";
+windowSwitcherPanel.append(windowSwitcherHeader, windowSwitcherList);
+windowSwitcher.appendChild(windowSwitcherPanel);
+document.body.appendChild(windowSwitcher);
+
 const paletteLauncher = document.createElement("button");
 paletteLauncher.type = "button";
 paletteLauncher.className = "palette-fab";
@@ -1064,6 +1086,7 @@ board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
 document.addEventListener("keydown", hideMenusOnEscape);
 document.addEventListener("keydown", handlePaneKeyboardShortcuts, { capture: true });
+document.addEventListener("keyup", handleWindowSwitcherKeyup, { capture: true });
 document.addEventListener("visibilitychange", handleDocumentVisibilityChange);
 // pagehide is the one teardown event that also fires when a tab is discarded
 // or frozen, where unload does not.
@@ -1071,6 +1094,7 @@ window.addEventListener("pagehide", saveWorkspaceOnExit);
 window.addEventListener("pointermove", continueInteraction);
 window.addEventListener("pointerup", finishInteraction);
 window.addEventListener("pointercancel", finishInteraction);
+window.addEventListener("blur", hideWindowSwitcher);
 window.addEventListener("resize", hideAllMenus);
 window.addEventListener("popstate", () => void handleSessionHistoryNavigation());
 window.addEventListener("message", handleBrowserPaneMessage);
@@ -1271,6 +1295,7 @@ function createRectangle(x, y, width, height, options = {}) {
     terminalStatusBadge: null,
     terminalStatus: null,
     terminalStatusTimer: null,
+    terminalStartupCommand: options.terminalStartupCommand || "",
     body: null,
     titleInput: null,
     editorModeButton: null,
@@ -2460,8 +2485,10 @@ function renderPaneFileBrowser(rect, data) {
   nameHeader.textContent = "Name";
   const typeHeader = document.createElement("span");
   typeHeader.textContent = "Type";
-  header.appendChild(nameHeader);
-  header.appendChild(typeHeader);
+  const sizeHeader = document.createElement("span");
+  sizeHeader.className = "pane-file-browser-size";
+  sizeHeader.textContent = "Size";
+  header.append(nameHeader, typeHeader, sizeHeader);
   view.content.appendChild(header);
 
   const list = document.createElement("div");
@@ -2488,8 +2515,15 @@ function renderPaneFileBrowser(rect, data) {
     const type = document.createElement("span");
     type.className = "pane-file-browser-type";
     type.textContent = entry.kind === "directory" ? "Folder" : canOpenInEditor ? "Text" : "File";
-    row.appendChild(name);
-    row.appendChild(type);
+    const size = document.createElement("span");
+    size.className = "pane-file-browser-size";
+    size.textContent = formatFileSize(entry.size, entry.kind);
+    if (entry.kind === "file") {
+      size.title = typeof entry.size === "number"
+        ? `${entry.size.toLocaleString()} bytes`
+        : "Size unavailable";
+    }
+    row.append(name, type, size);
 
     row.addEventListener("click", () => {
       for (const selected of list.querySelectorAll(".is-selected")) {
@@ -3288,10 +3322,8 @@ function openRenameWindowModal(rect) {
   panel.append(titleBar, content);
   renameWindowModal.appendChild(panel);
   renameWindowModal.hidden = false;
-  window.requestAnimationFrame(() => {
-    input.focus();
-    input.select();
-  });
+  input.focus();
+  input.select();
 }
 
 function hideRenameWindowModal() {
@@ -4427,7 +4459,7 @@ function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
 
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
-    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-rendering-2").then(async (module) => {
+    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-rendering-4").then(async (module) => {
       await module.init();
       installTerminalBlockRenderer(module.CanvasRenderer, module.CellFlags);
       module.setTerminalDocumentVisible?.(!document.hidden);
@@ -4575,6 +4607,11 @@ function connectTerminalSocket(rect) {
     // otherwise whichever terminal connects last steals it.
     if (activeRect === rect) {
       term.focus();
+    }
+    if (rect.terminalStartupCommand) {
+      const command = rect.terminalStartupCommand;
+      rect.terminalStartupCommand = "";
+      sendTerminalInput(socket, `${command}\r`);
     }
   });
   socket.addEventListener("message", (event) => {
@@ -6688,6 +6725,7 @@ let paletteSelection = 0;
 let paletteCodeInvokeTimer = null;
 let windowListEntries = [];
 let windowListSelection = 0;
+let windowSwitcherHideTimer = null;
 
 function toggleCommandPalette() {
   if (commandPalette.hidden) {
@@ -6749,7 +6787,7 @@ function restorePaneFocusAfterOverlayDismiss(overlay) {
     // One overlay can hand off to another in the same tick (running Window
     // List from the command palette). The overlay that is still open owns
     // keyboard focus, so returning it to the pane would swallow its arrow keys.
-    if (!commandPalette.hidden || !windowList.hidden) {
+    if (!commandPalette.hidden || !windowList.hidden || !renameWindowModal.hidden) {
       return;
     }
     const focused = document.activeElement;
@@ -6757,6 +6795,51 @@ function restorePaneFocusAfterOverlayDismiss(overlay) {
       focusPane(getActivePane());
     }
   });
+}
+
+function showWindowSwitcher() {
+  const entries = windowSwitcherEntries(rectangles, activePaneID);
+  if (entries.length === 0) {
+    hideWindowSwitcher();
+    return;
+  }
+
+  windowSwitcherList.replaceChildren();
+  let activeRow = null;
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "window-switcher-item";
+    if (entry.active) {
+      row.classList.add("is-selected");
+      activeRow = row;
+      windowSwitcherPosition.textContent = `${entry.position} of ${entry.total}`;
+    }
+    const order = document.createElement("span");
+    order.className = "window-switcher-order";
+    order.textContent = String(entry.position);
+    const name = document.createElement("span");
+    name.className = "window-switcher-name";
+    name.textContent = entry.name;
+    row.append(order, name);
+    windowSwitcherList.appendChild(row);
+  }
+
+  windowSwitcher.hidden = false;
+  window.clearTimeout(windowSwitcherHideTimer);
+  windowSwitcherHideTimer = window.setTimeout(hideWindowSwitcher, 1200);
+  activeRow?.scrollIntoView({ block: "nearest" });
+}
+
+function hideWindowSwitcher() {
+  window.clearTimeout(windowSwitcherHideTimer);
+  windowSwitcherHideTimer = null;
+  windowSwitcher.hidden = true;
+}
+
+function handleWindowSwitcherKeyup(event) {
+  if (event.key === "Control" || event.key === "Meta") {
+    hideWindowSwitcher();
+  }
 }
 
 function renderWindowList() {
@@ -7086,8 +7169,111 @@ function hideServerUpdateModal() {
   serverUpdateModal.replaceChildren();
 }
 
-// Checks GitHub for a newer release via the server, applies it, and waits for
-// the restarted server to come back before reloading the page.
+function showSystemdUpdatePrompt(check) {
+  serverUpdateModal.replaceChildren();
+  serverUpdateModal.dataset.closable = "true";
+
+  const panel = document.createElement("section");
+  panel.className = "settings-panel server-update-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "server-update-title");
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "server-update-title";
+  title.textContent = "Update Server";
+  titleBar.appendChild(title);
+
+  const content = document.createElement("div");
+  content.className = "settings-content server-update-content";
+  const status = document.createElement("p");
+  status.className = "server-update-status";
+  status.textContent = `Tessera ${check.latestVersion} is available. This systemd installation needs sudo authorization in a Terminal.`;
+
+  const actions = document.createElement("div");
+  actions.className = "rename-window-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "settings-background-button";
+  cancelButton.textContent = "Cancel";
+  cancelButton.addEventListener("click", hideServerUpdateModal);
+  const terminalButton = document.createElement("button");
+  terminalButton.type = "button";
+  terminalButton.textContent = "Open Update Terminal";
+  terminalButton.addEventListener("click", () => {
+    const point = paneSpawnPoint();
+    createTerminalPane(point.x, point.y, {
+      title: "Update Tessera",
+      terminalStartupCommand: check.updateCommand,
+    });
+    hideServerUpdateModal();
+    hideServerConnectionModal();
+    serverUpdateRestarting = true;
+    void waitForUpdatedServer(check, {
+      timeoutMs: 5 * 60 * 1000,
+      timeoutMessage: "The service update did not complete within five minutes. Inspect the Update Tessera terminal or the systemd journal.",
+    });
+  });
+  actions.append(cancelButton, terminalButton);
+  content.append(status, actions);
+  panel.append(titleBar, content);
+  serverUpdateModal.appendChild(panel);
+  serverUpdateModal.hidden = false;
+  window.requestAnimationFrame(() => terminalButton.focus());
+}
+
+async function waitForUpdatedServer(check, { timeoutMs = 60000, timeoutMessage = "The server did not come back within a minute. Use Reconnect once it is running." } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastHealth = null;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const cacheBuster = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const response = await fetch(`/api/health?update=${encodeURIComponent(cacheBuster)}`, {
+        signal: AbortSignal.timeout(2000),
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        continue;
+      }
+      const health = await response.json();
+      lastHealth = health;
+      // The old process can answer while graceful shutdown is still in
+      // progress. Do not reload until the replacement identifies itself.
+      if (!isExpectedServerVersion(health, check.latestVersion)) {
+        continue;
+      }
+      serverUpdateRestarting = false;
+      serverConnectionState = { failures: 0, state: "" };
+      showUpdateStatus(`Updated to ${health.version || check.latestVersion} — reloading...`, { busy: true });
+      window.setTimeout(() => window.location.reload(), 800);
+      // If navigation is blocked or stalls, restore an actionable client UI
+      // instead of leaving the locked update dialog on screen indefinitely.
+      window.setTimeout(() => {
+        hideServerUpdateModal();
+        showServerConnectionModal("restored");
+      }, 5000);
+      return;
+    } catch {
+      // Server still restarting; keep polling.
+    }
+  }
+  serverUpdateRestarting = false;
+  if (lastHealth && !isExpectedServerVersion(lastHealth, check.currentVersion)) {
+    showUpdateStatus(
+      `The server restarted as ${lastHealth.version || "an unknown version"}; expected ${check.latestVersion}.`,
+      { closable: true },
+    );
+  } else {
+    showUpdateStatus(timeoutMessage, { closable: true });
+  }
+  await checkServerConnection({ force: true });
+}
+
+// Checks GitHub for a newer release via the server, chooses the direct or
+// systemd-owned install path, and waits for the expected version before reload.
 async function runServerUpdate() {
   showUpdateStatus("Checking for updates...", { busy: true });
   let check;
@@ -7105,6 +7291,11 @@ async function runServerUpdate() {
   }
   if (!check.updateAvailable) {
     showUpdateStatus(`Tessera is up to date (${check.currentVersion}).`, { closable: true });
+    return;
+  }
+
+  if (isSystemdUpdateCheck(check)) {
+    showSystemdUpdatePrompt(check);
     return;
   }
 
@@ -7134,50 +7325,7 @@ async function runServerUpdate() {
   showUpdateStatus(updatePostError
     ? "The update connection closed. Waiting for the updated server..."
     : "Restarting server...", { busy: true });
-  const deadline = Date.now() + 60000;
-  let lastHealth = null;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    try {
-      const cacheBuster = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const response = await fetch(`/api/health?update=${encodeURIComponent(cacheBuster)}`, {
-        signal: AbortSignal.timeout(2000),
-        cache: "no-store",
-      });
-      if (response.ok) {
-        const health = await response.json();
-        lastHealth = health;
-        // The old process can answer while graceful shutdown is still in
-        // progress. Do not reload until the replacement identifies itself.
-        if (!isExpectedServerVersion(health, check.latestVersion)) {
-          continue;
-        }
-        serverUpdateRestarting = false;
-        serverConnectionState = { failures: 0, state: "" };
-        showUpdateStatus(`Updated to ${health.version || check.latestVersion} — reloading...`, { busy: true });
-        window.setTimeout(() => window.location.reload(), 800);
-        // If navigation is blocked or stalls, restore an actionable client UI
-        // instead of leaving the locked update dialog on screen indefinitely.
-        window.setTimeout(() => {
-          hideServerUpdateModal();
-          showServerConnectionModal("restored");
-        }, 5000);
-        return;
-      }
-    } catch {
-      // Server still restarting; keep polling.
-    }
-  }
-  serverUpdateRestarting = false;
-  if (lastHealth) {
-    showUpdateStatus(
-      `The server restarted as ${lastHealth.version || "an unknown version"}; expected ${check.latestVersion}.`,
-      { closable: true },
-    );
-    return;
-  }
-  showUpdateStatus("The server did not come back within a minute. Use Reconnect once it is running.", { closable: true });
-  await checkServerConnection({ force: true });
+  await waitForUpdatedServer(check);
 }
 
 // Every action the workspace menu offers, flattened into searchable commands,
@@ -7543,15 +7691,18 @@ function workspaceMenuLabel(rect) {
   return `${name}${kindSuffix}${runningSuffix}`;
 }
 
-function createTerminalPane(x, y) {
+function createTerminalPane(x, y, options = {}) {
   const rect = createRectangle(x, Math.max(y, tabHeight), 640, 360, {
     kind: "terminal",
     cwd: activeRect?.cwd || "",
+    title: options.title,
+    terminalStartupCommand: options.terminalStartupCommand,
   });
   clampIntoBoard(rect);
   setRectangle(rect, rect);
   setActivePane(rect, { raise: true, focusEditor: true });
   scheduleWorkspaceSave();
+  return rect;
 }
 
 function createWorksheetPane(x, y) {
@@ -8792,10 +8943,10 @@ function paneShortcutAction(keys) {
     return { run: destroyActivePane };
   }
   if (primary && (keys.key === "]" || keys.code === "BracketRight")) {
-    return { run: () => focusAdjacentPane(1) };
+    return { run: () => focusAdjacentPane(1, { showSwitcher: true }) };
   }
   if (primary && (keys.key === "[" || keys.code === "BracketLeft")) {
-    return { run: () => focusAdjacentPane(-1) };
+    return { run: () => focusAdjacentPane(-1, { showSwitcher: true }) };
   }
   if (alt && keys.key === "F10") {
     return { run: () => toggleFullRestore(getActivePane()), propagate: true };
@@ -8809,16 +8960,15 @@ function paneShortcutAction(keys) {
   return null;
 }
 
-function focusAdjacentPane(direction) {
-  const visiblePanes = rectangles.filter((rect) => rect.kind !== "pending" && !rect.minimized);
-  if (visiblePanes.length === 0) {
+function focusAdjacentPane(direction, options = {}) {
+  const next = adjacentWindowPane(rectangles, getActivePane(), direction);
+  if (!next) {
     return;
   }
-
-  const current = getActivePane();
-  const currentIndex = current ? visiblePanes.indexOf(current) : -1;
-  const nextIndex = (currentIndex + direction + visiblePanes.length) % visiblePanes.length;
-  setActivePane(visiblePanes[nextIndex], { raise: true, focusEditor: true });
+  setActivePane(next, { raise: true, focusEditor: true });
+  if (options.showSwitcher) {
+    showWindowSwitcher();
+  }
 }
 
 function focusTopVisiblePane() {

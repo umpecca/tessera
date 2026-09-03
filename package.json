@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build:web": "esbuild web/codemirror-entry.js --bundle --format=esm --minify --outfile=web/vendor/codemirror.js && esbuild web/terminal-entry.js --bundle --format=esm --minify --outfile=web/vendor/terminal.js"
+    "build:web": "node scripts/build-web.mjs"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",

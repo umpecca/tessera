@@ -23,6 +23,10 @@ func (a *API) selfUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, result)
 	case http.MethodPost:
+		if a.Updater.ServiceManaged() {
+			writeError(w, http.StatusConflict, "systemd-managed installation requires the interactive service update")
+			return
+		}
 		result, err := a.Updater.Apply(r.Context())
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())

@@ -35,6 +35,10 @@ type Updater struct {
 	// exePath is resolved at startup: on Windows the swap renames the running
 	// executable, after which os.Executable would report the ".old" path.
 	exePath string
+	// serviceName is non-empty when systemd owns this process's lifecycle. In
+	// that mode the browser must request an interactive privileged helper rather
+	// than replacing a root-owned executable from the service process.
+	serviceName string
 
 	restart       chan struct{}
 	restartOnce   sync.Once
@@ -55,10 +59,11 @@ func New(repo string) (*Updater, error) {
 		apiBase = defaultAPIBase
 	}
 	return &Updater{
-		Repo:    repo,
-		APIBase: apiBase,
-		exePath: exePath,
-		restart: make(chan struct{}),
+		Repo:        repo,
+		APIBase:     apiBase,
+		exePath:     exePath,
+		serviceName: DetectSystemdService(),
+		restart:     make(chan struct{}),
 	}, nil
 }
 
@@ -73,6 +78,8 @@ type CheckResult struct {
 	CurrentVersion  string `json:"currentVersion"`
 	LatestVersion   string `json:"latestVersion"`
 	UpdateAvailable bool   `json:"updateAvailable"`
+	UpdateMode      string `json:"updateMode,omitempty"`
+	UpdateCommand   string `json:"updateCommand,omitempty"`
 
 	assetURL  string
 	assetName string
@@ -81,6 +88,18 @@ type CheckResult struct {
 	companionURL  string
 	companionName string
 	companionSize int64
+}
+
+func (u *Updater) ServiceManaged() bool {
+	return u != nil && u.serviceName != ""
+}
+
+func (u *Updater) addUpdateMode(result *CheckResult) *CheckResult {
+	if result != nil && u.ServiceManaged() {
+		result.UpdateMode = "systemd"
+		result.UpdateCommand = systemdUpdateCommand(u.exePath)
+	}
+	return result
 }
 
 type releaseAsset struct {
@@ -130,7 +149,7 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 		UpdateAvailable: normalizeVersion(rel.TagName) != normalizeVersion(version.Version),
 	}
 	if !result.UpdateAvailable {
-		return result, nil
+		return u.addUpdateMode(result), nil
 	}
 
 	wanted := assetName()
@@ -153,13 +172,16 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 	if needsCompanion() && result.companionURL == "" {
 		return nil, fmt.Errorf("release %s has no companion asset named %q", rel.TagName, companionWanted)
 	}
-	return result, nil
+	return u.addUpdateMode(result), nil
 }
 
 // Apply re-checks the latest release, downloads the matching asset, and swaps
 // it over the running executable. It does not restart; the caller signals the
 // restart after responding to the client.
 func (u *Updater) Apply(ctx context.Context) (*CheckResult, error) {
+	if u.ServiceManaged() {
+		return nil, errors.New("systemd-managed installation requires the interactive service update")
+	}
 	if !u.mu.TryLock() {
 		return nil, errors.New("update already in progress")
 	}

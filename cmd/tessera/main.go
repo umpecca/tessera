@@ -36,7 +36,16 @@ func main() {
 	auditLog := flag.Bool("audit-log", false, "persist redacted security audit events")
 	auditRetention := flag.Int("audit-retention-days", 30, "audit-event retention in days when -audit-log is enabled; negative disables")
 	maxUploadSize := flag.Int64("max-upload-size", server.DefaultMaxUploadBytes, "maximum bytes per File Browser upload")
+	systemdUpdate := flag.Bool("systemd-update", false, "apply an update and restart tessera.service (root transient-unit helper)")
 	flag.Parse()
+
+	if *systemdUpdate {
+		if err := update.RunSystemdServiceUpdate(context.Background(), updateRepo); err != nil {
+			log.Fatalf("systemd update: %v", err)
+		}
+		log.Printf("systemd update complete")
+		return
+	}
 
 	users := parseUsers(*usersFlag)
 	useTray := *tray && desktop.TraySupported()

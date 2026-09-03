@@ -8,3 +8,11 @@ export function isExpectedServerVersion(health, expectedVersion) {
   return Boolean(actual && expected && actual === expected);
 }
 
+export function isSystemdUpdateCheck(check) {
+  return Boolean(
+    check?.updateAvailable
+    && check.updateMode === "systemd"
+    && typeof check.updateCommand === "string"
+    && check.updateCommand.trim()
+  );
+}
