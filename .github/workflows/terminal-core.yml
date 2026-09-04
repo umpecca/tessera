@@ -1,9 +1,8 @@
 name: Terminal core
 on:
   push:
-    paths: ['internal/terminalcore/**', 'internal/terminal/**', 'internal/httpapi/terminal*', 'internal/winconpty/**', 'web/terminal*', 'web/app.js', 'web/vendor/terminal.js', 'scripts/*terminal*', 'scripts/build-web.mjs', 'scripts/*conpty*', 'package*.json', 'go.*', '.github/workflows/terminal-core.yml']
-  pull_request:
-    paths: ['internal/terminalcore/**', 'internal/terminal/**', 'internal/httpapi/terminal*', 'internal/winconpty/**', 'web/terminal*', 'web/app.js', 'web/vendor/terminal.js', 'scripts/*terminal*', 'scripts/build-web.mjs', 'scripts/*conpty*', 'package*.json', 'go.*', '.github/workflows/terminal-core.yml']
+    tags:
+      - 'v*'
 permissions:
   contents: read
 jobs:
