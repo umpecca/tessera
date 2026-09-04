@@ -3284,6 +3284,26 @@ input {
   font-size: 12px;
 }
 
+.terminal-image-setting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 8px;
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 13px;
+}
+
+.terminal-image-setting select {
+  margin-left: auto;
+  font: inherit;
+  color: var(--text);
+  background: var(--chrome-bg);
+}
+
+.terminal-image-setting input { margin: 0; }
+
 /* Focus-neutral visual feedback for Ctrl+[ / Ctrl+] window cycling. */
 .window-switcher {
   position: fixed;

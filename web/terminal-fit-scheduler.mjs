@@ -74,15 +74,21 @@ export class TerminalFitScheduler {
     if (!term || terminalState.socket?.readyState !== socketOpen) {
       return;
     }
-    if (term.cols === terminalState.sentCols && term.rows === terminalState.sentRows) {
+    const cols = term.desiredCols ?? term.cols;
+    const rows = term.desiredRows ?? term.rows;
+    const metrics = term.renderer?.getMetrics?.();
+    const cellWidth = Math.max(1, Math.round(metrics?.width || 8));
+    const cellHeight = Math.max(1, Math.round(metrics?.height || 16));
+    if (cols === terminalState.sentCols && rows === terminalState.sentRows && cellWidth === terminalState.sentCellWidth && cellHeight === terminalState.sentCellHeight) {
       return;
     }
-    terminalState.sentCols = term.cols;
-    terminalState.sentRows = term.rows;
+    terminalState.sentCols = cols;
+    terminalState.sentRows = rows;
+    terminalState.sentCellWidth = cellWidth;
+    terminalState.sentCellHeight = cellHeight;
     terminalState.socket.send(JSON.stringify({
       type: "resize",
-      cols: term.cols,
-      rows: term.rows,
+      cols, rows, cellWidth, cellHeight,
     }));
   }
 }

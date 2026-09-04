@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"tessera/internal/terminal"
+	"tessera/internal/terminalcore"
 )
 
 // Application close codes for a terminal websocket. The browser renders
@@ -33,25 +34,42 @@ const (
 const maxTerminalCloseReason = 123
 
 type terminalClientMessage struct {
-	Type string `json:"type"`
-	Cols int    `json:"cols"`
-	Rows int    `json:"rows"`
-	Data string `json:"data"`
+	Type             string `json:"type"`
+	Cols             int    `json:"cols"`
+	Rows             int    `json:"rows"`
+	Data             string `json:"data"`
+	CellWidth        int    `json:"cellWidth"`
+	CellHeight       int    `json:"cellHeight"`
+	MemoryMiB        *int   `json:"memoryMiB"`
+	ShowPlaceholders *bool  `json:"showPlaceholders"`
 }
 
 // terminalAttachMessage opens every terminal socket. It is the only text
 // message the server sends; everything after it is stream bytes.
 type terminalAttachMessage struct {
-	Type   string `json:"type"`
-	Epoch  string `json:"epoch"`
-	Offset int64  `json:"offset"`
-	Reset  bool   `json:"reset"`
+	Type          string `json:"type"`
+	Epoch         string `json:"epoch"`
+	Offset        int64  `json:"offset"`
+	Reset         bool   `json:"reset"`
+	Protocol      int    `json:"protocol"`
+	Core          string `json:"core"`
+	Sequence      uint64 `json:"sequence"`
+	SnapshotBytes int    `json:"snapshotBytes"`
+	Cols          int    `json:"cols"`
+	Rows          int    `json:"rows"`
+	CellWidth     int    `json:"cellWidth"`
+	CellHeight    int    `json:"cellHeight"`
 }
 
 // terminalResumeCursor reads what the client says it already holds. A client
 // that says nothing — an old build, or a pane opening for the first time —
 // asks for the whole scrollback, which is what it used to get every time.
 func terminalResumeCursor(r *http.Request) terminal.Cursor {
+	if r.URL.Query().Get("protocol") == "2" {
+		sequence, _ := strconv.ParseUint(r.URL.Query().Get("resumeSequence"), 10, 64)
+		offset, _ := strconv.ParseInt(r.URL.Query().Get("resumeOffset"), 10, 64)
+		return terminal.Cursor{Protocol: terminal.StateProtocol, Core: r.URL.Query().Get("core"), Epoch: r.URL.Query().Get("resumeEpoch"), Sequence: sequence, Offset: offset}
+	}
 	offset, err := strconv.ParseInt(r.URL.Query().Get("resumeOffset"), 10, 64)
 	if err != nil || offset < 0 {
 		return terminal.Cursor{}
@@ -102,6 +120,10 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	if r.URL.Query().Get("protocol") != "2" || r.URL.Query().Get("core") != terminalcore.Compatibility {
+		_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(4503, "terminal core changed; reload Tessera"))
+		return
+	}
 
 	ownerID, err := a.Store.SessionOwner(r.Context(), workspaceID)
 	if err != nil {
@@ -121,6 +143,14 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer attachment.Unsubscribe()
+	if err := session.Configure(settings.TerminalColorMode == "light"); err != nil {
+		closeTerminalWithFailure(conn, err)
+		return
+	}
+	if attachment.Err != nil {
+		closeTerminalWithFailure(conn, attachment.Err)
+		return
+	}
 
 	var writeMu sync.Mutex
 	done := make(chan struct{})
@@ -132,14 +162,27 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		// before the first of them.
 		writeMu.Lock()
 		err := conn.WriteJSON(terminalAttachMessage{
-			Type:   "attach",
-			Epoch:  attachment.Epoch,
-			Offset: attachment.Offset,
-			Reset:  attachment.Reset,
+			Type:     "attach",
+			Epoch:    attachment.Epoch,
+			Offset:   attachment.Offset,
+			Reset:    attachment.Reset,
+			Protocol: attachment.Protocol, Core: attachment.Core, Sequence: attachment.Sequence,
+			SnapshotBytes: len(attachment.Snapshot), Cols: attachment.Cols, Rows: attachment.Rows,
+			CellWidth: attachment.CellWidth, CellHeight: attachment.CellHeight,
 		})
 		writeMu.Unlock()
 		if err != nil {
 			return
+		}
+		for offset := 0; offset < len(attachment.Snapshot); offset += 64 * 1024 {
+			end := min(offset+64*1024, len(attachment.Snapshot))
+			frame := terminal.StateFrame(terminal.StateSnapshot, attachment.Sequence, attachment.Offset, attachment.Snapshot[offset:end])
+			writeMu.Lock()
+			err := conn.WriteMessage(websocket.BinaryMessage, frame)
+			writeMu.Unlock()
+			if err != nil {
+				return
+			}
 		}
 		if len(attachment.Replay) > 0 {
 			writeMu.Lock()
@@ -188,7 +231,20 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 			if message.Type == "mouse" {
 				_, _ = session.WriteMouse([]byte(message.Data))
 			} else if message.Type == "resize" {
-				_ = session.Resize(message.Cols, message.Rows)
+				_ = session.ResizeWithMetrics(message.Cols, message.Rows, message.CellWidth, message.CellHeight)
+			} else if message.Type == "image-settings" || message.Type == "clear-images" {
+				var imageErr error
+				if message.Type == "clear-images" {
+					imageErr = session.ClearImages()
+				} else {
+					imageErr = session.ConfigureImages(message.MemoryMiB, message.ShowPlaceholders)
+				}
+				if imageErr != nil {
+					writeMu.Lock()
+					closeTerminalWithFailure(conn, imageErr)
+					writeMu.Unlock()
+					return
+				}
 			} else if message.Type == "close" {
 				a.Terminals.Terminate(workspaceID, paneID)
 				return

@@ -32,6 +32,12 @@ export class TerminalWriteScheduler {
     this.scheduleDrain();
   }
 
+  enqueueTask(task) {
+    if (this.disposed) return;
+    this.chunks.push(task);
+    this.scheduleDrain();
+  }
+
   scheduleDrain() {
     if (this.disposed || this.scheduleID !== null || this.head >= this.chunks.length) {
       return;
@@ -50,8 +56,12 @@ export class TerminalWriteScheduler {
     while (this.head < this.chunks.length) {
       const chunk = this.chunks[this.head];
       this.head += 1;
-      this.write(chunk);
-      writtenBytes += chunk.length;
+      if (typeof chunk === "function") {
+        chunk();
+      } else {
+        this.write(chunk);
+        writtenBytes += chunk.length;
+      }
       if (
         writtenBytes >= this.maximumBytesPerTurn
         || this.now() - startedAt >= this.timeBudgetMilliseconds
@@ -85,4 +95,3 @@ export class TerminalWriteScheduler {
     this.write = null;
   }
 }
-

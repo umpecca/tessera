@@ -76,7 +76,7 @@ function fakeTerminal(cols = 80, rows = 24) {
     term,
     socket: { readyState: 1, send: (data) => sent.push(JSON.parse(data)) },
     sentCols: 0,
-    sentRows: 0,
+    sentRows: 0, sentCellWidth: 8, sentCellHeight: 16,
     sent,
   };
   state.fit = {
@@ -126,7 +126,7 @@ test("a grid change is sent once after the layout settles", () => {
   const terminal = fakeTerminal();
   terminal.sentCols = 80;
   terminal.sentRows = 24;
-  terminal.nextSize = { cols: 100, rows: 30 };
+  terminal.nextSize = { cols: 100, rows: 30, cellWidth: 8, cellHeight: 16 };
 
   scheduler.request(terminal);
   frames.run();
@@ -136,7 +136,7 @@ test("a grid change is sent once after the layout settles", () => {
   assert.equal(timers.pending, 1);
   assert.deepEqual(terminal.sent, []);
   timers.run();
-  assert.deepEqual(terminal.sent, [{ type: "resize", cols: 100, rows: 30 }]);
+  assert.deepEqual(terminal.sent, [{ type: "resize", cols: 100, rows: 30, cellWidth: 8, cellHeight: 16 }]);
 });
 
 test("a resize burst sends only its final grid size", () => {
@@ -148,7 +148,7 @@ test("a resize burst sends only its final grid size", () => {
   for (const nextSize of [
     { cols: 90, rows: 25 },
     { cols: 110, rows: 31 },
-    { cols: 132, rows: 40 },
+    { cols: 132, rows: 40, cellWidth: 8, cellHeight: 16 },
   ]) {
     terminal.nextSize = nextSize;
     scheduler.request(terminal);
@@ -158,7 +158,7 @@ test("a resize burst sends only its final grid size", () => {
 
   assert.deepEqual(terminal.sent, []);
   timers.run();
-  assert.deepEqual(terminal.sent, [{ type: "resize", cols: 132, rows: 40 }]);
+  assert.deepEqual(terminal.sent, [{ type: "resize", cols: 132, rows: 40, cellWidth: 8, cellHeight: 16 }]);
   assert.deepEqual(timers.delays, [120, 120, 120]);
 });
 
@@ -175,7 +175,7 @@ test("a reconnected socket is told the size again", () => {
   scheduler.requestGridSize(terminal);
   scheduler.sendGridSize(terminal);
   assert.equal(timers.pending, 0);
-  assert.deepEqual(sent, [{ type: "resize", cols: 80, rows: 24 }]);
+  assert.deepEqual(sent, [{ type: "resize", cols: 80, rows: 24, cellWidth: 8, cellHeight: 16 }]);
 });
 
 test("a closed socket is never written to", () => {
@@ -212,7 +212,7 @@ test("a terminal disposed after its frame was queued is not fitted", () => {
 test("disposing after a fit cancels its pending grid size", () => {
   const { frames, scheduler, timers } = schedulerHarness();
   const terminal = fakeTerminal();
-  terminal.nextSize = { cols: 100, rows: 30 };
+  terminal.nextSize = { cols: 100, rows: 30, cellWidth: 8, cellHeight: 16 };
 
   scheduler.request(terminal);
   frames.run();

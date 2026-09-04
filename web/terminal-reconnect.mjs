@@ -7,6 +7,7 @@ export const terminalReconnectMaximumDelay = 10000;
 export const terminalFailureCloseCode = 4500;
 export const terminalExitedCloseCode = 4501;
 export const terminalExitFailedCloseCode = 4502;
+export const terminalIncompatibleCloseCode = 4503;
 
 // Returns the pause before a retry. A capped delay lets a restored server
 // recover quickly without keeping a disconnected browser in a tight loop.
@@ -80,6 +81,9 @@ export function terminalShouldRetry(status, options = {}) {
 function terminalCloseStatus(closeEvent) {
   const code = closeEvent?.code;
   const reason = String(closeEvent?.reason || "").trim();
+  if (code === terminalIncompatibleCloseCode) {
+    return { state: "failed", summary: capitalize(reason || "Terminal core changed; reload Tessera"), reconnect: false, closesPane: false };
+  }
   if (code === terminalExitedCloseCode) {
     return { state: "exited", summary: capitalize(reason || "terminal exited"), reconnect: false, closesPane: true };
   }

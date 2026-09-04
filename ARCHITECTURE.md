@@ -272,11 +272,16 @@ Deployment: In-process inside the Tessera Host.
 
 Name: Terminal Manager
 
-Description: Owns PTY sessions keyed by workspace and pane, replays bounded
-scrollback to reconnecting clients, broadcasts output, resizes terminals, and
-terminates sessions during pane, workspace, or server teardown.
+Description: Owns PTY sessions keyed by workspace and pane and maintains an
+authoritative Ghostty WASM terminal per shell through wazero. Output, geometry,
+and color configuration share one event order. Reconnects resume retained events
+or import a logical snapshot of both screens, scrollback, parser continuation,
+and Sixel cell attachments. The host owns terminal replies; clipboard writes are
+live effects. Teardown releases PTY and core resources. See
+[the core protocol and build documentation](docs/terminal-core.md).
 
-Technologies: ConPTY, Unix PTYs, Gorilla WebSocket.
+Technologies: pinned ConPTY redistributable, Unix PTYs, Gorilla WebSocket,
+Ghostty Web 0.4.0 with Tessera patches, Zig 0.15.2, wazero.
 
 Deployment: In-process inside the Tessera Host.
 

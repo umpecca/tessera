@@ -8,5 +8,5 @@ import "embed"
 // render scheduler) are excluded; run `npm run build:web` before `go build`
 // when the vendor bundles change.
 //
-//go:embed index.html manifest.webmanifest app.js styles.css browser-pane.mjs file-size.mjs pane-activation.mjs text-editor-language.mjs server-connection.mjs server-update.mjs terminal-font.mjs terminal-colors.mjs terminal-block-renderer.mjs terminal-input.mjs terminal-settings.mjs terminal-keyboard.mjs terminal-osc52.mjs terminal-reconnect.mjs terminal-write-scheduler.mjs wheel-sensitivity.mjs oled-border-size.mjs workspace-concurrency.mjs pane-content-sync.mjs window-switcher.mjs terminal-fit-scheduler.mjs vendor assets
+//go:embed index.html manifest.webmanifest app.js styles.css browser-pane.mjs file-size.mjs pane-activation.mjs text-editor-language.mjs server-connection.mjs server-update.mjs terminal-font.mjs terminal-colors.mjs terminal-block-renderer.mjs terminal-input.mjs terminal-settings.mjs terminal-keyboard.mjs terminal-osc52.mjs terminal-reconnect.mjs terminal-replica.mjs terminal-write-scheduler.mjs wheel-sensitivity.mjs oled-border-size.mjs workspace-concurrency.mjs pane-content-sync.mjs window-switcher.mjs terminal-fit-scheduler.mjs vendor assets
 var Files embed.FS

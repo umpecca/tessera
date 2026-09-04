@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add shared per-terminal Sixel memory budgets (16/32/64 MiB), optional
+  discarded-image markers, and an action to clear images while keeping text.
+
+- Add Sixel images with native Ghostty cell attachments, canvas rendering, and
+  shared host/browser WASM state. Ordered reconnect snapshots restore retained
+  text and images beyond the raw replay window, with host-owned terminal replies
+  and live-only clipboard effects. Bundle modern ConPTY passthrough on Windows.
+
 - Add a right-aligned file-size column to the pane File Browser, with compact
   IEC units, blank folder sizes, and resilient unavailable metadata handling.
 - Show a centered, Alt+Tab-style window switcher while `Ctrl+[` or `Ctrl+]`

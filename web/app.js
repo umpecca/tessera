@@ -61,7 +61,6 @@ import {
   terminalColorTheme,
 } from "./terminal-colors.mjs";
 import { installTerminalBlockRenderer } from "./terminal-block-renderer.mjs";
-import { TerminalOSC52Filter } from "./terminal-osc52.mjs";
 import {
   browseLocalPortHelpCommand,
   browserHelpAddress,
@@ -75,6 +74,7 @@ import { paneContentFields } from "./pane-content-sync.mjs";
 import { adjacentWindowPane, windowSwitcherEntries } from "./window-switcher.mjs";
 import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
 import { TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
+import { TerminalReplica } from "./terminal-replica.mjs";
 import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
@@ -4459,7 +4459,7 @@ function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
 
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
-    ghosttyModulePromise = import("./vendor/terminal.js?v=terminal-rendering-4").then(async (module) => {
+    ghosttyModulePromise = import("./vendor/terminal.js?v=sixel-state-1").then(async (module) => {
       await module.init();
       installTerminalBlockRenderer(module.CanvasRenderer, module.CellFlags);
       module.setTerminalDocumentVisible?.(!document.hidden);
@@ -4555,12 +4555,15 @@ async function startTerminal(rect) {
       term, fit, socket: null, dataDisposable, resizeDisposable, mouseBridge: null,
       pasteBridge: attachTerminalPasteBridge(rect, term),
       output: new TerminalWriteScheduler((data) => term.write(data)),
-      reconnectTimer: null, reconnectAttempts: 0, osc52: null,
+      reconnectTimer: null, reconnectAttempts: 0,
       sentCols: 0, sentRows: 0,
       // What this pane holds of the server's stream, so a reconnect can ask
       // for the remainder instead of the whole scrollback.
       stream: { epoch: "", offset: 0 },
     };
+    rect.terminal.replica = new TerminalReplica(term, rect.terminal.output, term.coreID, (text) => {
+      void applyTerminalClipboardWrite(text);
+    }, (error) => rect.terminal?.socket?.close(4500, error.message.slice(0, 100)));
     updateTerminalRenderState(rect);
     connectTerminalSocket(rect);
     requestTerminalFit(rect);
@@ -4584,7 +4587,8 @@ function connectTerminalSocket(rect) {
     setTerminalStatus(rect, terminalConnectingStatus(rect.terminalStatus));
   }
   const { term } = terminalState;
-  const socket = new WebSocket(terminalWebSocketURL(rect, term.cols, term.rows));
+  terminalState.replica.disconnect();
+  const socket = new WebSocket(terminalWebSocketURL(rect, term.desiredCols || term.cols, term.desiredRows || term.rows));
   socket.binaryType = "arraybuffer";
   terminalState.socket = socket;
   // A new connection has not been told any size yet.
@@ -4593,7 +4597,6 @@ function connectTerminalSocket(rect) {
   terminalState.mouseBridge?.dispose?.();
   terminalState.mouseBridge = attachTerminalMouseBridge(rect, term, socket);
   // A half-received sequence belongs to the connection that was sending it.
-  terminalState.osc52 = new TerminalOSC52Filter();
 
   socket.addEventListener("open", () => {
     if (rect.terminal?.socket !== socket) {
@@ -4624,19 +4627,8 @@ function connectTerminalSocket(rect) {
       applyTerminalAttachMessage(rect, terminalState, event.data);
       return;
     }
-    const payload = new Uint8Array(event.data);
-    // The position counts raw stream bytes, so it has to be advanced before
-    // the filter takes any of them back out.
-    terminalState.stream.offset += payload.length;
-    // A TUI's copy reaches the operator through OSC 52, which ghostty-web
-    // would swallow, so those sequences are taken out of the stream here.
-    const filtered = terminalState.osc52.write(payload);
-    for (const text of filtered.clipboard) {
-      void applyTerminalClipboardWrite(text);
-    }
-    if (filtered.data !== null) {
-      terminalState.output.enqueue(filtered.data);
-    }
+    try { terminalState.replica.receive(new Uint8Array(event.data)); }
+    catch (error) { socket.close(4500, error.message.slice(0, 100)); }
   });
   socket.addEventListener("close", (event) => {
     if (rect.terminal?.socket === socket) {
@@ -4659,17 +4651,12 @@ function applyTerminalAttachMessage(rect, terminalState, data) {
   if (message?.type !== "attach") {
     return;
   }
-  if (message.reset) {
-    terminalState.output?.reset();
-    terminalState.term?.reset();
-  }
-  terminalState.stream = {
-    epoch: typeof message.epoch === "string" ? message.epoch : "",
-    offset: Number.isFinite(message.offset) ? message.offset : 0,
-  };
+  try { terminalState.replica.attach(message); }
+  catch (error) { terminalState.socket?.close(4503, error.message.slice(0, 100)); }
 }
 
 function handleTerminalSocketClose(rect, terminalState, closeEvent) {
+  terminalState.replica?.disconnect();
   if (terminalState.reconnectTimer !== null) {
     return;
   }
@@ -5176,14 +5163,17 @@ function terminalWebSocketURL(rect, cols, rows) {
     cwd: rect.cwd || "",
     cols: String(cols || 80),
     rows: String(rows || 24),
+    protocol: "2",
+    core: rect.terminal.term.coreID,
   });
   // Saying what this pane already holds lets the server send only what it
   // missed. A pane opening for the first time says nothing and is sent the
   // scrollback in full.
-  const stream = rect.terminal?.stream;
+  const stream = rect.terminal?.replica?.cursor;
   if (stream?.epoch) {
     params.set("resumeEpoch", stream.epoch);
     params.set("resumeOffset", String(stream.offset));
+    params.set("resumeSequence", String(stream.sequence));
   }
   return `${protocol}//${window.location.host}/api/terminal?${params.toString()}`;
 }
@@ -7849,6 +7839,60 @@ function renderTerminalMenu(rect) {
     });
     terminalMenu.appendChild(button);
   }
+
+  const separator = document.createElement("div");
+  separator.className = "dock-menu-separator";
+  terminalMenu.appendChild(separator);
+  const imageSettings = term?.imageSettings?.() || { memoryMiB: 64, showPlaceholders: true };
+  const connected = rect?.terminal?.socket?.readyState === WebSocket.OPEN && Boolean(rect.terminal.replica?.cursor.epoch);
+  const budgetLabel = document.createElement("label");
+  budgetLabel.className = "terminal-image-setting";
+  budgetLabel.textContent = "Image memory";
+  budgetLabel.title = "Decoded image budget for this running shell, shared by all browsers.";
+  const budget = document.createElement("select");
+  budget.setAttribute("aria-label", "Terminal image memory");
+  budget.disabled = !connected;
+  for (const memoryMiB of [16, 32, 64]) {
+    const option = document.createElement("option");
+    option.value = String(memoryMiB);
+    option.textContent = `${memoryMiB} MiB`;
+    option.selected = imageSettings.memoryMiB === memoryMiB;
+    budget.appendChild(option);
+  }
+  budget.addEventListener("change", () => {
+    sendTerminalImageAction(rect, { type: "image-settings", memoryMiB: Number(budget.value) });
+    hideTerminalMenu();
+  });
+  budgetLabel.appendChild(budget);
+  terminalMenu.appendChild(budgetLabel);
+  const placeholderLabel = document.createElement("label");
+  placeholderLabel.className = "terminal-image-setting";
+  const placeholders = document.createElement("input");
+  placeholders.type = "checkbox";
+  placeholders.checked = imageSettings.showPlaceholders;
+  placeholders.disabled = !connected;
+  placeholders.addEventListener("change", () => {
+    sendTerminalImageAction(rect, { type: "image-settings", showPlaceholders: placeholders.checked });
+    hideTerminalMenu();
+  });
+  placeholderLabel.append(placeholders, document.createTextNode("Show discarded image markers"));
+  terminalMenu.appendChild(placeholderLabel);
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.textContent = "Clear terminal images";
+  clear.disabled = !connected;
+  clear.title = "Free retained images and markers in this shell, keeping text and scrollback.";
+  clear.addEventListener("click", () => {
+    sendTerminalImageAction(rect, { type: "clear-images" });
+    hideTerminalMenu();
+  });
+  terminalMenu.appendChild(clear);
+}
+
+function sendTerminalImageAction(rect, message) {
+  const state = rect?.terminal;
+  if (state?.socket?.readyState !== WebSocket.OPEN || !state.replica?.cursor.epoch) return;
+  state.socket.send(JSON.stringify(message));
 }
 
 function applyDockAction(action, rect) {

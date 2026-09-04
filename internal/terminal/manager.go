@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"tessera/internal/terminalcore"
 )
 
 const defaultScrollbackLimit = 4 * 1024 * 1024
@@ -16,8 +18,11 @@ const defaultScrollbackLimit = 4 * 1024 * 1024
 // Cursor is what a returning client says it already holds: the session it was
 // watching, and how many bytes of that session's output reached it.
 type Cursor struct {
-	Epoch  string
-	Offset int64
+	Epoch    string
+	Offset   int64
+	Protocol int
+	Sequence uint64
+	Core     string
 }
 
 // Attachment is one client's view of a session at the moment it attaches.
@@ -27,12 +32,18 @@ type Cursor struct {
 // the client already has on screen belongs to a stream it can no longer be
 // lined up with.
 type Attachment struct {
-	Epoch       string
-	Offset      int64
-	Reset       bool
-	Replay      []byte
-	Events      <-chan []byte
-	Unsubscribe func()
+	Epoch                             string
+	Offset                            int64
+	Reset                             bool
+	Replay                            []byte
+	Events                            <-chan []byte
+	Unsubscribe                       func()
+	Protocol                          int
+	Sequence                          uint64
+	Core                              string
+	Snapshot                          []byte
+	Cols, Rows, CellWidth, CellHeight int
+	Err                               error
 }
 
 // newEpoch identifies one session's byte stream. It has to differ between a
@@ -62,14 +73,15 @@ type Manager struct {
 // disconnected — a dropped connection is something the browser notices and
 // resumes from, which lost bytes are not.
 type subscriber struct {
-	events  chan []byte
-	wake    chan struct{}
-	quit    chan struct{}
-	pending [][]byte
-	bytes   int
-	limit   int
-	overrun bool
-	done    bool
+	protocol int
+	events   chan []byte
+	wake     chan struct{}
+	quit     chan struct{}
+	pending  [][]byte
+	bytes    int
+	limit    int
+	overrun  bool
+	done     bool
 }
 
 type ManagedSession struct {
@@ -89,12 +101,18 @@ type ManagedSession struct {
 	// workspace, or a server going down. exited marks the other way out,
 	// where the shell itself finished. Attaching clients need to tell them
 	// apart, since only the first is worth reconnecting through.
-	terminated atomic.Bool
-	exited     atomic.Bool
-	exitErr    error
-	closeOnce  sync.Once
-	mu         sync.Mutex
-	mouseModes mouseModeTracker
+	terminated                        atomic.Bool
+	exited                            atomic.Bool
+	exitErr                           error
+	closeOnce                         sync.Once
+	mu                                sync.Mutex
+	mouseModes                        mouseModeTracker
+	core                              *terminalcore.Core
+	cols, rows, cellWidth, cellHeight int
+	light                             bool
+	sequence                          uint64
+	stateEvents                       []stateEvent
+	stateBytes                        int
 }
 
 func NewManager() *Manager {
@@ -129,8 +147,13 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 		return existing, attachment, nil
 	}
 
+	core, err := terminalcore.New(cols, rows)
+	if err != nil {
+		return nil, nil, err
+	}
 	session, err := Start(cwd, terminalTerm, cols, rows)
 	if err != nil {
+		core.Close()
 		return nil, nil, err
 	}
 	managed := &ManagedSession{
@@ -141,6 +164,8 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 		subscribers: map[*subscriber]struct{}{},
 		scrollback:  scrollbackBuffer{limit: m.scrollbackLimit},
 		epoch:       newEpoch(),
+		core:        core,
+		cols:        cols, rows: rows, cellWidth: 8, cellHeight: 16,
 	}
 
 	m.mu.Lock()
@@ -153,6 +178,7 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 		m.mu.Unlock()
 		attachment := existing.subscribe(cursor)
 		_ = session.Close()
+		core.Close()
 		_ = existing.Resize(cols, rows)
 		return existing, attachment, nil
 	}
@@ -302,12 +328,15 @@ func (s *ManagedSession) Resize(cols, rows int) error {
 		return io.ErrClosedPipe
 	}
 	s.mu.Lock()
-	session := s.session
+	w, h := s.cellWidth, s.cellHeight
 	s.mu.Unlock()
-	if s.isClosed() || session == nil {
-		return io.ErrClosedPipe
+	if w == 0 {
+		w = 8
 	}
-	return session.Resize(cols, rows)
+	if h == 0 {
+		h = 16
+	}
+	return s.ResizeWithMetrics(cols, rows, w, h)
 }
 
 func (s *ManagedSession) Close() {
@@ -401,10 +430,11 @@ func (s *ManagedSession) readLoop() {
 
 func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 	sub := &subscriber{
-		events: make(chan []byte),
-		wake:   make(chan struct{}, 1),
-		quit:   make(chan struct{}),
-		limit:  s.scrollback.limit,
+		protocol: cursor.Protocol,
+		events:   make(chan []byte),
+		wake:     make(chan struct{}, 1),
+		quit:     make(chan struct{}),
+		limit:    s.scrollback.limit,
 	}
 	s.mu.Lock()
 	// The replay and the live subscription are decided under one lock, so
@@ -417,6 +447,9 @@ func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 		Replay:      replay,
 		Events:      sub.events,
 		Unsubscribe: func() {},
+	}
+	if cursor.Protocol == StateProtocol {
+		s.stateAttachLocked(cursor, attachment)
 	}
 	if s.isClosed() {
 		close(sub.events)
@@ -500,15 +533,51 @@ func (s *ManagedSession) publish(chunk []byte) {
 		return
 	}
 	s.mu.Lock()
+	var replies []byte
+	var clipboard [][]byte
+	if s.core != nil {
+		if err := s.core.Write(chunk); err != nil {
+			s.mu.Unlock()
+			s.markExited(err)
+			s.Close()
+			return
+		}
+		var err error
+		replies, err = s.core.Replies()
+		if err != nil {
+			s.mu.Unlock()
+			s.markExited(err)
+			s.Close()
+			return
+		}
+		clipboard, err = s.core.Clipboard()
+		if err != nil {
+			s.mu.Unlock()
+			s.markExited(err)
+			s.Close()
+			return
+		}
+	}
 	s.mouseModes.consume(chunk)
 	s.scrollback.append(chunk)
 	// published counts the stream, not what is still retained: trimming the
 	// front of the scrollback must not move a client's position.
 	s.published += int64(len(chunk))
+	if s.core != nil {
+		s.publishStateLocked(StateOutput, chunk)
+		for _, text := range clipboard {
+			s.publishStateLocked(StateClipboard, text)
+		}
+	}
 	for sub := range s.subscribers {
-		s.enqueueLocked(sub, chunk)
+		if sub.protocol != StateProtocol {
+			s.enqueueLocked(sub, chunk)
+		}
 	}
 	s.mu.Unlock()
+	if len(replies) > 0 {
+		_, _ = s.Write(replies)
+	}
 }
 
 func (s *ManagedSession) enqueueLocked(sub *subscriber, chunk []byte) {
@@ -562,6 +631,12 @@ func (s *ManagedSession) finish() {
 		// gets it before its channel closes.
 		s.releaseLocked(sub)
 	}
+	if s.core != nil {
+		s.core.Close()
+		s.core = nil
+	}
+	s.stateEvents = nil
+	s.stateBytes = 0
 	s.mu.Unlock()
 	if s.manager != nil {
 		s.manager.remove(s.workspaceID, s.paneID, s)

@@ -8,6 +8,12 @@ resizable panes with BeOS-inspired window chrome and a Deskbar.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries, data flow,
 deployment details, and the security roadmap.
 
+Terminal panes support Sixel images and restore retained text and images from
+the running host when a browser reconnects. Right-click a terminal to choose an
+image-memory budget, toggle discarded-image markers, or clear images while
+keeping text. See [terminal core documentation](docs/terminal-core.md)
+for the pinned source build, protocol, resource limits, and restoration guarantees.
+
 ## Security and trusted-environment status
 
 Tessera is currently intended for use by one operator or a small group in a

@@ -1,0 +1,45 @@
+name: Terminal core
+on:
+  push:
+    paths: ['internal/terminalcore/**', 'internal/terminal/**', 'internal/httpapi/terminal*', 'internal/winconpty/**', 'web/terminal*', 'web/app.js', 'web/vendor/terminal.js', 'scripts/*terminal*', 'scripts/build-web.mjs', 'scripts/*conpty*', 'package*.json', 'go.*', '.github/workflows/terminal-core.yml']
+  pull_request:
+    paths: ['internal/terminalcore/**', 'internal/terminal/**', 'internal/httpapi/terminal*', 'internal/winconpty/**', 'web/terminal*', 'web/app.js', 'web/vendor/terminal.js', 'scripts/*terminal*', 'scripts/build-web.mjs', 'scripts/*conpty*', 'package*.json', 'go.*', '.github/workflows/terminal-core.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.15.2'
+      - run: npm ci
+      - run: npm run verify:terminal-core
+      - run: npm run build:web
+      - run: git diff --exit-code -- web/vendor/terminal.js
+      - run: node --test internal/terminalcore/core.test.mjs web/*.test.mjs
+      - run: go test ./...
+  platform-integration:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: npm ci
+      - run: npm run build:web
+      - run: go test ./...
+      - run: go build -ldflags "-s -w" ./cmd/tessera

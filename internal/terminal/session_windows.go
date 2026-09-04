@@ -6,7 +6,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/UserExistsError/conpty"
+	conpty "tessera/internal/winconpty"
 )
 
 type windowsPty struct {

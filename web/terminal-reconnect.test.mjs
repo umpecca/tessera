@@ -14,6 +14,13 @@ import {
 
 const dropped = { code: 1006, reason: "" };
 
+test("incompatible terminal core requires reload instead of retrying", () => {
+  const outcome = terminalCloseOutcome({ code: 4503, reason: "terminal core changed; reload Tessera" });
+  assert.equal(outcome.reconnect, false);
+  assert.equal(outcome.closesPane, false);
+  assert.match(outcome.summary, /reload Tessera/);
+});
+
 test("terminal reconnect delay grows conservatively and is capped", () => {
   assert.equal(terminalReconnectDelay(0), 500);
   assert.equal(terminalReconnectDelay(1), 1000);
