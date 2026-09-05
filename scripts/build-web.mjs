@@ -42,3 +42,16 @@ await build({
   plugins: [ghosttyWebUnicodeGuard],
   define: { __TESSERA_CORE_ID__: JSON.stringify(coreID) },
 });
+
+await build({
+  entryPoints: ["web/vnc-entry.js"],
+  bundle: true,
+  format: "esm",
+  minify: true,
+  legalComments: "eof",
+  outfile: "web/vendor/vnc.js",
+});
+
+for (const license of ["LICENSE.MPL-2.0", "LICENSE.BSD-2-Clause", "LICENSE.BSD-3-Clause", "LICENSE.OFL-1.1"]) {
+  await fs.copyFile(`node_modules/@novnc/novnc/docs/${license}`, `web/vendor/noVNC-${license}.txt`);
+}

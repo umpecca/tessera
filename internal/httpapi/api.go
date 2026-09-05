@@ -37,6 +37,8 @@ type API struct {
 
 	browserProxyOnce sync.Once
 	browserProxy     *browserProxyManager
+	vncProxyOnce     sync.Once
+	vncProxy         *vncProxyManager
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -62,6 +64,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/browser-proxy", a.browserProxyControl)
 	mux.HandleFunc("/api/browser-proxy/", a.browserProxyControl)
 	mux.HandleFunc("/browser-proxy/", a.browserProxyRequest)
+	mux.HandleFunc("/api/vnc-proxy", a.vncProxyCreate)
+	mux.HandleFunc("/api/vnc-proxy/connect", a.vncProxyConnect)
 	mux.HandleFunc("/", a.staticFiles())
 }
 

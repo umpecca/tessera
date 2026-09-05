@@ -1,7 +1,44 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { activePaneOnLoad, focusPane, paneNeedsRaise } from "./pane-activation.mjs";
+import { activePaneOnLoad, focusPane, openTerminalWithoutFocus, paneNeedsRaise } from "./pane-activation.mjs";
+
+test("terminal startup preserves restored focus and subsequent user focus still selects it", () => {
+  let selectedPane = "editor";
+  const previousControl = { focus() { container.ownerDocument.activeElement = this; } };
+  const container = new EventTarget();
+  container.ownerDocument = { activeElement: previousControl };
+  const terminalInput = {
+    focus() {
+      container.ownerDocument.activeElement = this;
+      const event = new Event("focusin", { bubbles: true });
+      // Model the containing pane's bubbling focusin handler.
+      let reachedPane = true;
+      event.stopPropagation = () => { reachedPane = false; };
+      container.dispatchEvent(event);
+      if (reachedPane) selectedPane = "terminal";
+    },
+  };
+
+  openTerminalWithoutFocus({ open() { terminalInput.focus(); } }, container);
+
+  assert.equal(selectedPane, "editor");
+  assert.equal(container.ownerDocument.activeElement, previousControl);
+  terminalInput.focus();
+  assert.equal(selectedPane, "terminal");
+  assert.equal(container.ownerDocument.activeElement, terminalInput);
+});
+
+test("terminal startup failure restores focus and removes the temporary listener", () => {
+  const container = new EventTarget();
+  let restored = false;
+  container.ownerDocument = { activeElement: { focus() { restored = true; } } };
+  assert.throws(() => openTerminalWithoutFocus({ open() { throw new Error("failed"); } }, container), /failed/);
+  assert.equal(restored, true);
+  const event = new Event("focusin");
+  event.stopPropagation = () => assert.fail("startup listener was not removed");
+  container.dispatchEvent(event);
+});
 
 function pane(id, options = {}) {
   return {
@@ -109,6 +146,17 @@ test("browser panes focus the live frame or fall back to the address", () => {
 
   frame.hidden = true;
   focusPane({ kind: "browser", browser: { frame, address } });
+  assert.equal(address.calls, 1);
+});
+
+test("VNC panes focus a live RFB client or fall back to the address", () => {
+  const rfb = focusable();
+  const address = focusable();
+  focusPane({ kind: "vnc", vnc: { rfb, address } });
+  assert.equal(rfb.calls, 1);
+  assert.equal(address.calls, 0);
+
+  focusPane({ kind: "vnc", vnc: { rfb: null, address } });
   assert.equal(address.calls, 1);
 });
 

@@ -1166,6 +1166,141 @@ input {
   display: none;
 }
 
+.window-body.is-vnc {
+  cursor: default;
+  user-select: none;
+  background: #202020;
+}
+
+.vnc-pane {
+  position: relative;
+  display: grid;
+  grid-template-rows: 34px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.vnc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  overflow-x: auto;
+  box-sizing: border-box;
+  padding: 4px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--chrome-bg);
+}
+
+.vnc-address {
+  flex: 1 1 160px;
+  min-width: 120px;
+  height: 25px;
+  box-sizing: border-box;
+  border: 1px solid var(--divider);
+  padding: 2px 6px;
+  background: var(--editor-bg);
+  color: var(--text);
+  font: 12px/1 var(--tessera-font);
+}
+
+.vnc-connect {
+  flex-basis: 76px;
+  font-size: 11px;
+}
+
+.vnc-select {
+  height: 25px;
+  border: 1px solid var(--divider);
+  background: var(--pane-bg);
+  color: var(--text);
+  font: 11px/1 var(--tessera-font);
+}
+
+.vnc-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  color: var(--text);
+  font: 11px/1 var(--tessera-font);
+}
+
+.vnc-screen,
+.vnc-message {
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.vnc-screen {
+  overflow: hidden;
+  background: #202020;
+}
+
+.vnc-screen.is-one-to-one {
+  overflow: auto;
+}
+
+.vnc-message {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--muted-text);
+  background: var(--pane-bg);
+  font: 12px/1.4 var(--tessera-font);
+  text-align: center;
+}
+
+.vnc-message.is-error {
+  color: var(--danger-text, #b00020);
+}
+
+.vnc-message[hidden],
+.vnc-screen[hidden],
+.vnc-dialog[hidden] {
+  display: none;
+}
+
+.vnc-dialog {
+  position: absolute;
+  z-index: 2;
+  top: 48px;
+  left: 50%;
+  display: grid;
+  width: min(340px, calc(100% - 32px));
+  gap: 8px;
+  box-sizing: border-box;
+  padding: 14px;
+  transform: translateX(-50%);
+  border: 1px solid var(--accent-border);
+  box-shadow: 4px 5px 0 color-mix(in srgb, var(--shadow) 65%, transparent);
+  background: var(--pane-bg);
+  color: var(--text);
+  font: 12px/1.4 var(--tessera-font);
+}
+
+.vnc-dialog input,
+.vnc-dialog textarea {
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--divider);
+  padding: 5px;
+  background: var(--editor-bg);
+  color: var(--text);
+  font: 12px/1.3 var(--tessera-font);
+}
+
+.vnc-dialog textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+
 .window-body.is-text-editor {
   display: grid;
   grid-template-rows: 25px minmax(0, 1fr);

@@ -19,6 +19,21 @@ export function activePaneOnLoad(panes, savedActivePaneID) {
   return covering;
 }
 
+// Ghostty focuses its input synchronously during open(). Keep that startup
+// focus from selecting/raising the pane through the body's focusin listener,
+// and return keyboard focus to the control that owned it before startup.
+export function openTerminalWithoutFocus(term, container) {
+  const previouslyFocused = container.ownerDocument.activeElement;
+  const suppressFocus = (event) => event.stopPropagation();
+  container.addEventListener("focusin", suppressFocus, { capture: true });
+  try {
+    term.open(container);
+  } finally {
+    container.removeEventListener("focusin", suppressFocus, { capture: true });
+    previouslyFocused?.focus({ preventScroll: true });
+  }
+}
+
 export function focusPane(pane) {
   if (!pane) {
     return false;
@@ -38,6 +53,8 @@ export function focusPane(pane) {
     target = pane.browser?.frame && !pane.browser.frame.hidden
       ? pane.browser.frame
       : pane.browser?.address || target;
+  } else if (pane.kind === "vnc") {
+    target = pane.vnc?.rfb || pane.vnc?.address || target;
   } else if (pane.kind === "file-browser") {
     const entry = pane.fileBrowserView?.content?.querySelector?.(".pane-file-browser-entry.is-selected")
       || pane.fileBrowserView?.content?.querySelector?.(".pane-file-browser-entry")

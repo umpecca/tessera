@@ -1,0 +1,1 @@
+ALTER TABLE user_settings ADD COLUMN revision TEXT NOT NULL DEFAULT '';

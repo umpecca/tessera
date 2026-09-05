@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
+import { newWorkspaceRevision, workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
+
+test("workspace tokens use 128 random bits without requiring secure-context randomUUID", () => {
+  assert.equal(newWorkspaceRevision({ getRandomValues(bytes) {
+    assert.equal(bytes.length, 16);
+    return bytes.fill(15);
+  } }), "0f".repeat(16));
+});
 
 test("successful workspace saves advance the local revision", () => {
   assert.deepEqual(workspaceSaveOutcome("revision-1", 200, "revision-2"), {

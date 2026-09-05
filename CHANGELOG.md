@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add persistent VNC connector windows using bundled noVNC, manual in-memory
+  authentication, explicit clipboard transfer, view-only and scaling controls,
+  and short-lived same-origin WebSocket-to-TCP capabilities for any host target.
+
 - Add shared per-terminal Sixel memory budgets (16/32/64 MiB), optional
   discarded-image markers, and an action to clear images while keeping text.
 

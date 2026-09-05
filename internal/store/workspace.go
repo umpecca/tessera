@@ -16,13 +16,17 @@ const DefaultWorkspaceID = "default"
 var ErrWorkspaceConflict = errors.New("workspace has changed since it was loaded")
 
 type Workspace struct {
-	ID           string          `json:"id"`
-	Revision     string          `json:"revision"`
-	OwnerID      string          `json:"ownerId,omitempty"`
-	Name         string          `json:"name"`
-	ActivePaneID string          `json:"activePaneId"`
-	Layout       json.RawMessage `json:"layout"`
-	Panes        []Pane          `json:"panes"`
+	ID       string `json:"id"`
+	Revision string `json:"revision"`
+	// Client-generated tokens let a final save supersede its own in-flight
+	// request without accepting revisions written by another browser.
+	NextRevision      string          `json:"nextRevision,omitempty"`
+	AlternateRevision string          `json:"alternateRevision,omitempty"`
+	OwnerID           string          `json:"ownerId,omitempty"`
+	Name              string          `json:"name"`
+	ActivePaneID      string          `json:"activePaneId"`
+	Layout            json.RawMessage `json:"layout"`
+	Panes             []Pane          `json:"panes"`
 	// HasBackground and BackgroundVersion describe the workspace's background
 	// image. They are populated on load (the image bytes live in a separate
 	// table, served on demand) and ignored on save.
@@ -47,6 +51,9 @@ type Pane struct {
 	EditorTabs              string `json:"editorTabs"`
 	FileBrowserSidebarWidth int    `json:"fileBrowserSidebarWidth"`
 	BrowserURL              string `json:"browserUrl"`
+	VNCTarget               string `json:"vncTarget"`
+	VNCViewOnly             bool   `json:"vncViewOnly"`
+	VNCScaleMode            string `json:"vncScaleMode"`
 	IsFull                  bool   `json:"isFull"`
 	RestoreBox              string `json:"restoreBox"`
 	Minimized               bool   `json:"minimized"`
@@ -61,6 +68,25 @@ type Pane struct {
 	// are ignored. They are request-only, so a loaded workspace never sets them.
 	BufferTextUnchanged bool `json:"bufferTextUnchanged,omitempty"`
 	EditorTabsUnchanged bool `json:"editorTabsUnchanged,omitempty"`
+}
+
+type paneVNCSettings struct {
+	Target    string `json:"target,omitempty"`
+	ViewOnly  bool   `json:"viewOnly,omitempty"`
+	ScaleMode string `json:"scaleMode,omitempty"`
+}
+
+func paneVNCSettingsJSON(pane Pane) string {
+	settings, _ := json.Marshal(paneVNCSettings{Target: pane.VNCTarget, ViewOnly: pane.VNCViewOnly, ScaleMode: pane.VNCScaleMode})
+	return string(settings)
+}
+
+func applyPaneVNCSettings(pane *Pane, raw string) {
+	var settings paneVNCSettings
+	_ = json.Unmarshal([]byte(raw), &settings)
+	pane.VNCTarget = settings.Target
+	pane.VNCViewOnly = settings.ViewOnly
+	pane.VNCScaleMode = settings.ScaleMode
 }
 
 func (s *Store) LoadDefaultWorkspace(ctx context.Context, defaultCwd string) (*Workspace, error) {
@@ -122,7 +148,7 @@ WHERE id = ?`, id).Scan(&ws.ID, &ws.Revision, &ws.OwnerID, &ws.Name, &ws.ActiveP
 	ws.ThemeID = normalizeThemeID(ws.ThemeID)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, is_full, restore_box, minimized, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ?
 ORDER BY position ASC, created_at ASC`, id)
@@ -133,11 +159,16 @@ ORDER BY position ASC, created_at ASC`, id)
 
 	for rows.Next() {
 		var pane Pane
-		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.FileBrowserSidebarWidth, &pane.BrowserURL, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
+		var vncSettings string
+		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.FileBrowserSidebarWidth, &pane.BrowserURL, &vncSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
 			return nil, fmt.Errorf("scan pane: %w", err)
 		}
+		applyPaneVNCSettings(&pane, vncSettings)
 		if pane.Kind == "" {
 			pane.Kind = "worksheet"
+		}
+		if pane.VNCScaleMode != "one-to-one" {
+			pane.VNCScaleMode = "fit"
 		}
 		ws.Panes = append(ws.Panes, pane)
 	}
@@ -171,16 +202,21 @@ func (s *Store) LoadPane(ctx context.Context, workspaceID, paneID string) (*Pane
 		return nil, errors.New("pane id is required")
 	}
 	var pane Pane
+	var vncSettings string
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, is_full, restore_box, minimized, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ? AND id = ?`, workspaceID, paneID).Scan(
-		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.FileBrowserSidebarWidth, &pane.BrowserURL, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
+		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.FileBrowserSidebarWidth, &pane.BrowserURL, &vncSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
 	if err != nil {
 		return nil, err
 	}
+	applyPaneVNCSettings(&pane, vncSettings)
 	if pane.Kind == "" {
 		pane.Kind = "worksheet"
+	}
+	if pane.VNCScaleMode != "one-to-one" {
+		pane.VNCScaleMode = "fit"
 	}
 	return &pane, nil
 }
@@ -221,7 +257,17 @@ func (s *Store) SaveWorkspace(ctx context.Context, ws *Workspace) error {
 	defer tx.Rollback()
 
 	now := nowText()
-	nextRevision := newID()
+	nextRevision := ws.NextRevision
+	if nextRevision == "" {
+		nextRevision = newID()
+	} else if decoded, err := hex.DecodeString(nextRevision); err != nil || len(decoded) != 16 || nextRevision == ws.Revision || nextRevision == ws.AlternateRevision {
+		return errors.New("invalid next workspace revision")
+	}
+	if ws.AlternateRevision != "" {
+		if decoded, err := hex.DecodeString(ws.AlternateRevision); err != nil || len(decoded) != 16 || ws.Revision == "" {
+			return errors.New("invalid alternate workspace revision")
+		}
+	}
 	if ws.LastOpenedAt == "" {
 		ws.LastOpenedAt = now
 	}
@@ -251,8 +297,8 @@ UPDATE workspaces SET
   theme_id = ?,
   revision = ?,
   updated_at = ?
-WHERE id = ? AND revision = ?`,
-			ws.ActivePaneID, string(ws.Layout), ws.BackgroundMode, ws.DefaultPaneFontSize, ws.DefaultTheme, ws.ThemeID, nextRevision, now, ws.ID, ws.Revision)
+WHERE id = ? AND (revision = ? OR (revision = ? AND ? <> ''))`,
+			ws.ActivePaneID, string(ws.Layout), ws.BackgroundMode, ws.DefaultPaneFontSize, ws.DefaultTheme, ws.ThemeID, nextRevision, now, ws.ID, ws.Revision, ws.AlternateRevision, ws.AlternateRevision)
 		if err != nil {
 			return fmt.Errorf("update workspace: %w", err)
 		}
@@ -277,6 +323,9 @@ WHERE id = ? AND revision = ?`,
 		if pane.Kind == "" {
 			pane.Kind = "worksheet"
 		}
+		if pane.VNCScaleMode != "one-to-one" {
+			pane.VNCScaleMode = "fit"
+		}
 		if pane.Width < 1 {
 			pane.Width = 360
 		}
@@ -290,8 +339,8 @@ WHERE id = ? AND revision = ?`,
 		seen[pane.ID] = true
 
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, file_browser_sidebar_width, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   kind = excluded.kind,
   title = excluded.title,
@@ -303,6 +352,7 @@ ON CONFLICT(id) DO UPDATE SET
   editor_tabs = CASE WHEN ? THEN panes.editor_tabs ELSE excluded.editor_tabs END,
   file_browser_sidebar_width = excluded.file_browser_sidebar_width,
   browser_url = excluded.browser_url,
+  vnc_settings = excluded.vnc_settings,
   is_full = excluded.is_full,
   restore_box = excluded.restore_box,
   minimized = excluded.minimized,
@@ -313,7 +363,7 @@ ON CONFLICT(id) DO UPDATE SET
   z_index = excluded.z_index,
   position = excluded.position,
   updated_at = excluded.updated_at`,
-			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.FileBrowserSidebarWidth, pane.BrowserURL, pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now,
+			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.FileBrowserSidebarWidth, pane.BrowserURL, paneVNCSettingsJSON(pane), pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now,
 			pane.BufferTextUnchanged, pane.EditorTabsUnchanged); err != nil {
 			return fmt.Errorf("upsert pane %s: %w", pane.ID, err)
 		}
@@ -350,6 +400,8 @@ ON CONFLICT(id) DO UPDATE SET
 		return fmt.Errorf("commit workspace: %w", err)
 	}
 	ws.Revision = nextRevision
+	ws.NextRevision = ""
+	ws.AlternateRevision = ""
 	return nil
 }
 

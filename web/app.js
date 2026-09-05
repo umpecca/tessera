@@ -67,9 +67,15 @@ import {
   browserLocalPortExamples,
   normalizeBrowserAddress,
 } from "./browser-pane.mjs";
+import {
+  normalizeVNCTarget,
+  normalizeVNCScaleMode,
+  vncCredentialFields,
+  vncWebSocketURL,
+} from "./vnc-pane.mjs";
 import { formatFileSize } from "./file-size.mjs";
-import { workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
-import { activePaneOnLoad, focusPane, paneNeedsRaise } from "./pane-activation.mjs";
+import { newWorkspaceRevision, workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
+import { activePaneOnLoad, focusPane, openTerminalWithoutFocus, paneNeedsRaise } from "./pane-activation.mjs";
 import { paneContentFields } from "./pane-content-sync.mjs";
 import { adjacentWindowPane, windowSwitcherEntries } from "./window-switcher.mjs";
 import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
@@ -119,6 +125,7 @@ let workspaceRevision = "";
 let workspaceSaveSuspended = false;
 let workspaceNeedsRevalidation = false;
 let workspaceSavePromise = null;
+let workspaceInFlightRevision = "";
 let workspaceSaveQueued = false;
 let multiUser = false;
 let userRoster = [];
@@ -140,9 +147,14 @@ let saveTimer = null;
 let workspaceStatusHideTimer = null;
 let saveRevision = 0;
 let userSettingsSaveTimer = null;
+let userSettingsSavePromise = null;
+let userSettingsDirty = false;
+let userSettingsRevision = "";
+let userSettingsInFlightRevision = "";
 let worksheetLineDrag = null;
 const runStreamControllers = new Map();
 let ghosttyModulePromise = null;
+let vncModulePromise = null;
 const terminalTextEncoder = new TextEncoder();
 // The editor and terminal must render in a monospace face for column
 // alignment; keep this in sync with --tessera-font in styles.css. xterm
@@ -459,6 +471,8 @@ async function loadUserSettings() {
     throw new Error(`load user settings failed: ${response.status}`);
   }
   const settings = await response.json();
+  userSettingsRevision = settings.revision || "";
+  userSettingsDirty = false;
   defaultPaneFontSize = normalizePaneFontSize(settings.defaultPaneFontSize);
   defaultTheme = themes[settings.defaultTheme] ? settings.defaultTheme : defaultThemeID;
   deskbarButtonEnabled = settings.deskbarButtonEnabled !== false;
@@ -488,22 +502,38 @@ async function switchSession(session, options = {}) {
     if (!options.skipSave && currentSessionID) {
       await flushWorkspaceSave();
     }
+    const workspace = await fetchWorkspace(session.id);
     const activated = await fetch(`${userAPIPath("sessions")}/${encodeURIComponent(session.id)}/activate`, { method: "POST" });
     if (!activated.ok) {
       throw new Error(`activate session failed: ${activated.status}`);
     }
+    // The old workspace remains usable during network requests. Include any
+    // edits made while the target was loading before replacing its panes.
+    if (!options.skipSave && currentSessionID) {
+      await flushWorkspaceSave();
+    }
     currentSessionID = session.id;
     currentSessionName = session.name;
-    workspaceID = session.id;
+    loadWorkspace(workspace);
     const route = sessionRoute(currentUser || "default", session.id);
     if (options.historyMode === "replace") {
       window.history.replaceState({}, "", route);
     } else if (options.historyMode !== "none") {
       window.history.pushState({}, "", route);
     }
-    await loadWorkspace();
-    await refreshSessions();
     hideSessionsModal();
+    await Promise.all([refreshSessions(), syncRunningCommands()]).catch((error) => {
+      console.warn(error);
+      setWorkspaceStatus("error", "Session opened; refresh failed", error.message);
+    });
+  } catch (error) {
+    console.warn(error);
+    setWorkspaceStatus("error", "Could not switch session", error.message);
+    // Back/Forward changes the URL before this handler starts.
+    if (options.historyMode === "none" && currentSessionID) {
+      window.history.replaceState({}, "", sessionRoute(currentUser || "default", currentSessionID));
+    }
+    return false;
   } finally {
     sessionNavigationPending = false;
   }
@@ -720,6 +750,7 @@ const normalWorksheetEditorMode = "normal";
 const fileBrowserPaneKind = "file-browser";
 const textEditorPaneKind = "text-editor";
 const audioPaneKind = "audio";
+const vncPaneKind = "vnc";
 // Which modifier the platform pastes with, since that decides whether the
 // browser will deliver a paste event on its own. userAgentData is the modern
 // signal; navigator.platform is deprecated but still the only one in some
@@ -1091,6 +1122,12 @@ document.addEventListener("visibilitychange", handleDocumentVisibilityChange);
 // pagehide is the one teardown event that also fires when a tab is discarded
 // or frozen, where unload does not.
 window.addEventListener("pagehide", saveWorkspaceOnExit);
+window.addEventListener("pagehide", saveUserSettingsOnExit);
+window.addEventListener("pagehide", () => {
+  for (const rect of rectangles) {
+    disposeVNCPane(rect);
+  }
+});
 window.addEventListener("pointermove", continueInteraction);
 window.addEventListener("pointerup", finishInteraction);
 window.addEventListener("pointercancel", finishInteraction);
@@ -1308,6 +1345,10 @@ function createRectangle(x, y, width, height, options = {}) {
     fileBrowserRequestID: 0,
     browserUrl: options.browserUrl || "",
     browser: null,
+    vncTarget: options.vncTarget || "",
+    vncViewOnly: Boolean(options.vncViewOnly),
+    vncScaleMode: normalizeVNCScaleMode(options.vncScaleMode),
+    vnc: null,
     audio: null,
     isFull: Boolean(options.isFull),
     minimized: Boolean(options.minimized),
@@ -1487,6 +1528,8 @@ function createRectangle(x, y, width, height, options = {}) {
       ? "file"
       : rect.kind === browserPaneKind
         ? "url"
+      : rect.kind === vncPaneKind
+        ? "target"
       : rect.kind === audioPaneKind
         ? "station"
       : "cwd";
@@ -1498,6 +1541,8 @@ function createRectangle(x, y, width, height, options = {}) {
     ? rect.lastExportPath
     : rect.kind === browserPaneKind
       ? rect.browserUrl
+    : rect.kind === vncPaneKind
+      ? rect.vncTarget
     : rect.kind === audioPaneKind
       ? "Shared across clients"
       : rect.cwd;
@@ -1507,6 +1552,8 @@ function createRectangle(x, y, width, height, options = {}) {
       ? "untitled"
       : rect.kind === browserPaneKind
         ? "localhost:5000"
+      : rect.kind === vncPaneKind
+        ? "host:5900"
       : rect.kind === audioPaneKind
         ? "Shared across clients"
       : "host default";
@@ -1518,11 +1565,13 @@ function createRectangle(x, y, width, height, options = {}) {
       ? "Editor file"
       : rect.kind === browserPaneKind
         ? "Browser address"
+      : rect.kind === vncPaneKind
+        ? "VNC target"
       : rect.kind === audioPaneKind
         ? "Shared audio station"
       : "Pane working directory");
   cwdInput.addEventListener("pointerdown", (event) => {
-    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === audioPaneKind) {
+    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === vncPaneKind || rect.kind === audioPaneKind) {
       return;
     }
     event.preventDefault();
@@ -1536,7 +1585,7 @@ function createRectangle(x, y, width, height, options = {}) {
     }
   });
   cwdInput.addEventListener("keydown", (event) => {
-    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === audioPaneKind) {
+    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === vncPaneKind || rect.kind === audioPaneKind) {
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -1565,6 +1614,8 @@ function createRectangle(x, y, width, height, options = {}) {
         ? "Text editor"
       : rect.kind === browserPaneKind
         ? "Browser"
+      : rect.kind === vncPaneKind
+        ? "VNC remote desktop"
       : rect.kind === audioPaneKind
         ? "Audio station"
       : rect.kind === "pending"
@@ -1614,6 +1665,8 @@ function createRectangle(x, y, width, height, options = {}) {
     rect.filePathInput = cwdInput;
   } else if (rect.kind === browserPaneKind) {
     rect.browserStatusInput = cwdInput;
+  } else if (rect.kind === vncPaneKind) {
+    rect.vncStatusInput = cwdInput;
   } else if (rect.kind !== browserPaneKind && rect.kind !== audioPaneKind) {
     rect.cwdInput = cwdInput;
   }
@@ -1634,6 +1687,8 @@ function createRectangle(x, y, width, height, options = {}) {
     mountTextEditor(rect);
   } else if (rect.kind === browserPaneKind) {
     mountBrowserPane(rect);
+  } else if (rect.kind === vncPaneKind) {
+    mountVNCPane(rect);
   } else if (rect.kind === audioPaneKind) {
     mountAudioPane(rect);
   } else {
@@ -1895,6 +1950,350 @@ function disposeBrowserPane(rect) {
   if (sessionID) {
     void fetch(`/api/browser-proxy/${encodeURIComponent(sessionID)}`, { method: "DELETE" });
   }
+}
+
+function loadVNCModule() {
+  if (!vncModulePromise) {
+    vncModulePromise = import("./vendor/vnc.js?v=novnc-1.7.0");
+  }
+  return vncModulePromise;
+}
+
+function mountVNCPane(rect) {
+  rect.body.classList.add("is-vnc");
+  const pane = document.createElement("div");
+  pane.className = "vnc-pane";
+  const toolbar = document.createElement("div");
+  toolbar.className = "vnc-toolbar";
+  const address = document.createElement("input");
+  address.className = "vnc-address";
+  address.type = "text";
+  address.placeholder = "host:5900";
+  address.value = rect.vncTarget;
+  address.spellcheck = false;
+  address.setAttribute("aria-label", "VNC target");
+  const connect = browserToolbarButton("Connect", "Connect or disconnect VNC");
+  connect.classList.add("vnc-connect");
+  const ctrlAltDelete = browserToolbarButton("CAD", "Send Ctrl+Alt+Del");
+  const scale = document.createElement("select");
+  scale.className = "vnc-select";
+  scale.setAttribute("aria-label", "VNC scaling");
+  for (const [value, label] of [["fit", "Fit"], ["one-to-one", "1:1"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    scale.appendChild(option);
+  }
+  scale.value = rect.vncScaleMode;
+  const viewOnlyLabel = document.createElement("label");
+  viewOnlyLabel.className = "vnc-toggle";
+  const viewOnly = document.createElement("input");
+  viewOnly.type = "checkbox";
+  viewOnly.checked = rect.vncViewOnly;
+  viewOnlyLabel.append(viewOnly, "View only");
+  const sendClipboard = browserToolbarButton("↑", "Send local clipboard to remote");
+  const copyClipboard = browserToolbarButton("↓", "Copy remote clipboard locally");
+  const message = document.createElement("div");
+  message.className = "vnc-message";
+  message.textContent = rect.vncTarget ? "Ready to connect." : "Enter a VNC server address.";
+  const screen = document.createElement("div");
+  screen.className = "vnc-screen";
+  screen.tabIndex = 0;
+  screen.hidden = true;
+  const dialog = document.createElement("form");
+  dialog.className = "vnc-dialog";
+  dialog.hidden = true;
+
+  rect.vnc = {
+    pane, address, connect, ctrlAltDelete, scale, viewOnly, sendClipboard, copyClipboard,
+    message, screen, dialog, rfb: null, credentials: {}, remoteClipboard: "", intentionalDisconnect: false,
+  };
+  toolbar.append(address, connect, ctrlAltDelete, scale, viewOnlyLabel, sendClipboard, copyClipboard);
+  pane.append(toolbar, message, screen, dialog);
+  rect.body.appendChild(pane);
+  updateVNCControls(rect);
+
+  address.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void connectVNCPane(rect);
+    }
+  });
+  address.addEventListener("input", () => {
+    rect.vncTarget = address.value;
+    if (rect.vncStatusInput) {
+      rect.vncStatusInput.value = rect.vncTarget;
+    }
+    scheduleWorkspaceSave();
+  });
+  connect.addEventListener("click", () => {
+    if (rect.vnc?.rfb) {
+      disconnectVNCPane(rect);
+    } else {
+      void connectVNCPane(rect);
+    }
+  });
+  ctrlAltDelete.addEventListener("click", () => rect.vnc?.rfb?.sendCtrlAltDel());
+  scale.addEventListener("change", () => {
+    rect.vncScaleMode = normalizeVNCScaleMode(scale.value);
+    applyVNCPreferences(rect);
+    scheduleWorkspaceSave();
+  });
+  viewOnly.addEventListener("change", () => {
+    rect.vncViewOnly = viewOnly.checked;
+    applyVNCPreferences(rect);
+    scheduleWorkspaceSave();
+  });
+  sendClipboard.addEventListener("click", () => void sendVNCClipboard(rect));
+  copyClipboard.addEventListener("click", () => void copyVNCClipboard(rect));
+}
+
+function setVNCMessage(rect, text, error = false) {
+  if (!rect.vnc) {
+    return;
+  }
+  rect.vnc.message.textContent = text;
+  rect.vnc.message.classList.toggle("is-error", error);
+  rect.vnc.message.hidden = false;
+}
+
+function updateVNCControls(rect) {
+  const view = rect.vnc;
+  if (!view) {
+    return;
+  }
+  const connected = Boolean(view.rfb);
+  view.connect.textContent = connected ? "Disconnect" : "Connect";
+  view.address.disabled = connected;
+  view.ctrlAltDelete.disabled = !connected || rect.vncViewOnly;
+  view.sendClipboard.disabled = !connected || rect.vncViewOnly;
+  view.copyClipboard.disabled = !view.remoteClipboard;
+}
+
+function applyVNCPreferences(rect) {
+  const rfb = rect.vnc?.rfb;
+  if (!rfb) {
+    return;
+  }
+  rfb.viewOnly = rect.vncViewOnly;
+  rfb.scaleViewport = rect.vncScaleMode === "fit";
+  rfb.clipViewport = rect.vncScaleMode === "one-to-one";
+  rfb.resizeSession = false;
+  rect.vnc.screen.classList.toggle("is-one-to-one", rect.vncScaleMode === "one-to-one");
+  updateVNCControls(rect);
+}
+
+async function connectVNCPane(rect) {
+  const view = rect?.vnc;
+  if (!view || view.rfb) {
+    return;
+  }
+  const target = normalizeVNCTarget(view.address.value);
+  if (!target) {
+    setVNCMessage(rect, "Enter a host, host:port, or bracketed IPv6 address.", true);
+    return;
+  }
+  view.connect.disabled = true;
+  setVNCMessage(rect, `Connecting to ${target}...`);
+  hideVNCDialog(rect);
+  try {
+    const [module, response] = await Promise.all([
+      loadVNCModule(),
+      fetch("/api/vnc-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId: workspaceID, target }),
+      }),
+    ]);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `VNC proxy failed: ${response.status}`);
+    }
+    if (!rect.vnc || !rectangles.includes(rect)) {
+      return;
+    }
+    rect.vncTarget = data.target || target;
+    view.address.value = rect.vncTarget;
+    if (rect.vncStatusInput) {
+      rect.vncStatusInput.value = rect.vncTarget;
+    }
+    const rfb = new module.RFB(view.screen, vncWebSocketURL(data.path, window.location), {
+      shared: true,
+      credentials: { ...view.credentials },
+      wsProtocols: ["binary"],
+    });
+    view.rfb = rfb;
+    view.intentionalDisconnect = false;
+    rfb.addEventListener("connect", () => {
+      if (view.rfb !== rfb) return;
+      view.screen.hidden = false;
+      view.message.hidden = true;
+      hideVNCDialog(rect);
+      updateVNCControls(rect);
+      rfb.focus({ preventScroll: true });
+    });
+    rfb.addEventListener("disconnect", (event) => {
+      if (view.rfb !== rfb) return;
+      view.rfb = null;
+      view.screen.hidden = true;
+      hideVNCDialog(rect);
+      setVNCMessage(rect, view.intentionalDisconnect || event.detail.clean ? "Disconnected." : "The VNC connection closed unexpectedly.", !view.intentionalDisconnect && !event.detail.clean);
+      view.intentionalDisconnect = false;
+      updateVNCControls(rect);
+    });
+    rfb.addEventListener("credentialsrequired", (event) => showVNCCredentials(rect, rfb, event.detail.types));
+    rfb.addEventListener("serververification", (event) => void showVNCVerification(rect, rfb, event.detail));
+    rfb.addEventListener("securityfailure", (event) => setVNCMessage(rect, event.detail.reason || "VNC authentication failed.", true));
+    rfb.addEventListener("clipboard", (event) => {
+      view.remoteClipboard = event.detail.text || "";
+      updateVNCControls(rect);
+    });
+    applyVNCPreferences(rect);
+    scheduleWorkspaceSave();
+  } catch (error) {
+    setVNCMessage(rect, error.message || "Could not connect to the VNC server.", true);
+  } finally {
+    if (rect.vnc) {
+      rect.vnc.connect.disabled = false;
+      updateVNCControls(rect);
+    }
+  }
+}
+
+function showVNCCredentials(rect, rfb, requestedTypes) {
+  const view = rect.vnc;
+  if (!view || view.rfb !== rfb) return;
+  const fields = vncCredentialFields(requestedTypes);
+  view.dialog.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = "Credentials required";
+  view.dialog.appendChild(title);
+  const inputs = {};
+  for (const type of fields) {
+    const input = document.createElement("input");
+    input.type = type === "password" ? "password" : "text";
+    input.placeholder = type === "target" ? "Target or session" : type[0].toUpperCase() + type.slice(1);
+    input.autocomplete = type === "password" ? "current-password" : "off";
+    input.setAttribute("aria-label", input.placeholder);
+    input.value = view.credentials[type] || "";
+    inputs[type] = input;
+    view.dialog.appendChild(input);
+  }
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = "Continue";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => disconnectVNCPane(rect));
+  view.dialog.append(submit, cancel);
+  view.dialog.onsubmit = (event) => {
+    event.preventDefault();
+    for (const [type, input] of Object.entries(inputs)) view.credentials[type] = input.value;
+    hideVNCDialog(rect);
+    rfb.sendCredentials({ ...view.credentials });
+  };
+  view.dialog.hidden = false;
+  inputs[fields[0]]?.focus();
+}
+
+async function showVNCVerification(rect, rfb, details) {
+  const view = rect.vnc;
+  if (!view || view.rfb !== rfb) return;
+  let identity = details?.type || "unknown type";
+  if (details?.publickey instanceof Uint8Array && crypto.subtle) {
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", details.publickey));
+    identity += ` SHA-256 ${[...digest].map((value) => value.toString(16).padStart(2, "0")).join(":")}`;
+  }
+  if (!rect.vnc || view.rfb !== rfb) return;
+  view.dialog.replaceChildren();
+  const message = document.createElement("span");
+  message.textContent = `Verify this VNC server identity before continuing: ${identity}`;
+  const approve = document.createElement("button");
+  approve.type = "button";
+  approve.textContent = "Trust once";
+  approve.addEventListener("click", () => {
+    hideVNCDialog(rect);
+    rfb.approveServer();
+  });
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => disconnectVNCPane(rect));
+  view.dialog.append(message, approve, cancel);
+  view.dialog.hidden = false;
+  approve.focus();
+}
+
+function showVNCClipboardEntry(rect) {
+  const view = rect.vnc;
+  if (!view?.rfb) return;
+  view.dialog.replaceChildren();
+  const field = document.createElement("textarea");
+  field.placeholder = "Paste text to send to the remote desktop";
+  field.setAttribute("aria-label", "Remote clipboard text");
+  const send = document.createElement("button");
+  send.type = "submit";
+  send.textContent = "Send";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => hideVNCDialog(rect));
+  view.dialog.append(field, send, cancel);
+  view.dialog.onsubmit = (event) => {
+    event.preventDefault();
+    view.rfb?.clipboardPasteFrom(field.value);
+    hideVNCDialog(rect);
+    view.rfb?.focus({ preventScroll: true });
+  };
+  view.dialog.hidden = false;
+  field.focus();
+}
+
+function hideVNCDialog(rect) {
+  if (!rect.vnc) return;
+  rect.vnc.dialog.hidden = true;
+  rect.vnc.dialog.onsubmit = null;
+  rect.vnc.dialog.replaceChildren();
+}
+
+async function sendVNCClipboard(rect) {
+  const rfb = rect.vnc?.rfb;
+  if (!rfb || rect.vncViewOnly) return;
+  try {
+    if (!navigator.clipboard?.readText) throw new Error("clipboard unavailable");
+    rfb.clipboardPasteFrom(await navigator.clipboard.readText());
+    rfb.focus({ preventScroll: true });
+  } catch {
+    showVNCClipboardEntry(rect);
+  }
+}
+
+async function copyVNCClipboard(rect) {
+  const text = rect.vnc?.remoteClipboard;
+  if (!text) return;
+  if (!await writeClipboardText(text)) {
+    setWorkspaceStatus("error", "Clipboard blocked", "The remote text is available to Tessera's own Paste.");
+  }
+  rect.vnc?.rfb?.focus({ preventScroll: true });
+}
+
+function disconnectVNCPane(rect) {
+  const view = rect?.vnc;
+  if (!view?.rfb) return;
+  view.intentionalDisconnect = true;
+  view.rfb.disconnect();
+}
+
+function disposeVNCPane(rect) {
+  const view = rect?.vnc;
+  if (!view) return;
+  view.intentionalDisconnect = true;
+  view.rfb?.disconnect();
+  view.credentials = {};
+  view.remoteClipboard = "";
+  view.rfb = null;
+  rect.vnc = null;
 }
 
 function readAudioVolume() {
@@ -3227,6 +3626,14 @@ function setActivePane(rect, options = {}) {
   }
   const wasActive = activePaneID === rect.id;
   const needsRaise = Boolean(options.raise) && paneNeedsRaise(rectangles, rect);
+  if (wasActive && !needsRaise) {
+    if (options.focusEditor) {
+      focusPane(rect);
+    } else if (options.focusElement) {
+      rect.element.focus({ preventScroll: true });
+    }
+    return;
+  }
   clearActivePaneClass();
   activeRect = rect;
   activePaneID = rect.id;
@@ -3348,23 +3755,15 @@ function clearActivePaneClass() {
   }
 }
 
-// Ghostty's cursor blinks continuously once started, so tie it to pane focus
-// ourselves rather than leaving every terminal blinking at once. Disabling
-// blink alone leaves a static cursor drawn (ghostty's stopCursorBlink()
-// forces it visible), so also reach into the renderer to hide it entirely
-// on panes that aren't focused.
+// Only the active pane blinks. The adapter requests a frame per blink tick
+// and hides inactive cursors without keeping an idle animation loop alive.
 function setTerminalCursorBlink(rect, blink) {
   if (rect?.kind !== "terminal" || !rect.terminal?.term) {
     return;
   }
   try {
     const { term } = rect.terminal;
-    term.options.cursorBlink = blink;
-    if (term.renderer) {
-      term.renderer.cursorVisible = blink;
-    }
-    term.setRenderContinuous?.(blink && !rect.minimized);
-    term.requestRender?.();
+    term.setCursorActive?.(blink && !rect.minimized);
   } catch {
     // Terminal not fully initialized yet; ignore.
   }
@@ -3377,7 +3776,7 @@ function updateTerminalRenderState(rect) {
   }
   const paused = Boolean(rect.minimized);
   term.setRenderPaused?.(paused);
-  term.setRenderContinuous?.(!paused && activeRect === rect);
+  term.setCursorActive?.(!paused && activeRect === rect);
   if (!paused) {
     term.requestRender?.();
   }
@@ -3390,7 +3789,8 @@ function handleDocumentVisibilityChange() {
     // so anything scheduled goes out now. This one takes the ordinary path:
     // the page is still here to read the response and keep its revision in
     // step, which the exit flush cannot do.
-    void flushWorkspaceSave();
+    void saveWorkspace();
+    void flushUserSettingsSave().catch(reportSettingsSaveError);
     return;
   }
   // A backgrounded tab has its timers throttled, so a pane that went to
@@ -3815,32 +4215,47 @@ function parentPathFromFilePath(path) {
 }
 
 function setRectangle(rect, next) {
-  rect.x = Math.round(next.x);
-  rect.y = Math.round(next.y);
-  rect.width = Math.max(1, Math.round(next.width));
-  rect.height = Math.max(1, Math.round(next.height));
-  rect.element.style.transform = `translate(${rect.x}px, ${rect.y}px)`;
-  rect.element.style.width = `${rect.width}px`;
-  rect.element.style.height = `${rect.height}px`;
-  if (rect.editor) {
-    rect.editor.requestMeasure();
+  const x = Math.round(next.x);
+  const y = Math.round(next.y);
+  const width = Math.max(1, Math.round(next.width));
+  const height = Math.max(1, Math.round(next.height));
+  // Creation and pane-type changes pass the pane itself to force layout.
+  const sizeChanged = rect === next || rect.width !== width || rect.height !== height;
+  if (rect.x === x && rect.y === y && !sizeChanged) {
+    return;
   }
-  requestTerminalFit(rect);
+  rect.x = x;
+  rect.y = y;
+  rect.width = width;
+  rect.height = height;
+  rect.element.style.transform = `translate(${rect.x}px, ${rect.y}px)`;
+  if (sizeChanged) {
+    rect.element.style.width = `${rect.width}px`;
+    rect.element.style.height = `${rect.height}px`;
+    rect.editor?.requestMeasure();
+    requestTerminalFit(rect);
+  }
   if (!isArrangingWindows) {
     arrangeOutSnapshot = null;
   }
   scheduleWorkspaceSave();
 }
 
-async function loadWorkspace() {
+async function fetchWorkspace(id) {
+  const response = await fetch(`/api/workspace/${encodeURIComponent(id)}`);
+  if (!response.ok) throw new Error(`load workspace failed: ${response.status}`);
+  const workspace = await response.json();
+  if (!workspace || workspace.id !== id || typeof workspace.revision !== "string"
+    || !Array.isArray(workspace.panes) || workspace.panes.some((pane) => !pane || typeof pane.id !== "string")) {
+    throw new Error("Invalid workspace response");
+  }
+  return workspace;
+}
+
+function loadWorkspace(workspace) {
   isLoadingWorkspace = true;
   setWorkspaceStatus("loading", "Loading...");
   try {
-    const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceID)}`);
-    if (!response.ok) {
-      throw new Error(`load workspace failed: ${response.status}`);
-    }
-    const workspace = await response.json();
     workspaceID = workspace.id || "default";
     workspaceRevision = workspace.revision || "";
     workspaceSaveSuspended = false;
@@ -3864,6 +4279,9 @@ async function loadWorkspace() {
         editorTabs: pane.editorTabs,
         fileBrowserSidebarWidth: pane.fileBrowserSidebarWidth,
         browserUrl: pane.browserUrl,
+        vncTarget: pane.vncTarget,
+        vncViewOnly: Boolean(pane.vncViewOnly),
+        vncScaleMode: pane.vncScaleMode,
         zIndex: pane.zIndex || 0,
         minimized: Boolean(pane.minimized),
         isFull: Boolean(pane.isFull),
@@ -3879,12 +4297,8 @@ async function loadWorkspace() {
     if (activeLoadedRect) {
       setActivePane(activeLoadedRect, { raise: false, focusEditor: true });
     }
-    await syncRunningCommands();
     updateDeskbar();
     setWorkspaceStatus("saved", "Saved", "Workspace loaded");
-  } catch (error) {
-    console.warn(error);
-    setWorkspaceStatus("error", "Load failed", error.message || "Workspace load failed");
   } finally {
     isLoadingWorkspace = false;
   }
@@ -3898,6 +4312,7 @@ function clearRectanglesForLoad() {
   for (const rect of rectangles.splice(0)) {
     disposeTerminal(rect);
     disposeBrowserPane(rect);
+    disposeVNCPane(rect);
     if (rect.audio) {
       rect.audio.element.pause();
       rect.audio.element.removeAttribute("src");
@@ -3939,25 +4354,16 @@ function scheduleUserSettingsSave() {
   if (!currentUser) {
     return;
   }
+  userSettingsDirty = true;
   window.clearTimeout(userSettingsSaveTimer);
   userSettingsSaveTimer = window.setTimeout(() => {
-    void saveUserSettings().catch((error) => {
-      console.warn(error);
-      setWorkspaceStatus("error", "Settings save failed", error.message || "Settings save failed");
-    });
+    void saveUserSettings().catch(reportSettingsSaveError);
   }, 250);
 }
 
-async function saveUserSettings() {
-  window.clearTimeout(userSettingsSaveTimer);
-  userSettingsSaveTimer = null;
-  if (!currentUser) {
-    return;
-  }
-  const response = await fetch(userAPIPath("settings"), {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+function userSettingsPayload() {
+  return {
+      revision: userSettingsRevision,
       defaultPaneFontSize,
       defaultTheme,
       themeId: themeID,
@@ -3968,17 +4374,64 @@ async function saveUserSettings() {
       terminalTerm,
       terminalFont,
       terminalColorMode,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`save user settings failed: ${response.status}`);
+  };
+}
+
+function reportSettingsSaveError(error) {
+  console.warn(error);
+  setWorkspaceStatus("error", "Settings save failed", error.message || "Settings save failed");
+}
+
+async function saveUserSettings() {
+  window.clearTimeout(userSettingsSaveTimer);
+  userSettingsSaveTimer = null;
+  if (userSettingsSavePromise) return userSettingsSavePromise;
+  if (!currentUser || !userSettingsDirty) return;
+  const url = userAPIPath("settings");
+  userSettingsSavePromise = (async () => {
+    while (userSettingsDirty) {
+      userSettingsDirty = false;
+      const body = userSettingsPayload();
+      body.nextRevision = newWorkspaceRevision();
+      userSettingsInFlightRevision = body.nextRevision;
+      try {
+        const response = await fetch(url, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body), keepalive: true,
+        });
+        if (!response.ok) throw new Error(response.status === 409
+          ? "Settings changed in another browser. Refresh before saving settings again."
+          : `save user settings failed: ${response.status}`);
+        const saved = await response.json();
+        userSettingsRevision = saved.revision;
+      } catch (error) {
+        userSettingsDirty = true;
+        throw error;
+      } finally {
+        userSettingsInFlightRevision = "";
+      }
+    }
+  })();
+  try {
+    await userSettingsSavePromise;
+  } finally {
+    userSettingsSavePromise = null;
   }
 }
 
+function saveUserSettingsOnExit() {
+  if (!currentUser || (!userSettingsDirty && !userSettingsSavePromise)) return;
+  const body = userSettingsPayload();
+  body.nextRevision = newWorkspaceRevision();
+  body.alternateRevision = userSettingsInFlightRevision;
+  void fetch(userAPIPath("settings"), {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body), keepalive: true,
+  }).catch(() => {});
+}
+
 async function flushUserSettingsSave() {
-  if (userSettingsSaveTimer) {
-    await saveUserSettings();
-  }
+  await saveUserSettings();
 }
 
 async function flushAllPersistence() {
@@ -3987,11 +4440,13 @@ async function flushAllPersistence() {
 
 async function flushWorkspaceSave() {
   if (isLoadingWorkspace || workspaceSaveSuspended || workspaceNeedsRevalidation) {
-    return;
+    throw new Error("Workspace saving is paused. Resolve the connection or conflict before leaving this session.");
   }
   window.clearTimeout(saveTimer);
   saveTimer = null;
-  await saveWorkspace();
+  if (!await saveWorkspace()) {
+    throw new Error("Workspace could not be saved. Your current session has been kept open.");
+  }
 }
 
 // A scheduled save lives in a timer, and a page that goes away takes the timer
@@ -4010,7 +4465,19 @@ function saveWorkspaceOnExit() {
   }
   window.clearTimeout(saveTimer);
   saveTimer = null;
-  const body = JSON.stringify(workspaceSavePayload().body);
+  const { body: payload, contentByPaneID } = workspaceSavePayload();
+  // The pending save may contain content changed and then reverted locally.
+  // Carry all final content rather than comparing against the last ACK.
+  if (workspaceInFlightRevision) {
+    for (const pane of payload.panes) {
+      Object.assign(pane, contentByPaneID.get(pane.id));
+      delete pane.bufferTextUnchanged;
+      delete pane.editorTabsUnchanged;
+    }
+  }
+  payload.nextRevision = newWorkspaceRevision();
+  payload.alternateRevision = workspaceInFlightRevision;
+  const body = JSON.stringify(payload);
   void fetch(`/api/workspace/${encodeURIComponent(workspaceID)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -4021,31 +4488,36 @@ function saveWorkspaceOnExit() {
     // not survive the unload, which is still better than not trying. Trimming
     // it is not an option — a pane whose content is left out of a save is a
     // pane the server keeps its old copy of.
-    keepalive: body.length <= maxKeepaliveSaveBytes,
+    keepalive: new TextEncoder().encode(body).byteLength <= maxKeepaliveSaveBytes,
   }).catch(() => {});
 }
 
 async function saveWorkspace() {
   if (isLoadingWorkspace || workspaceSaveSuspended) {
-    return;
+    return false;
   }
   if (workspaceNeedsRevalidation) {
     workspaceSaveQueued = true;
-    return;
+    return false;
   }
   if (workspaceSavePromise) {
     workspaceSaveQueued = true;
     return workspaceSavePromise;
   }
-  workspaceSavePromise = performWorkspaceSave();
+  // Every waiter shares the entire drain, including edits queued during a
+  // request. Waiting only for the first request can navigate away too early.
+  workspaceSavePromise = (async () => {
+    do {
+      workspaceSaveQueued = false;
+      if (!await performWorkspaceSave()) return false;
+      if (workspaceSaveSuspended || workspaceNeedsRevalidation) return false;
+    } while (workspaceSaveQueued || saveTimer !== null);
+    return true;
+  })();
   try {
-    await workspaceSavePromise;
+    return await workspaceSavePromise;
   } finally {
     workspaceSavePromise = null;
-    if (workspaceSaveQueued && !workspaceSaveSuspended && !workspaceNeedsRevalidation) {
-      workspaceSaveQueued = false;
-      await saveWorkspace();
-    }
   }
 }
 
@@ -4079,6 +4551,9 @@ function workspaceSavePayload() {
     lastExportPath: rect.kind === "terminal" ? "" : (rect.lastExportPath || ""),
     fileBrowserSidebarWidth: rect.kind === fileBrowserPaneKind ? rect.fileBrowserSidebarWidth : defaultFileBrowserSidebarWidth,
     browserUrl: rect.kind === browserPaneKind ? rect.browserUrl : "",
+    vncTarget: rect.kind === vncPaneKind ? rect.vncTarget : "",
+    vncViewOnly: rect.kind === vncPaneKind && rect.vncViewOnly,
+    vncScaleMode: rect.kind === vncPaneKind ? rect.vncScaleMode : "fit",
     x: rect.x,
     y: rect.y,
     width: rect.width,
@@ -4114,6 +4589,8 @@ async function performWorkspaceSave() {
   saveTimer = null;
   setWorkspaceStatus("saving", "Saving...");
   const { body, contentByPaneID } = workspaceSavePayload();
+  body.nextRevision = newWorkspaceRevision();
+  workspaceInFlightRevision = body.nextRevision;
 
   try {
     const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceID)}`, {
@@ -4125,7 +4602,7 @@ async function performWorkspaceSave() {
     const outcome = workspaceSaveOutcome(workspaceRevision, response.status, data.revision);
     if (outcome.suspended) {
       showWorkspaceConflict();
-      return;
+      return false;
     }
     if (!response.ok) {
       throw new Error(`save workspace failed: ${response.status}`);
@@ -4135,11 +4612,15 @@ async function performWorkspaceSave() {
     if (revision === saveRevision && saveTimer === null) {
       setWorkspaceStatus("saved", "Saved");
     }
+    return true;
   } catch (error) {
     if (revision === saveRevision && saveTimer === null) {
       console.warn(error);
       setWorkspaceStatus("error", "Save failed", error.message || "Workspace save failed");
     }
+    return false;
+  } finally {
+    workspaceInFlightRevision = "";
   }
 }
 
@@ -4479,7 +4960,7 @@ async function startTerminal(rect) {
     const modulePromise = loadGhosttyModule();
     await loadTerminalFont(document.fonts, terminalFont, rect.fontSize);
     const { FitAddon, Terminal, WrappedHTTPLinkProvider } = await modulePromise;
-    if (!rect.terminalContainer || rect.kind !== "terminal") {
+    if (!rect.terminalContainer || rect.kind !== "terminal" || !rectangles.includes(rect)) {
       return;
     }
 
@@ -4499,7 +4980,7 @@ async function startTerminal(rect) {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(rect.terminalContainer);
+    openTerminalWithoutFocus(term, rect.terminalContainer);
     term.attachCustomKeyEventHandler((event) => {
       if (isTerminalCopyShortcut(event)) {
         void applyTerminalMenuAction("copy", rect);
@@ -4539,12 +5020,6 @@ async function startTerminal(rect) {
     term.registerLinkProvider(new WrappedHTTPLinkProvider(term));
     fit.fit();
     fit.observeResize();
-    // ghostty focuses itself inside open(); hand focus back to the active
-    // pane, or a session load's last-opened terminal ends up with the input.
-    if (activeRect && activeRect !== rect) {
-      setActivePane(activeRect, { focusEditor: true });
-    }
-
     const dataDisposable = term.onData((data) => {
       sendTerminalInput(rect.terminal?.socket, data);
     });
@@ -4606,9 +5081,8 @@ function connectTerminalSocket(rect) {
     clearTerminalStatus(rect);
     setPaneCwd(rect, rect.cwd, { silent: true });
     sendTerminalGridSize(terminalState);
-    // Only the active pane's terminal may take focus when it comes up;
-    // otherwise whichever terminal connects last steals it.
-    if (activeRect === rect) {
+    // Reconnection must not take keyboard focus away from a dialog.
+    if (activeRect === rect && (document.activeElement === document.body || rect.element.contains(document.activeElement))) {
       term.focus();
     }
     if (rect.terminalStartupCommand) {
@@ -5256,6 +5730,8 @@ function defaultPaneTitle(kind) {
       ? "Text Editor"
       : kind === browserPaneKind
         ? "Browser"
+      : kind === vncPaneKind
+        ? "VNC"
       : kind === audioPaneKind
         ? "Audio"
       : kind === "worksheet"
@@ -5507,6 +5983,17 @@ function renderWorkspaceMenu() {
     createBrowserPane(point.x, point.y);
   });
   workspaceMenu.appendChild(browserButton);
+
+  const vncButton = document.createElement("button");
+  vncButton.type = "button";
+  vncButton.textContent = "New VNC";
+  vncButton.className = "is-command";
+  vncButton.addEventListener("click", () => {
+    const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
+    hideWorkspaceMenu();
+    createVNCPane(point.x, point.y);
+  });
+  workspaceMenu.appendChild(vncButton);
 
   const audioButton = document.createElement("button");
   audioButton.type = "button";
@@ -7372,6 +7859,10 @@ function buildPaletteCommands() {
     const point = paneSpawnPoint();
     createBrowserPane(point.x, point.y);
   } });
+  commands.push({ id: "new-vnc", label: "New VNC", hint: "remote desktop", run: () => {
+    const point = paneSpawnPoint();
+    createVNCPane(point.x, point.y);
+  } });
   commands.push({ id: "new-audio", label: "New Audio", hint: "create", run: () => {
     const point = paneSpawnPoint();
     createAudioPane(point.x, point.y);
@@ -7626,6 +8117,7 @@ function renderWindowTypeMenu() {
     [fileBrowserPaneKind, "File Browser"],
     [textEditorPaneKind, "Text Editor"],
     [browserPaneKind, "Browser"],
+    [vncPaneKind, "VNC"],
     [audioPaneKind, "Audio"],
   ];
   for (const [kind, label] of actions) {
@@ -7645,7 +8137,7 @@ function finalizePendingRectangle(rect, kind) {
   if (!rect || rect.kind !== "pending" || !rectangles.includes(rect)) {
     return;
   }
-  const paneKind = kind === "terminal" || kind === fileBrowserPaneKind || kind === textEditorPaneKind || kind === browserPaneKind || kind === audioPaneKind
+  const paneKind = kind === "terminal" || kind === fileBrowserPaneKind || kind === textEditorPaneKind || kind === browserPaneKind || kind === vncPaneKind || kind === audioPaneKind
     ? kind
     : "worksheet";
   const box = rectangleBox(rect);
@@ -7674,6 +8166,8 @@ function workspaceMenuLabel(rect) {
         ? " [editor]"
       : rect.kind === browserPaneKind
         ? " [browser]"
+      : rect.kind === vncPaneKind
+        ? " [vnc]"
       : rect.kind === audioPaneKind
         ? " [audio]"
       : "";
@@ -7746,6 +8240,18 @@ function createBrowserPane(x, y) {
   setRectangle(rect, rect);
   setActivePane(rect, { raise: true, focusEditor: true });
   rect.browser?.address.focus();
+  scheduleWorkspaceSave();
+  return rect;
+}
+
+function createVNCPane(x, y) {
+  const rect = createRectangle(x, Math.max(y, tabHeight), 720, 480, {
+    kind: vncPaneKind,
+  });
+  clampIntoBoard(rect);
+  setRectangle(rect, rect);
+  setActivePane(rect, { raise: true, focusEditor: true });
+  rect.vnc?.address.focus();
   scheduleWorkspaceSave();
   return rect;
 }
@@ -8926,6 +9432,7 @@ function destroyRectangle(rect, options = {}) {
   }
   disposeTerminal(rect, { closeServer: options.closeServerTerminal });
   disposeBrowserPane(rect);
+  disposeVNCPane(rect);
   if (rect.audio) {
     rect.audio.element.pause();
     rect.audio.element.removeAttribute("src");
@@ -8971,6 +9478,12 @@ function handlePaneKeyboardShortcuts(event) {
 // document-level handler and by keystrokes relayed out of browser-pane
 // iframes, which never reach this document on their own.
 function paneShortcutAction(keys) {
+  // Dialogs and pickers own keyboard input, including relayed iframe keys.
+  if ([settingsModal, renameWindowModal, sessionsModal, sessionActionModal,
+    serverUpdateModal, serverConnectionModal, workspaceConflictModal, helpModal,
+    directoryBrowser, userSelect].some((overlay) => !overlay.hidden)) {
+    return null;
+  }
   const primary = (keys.ctrlKey || keys.metaKey) && !keys.altKey && !keys.shiftKey;
   const alt = keys.altKey && !keys.ctrlKey && !keys.metaKey && !keys.shiftKey;
 
@@ -8979,6 +9492,9 @@ function paneShortcutAction(keys) {
   }
   if (primary && (keys.key === "k" || keys.key === "K")) {
     return { run: toggleCommandPalette };
+  }
+  if (!commandPalette.hidden || !windowList.hidden) {
+    return null;
   }
   if (primary && keys.key === "Enter") {
     return { run: () => runPaneCommand(getActivePane()), propagate: true };

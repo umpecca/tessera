@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,7 @@ var (
 	ErrInvalidSessionName = errors.New("session name must be between 1 and 80 characters")
 	ErrSessionNameExists  = errors.New("a session with that name already exists")
 	ErrLastSession        = errors.New("the final session cannot be destroyed")
+	ErrSettingsConflict   = errors.New("user settings have changed since they were loaded")
 )
 
 type Session struct {
@@ -25,6 +27,9 @@ type Session struct {
 }
 
 type UserSettings struct {
+	Revision                 string  `json:"revision"`
+	NextRevision             string  `json:"nextRevision,omitempty"`
+	AlternateRevision        string  `json:"alternateRevision,omitempty"`
 	UserID                   string  `json:"userId"`
 	DefaultPaneFontSize      int     `json:"defaultPaneFontSize"`
 	DefaultTheme             string  `json:"defaultTheme"`
@@ -311,14 +316,14 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 	err := s.db.QueryRowContext(ctx, `
 SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled,
        terminal_wheel_sensitivity, editor_wheel_sensitivity, oled_window_border_size,
-       terminal_term, terminal_font, terminal_color_mode
+       terminal_term, terminal_font, terminal_color_mode, revision
 FROM user_settings
 WHERE user_id = ?`, userID).Scan(
 		&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme,
 		&settings.ThemeID, &settings.DeskbarButtonEnabled,
 		&settings.TerminalWheelSensitivity, &settings.EditorWheelSensitivity,
 		&settings.OLEDWindowBorderSize, &settings.TerminalTERM, &settings.TerminalFont,
-		&settings.TerminalColorMode)
+		&settings.TerminalColorMode, &settings.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		now := nowText()
 		if _, err := s.db.ExecContext(ctx, `
@@ -326,9 +331,9 @@ INSERT OR IGNORE INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
   editor_wheel_sensitivity, oled_window_border_size, terminal_term, terminal_font,
-  terminal_color_mode, created_at, updated_at
+  terminal_color_mode, created_at, updated_at, revision
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalColorMode, now, now); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalColorMode, now, now, newID()); err != nil {
 			return nil, fmt.Errorf("create user settings: %w", err)
 		}
 		return s.LoadUserSettings(ctx, userID)
@@ -355,6 +360,17 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 	if settings.UserID == "" {
 		settings.UserID = DefaultWorkspaceID
 	}
+	nextRevision := settings.NextRevision
+	if nextRevision == "" {
+		nextRevision = newID()
+	} else if decoded, err := hex.DecodeString(nextRevision); err != nil || len(decoded) != 16 || nextRevision == settings.Revision || nextRevision == settings.AlternateRevision {
+		return errors.New("invalid next settings revision")
+	}
+	if settings.AlternateRevision != "" {
+		if decoded, err := hex.DecodeString(settings.AlternateRevision); err != nil || len(decoded) != 16 || settings.Revision == "" {
+			return errors.New("invalid alternate settings revision")
+		}
+	}
 	settings.DefaultPaneFontSize = normalizeDefaultPaneFontSize(settings.DefaultPaneFontSize)
 	settings.DefaultTheme = normalizeThemeID(settings.DefaultTheme)
 	settings.ThemeID = normalizeThemeID(settings.ThemeID)
@@ -365,14 +381,14 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 	settings.TerminalFont = NormalizeTerminalFont(settings.TerminalFont)
 	settings.TerminalColorMode = NormalizeTerminalColorMode(settings.TerminalColorMode)
 	now := nowText()
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 INSERT INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
   editor_wheel_sensitivity, oled_window_border_size, terminal_term, terminal_font,
-  terminal_color_mode, created_at, updated_at
+  terminal_color_mode, created_at, updated_at, revision
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
   default_theme = excluded.default_theme,
@@ -384,13 +400,26 @@ ON CONFLICT(user_id) DO UPDATE SET
   terminal_term = excluded.terminal_term,
   terminal_font = excluded.terminal_font,
   terminal_color_mode = excluded.terminal_color_mode,
-  updated_at = excluded.updated_at`, settings.UserID, settings.DefaultPaneFontSize,
+  updated_at = excluded.updated_at,
+  revision = excluded.revision
+WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? <> '')`, settings.UserID, settings.DefaultPaneFontSize,
 		settings.DefaultTheme, settings.ThemeID, settings.DeskbarButtonEnabled,
 		settings.TerminalWheelSensitivity, settings.EditorWheelSensitivity,
 		settings.OLEDWindowBorderSize, settings.TerminalTERM, settings.TerminalFont,
-		settings.TerminalColorMode, now, now)
+		settings.TerminalColorMode, now, now, nextRevision,
+		settings.Revision, settings.Revision, settings.AlternateRevision, settings.AlternateRevision)
 	if err != nil {
 		return fmt.Errorf("save user settings: %w", err)
 	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check settings save: %w", err)
+	}
+	if changed == 0 {
+		return ErrSettingsConflict
+	}
+	settings.Revision = nextRevision
+	settings.NextRevision = ""
+	settings.AlternateRevision = ""
 	return nil
 }

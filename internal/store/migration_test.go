@@ -35,7 +35,7 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 	assertTableColumns(t, st.db, "panes", []string{
 		"id", "workspace_id", "kind", "title", "buffer_text", "editor_mode",
 		"font_size", "cwd", "last_export_path", "editor_tabs",
-		"file_browser_sidebar_width", "browser_url", "is_full", "restore_box", "minimized",
+		"file_browser_sidebar_width", "browser_url", "vnc_settings", "is_full", "restore_box", "minimized",
 		"x", "y", "width", "height", "z_index", "position", "created_at",
 		"updated_at",
 	})
@@ -60,7 +60,7 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 		"user_id", "default_pane_font_size", "default_theme", "theme_id",
 		"deskbar_button_enabled", "terminal_wheel_sensitivity",
 		"editor_wheel_sensitivity", "oled_window_border_size", "terminal_term",
-		"terminal_font", "terminal_color_mode", "created_at", "updated_at",
+		"terminal_font", "terminal_color_mode", "created_at", "updated_at", "revision",
 	})
 	if err := st.Close(); err != nil {
 		t.Fatalf("close fresh store: %v", err)

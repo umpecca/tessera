@@ -8,6 +8,80 @@ import (
 	"testing"
 )
 
+func TestFinalWorkspaceSaveSupersedesOnlyItsOwnPendingSave(t *testing.T) {
+	for _, order := range []string{"pending-first", "final-first", "another-client"} {
+		t.Run(order, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := Open(ctx, filepath.Join(t.TempDir(), "workspace.sqlite3"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			initial, err := st.LoadDefaultWorkspace(ctx, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending := *initial
+			pending.NextRevision = "11111111111111111111111111111111"
+			pending.Panes = []Pane{{ID: "editor", BufferText: "intermediate"}, {ID: "terminal"}}
+			pending.ActivePaneID = "editor"
+			final := *initial
+			final.NextRevision = "22222222222222222222222222222222"
+			final.AlternateRevision = pending.NextRevision
+			final.Panes = []Pane{{ID: "editor", BufferText: "reverted"}, {ID: "terminal"}}
+			final.ActivePaneID = "terminal"
+			if order != "final-first" {
+				if err := st.SaveWorkspace(ctx, &pending); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if order == "another-client" {
+				other := pending
+				other.ActivePaneID = "editor"
+				if err := st.SaveWorkspace(ctx, &other); err != nil {
+					t.Fatal(err)
+				}
+				if err := st.SaveWorkspace(ctx, &final); !errors.Is(err, ErrWorkspaceConflict) {
+					t.Fatalf("final save overwrote another client: %v", err)
+				}
+				return
+			}
+			if err := st.SaveWorkspace(ctx, &final); err != nil {
+				t.Fatal(err)
+			}
+			if order == "final-first" {
+				if err := st.SaveWorkspace(ctx, &pending); !errors.Is(err, ErrWorkspaceConflict) {
+					t.Fatalf("older pending save overwrote final save: %v", err)
+				}
+			}
+			loaded, err := st.LoadWorkspace(ctx, initial.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.ActivePaneID != "terminal" || loaded.Panes[0].BufferText != "reverted" || loaded.Revision != final.Revision {
+				t.Fatalf("final state not preserved: %+v", loaded)
+			}
+		})
+	}
+}
+
+func TestWorkspaceSaveRejectsReusedNextRevision(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "workspace.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ws, err := st.LoadDefaultWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.NextRevision = ws.Revision
+	if err := st.SaveWorkspace(ctx, ws); err == nil {
+		t.Fatal("accepted unchanged revision")
+	}
+}
+
 func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
@@ -38,6 +112,9 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 		LastExportPath: filepath.Join(defaultCwd, "first.txt"),
 		EditorTabs:     `{"active":0,"tabs":[{"path":"first.txt","text":"pwd\noutput\n"}]}`,
 		BrowserURL:     "http://localhost:5000/",
+		VNCTarget:      "desktop.example:5901",
+		VNCViewOnly:    true,
+		VNCScaleMode:   "one-to-one",
 		Minimized:      true,
 		X:              11,
 		Y:              22,
@@ -93,6 +170,9 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	}
 	if loaded.Panes[0].BrowserURL != "http://localhost:5000/" {
 		t.Fatalf("first pane browser URL = %q", loaded.Panes[0].BrowserURL)
+	}
+	if loaded.Panes[0].VNCTarget != "desktop.example:5901" || !loaded.Panes[0].VNCViewOnly || loaded.Panes[0].VNCScaleMode != "one-to-one" {
+		t.Fatalf("first pane VNC settings were not persisted: %+v", loaded.Panes[0])
 	}
 	if loaded.Panes[0].EditorMode != "normal" {
 		t.Fatalf("first pane editor mode = %q, want normal", loaded.Panes[0].EditorMode)

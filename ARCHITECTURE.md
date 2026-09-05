@@ -187,6 +187,11 @@ Current pane types:
   cookies before forwarding. A client-only help dialog is shared by the Browser
   toolbar's network icon and the command palette; it validates and launches a
   loopback address without adding discovery or port-scanning APIs.
+- **VNC:** manually connected noVNC remote-desktop view. A five-minute,
+  single-use capability authorizes one same-origin binary WebSocket, which the
+  Go host bridges to the requested TCP target. Targets and view preferences are
+  durable; credentials and server-verification decisions exist only in the
+  browser page.
 - **Audio:** controls and listens to one host-wide source. Global transport state
   is synchronized by SSE while volume, mute, and autoplay recovery are local to
   each browser.
@@ -479,6 +484,10 @@ Key Security Tools/Practices:
   reach network resources visible to the host.
 - Restrict Browser pane proxy sessions to dial-validated loopback addresses;
   never turn the path proxy into a general host-network proxy.
+- Treat VNC access as an explicitly broad exception: its bridge accepts any
+  TCP destination reachable from the host. Capability tokens, same-origin
+  checks, rate limiting, and audit records do not replace authentication or
+  destination policy, so deployments must remain restricted to trusted users.
 - Reject cross-origin terminal WebSocket connections. This is defense in depth,
   not authentication.
 - Scope process teardown by workspace so deleting one session does not terminate

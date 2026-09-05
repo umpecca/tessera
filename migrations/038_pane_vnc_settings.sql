@@ -1,0 +1,1 @@
+ALTER TABLE panes ADD COLUMN vnc_settings TEXT NOT NULL DEFAULT '';

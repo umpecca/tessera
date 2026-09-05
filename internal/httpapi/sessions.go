@@ -170,7 +170,10 @@ func (a *API) userSettings(w http.ResponseWriter, r *http.Request, userID string
 			return
 		}
 		settings.UserID = userID
-		if err := a.Store.SaveUserSettings(r.Context(), &settings); err != nil {
+		if err := a.Store.SaveUserSettings(r.Context(), &settings); errors.Is(err, store.ErrSettingsConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		} else if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

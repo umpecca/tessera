@@ -1,3 +1,9 @@
+export function newWorkspaceRevision(random = globalThis.crypto) {
+  // getRandomValues also works on HTTP LAN hosts where randomUUID is absent.
+  return Array.from(random.getRandomValues(new Uint8Array(16)),
+    (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function workspaceSaveOutcome(currentRevision, status, serverRevision = "") {
   if (status === 409) {
     return { revision: currentRevision || "", suspended: true };

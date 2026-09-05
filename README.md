@@ -230,10 +230,36 @@ Current pane types:
   project-specific configuration. Open **Browse Local Port Help** from the
   command palette (`BL`) or use the network icon in a Browser pane for an
   interactive guide and launcher.
+- **VNC:** an interactive remote desktop powered by the bundled noVNC client.
+  Enter a DNS name, IPv4 address, or bracketed IPv6 address with an optional
+  port, then choose **Connect**. The target and display preferences persist,
+  but credentials remain only in the current browser page and connections are
+  never restored automatically.
 - **Audio:** a view of the host-wide shared audio station. It can play a host
   file, proxy a direct HTTP(S) audio response, or capture audio rendered by a
   linked Terminal process tree. Transport controls are shared; browser volume
   and mute are local to each listener.
+
+### VNC connections
+
+VNC panes connect from the Tessera host directly to any requested TCP address;
+port 5900 is used when none is given. Browser-to-Tessera traffic uses the
+page's `ws` or `wss` transport, while the Tessera-to-VNC leg is ordinary TCP
+unless the negotiated VNC security scheme protects it. SSH tunneling, VNC file
+transfer, audio, power controls, automatic reconnect, remote-resolution resize,
+and saved credentials are not included.
+
+The VNC bridge can reach public, private, loopback, and host-local services and
+therefore acts as a general TCP capability for anyone who can access Tessera.
+Run Tessera only for trusted users on trusted networks. The same-origin checks
+and short-lived one-use connection tokens are defense in depth, not user
+authentication or a destination firewall.
+
+Use **Fit** to scale the remote desktop into its window or **1:1** for native
+pixels with scrolling. **View only** suppresses remote input. Clipboard text is
+never moved automatically: the up-arrow sends local clipboard text and the
+down-arrow copies the most recently received remote text. A visible text field
+is offered when the browser refuses clipboard access.
 
 ### Terminal appearance
 
@@ -462,6 +488,9 @@ Frontend dependencies are bundled with esbuild and committed under
 npm install
 npm run build:web
 ```
+
+The VNC bundle uses noVNC 1.7.0 under MPL-2.0 and carries its upstream license
+notices beside `web/vendor/vnc.js`.
 
 Routine checks:
 

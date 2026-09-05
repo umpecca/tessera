@@ -6,6 +6,7 @@ import {
 } from "ghostty-web";
 
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
+import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
 import { SixelRenderer, installSixelRenderer } from "./terminal-sixel-renderer.mjs";
 
 const renderScheduler = new TerminalRenderScheduler();
@@ -19,15 +20,38 @@ globalThis.addEventListener?.("resize", () => {
 // visibility and activity state without depending on Ghostty internals.
 class Terminal extends GhosttyTerminal {
   constructor(options) {
-    super(options);
+    super({ ...options, cursorBlink: false });
+    this.cursorBlink = new TerminalCursorBlink((visible) => {
+      if (this.renderer) this.renderer.cursorVisible = visible;
+      this.requestRender();
+    });
+    this.renderPaused = false;
     this.coreID = __TESSERA_CORE_ID__;
     this.sixelRenderer = new SixelRenderer();
     this.desiredCols = this.cols;
     this.desiredRows = this.rows;
+    this.onScroll(() => this.requestRender());
   }
 
   startRenderLoop() {
     renderScheduler.register(this, () => this.renderScheduledFrame());
+  }
+
+  open(container) {
+    this.opening = true;
+    try {
+      super.open(container);
+    } finally {
+      this.opening = false;
+    }
+  }
+
+  focus() {
+    // Ghostty's open() calls focus(), which also queues a second focus in a
+    // timer. Startup must never steal focus from the restored pane or dialog.
+    if (!this.opening && this.isOpen && !this.isDisposed) {
+      this.element?.focus({ preventScroll: true });
+    }
   }
 
   renderScheduledFrame() {
@@ -36,6 +60,7 @@ class Terminal extends GhosttyTerminal {
       return;
     }
     const pixelRatio = globalThis.devicePixelRatio || 1;
+    this.renderer.cursorVisible = this.cursorBlink.cursorVisible;
     const resolutionChanged = this.renderer.devicePixelRatio !== pixelRatio;
     if (resolutionChanged) {
       this.renderer.devicePixelRatio = pixelRatio;
@@ -67,6 +92,12 @@ class Terminal extends GhosttyTerminal {
   reset() {
     this.sixelRenderer.clear();
     super.reset();
+    this.requestRender();
+  }
+
+  clear() {
+    super.clear();
+    this.requestRender();
   }
 
   processTerminalResponses() {
@@ -144,15 +175,18 @@ class Terminal extends GhosttyTerminal {
     renderScheduler.request(this);
   }
 
-  setRenderContinuous(continuous) {
-    renderScheduler.setContinuous(this, continuous);
+  setCursorActive(active) {
+    this.cursorBlink.setActive(active);
   }
 
   setRenderPaused(paused) {
+    this.renderPaused = paused;
     renderScheduler.setPaused(this, paused);
+    this.cursorBlink.setVisible(!paused && renderScheduler.enabled);
   }
 
   dispose() {
+    this.cursorBlink.dispose();
     this.sixelRenderer.clear();
     renderScheduler.unregister(this);
     super.dispose();
@@ -161,6 +195,9 @@ class Terminal extends GhosttyTerminal {
 
 function setTerminalDocumentVisible(visible) {
   renderScheduler.setEnabled(visible);
+  for (const terminal of renderScheduler.entries.keys()) {
+    terminal.cursorBlink.setVisible(visible && !terminal.renderPaused);
+  }
 }
 
 export {
