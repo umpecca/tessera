@@ -53,6 +53,10 @@ Verified locally:
   macOS binary needs the existing CGO system tray dependency on a native runner;
   the added CI matrix provides that gate.
 - Independent pinned source checkouts produce identical bundled WASM bytes.
+- The pinned checkout disables Git line-ending conversion explicitly. This keeps
+  Windows hosts with a system `core.autocrlf=true` setting from producing a
+  different WASM artifact than Linux CI. The canonical LF build and generated
+  web bundle pass the byte-for-byte verification on Windows.
 
 Text-only benchmark on this Windows host: upstream/current rewrite throughput
 48.7/49.8 MB/s and scrolling throughput 47.6/43.9 MB/s. Wazero host throughput

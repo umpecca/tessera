@@ -17,10 +17,13 @@ if (run(zig, ["version"], root, true) !== pin.zig) throw new Error(`Set ZIG to Z
 const cache = path.join(root, ".cache", "terminal-core");
 await fs.mkdir(cache, { recursive: true });
 const work = await fs.mkdtemp(path.join(cache, "build-"));
-run("git", ["clone", "--quiet", "--no-checkout", "https://github.com/coder/ghostty-web.git", "web"], work);
+// Force identical source bytes on every host. Git for Windows may otherwise
+// inherit core.autocrlf=true and Zig's output changes when upstream inputs use
+// CRLF instead of the LF bytes stored in the pinned commits.
+run("git", ["-c", "core.autocrlf=false", "clone", "--quiet", "--no-checkout", "https://github.com/coder/ghostty-web.git", "web"], work);
 const web = path.join(work, "web");
-run("git", ["checkout", "--quiet", pin.ghosttyWeb], web);
-run("git", ["submodule", "update", "--init", "--depth", "1", "ghostty"], web);
+run("git", ["-c", "core.autocrlf=false", "checkout", "--quiet", pin.ghosttyWeb], web);
+run("git", ["-c", "core.autocrlf=false", "submodule", "update", "--init", "--depth", "1", "ghostty"], web);
 const ghostty = path.join(web, "ghostty");
 if (run("git", ["rev-parse", "HEAD"], ghostty, true) !== pin.ghostty) throw new Error("Pinned Ghostty submodule differs");
 run("git", ["apply", "--whitespace=nowarn", "../patches/ghostty-wasm-api.patch"], ghostty);
