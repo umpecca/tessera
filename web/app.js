@@ -130,6 +130,7 @@ let workspaceSaveQueued = false;
 let multiUser = false;
 let userRoster = [];
 let currentUser = null;
+let userSelectionRequestID = 0;
 let sessions = [];
 let currentSessionID = "";
 let currentSessionName = "";
@@ -142,6 +143,7 @@ let sessionNavigationPending = false;
 let workspaceHasBackground = false;
 let workspaceBackgroundVersion = "";
 let workspaceBackgroundMode = "fill";
+let backgroundRequestID = 0;
 let isLoadingWorkspace = false;
 let saveTimer = null;
 let workspaceStatusHideTimer = null;
@@ -377,8 +379,8 @@ function isAllowedUser(name) {
   return multiUser ? userRoster.includes(name) : name === "default";
 }
 
-function userAPIPath(resource) {
-  return `/api/users/${encodeURIComponent(currentUser || "default")}/${resource}`;
+function userAPIPath(resource, user = currentUser || "default") {
+  return `/api/users/${encodeURIComponent(user)}/${resource}`;
 }
 
 // startApp decides between single-user and multi-user startup. A failed or
@@ -417,23 +419,44 @@ async function startApp() {
 
 async function selectUser(name, options = {}) {
   if (!isAllowedUser(name)) {
-    return;
+    return false;
   }
-  currentUser = name;
-  persistUser(name);
-  hideUserSelect();
-  await Promise.all([refreshSessions(), loadUserSettings()]);
-  const requested = sessions.find((session) => session.id === options.sessionID);
-  const target = requested || sessions[0];
-  if (!target) {
-    setWorkspaceStatus("error", "No sessions");
-    return;
+  const requestID = ++userSelectionRequestID;
+  try {
+    const [nextSessions, settings] = await Promise.all([fetchSessions(name), fetchUserSettings(name)]);
+    const requested = nextSessions.find((session) => session.id === options.sessionID);
+    const target = requested || nextSessions[0];
+    if (!target) throw new Error("No sessions");
+    const workspace = await fetchWorkspace(target.id);
+    if (requestID !== userSelectionRequestID) return false;
+    const activated = await fetch(`${userAPIPath("sessions", name)}/${encodeURIComponent(target.id)}/activate`, { method: "POST" });
+    if (!activated.ok) throw new Error(`activate session failed: ${activated.status}`);
+    if (requestID !== userSelectionRequestID) return false;
+    currentUser = name;
+    sessions = nextSessions;
+    applyUserSettings(settings);
+    currentSessionID = target.id;
+    currentSessionName = target.name;
+    loadWorkspace(workspace);
+    persistUser(name);
+    hideUserSelect();
+    const route = sessionRoute(name, target.id);
+    if (options.historyMode === "push") window.history.pushState({}, "", route);
+    else if (options.historyMode !== "none") window.history.replaceState({}, "", route);
+    await syncRunningCommands();
+    return true;
+  } catch (error) {
+    if (requestID === userSelectionRequestID) {
+      console.warn(error);
+      setWorkspaceStatus("error", "Could not switch user", error.message);
+    }
+    return false;
   }
-  await switchSession(target, { skipSave: true, historyMode: options.historyMode || "replace" });
 }
 
 async function switchUser() {
   await flushAllPersistence();
+  userSelectionRequestID += 1;
   currentUser = null;
   currentSessionID = "";
   currentSessionName = "";
@@ -456,21 +479,28 @@ async function jumpToUser(name) {
 }
 
 async function refreshSessions() {
-  const response = await fetch(userAPIPath("sessions"));
+  sessions = await fetchSessions(currentUser || "default");
+  return sessions;
+}
+
+async function fetchSessions(user) {
+  const response = await fetch(userAPIPath("sessions", user));
   if (!response.ok) {
     throw new Error(`load sessions failed: ${response.status}`);
   }
   const payload = await response.json();
-  sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
-  return sessions;
+  return Array.isArray(payload.sessions) ? payload.sessions : [];
 }
 
-async function loadUserSettings() {
-  const response = await fetch(userAPIPath("settings"));
+async function fetchUserSettings(user) {
+  const response = await fetch(userAPIPath("settings", user));
   if (!response.ok) {
     throw new Error(`load user settings failed: ${response.status}`);
   }
-  const settings = await response.json();
+  return response.json();
+}
+
+function applyUserSettings(settings) {
   userSettingsRevision = settings.revision || "";
   userSettingsDirty = false;
   defaultPaneFontSize = normalizePaneFontSize(settings.defaultPaneFontSize);
@@ -615,7 +645,11 @@ function normalizeBackgroundDisplayMode(mode) {
 }
 
 function backgroundURL(version) {
-  const base = `/api/workspace/${encodeURIComponent(workspaceID)}/background`;
+  return backgroundURLFor(workspaceID, version);
+}
+
+function backgroundURLFor(id, version) {
+  const base = `/api/workspace/${encodeURIComponent(id)}/background`;
   return version ? `${base}?v=${encodeURIComponent(version)}` : base;
 }
 
@@ -699,14 +733,17 @@ async function uploadBackground(file) {
     setWorkspaceStatus("error", "Not an image", "Background must be an image file");
     return;
   }
+  const targetWorkspaceID = workspaceID;
+  const requestID = ++backgroundRequestID;
   try {
     setWorkspaceStatus("saving", "Preparing image...");
     const jpeg = await compressBackgroundImage(file);
+    if (requestID !== backgroundRequestID || workspaceID !== targetWorkspaceID) return;
     if (jpeg.size > maxBackgroundBytes) {
       throw new Error("compressed image is still too large");
     }
     setWorkspaceStatus("saving", "Saving...");
-    const response = await fetch(backgroundURL(""), {
+    const response = await fetch(backgroundURLFor(targetWorkspaceID, ""), {
       method: "PUT",
       headers: { "Content-Type": "image/jpeg" },
       body: jpeg,
@@ -715,24 +752,30 @@ async function uploadBackground(file) {
       throw new Error(`set background failed: ${response.status}`);
     }
     const data = await response.json().catch(() => ({}));
+    if (requestID !== backgroundRequestID || workspaceID !== targetWorkspaceID) return;
     applyWorkspaceBackground(true, data.version || String(Date.now()), workspaceBackgroundMode);
     setWorkspaceStatus("saved", "Saved", "Background updated");
   } catch (error) {
+    if (requestID !== backgroundRequestID || workspaceID !== targetWorkspaceID) return;
     console.warn(error);
     setWorkspaceStatus("error", "Save failed", error.message || "Background save failed");
   }
 }
 
 async function clearBackground() {
+  const targetWorkspaceID = workspaceID;
+  const requestID = ++backgroundRequestID;
   setWorkspaceStatus("saving", "Saving...");
   try {
-    const response = await fetch(backgroundURL(""), { method: "DELETE" });
+    const response = await fetch(backgroundURLFor(targetWorkspaceID, ""), { method: "DELETE" });
     if (!response.ok && response.status !== 404) {
       throw new Error(`clear background failed: ${response.status}`);
     }
+    if (requestID !== backgroundRequestID || workspaceID !== targetWorkspaceID) return;
     applyWorkspaceBackground(false, "", workspaceBackgroundMode);
     setWorkspaceStatus("saved", "Saved", "Background cleared");
   } catch (error) {
+    if (requestID !== backgroundRequestID || workspaceID !== targetWorkspaceID) return;
     console.warn(error);
     setWorkspaceStatus("error", "Clear failed", error.message || "Background clear failed");
   }
@@ -1345,6 +1388,7 @@ function createRectangle(x, y, width, height, options = {}) {
     fileBrowserRequestID: 0,
     browserUrl: options.browserUrl || "",
     browser: null,
+    browserRequestID: 0,
     vncTarget: options.vncTarget || "",
     vncViewOnly: Boolean(options.vncViewOnly),
     vncScaleMode: normalizeVNCScaleMode(options.vncScaleMode),
@@ -1841,6 +1885,7 @@ async function navigateBrowserPane(rect, value) {
   if (!browser) {
     return;
   }
+  const requestID = ++rect.browserRequestID;
   const normalized = normalizeBrowserAddress(value);
   if (!normalized) {
     browser.message.textContent = "Use a loopback HTTP address such as localhost:5000.";
@@ -1864,6 +1909,10 @@ async function navigateBrowserPane(rect, value) {
     if (!response.ok) {
       throw new Error(data.error || `browser proxy failed: ${response.status}`);
     }
+    if (requestID !== rect.browserRequestID || rect.browser !== browser || !rectangles.includes(rect)) {
+      releaseBrowserProxySession(data.id);
+      return;
+    }
     const previousSessionID = browser.sessionID;
     browser.sessionID = data.id;
     rect.browserUrl = data.url || normalized;
@@ -1876,9 +1925,10 @@ async function navigateBrowserPane(rect, value) {
     browser.message.hidden = true;
     scheduleWorkspaceSave();
     if (previousSessionID && previousSessionID !== browser.sessionID) {
-      void fetch(`/api/browser-proxy/${encodeURIComponent(previousSessionID)}`, { method: "DELETE" });
+      releaseBrowserProxySession(previousSessionID);
     }
   } catch (error) {
+    if (requestID !== rect.browserRequestID || rect.browser !== browser) return;
     browser.message.textContent = error.message || "Could not open development server.";
     browser.message.classList.add("is-error");
     browser.message.hidden = false;
@@ -1944,12 +1994,17 @@ function disposeBrowserPane(rect) {
     return;
   }
   const sessionID = browser.sessionID;
+  rect.browserRequestID += 1;
+  rect.browserRequestID += 1;
   browser.sessionID = "";
   browser.frame.src = "about:blank";
   rect.browser = null;
-  if (sessionID) {
-    void fetch(`/api/browser-proxy/${encodeURIComponent(sessionID)}`, { method: "DELETE" });
-  }
+  releaseBrowserProxySession(sessionID);
+}
+
+function releaseBrowserProxySession(sessionID) {
+  if (!sessionID) return;
+  void fetch(`/api/browser-proxy/${encodeURIComponent(sessionID)}`, { method: "DELETE" }).catch(() => {});
 }
 
 function loadVNCModule() {
@@ -2986,8 +3041,10 @@ async function openFileFromPaneFileBrowser(path, sourceRect) {
     return;
   }
 
+  const targetWorkspaceID = workspaceID;
   try {
     const data = await readHostFile(path);
+    if (workspaceID !== targetWorkspaceID || !rectangles.includes(sourceRect)) return;
     const bounds = board.getBoundingClientRect();
     const width = Math.min(Math.max(480, sourceRect?.width || 640), Math.max(320, bounds.width - 24));
     const height = Math.min(Math.max(320, sourceRect?.height || 420), Math.max(220, bounds.height - tabHeight - 24));
@@ -3011,6 +3068,7 @@ async function openFileFromPaneFileBrowser(path, sourceRect) {
     scheduleWorkspaceSave();
     setWorkspaceStatus("saved", "Opened", data.path || path);
   } catch (error) {
+    if (workspaceID !== targetWorkspaceID || !rectangles.includes(sourceRect)) return;
     console.warn(error);
     setWorkspaceStatus("error", "Open failed", error.message || "Could not open file");
   }
@@ -4305,6 +4363,7 @@ function loadWorkspace(workspace) {
 }
 
 function clearRectanglesForLoad() {
+  backgroundRequestID += 1;
   stopRunStreams();
   // Whatever is loaded next is the server's copy, not the content this browser
   // last pushed, so the next save carries its documents again.
@@ -8805,6 +8864,7 @@ async function openFileIntoEditor(rect, path) {
     rect.editor?.focus();
     return;
   }
+  const targetWorkspaceID = workspaceID;
   try {
     if (rect.kind === textEditorPaneKind) {
       const pathKey = editorPathKey(path);
@@ -8816,6 +8876,7 @@ async function openFileIntoEditor(rect, path) {
       }
     }
     const data = await readHostFile(path);
+    if (workspaceID !== targetWorkspaceID || !rectangles.includes(rect) || !rect.editor) return;
     if (rect.kind === textEditorPaneKind) {
       rememberActiveTextEditorTab(rect);
       rect.textEditorTabs.push(newTextEditorTab(data.path || path, data.text || ""));
@@ -8828,10 +8889,11 @@ async function openFileIntoEditor(rect, path) {
     setWorkspaceStatus("saved", rect.kind === textEditorPaneKind ? "Opened" : "Imported", data.path || path);
     scheduleWorkspaceSave();
   } catch (error) {
+    if (workspaceID !== targetWorkspaceID || !rectangles.includes(rect)) return;
     console.warn(error);
     setWorkspaceStatus("error", "Import failed", error.message || "Import failed");
   } finally {
-    rect.editor?.focus();
+    if (workspaceID === targetWorkspaceID && rectangles.includes(rect)) rect.editor?.focus();
   }
 }
 
