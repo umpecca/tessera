@@ -26,6 +26,10 @@ class Terminal extends GhosttyTerminal {
       this.requestRender();
     });
     this.renderPaused = false;
+    // CanvasRenderer.resize() clears the bitmap. Keep this state separate from
+    // Ghostty's dirty rows because a same-grid geometry update is a no-op in
+    // the terminal core and therefore does not dirty any rows itself.
+    this.fullRedrawPending = false;
     this.coreID = __TESSERA_CORE_ID__;
     this.sixelRenderer = new SixelRenderer();
     this.desiredCols = this.cols;
@@ -66,13 +70,15 @@ class Terminal extends GhosttyTerminal {
       this.renderer.devicePixelRatio = pixelRatio;
       this.renderer.resize(this.cols, this.rows);
     }
+    const forceFullRedraw = resolutionChanged || this.fullRedrawPending;
     this.renderer.render(
       this.wasmTerm,
-      resolutionChanged,
+      forceFullRedraw,
       this.viewportY,
       this,
       this.scrollbarOpacity,
     );
+    this.fullRedrawPending = false;
     const cursor = this.wasmTerm.getCursor();
     if (cursor.y !== this.lastCursorY) {
       this.lastCursorY = cursor.y;
@@ -122,6 +128,7 @@ class Terminal extends GhosttyTerminal {
     this.wasmTerm.resize(cols, rows);
     this.wasmTerm.exports.tessera_sixel_geometry(this.wasmTerm.handle, cellWidth, cellHeight);
     this.renderer.resize(cols, rows);
+    this.fullRedrawPending = true;
     this.requestRender();
   }
 
@@ -168,6 +175,7 @@ class Terminal extends GhosttyTerminal {
     this.clearSelection();
     this.linkDetector?.invalidateCache();
     this.renderer.resize(this.cols, this.rows);
+    this.fullRedrawPending = true;
     this.requestRender();
   }
 

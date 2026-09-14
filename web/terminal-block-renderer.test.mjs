@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { installTerminalBlockRenderer, terminalBlockRects } from "./terminal-block-renderer.mjs";
+import {
+  installTerminalBlockRenderer,
+  terminalBlockRects,
+  terminalSymbolNeedsCellConstraint,
+} from "./terminal-block-renderer.mjs";
 
 const supported = [
   0x2580,
@@ -39,6 +43,15 @@ test("leaves shade and ordinary characters on the normal font renderer", () => {
   }
 });
 
+test("constrains symbol ranges that commonly need a fallback face", () => {
+  for (const codepoint of [0x2192, 0x23f5, 0x25c9, 0x2702, 0x2801, 0x2b9e, 0x1f5a5]) {
+    assert.equal(terminalSymbolNeedsCellConstraint(codepoint), true);
+  }
+  for (const codepoint of ["A".codePointAt(0), 0x0301, 0x4e00, 0xe0b0]) {
+    assert.equal(terminalSymbolNeedsCellConstraint(codepoint), false);
+  }
+});
+
 test("renderer extension replaces a block glyph with translated cell rectangles", () => {
   class Renderer {
     renderCellText(cell) {
@@ -62,4 +75,40 @@ test("renderer extension replaces a block glyph with translated cell rectangles"
   assert.equal(renderer.originalCells.length, 1, "patch was installed more than once");
   assert.equal(renderer.originalCells[0].codepoint, 32);
   assert.deepEqual(renderer.ctx.rectangles, [[18, 51, 9, 17]]);
+});
+
+test("renderer supplies a cell maxWidth to symbols and restores canvas state", () => {
+  class Renderer {
+    renderCellText(cell) {
+      this.ctx.fillText(String.fromCodePoint(cell.codepoint), 18, 51);
+    }
+  }
+  installTerminalBlockRenderer(Renderer, { INVISIBLE: 32, FAINT: 128 });
+  const calls = [];
+  const originalFillText = (...args) => calls.push(args);
+  const renderer = new Renderer();
+  renderer.metrics = { width: 9, height: 17 };
+  renderer.ctx = { fillText: originalFillText };
+
+  renderer.renderCellText({ codepoint: 0x23f8, width: 1, flags: 0 }, 2, 3);
+  renderer.renderCellText({ codepoint: 0x1f5a5, width: 2, flags: 0 }, 2, 3);
+  assert.deepEqual(calls, [
+    ["⏸", 18, 51, 9],
+    ["🖥", 18, 51, 18],
+  ]);
+  assert.equal(renderer.ctx.fillText, originalFillText);
+});
+
+test("renderer does not constrain ordinary or invisible glyphs", () => {
+  class Renderer {
+    renderCellText(cell) { this.ctx.fillText(String.fromCodePoint(cell.codepoint), 0, 0); }
+  }
+  installTerminalBlockRenderer(Renderer, { INVISIBLE: 32, FAINT: 128 });
+  const calls = [];
+  const renderer = new Renderer();
+  renderer.metrics = { width: 9, height: 17 };
+  renderer.ctx = { fillText: (...args) => calls.push(args) };
+  renderer.renderCellText({ codepoint: 0x41, width: 1, flags: 0 }, 0, 0);
+  renderer.renderCellText({ codepoint: 0x23f5, width: 1, flags: 32 }, 0, 0);
+  assert.deepEqual(calls, [["A", 0, 0], ["⏵", 0, 0]]);
 });

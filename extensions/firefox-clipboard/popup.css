@@ -1,0 +1,7 @@
+body { width: 320px; margin: 16px; font: 14px/1.4 system-ui, sans-serif; color: #202020; background: #fafafa; }
+h1 { font-size: 18px; } h2 { font-size: 14px; }
+label { display: block; margin: 12px 0; }
+button { padding: 5px 12px; cursor: pointer; }
+#origin { font-weight: bold; overflow-wrap: anywhere; }
+li { margin: 8px 0; overflow-wrap: anywhere; } li button { margin-left: 8px; }
+#status { min-height: 20px; }

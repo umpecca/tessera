@@ -1,4 +1,6 @@
 export const defaultTerminalFont = "jetbrains-mono";
+export const terminalSymbolFontFamily = '"Noto Sans Symbols 2"';
+export const terminalSymbolProbe = "⏵⏸⮞⣿";
 
 export const terminalFonts = Object.freeze({
   "jetbrains-mono": Object.freeze({
@@ -16,7 +18,11 @@ export function normalizeTerminalFont(value) {
 }
 
 export function terminalFontFamily(value) {
-  return terminalFonts[normalizeTerminalFont(value)].family;
+  const primary = terminalFonts[normalizeTerminalFont(value)].family.replace(/, monospace$/, "");
+  // Keep terminal symbols independent of the operating system. In particular,
+  // Firefox 115 on High Sierra otherwise falls back to an old macOS face whose
+  // canvas advance widths can overlap adjacent terminal cells.
+  return `${primary}, ${terminalSymbolFontFamily}, monospace`;
 }
 
 export function terminalFontDescriptors(value, fontSize) {
@@ -29,5 +35,10 @@ export async function loadTerminalFont(fontSet, value, fontSize) {
   if (!fontSet?.load) {
     return;
   }
-  await Promise.all(terminalFontDescriptors(value, fontSize).map((descriptor) => fontSet.load(descriptor)));
+  const size = Number.isFinite(Number(fontSize)) ? Number(fontSize) : 14;
+  await Promise.all([
+    ...terminalFontDescriptors(value, size).map((descriptor) => fontSet.load(descriptor, "M")),
+    fontSet.load(`${size}px ${terminalSymbolFontFamily}`, terminalSymbolProbe),
+    fontSet.load(`bold ${size}px ${terminalSymbolFontFamily}`, terminalSymbolProbe),
+  ]);
 }

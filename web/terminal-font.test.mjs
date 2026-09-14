@@ -7,6 +7,8 @@ import {
   normalizeTerminalFont,
   terminalFontDescriptors,
   terminalFontFamily,
+  terminalSymbolFontFamily,
+  terminalSymbolProbe,
 } from "./terminal-font.mjs";
 
 test("normalizes terminal font IDs to the JetBrains Mono default", () => {
@@ -16,18 +18,20 @@ test("normalizes terminal font IDs to the JetBrains Mono default", () => {
 });
 
 test("returns regular and bold browser font descriptors", () => {
-  assert.equal(terminalFontFamily("jetbrains-mono"), '"JetBrains Mono", monospace');
+  assert.equal(terminalFontFamily("jetbrains-mono"), '"JetBrains Mono", "Noto Sans Symbols 2", monospace');
   assert.deepEqual(terminalFontDescriptors("fira-code", 16), [
-    '16px "Fira Code", monospace',
-    'bold 16px "Fira Code", monospace',
+    '16px "Fira Code", "Noto Sans Symbols 2", monospace',
+    'bold 16px "Fira Code", "Noto Sans Symbols 2", monospace',
   ]);
 });
 
-test("waits for regular and bold terminal faces", async () => {
+test("waits for regular, bold, and deterministic symbol fallback faces", async () => {
   const loaded = [];
-  await loadTerminalFont({ load: async (descriptor) => loaded.push(descriptor) }, "jetbrains-mono", 15);
+  await loadTerminalFont({ load: async (...request) => loaded.push(request) }, "jetbrains-mono", 15);
   assert.deepEqual(loaded, [
-    '15px "JetBrains Mono", monospace',
-    'bold 15px "JetBrains Mono", monospace',
+    ['15px "JetBrains Mono", "Noto Sans Symbols 2", monospace', "M"],
+    ['bold 15px "JetBrains Mono", "Noto Sans Symbols 2", monospace', "M"],
+    [`15px ${terminalSymbolFontFamily}`, terminalSymbolProbe],
+    [`bold 15px ${terminalSymbolFontFamily}`, terminalSymbolProbe],
   ]);
 });

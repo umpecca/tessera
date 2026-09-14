@@ -267,7 +267,9 @@ Terminal panes use the locally bundled JetBrains Mono font by default. Choose
 JetBrains Mono or Fira Code under **Settings → Terminal → Font**; the per-user
 choice is persisted and applies immediately to open panes. Tessera waits for
 the regular and bold faces before creating a terminal so the canvas starts
-with stable character-cell measurements.
+with stable character-cell measurements. A bundled Noto Sans Symbols 2 face is
+used only when the selected monospace font lacks a symbol, avoiding platform
+fallback metrics that can overlap terminal cells in legacy Firefox/macOS.
 
 Choose **Dark** or **Light** under **Settings → Terminal → Colors**. Both modes
 use the conventional xterm RGB values for indexed colors 0–15 and leave
@@ -434,6 +436,15 @@ deleted.
 
 The selected user is remembered in browser storage. This is convenience and
 state separation only, not authentication or authorization.
+
+## Firefox clipboard extension
+
+Firefox 115 ESR users can enable an optional text clipboard bridge under
+**Settings → Clipboard**. Tessera bundles the download and setup instructions;
+the extension requires explicit approval for each Tessera address. Unsigned
+development builds are clearly labeled and require temporary installation.
+See [Firefox clipboard documentation](docs/firefox-clipboard.md) for signing,
+release packaging, permissions, and updates.
 
 ## Desktop and platform behavior
 

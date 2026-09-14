@@ -21,6 +21,25 @@ func testWebFS(appJS string) fstest.MapFS {
 	}
 }
 
+func TestExtensionDownloadContentTypesAndMissingPackage(t *testing.T) {
+	files := testWebFS("test")
+	for _, item := range []struct{ name, contentType string }{
+		{"extensions/tessera-clipboard.xpi", "application/x-xpinstall"},
+		{"extensions/tessera-clipboard-dev.zip", "application/zip"},
+		{"extensions/firefox-clipboard.json", "application/json"},
+	} {
+		files[item.name] = &fstest.MapFile{Data: []byte("package bytes")}
+		response := serveStatic(t, files, "/"+item.name, nil)
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != item.contentType || response.Body.String() != "package bytes" {
+			t.Fatalf("incorrect extension response for %s: %d %v", item.name, response.Code, response.Header())
+		}
+	}
+	response := serveStatic(t, files, "/extensions/missing.xpi", nil)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("missing XPI served SPA: %d", response.Code)
+	}
+}
+
 func serveStatic(t *testing.T, files fstest.MapFS, target string, header http.Header) *httptest.ResponseRecorder {
 	t.Helper()
 	api := &API{WebFS: files}

@@ -207,7 +207,9 @@ Per-user settings also carry independent wheel sensitivity multipliers for
 Terminal panes and CodeMirror-based Worksheet/Text Editor panes, the selected
 terminal font and color mode, and the validated `TERM` capability name used
 when new Unix terminal PTYs are created. JetBrains Mono is bundled and selected
-by default, with Fira Code retained as an alternative. Terminal creation waits
+by default, with Fira Code retained as an alternative. Noto Sans Symbols 2 is
+bundled after either selected face to make missing terminal symbols independent
+of operating-system fallback fonts. Terminal creation waits
 for the selected regular and bold faces before Ghostty Web measures the canvas
 cells. Neutral light and dark terminal modes share an explicit xterm base-16
 palette and remain independent of workspace themes; changing the mode rebuilds
@@ -576,3 +578,11 @@ runs the Go test suite on every target runner.
 - **Transcript:** Editable worksheet text containing commands and inserted output.
 - **Trusted environment:** A host and network where every client able to reach
   Tessera is allowed to exercise Tessera's command and filesystem capabilities.
+
+## Optional Firefox clipboard bridge
+
+The browser can delegate text clipboard operations to a separately installed
+Firefox extension. Tessera embeds its downloadable package and metadata;
+clipboard data moves between the approved page and extension, never through
+a new HTTP clipboard endpoint. See [Firefox clipboard bridge](docs/firefox-clipboard.md)
+for origin/frame authorization, protocol, packaging, and signing boundaries.

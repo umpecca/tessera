@@ -9,7 +9,27 @@ permissions:
   contents: read
 
 jobs:
+  terminal-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+
+      - run: npm ci
+      - run: npm run verify:terminal-core
+      - run: npm run build:web
+      - run: git diff --exit-code -- web/vendor/terminal.js
+      - run: node --test internal/terminalcore/core.test.mjs web/*.test.mjs
+
   build:
+    needs: terminal-core
     strategy:
       matrix:
         include:
@@ -23,11 +43,13 @@ jobs:
             goarch: amd64
             cgo: "0"
             ext: ""
+            test: true
           - runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
             cgo: "0"
             ext: ""
+            test: false
           # - runner: macos-15-intel
           #   goos: darwin
           #   goarch: amd64
@@ -38,11 +60,13 @@ jobs:
             goarch: arm64
             cgo: "1"
             ext: ""
+            test: true
           - runner: windows-latest
             goos: windows
             goarch: amd64
             cgo: "0"
             ext: ".exe"
+            test: true
           # - runner: ubuntu-latest
           #   goos: openbsd
           #   goarch: amd64
@@ -52,19 +76,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - run: npm ci
-
-      - run: npm run build:web
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
       - name: Test
+        if: matrix.test
         env:
           CGO_ENABLED: ${{ matrix.cgo }}
         run: go test ./...
@@ -82,6 +99,7 @@ jobs:
           path: tessera-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
 
   encoder:
+    needs: terminal-core
     strategy:
       matrix:
         include:
@@ -120,6 +138,7 @@ jobs:
           path: tessera-lame-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
 
   encoder-windows:
+    needs: terminal-core
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -154,6 +173,7 @@ jobs:
           path: tessera-lame-windows-amd64.exe
 
   encoder-source:
+    needs: terminal-core
     runs-on: ubuntu-latest
     steps:
       - name: Preserve LAME source and license
@@ -171,6 +191,7 @@ jobs:
             LICENSE.LAME.txt
 
   installer-test:
+    needs: terminal-core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

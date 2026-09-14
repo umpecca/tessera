@@ -557,6 +557,17 @@
   font-display: swap;
 }
 
+/* Official unmodified Google Fonts face (Noto Symbols commit 25b00f0).
+ * It prevents legacy Firefox/macOS canvas rendering from choosing an
+ * incompatible operating-system fallback for terminal symbols such as ⏵. */
+@font-face {
+  font-family: "Noto Sans Symbols 2";
+  src: url("/assets/NotoSansSymbols2-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root[data-theme="oled-terminal"] .resize-edge-e {
   top: 0;
   right: calc(0px - var(--oled-window-border-size));
@@ -3522,3 +3533,10 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.settings-clipboard { font-size: 13px; line-height: 1.5; }
+.settings-clipboard p { margin: 0 0 10px; }
+.settings-clipboard code { overflow-wrap: anywhere; }
+.settings-clipboard-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
+.settings-clipboard a { color: var(--text); text-decoration: underline; }
+.settings-clipboard button { font: inherit; color: var(--text); background: var(--control-face); padding: 5px 10px; border: 1px solid var(--border-strong); cursor: pointer; }

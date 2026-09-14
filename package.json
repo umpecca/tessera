@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build:web": "node scripts/build-web.mjs",
+    "build:web": "npm run build:clipboard && node scripts/build-web.mjs",
     "build:terminal-core": "node scripts/build-terminal-core.mjs",
-    "verify:terminal-core": "node scripts/build-terminal-core.mjs --check"
+    "verify:terminal-core": "node scripts/build-terminal-core.mjs --check",
+    "build:clipboard": "go run ./scripts/package-clipboard"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",

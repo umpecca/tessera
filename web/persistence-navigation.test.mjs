@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 function loadFunctions(names, globals) {
   const context = vm.createContext(globals);
   for (const name of names) {

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tessera Clipboard Bridge setup</title><link rel="stylesheet" href="clipboard-help.css"></head>
+<body><main>
+<h1>Tessera Clipboard Bridge</h1>
+<p>The optional Firefox extension enables text Copy/Paste commands in Tessera, including Firefox 115 ESR and HTTP connections. Keyboard paste continues to work without it.</p>
+<h2>Install a signed release</h2>
+<ol><li>In Tessera, open Settings → Clipboard. If the button says “Install Firefox extension”, click it and approve Firefox’s installation and clipboard permission prompts.</li>
+<li>If direct installation is blocked, save the XPI file. Open Firefox’s Add-ons Manager (about:addons), choose the gear menu → Install Add-on From File, and select it.</li>
+<li>Return to your Tessera tab. Open Tessera Clipboard Bridge from Firefox’s toolbar/extensions menu, enable this address, approve site access, and save.</li>
+<li>In Tessera Settings → Clipboard, click Check connection. It should say “Clipboard bridge connected”.</li></ol>
+<h2>Unsigned development builds</h2>
+<p>If Settings says “Download development extension”, the package has not been signed by Mozilla and cannot be installed normally.</p>
+<ol><li>Download the ZIP from Settings and extract it.</li><li>Open about:debugging → This Firefox → Load Temporary Add-on. Select manifest.json in the extracted folder.</li><li>Enable your Tessera address using the extension’s toolbar button, then check the connection in Tessera.</li></ol>
+<p>Temporary extensions are removed when Firefox closes. Reload the extension from about:debugging after changing its source, then refresh Tessera.</p>
+<h2>Permissions and clipboard behavior</h2>
+<p>Enable only addresses you trust. Authorization includes the exact scheme, hostname, and port. Firefox’s site permission prompt covers the hostname’s ports, but the bridge checks your exact approved address for every operation. Browser-pane frames and proxy pages are excluded.</p>
+<p>Reads and ordinary writes require a recent click or key press in the Tessera page. There is no clipboard polling. The separate terminal option permits terminal programs to copy text without a click (OSC 52). It never permits terminal programs to read the clipboard. The bridge transfers plain text, limited to 1,048,576 UTF-16 code units per operation.</p>
+<p>To revoke access, open the extension and remove the address. You can also remove the extension through Firefox’s Add-ons Manager. Settings status is refreshed by Check connection; blocked requests fall back to Tessera’s browser/internal clipboard behavior.</p>
+<h2>Updates</h2>
+<p>Updating Tessera does not update an installed extension automatically. When Tessera includes a newer signed package, Settings offers Update Firefox extension. Install it using the same flow and check the connection again. This extension has no automatic update URL.</p>
+<p>If installation fails, verify that the package is signed, Firefox is at least version 115, and you are using the current maintenance update of Firefox 115 ESR.</p>
+</main></body></html>

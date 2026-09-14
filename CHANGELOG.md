@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Redraw every terminal row after a host geometry update clears its canvas,
+  preventing an idle TUI from remaining blank after a Firefox page refresh.
+
+- Render terminal technical, geometric, dingbat, arrow, and Braille symbols
+  through a bundled Noto Sans Symbols 2 fallback, fixing overlapped glyphs such
+  as Claude Code's `⏵⏵` indicator in Firefox 115 on macOS High Sierra.
+
+- Add an optional Firefox 115 clipboard extension with per-address consent,
+  separately enabled terminal writes, editor/terminal/VNC integration, and
+  embedded download/setup controls under Settings → Clipboard.
+
 - Add persistent VNC connector windows using bundled noVNC, manual in-memory
   authentication, explicit clipboard transfer, view-only and scaling controls,
   and short-lived same-origin WebSocket-to-TCP capabilities for any host target.

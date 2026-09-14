@@ -20,6 +20,8 @@ import (
 // has no built-in type for .webmanifest. Setting the header explicitly before
 // serving keeps behavior identical across machines.
 var staticContentTypes = map[string]string{
+	".xpi":         "application/x-xpinstall",
+	".zip":         "application/zip",
 	".html":        "text/html; charset=utf-8",
 	".css":         "text/css; charset=utf-8",
 	".js":          "text/javascript; charset=utf-8",
@@ -69,6 +71,10 @@ func (a *API) staticFiles() http.HandlerFunc {
 
 		info, err := fs.Stat(webFS, requestPath)
 		if err != nil || info.IsDir() {
+			if strings.HasPrefix(requestPath, "extensions/") {
+				writeError(w, http.StatusNotFound, "extension asset not found")
+				return
+			}
 			serveIndex(w, r, webFS, buildHash)
 			return
 		}

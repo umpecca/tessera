@@ -55,6 +55,11 @@ export function terminalBlockRects(codepoint, width, height) {
   return rects?.filter(Boolean) || null;
 }
 
+export function terminalSymbolNeedsCellConstraint(codepoint) {
+  return (codepoint >= 0x2190 && codepoint <= 0x2bff) ||
+    (codepoint >= 0x1f000 && codepoint <= 0x1fbff);
+}
+
 export function installTerminalBlockRenderer(CanvasRenderer, CellFlags) {
   const prototype = CanvasRenderer?.prototype;
   if (!prototype || prototype[rendererPatch]) {
@@ -68,6 +73,22 @@ export function installTerminalBlockRenderer(CanvasRenderer, CellFlags) {
   prototype.renderCellText = function renderTesseraBlockCell(cell, column, row) {
     const width = this.metrics.width * (cell.width || 1);
     const rects = terminalBlockRects(cell.codepoint, width, this.metrics.height);
+    if (!rects && terminalSymbolNeedsCellConstraint(cell.codepoint) && !(cell.flags & CellFlags.INVISIBLE)) {
+      // Symbol fonts are not necessarily monospaced. Canvas fillText otherwise
+      // lets a wide fallback glyph overwrite neighboring cells. Its maxWidth
+      // argument only condenses glyphs that exceed Ghostty's assigned width,
+      // leaving already narrow symbols (including U+23F5) unchanged.
+      const originalFillText = this.ctx.fillText;
+      this.ctx.fillText = function fillTerminalSymbol(text, x, y, callerMaxWidth) {
+        const maxWidth = Number.isFinite(callerMaxWidth) ? Math.min(callerMaxWidth, width) : width;
+        return originalFillText.call(this, text, x, y, maxWidth);
+      };
+      try {
+        return originalRenderCellText.call(this, cell, column, row);
+      } finally {
+        this.ctx.fillText = originalFillText;
+      }
+    }
     if (!rects || cell.flags & CellFlags.INVISIBLE) {
       return originalRenderCellText.call(this, cell, column, row);
     }

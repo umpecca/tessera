@@ -1,3 +1,4 @@
+import { ClipboardBridge, clipboardBridgeNeedsUpdate } from "./clipboard-bridge.mjs";
 import {
   basicSetup,
   EditorSelection,
@@ -148,6 +149,10 @@ let isLoadingWorkspace = false;
 let saveTimer = null;
 let workspaceStatusHideTimer = null;
 let saveRevision = 0;
+const clipboardBridge = new ClipboardBridge();
+void clipboardBridge.check();
+window.addEventListener("focus", () => { void clipboardBridge.check(); });
+
 let userSettingsSaveTimer = null;
 let userSettingsSavePromise = null;
 let userSettingsDirty = false;
@@ -2316,8 +2321,9 @@ async function sendVNCClipboard(rect) {
   const rfb = rect.vnc?.rfb;
   if (!rfb || rect.vncViewOnly) return;
   try {
-    if (!navigator.clipboard?.readText) throw new Error("clipboard unavailable");
-    rfb.clipboardPasteFrom(await navigator.clipboard.readText());
+    const text = await readClipboardText();
+    if (clipboardReadFellBack) throw new Error("clipboard unavailable");
+    rfb.clipboardPasteFrom(text);
     rfb.focus({ preventScroll: true });
   } catch {
     showVNCClipboardEntry(rect);
@@ -6714,6 +6720,7 @@ function renderSettingsModal() {
     renderSettingsTerminalColorModeRow(),
     renderSettingsTerminalTERMRow(),
   ]));
+  content.appendChild(renderSettingsSection("Clipboard", [renderSettingsClipboardRow()]));
   content.appendChild(renderSettingsSection("Theme", [
     renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
     renderSettingsThemeRow("Current", "Applied across this user's sessions immediately.", themeID, (next) => applyTheme(next)),
@@ -6725,6 +6732,70 @@ function renderSettingsModal() {
   ]));
   panel.appendChild(content);
   settingsModal.appendChild(panel);
+}
+
+function renderSettingsClipboardRow() {
+  const row = document.createElement("div");
+  row.className = "settings-clipboard";
+  const status = document.createElement("p");
+  status.setAttribute("role", "status");
+  const instructions = document.createElement("p");
+  instructions.textContent = "The optional Firefox extension enables text Copy/Paste commands on older Firefox and HTTP connections. After installation, open its toolbar button and enable this Tessera address. Terminal-initiated copying is a separate extension option.";
+  const address = document.createElement("code");
+  address.textContent = window.location.origin;
+  const actions = document.createElement("div");
+  actions.className = "settings-clipboard-actions";
+  const check = document.createElement("button");
+  check.type = "button";
+  check.textContent = "Check connection";
+  const download = document.createElement("a");
+  download.hidden = true;
+  const help = document.createElement("a");
+  help.href = "/extensions/firefox-clipboard-help.html";
+  help.target = "_blank";
+  help.rel = "noopener noreferrer";
+  help.textContent = "Installation instructions";
+  const packageStatus = document.createElement("p");
+  packageStatus.textContent = "Checking bundled extension…";
+  let bundle = null;
+  const update = () => {
+    const connected = clipboardBridge.status;
+    status.textContent = connected
+      ? `Clipboard bridge connected (v${connected.version}). Terminal copying: ${connected.terminal ? "enabled" : "disabled"}.`
+      : "Clipboard bridge not connected. Keyboard paste and browser fallbacks remain available.";
+    if (bundle) {
+      const newer = connected && clipboardBridgeNeedsUpdate(connected.version, bundle.version);
+      download.textContent = bundle.signed
+        ? `${newer ? "Update" : "Install"} Firefox extension (v${bundle.version})`
+        : `Download development extension (v${bundle.version}, unsigned)`;
+    }
+  };
+  check.addEventListener("click", async () => {
+    check.disabled = true;
+    status.textContent = "Checking clipboard bridge…";
+    await clipboardBridge.check();
+    if (!row.isConnected) return;
+    check.disabled = false;
+    update();
+  });
+  void fetch("/extensions/firefox-clipboard.json", { cache: "no-store" })
+    .then(response => { if (!response.ok) throw new Error(); return response.json(); })
+    .then(info => {
+      if (!row.isConnected) return;
+      bundle = info;
+      download.href = info.signed ? "/extensions/tessera-clipboard.xpi" : "/extensions/tessera-clipboard-dev.zip";
+      if (!info.signed) download.download = "tessera-clipboard-dev.zip";
+      download.hidden = false;
+      packageStatus.textContent = info.signed
+        ? "Firefox will ask you to approve installation and clipboard permissions. If prompted, download the file and use Firefox’s Install Add-on From File option."
+        : "This build includes an unsigned development package. Extract it and use about:debugging → This Firefox → Load Temporary Add-on → manifest.json. Temporary installation ends when Firefox closes. A Mozilla-signed package is required for normal installation.";
+      update();
+    })
+    .catch(() => { if (row.isConnected) packageStatus.textContent = "The bundled extension is unavailable. See installation instructions."; });
+  update();
+  actions.append(check, download, help);
+  row.append(status, instructions, address, actions, packageStatus);
+  return row;
 }
 
 function openHelpModal() {
@@ -8350,7 +8421,7 @@ function renderEditorMenu(rect) {
     ];
   const hasSelection = hasEditorSelection(rect.editor);
   const canRun = Boolean(commandTargetForEditor(rect.editor)) && !rect.running;
-  const canReadClipboard = Boolean(navigator.clipboard?.readText || document.queryCommandSupported?.("paste"));
+  const canReadClipboard = Boolean(clipboardBridge.status || navigator.clipboard?.readText || document.queryCommandSupported?.("paste"));
   const canPaste = canReadClipboard || editorClipboardText.length > 0;
 
   for (const [action, label] of actions) {
@@ -8384,7 +8455,7 @@ function renderTerminalMenu(rect) {
   ];
   const term = rect?.terminal?.term;
   const hasSelection = Boolean(term?.hasSelection?.() || term?.getSelection?.());
-  const canReadClipboard = Boolean(navigator.clipboard?.readText || document.queryCommandSupported?.("paste"));
+  const canReadClipboard = Boolean(clipboardBridge.status || navigator.clipboard?.readText || document.queryCommandSupported?.("paste"));
   const canPaste = canReadClipboard || editorClipboardText.length > 0;
 
   for (const [action, label] of actions) {
@@ -9364,8 +9435,16 @@ function settledWithin(promise, milliseconds) {
 // Returns whether the text reached the real system clipboard. Tessera's own
 // buffer is updated either way, so pasting back inside Tessera still works
 // when the browser refuses the write.
-async function writeClipboardText(text) {
+async function writeClipboardText(text, { terminal = false } = {}) {
   editorClipboardText = text;
+  if (clipboardBridge.status && (!terminal || clipboardBridge.status.terminal)) {
+    try {
+      await clipboardBridge.writeText(text, terminal);
+      return true;
+    } catch {
+      // Retain the ordinary browser and internal-buffer fallbacks.
+    }
+  }
   if (navigator.clipboard?.writeText) {
     try {
       if (await settledWithin(navigator.clipboard.writeText(text), clipboardWriteTimeoutMs)) {
@@ -9387,7 +9466,7 @@ let terminalClipboardWrites = Promise.resolve();
 function applyTerminalClipboardWrite(text) {
   terminalClipboardWrites = terminalClipboardWrites
     .then(async () => {
-      if (await writeClipboardText(text)) {
+      if (await writeClipboardText(text, { terminal: true })) {
         return;
       }
       setWorkspaceStatus(
@@ -9407,6 +9486,10 @@ let clipboardReadFellBack = false;
 
 async function readClipboardText() {
   clipboardReadFellBack = false;
+  if (clipboardBridge.status) {
+    try { return await clipboardBridge.readText(); }
+    catch { /* Continue with the browser and internal-buffer fallbacks. */ }
+  }
   if (navigator.clipboard?.readText) {
     try {
       return await navigator.clipboard.readText();

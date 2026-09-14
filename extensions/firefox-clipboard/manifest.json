@@ -1,0 +1,19 @@
+{
+  "manifest_version": 2,
+  "name": "Tessera Clipboard Bridge",
+  "version": "0.1.0",
+  "description": "Enable text clipboard commands for explicitly approved Tessera addresses.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "clipboard-bridge@tessera.local",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": ["activeTab", "storage", "clipboardRead", "clipboardWrite"],
+  "optional_permissions": ["http://*/*", "https://*/*"],
+  "background": { "scripts": ["policy.js", "background.js"] },
+  "browser_action": {
+    "default_title": "Tessera Clipboard Bridge",
+    "default_popup": "popup.html"
+  }
+}

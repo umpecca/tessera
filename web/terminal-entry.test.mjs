@@ -4,9 +4,18 @@ import test from "node:test";
 import vm from "node:vm";
 import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
 
-test("the terminal adapter suppresses startup autofocus and explicitly requests output frames", () => {
+function loadTerminalClass(overrides = {}) {
   const source = readFileSync(new URL("./terminal-entry.js", import.meta.url), "utf8");
   const classSource = source.slice(source.indexOf("class Terminal extends"), source.indexOf("\nfunction setTerminalDocumentVisible"));
+  return vm.runInNewContext(`${classSource}; Terminal`, {
+    TerminalCursorBlink,
+    __TESSERA_CORE_ID__: "test",
+    SixelRenderer: class { prune() {} clear() {} },
+    ...overrides,
+  });
+}
+
+test("the terminal adapter suppresses startup autofocus and explicitly requests output frames", () => {
   let focuses = 0;
   let frames = 0;
   let writes = 0;
@@ -24,9 +33,8 @@ test("the terminal adapter suppresses startup autofocus and explicitly requests 
     reset() {}
     dispose() { this.isDisposed = true; }
   }
-  const Terminal = vm.runInNewContext(`${classSource}; Terminal`, {
-    GhosttyTerminal, TerminalCursorBlink, __TESSERA_CORE_ID__: "test",
-    SixelRenderer: class { prune() {} clear() {} },
+  const Terminal = loadTerminalClass({
+    GhosttyTerminal,
     renderScheduler: { request() { frames++; }, unregister() {} },
   });
   const term = new Terminal({ cursorBlink: true });
@@ -45,4 +53,51 @@ test("the terminal adapter suppresses startup autofocus and explicitly requests 
   term.dispose();
   term.focus();
   assert.equal(focuses, 1);
+});
+
+test("same-grid geometry forces a full redraw after clearing the canvas", () => {
+  let bitmap = "content";
+  const forcedRenders = [];
+  class GhosttyTerminal {
+    constructor(options) {
+      this.options = options;
+      this.cols = options.cols;
+      this.rows = options.rows;
+      this.viewportY = 0;
+      this.scrollbarOpacity = 0;
+      this.lastCursorY = 0;
+      this.cursorMoveEmitter = { fire() {} };
+    }
+    onScroll() {}
+  }
+  const Terminal = loadTerminalClass({
+    GhosttyTerminal,
+    renderScheduler: { request() {}, unregister() {} },
+  });
+  const term = new Terminal({ cols: 80, rows: 24 });
+  term.isOpen = true;
+  term.renderer = {
+    cursorVisible: false,
+    devicePixelRatio: 1,
+    resize() { bitmap = "blank"; },
+    render(_terminal, forceFullRedraw) {
+      forcedRenders.push(forceFullRedraw);
+      if (forceFullRedraw) bitmap = "content";
+    },
+  };
+  term.wasmTerm = {
+    handle: 1,
+    resize() {}, // Ghostty does not dirty rows when the grid is unchanged.
+    exports: { tessera_sixel_geometry() {} },
+    getCursor() { return { y: 0 }; },
+  };
+
+  term.applyGeometry(80, 24, 9, 16);
+  assert.equal(bitmap, "blank", "resizing clears the canvas before its scheduled frame");
+  term.renderScheduledFrame();
+  assert.equal(bitmap, "content");
+  assert.deepEqual(forcedRenders, [true]);
+
+  term.renderScheduledFrame();
+  assert.deepEqual(forcedRenders, [true, false], "later idle frames retain dirty-row rendering");
 });

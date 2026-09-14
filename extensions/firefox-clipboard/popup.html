@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Tessera Clipboard Bridge</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <h1>Tessera Clipboard Bridge</h1>
+  <p id="origin"></p>
+  <p>Enable only on your trusted Tessera server. This lets that address exchange text with your system clipboard when you use Copy or Paste.</p>
+  <label><input id="enabled" type="checkbox"> Enable for this address</label>
+  <label><input id="terminal" type="checkbox"> Also allow terminal programs to copy text without a click</label>
+  <button id="save" type="button" disabled>Save</button>
+  <p id="status" role="status"></p>
+  <h2>Enabled addresses</h2>
+  <ul id="sites"></ul>
+  <script src="policy.js"></script><script src="popup.js"></script>
+</body>
+</html>
