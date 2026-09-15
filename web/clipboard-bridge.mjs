@@ -77,3 +77,21 @@ export function clipboardBridgeNeedsUpdate(installed, bundled) {
   }
   return false;
 }
+
+export function firefoxClipboardExtensionRecommendation(environment = {}) {
+  const userAgent = environment.userAgent || "";
+  const match = /\bFirefox\/(\d+)/i.exec(userAgent);
+  if (!match) return "";
+
+  const clipboard = environment.clipboard;
+  const hasNativeClipboard = environment.isSecureContext === true &&
+    typeof clipboard?.readText === "function" &&
+    typeof clipboard?.writeText === "function";
+  if (Number(match[1]) <= 115) {
+    return "Firefox 115 ESR needs the Tessera Clipboard extension for reliable Copy and Paste.";
+  }
+  if (!hasNativeClipboard) {
+    return "Firefox cannot use its native Clipboard API on this connection. The Tessera Clipboard extension enables Copy and Paste here.";
+  }
+  return "";
+}

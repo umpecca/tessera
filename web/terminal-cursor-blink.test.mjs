@@ -32,6 +32,11 @@ test("an idle active terminal renders only on cursor changes, and stops when hid
     assert.equal(frames.size, 0);
   }
   assert.equal(renders, 11, "ten blink ticks produced exactly ten additional renders");
+  blink.setEnabled(false);
+  assert.equal(timers.size, 0, "a steady cursor has no timer");
+  assert.equal(blink.cursorVisible, true, "the active steady cursor remains visible");
+  blink.setEnabled(true);
+  assert.equal(timers.size, 1);
   blink.setVisible(false);
   assert.equal(timers.size, 0);
   blink.setVisible(true);

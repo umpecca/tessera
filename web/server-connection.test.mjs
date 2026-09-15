@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { nextServerConnectionState } from "./server-connection.mjs";
+import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
+
+test("detects system sleep without mistaking a throttled callback for wake", () => {
+  assert.equal(browserWakeDetected(
+    { wall: 1_000, monotonic: 500 },
+    { wall: 61_000, monotonic: 700 },
+  ), true);
+  assert.equal(browserWakeDetected(
+    { wall: 1_000, monotonic: 500 },
+    { wall: 61_000, monotonic: 60_500 },
+  ), false);
+  assert.equal(browserWakeDetected(null, { wall: 61_000, monotonic: 700 }), false);
+});
 
 test("one failed health probe stays silent and the second shows recovery", () => {
   let state = nextServerConnectionState(null, { healthy: false });

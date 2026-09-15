@@ -261,6 +261,22 @@ never moved automatically: the up-arrow sends local clipboard text and the
 down-arrow copies the most recently received remote text. A visible text field
 is offered when the browser refuses clipboard access.
 
+### Older Mac performance
+
+Choose **Older Mac** under **Settings → Performance → Profile** to cap terminal
+canvases at 1× device resolution, use a steady active cursor, disable terminal
+smooth scrolling, and stop decorative status animations. On a 2× Retina
+display, the terminal paints one quarter as many canvas pixels while preserving
+the same rows, columns, font size, and terminal contents. The per-user setting
+applies immediately to open terminals and persists across sessions. Choose
+**Standard** to restore native display resolution and animation.
+
+Settings also includes a **Compatibility** panel showing the clipboard APIs
+available to the current page, Firefox extension connection, effective
+terminal rendering scale, and Tessera server status. **Copy diagnostics**
+creates a troubleshooting summary without workspace, session, host, or
+clipboard contents.
+
 ### Terminal appearance
 
 Terminal panes use the locally bundled JetBrains Mono font by default. Choose

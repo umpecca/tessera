@@ -41,6 +41,7 @@ type UserSettings struct {
 	TerminalTERM             string  `json:"terminalTerm"`
 	TerminalFont             string  `json:"terminalFont"`
 	TerminalColorMode        string  `json:"terminalColorMode"`
+	OlderMacMode             bool    `json:"olderMacMode"`
 }
 
 const defaultWheelSensitivity = 1.5
@@ -316,14 +317,14 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 	err := s.db.QueryRowContext(ctx, `
 SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled,
        terminal_wheel_sensitivity, editor_wheel_sensitivity, oled_window_border_size,
-       terminal_term, terminal_font, terminal_color_mode, revision
+       terminal_term, terminal_font, terminal_color_mode, older_mac_mode, revision
 FROM user_settings
 WHERE user_id = ?`, userID).Scan(
 		&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme,
 		&settings.ThemeID, &settings.DeskbarButtonEnabled,
 		&settings.TerminalWheelSensitivity, &settings.EditorWheelSensitivity,
 		&settings.OLEDWindowBorderSize, &settings.TerminalTERM, &settings.TerminalFont,
-		&settings.TerminalColorMode, &settings.Revision)
+		&settings.TerminalColorMode, &settings.OlderMacMode, &settings.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		now := nowText()
 		if _, err := s.db.ExecContext(ctx, `
@@ -331,9 +332,9 @@ INSERT OR IGNORE INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
   editor_wheel_sensitivity, oled_window_border_size, terminal_term, terminal_font,
-  terminal_color_mode, created_at, updated_at, revision
+  terminal_color_mode, older_mac_mode, created_at, updated_at, revision
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalColorMode, now, now, newID()); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalColorMode, false, now, now, newID()); err != nil {
 			return nil, fmt.Errorf("create user settings: %w", err)
 		}
 		return s.LoadUserSettings(ctx, userID)
@@ -386,9 +387,9 @@ INSERT INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
   editor_wheel_sensitivity, oled_window_border_size, terminal_term, terminal_font,
-  terminal_color_mode, created_at, updated_at, revision
+  terminal_color_mode, older_mac_mode, created_at, updated_at, revision
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
   default_theme = excluded.default_theme,
@@ -400,13 +401,14 @@ ON CONFLICT(user_id) DO UPDATE SET
   terminal_term = excluded.terminal_term,
   terminal_font = excluded.terminal_font,
   terminal_color_mode = excluded.terminal_color_mode,
+  older_mac_mode = excluded.older_mac_mode,
   updated_at = excluded.updated_at,
   revision = excluded.revision
 WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? <> '')`, settings.UserID, settings.DefaultPaneFontSize,
 		settings.DefaultTheme, settings.ThemeID, settings.DeskbarButtonEnabled,
 		settings.TerminalWheelSensitivity, settings.EditorWheelSensitivity,
 		settings.OLEDWindowBorderSize, settings.TerminalTERM, settings.TerminalFont,
-		settings.TerminalColorMode, now, now, nextRevision,
+		settings.TerminalColorMode, settings.OlderMacMode, now, now, nextRevision,
 		settings.Revision, settings.Revision, settings.AlternateRevision, settings.AlternateRevision)
 	if err != nil {
 		return fmt.Errorf("save user settings: %w", err)

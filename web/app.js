@@ -1,4 +1,9 @@
-import { ClipboardBridge, clipboardBridgeNeedsUpdate } from "./clipboard-bridge.mjs";
+import {
+  ClipboardBridge,
+  clipboardBridgeNeedsUpdate,
+  firefoxClipboardExtensionRecommendation,
+} from "./clipboard-bridge.mjs";
+import { compatibilityDiagnostics, detectCompatibility } from "./compatibility.mjs";
 import {
   basicSetup,
   EditorSelection,
@@ -22,7 +27,7 @@ import {
   yaml,
 } from "./vendor/codemirror.js?v=syntax-highlighting-1";
 import { textEditorLanguageID } from "./text-editor-language.mjs";
-import { nextServerConnectionState } from "./server-connection.mjs";
+import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
 import {
   terminalCloseOutcome,
@@ -150,8 +155,13 @@ let saveTimer = null;
 let workspaceStatusHideTimer = null;
 let saveRevision = 0;
 const clipboardBridge = new ClipboardBridge();
-void clipboardBridge.check();
-window.addEventListener("focus", () => { void clipboardBridge.check(); });
+let clipboardPromptCheckID = 0;
+let clipboardPromptDismissed = false;
+const clipboardPromptSnoozeKey = "tessera.clipboard-extension-prompt-snoozed-until.v1";
+window.addEventListener("focus", () => {
+  checkForBrowserWake();
+  void refreshClipboardBridgeAndPrompt();
+});
 
 let userSettingsSaveTimer = null;
 let userSettingsSavePromise = null;
@@ -183,6 +193,7 @@ let oledWindowBorderSize = defaultOLEDBorderSize;
 let terminalTerm = defaultTerminalTERM;
 let terminalFont = defaultTerminalFont;
 let terminalColorMode = defaultTerminalColorMode;
+let olderMacMode = false;
 let audioStationState = null;
 let audioStationEvents = null;
 let audioStationReconnectTimer = null;
@@ -194,9 +205,17 @@ const serverHealthPollInterval = 5000;
 // that ceiling falls back to an ordinary request.
 const maxKeepaliveSaveBytes = 60 * 1024;
 let serverConnectionState = { failures: 0, state: "" };
+let serverConnectionLastHealthy = null;
 let serverHealthMonitorTimer = null;
 let serverHealthProbe = null;
 let serverUpdateRestarting = false;
+let browserWakeSample = { wall: Date.now(), monotonic: performance.now() };
+let browserWakePending = false;
+let wakeRecoveryID = 0;
+let wakeRecoveryActive = false;
+let wakeRecoveryHealthReady = false;
+let wakeRecoveryStatusHideTimer = null;
+const wakeRecoveryTerminals = new Set();
 
 const defaultThemeID = "next-tessera";
 const themes = {
@@ -328,6 +347,20 @@ async function setTerminalColorMode(value, { save = true } = {}) {
     scheduleUserSettingsSave();
   }
   await recreateOpenTerminalViews(rectangles, disposeTerminal, startTerminal);
+}
+
+function setOlderMacMode(enabled, { save = true } = {}) {
+  olderMacMode = enabled === true;
+  document.documentElement.dataset.performanceProfile = olderMacMode ? "older-mac" : "standard";
+  for (const rect of rectangles) {
+    const term = rect.kind === "terminal" ? rect.terminal?.term : null;
+    if (!term) continue;
+    term.setRenderPixelRatioCap?.(olderMacMode ? 1 : 0);
+    term.setCursorBlinkEnabled?.(!olderMacMode);
+    term.options.smoothScrollDuration = olderMacMode ? 0 : 100;
+    updateTerminalRenderState(rect);
+  }
+  if (save) scheduleUserSettingsSave();
 }
 
 function applyTheme(id, { save = true } = {}) {
@@ -516,6 +549,7 @@ function applyUserSettings(settings) {
   terminalTerm = normalizeTerminalTERM(settings.terminalTerm);
   terminalFont = normalizeTerminalFont(settings.terminalFont);
   terminalColorMode = normalizeTerminalColorMode(settings.terminalColorMode);
+  setOlderMacMode(settings.olderMacMode === true, { save: false });
   setOLEDWindowBorderSize(settings.oledWindowBorderSize, { save: false });
   applyTheme(settings.themeId || defaultTheme, { save: false });
   updateDeskbar();
@@ -995,6 +1029,43 @@ settingsModal.addEventListener("pointerdown", (event) => {
 });
 document.body.appendChild(settingsModal);
 
+const clipboardSetupPrompt = document.createElement("aside");
+clipboardSetupPrompt.className = "clipboard-setup-prompt";
+clipboardSetupPrompt.hidden = true;
+clipboardSetupPrompt.setAttribute("role", "region");
+clipboardSetupPrompt.setAttribute("aria-labelledby", "clipboard-setup-prompt-title");
+const clipboardSetupCopy = document.createElement("div");
+const clipboardSetupTitle = document.createElement("strong");
+clipboardSetupTitle.id = "clipboard-setup-prompt-title";
+clipboardSetupTitle.textContent = "Enable reliable clipboard access";
+const clipboardSetupMessage = document.createElement("span");
+clipboardSetupCopy.append(clipboardSetupTitle, clipboardSetupMessage);
+const clipboardSetupActions = document.createElement("div");
+clipboardSetupActions.className = "clipboard-setup-prompt-actions";
+const clipboardSetupButton = document.createElement("button");
+clipboardSetupButton.type = "button";
+clipboardSetupButton.textContent = "Set up clipboard";
+clipboardSetupButton.addEventListener("click", () => {
+  clipboardPromptDismissed = true;
+  clipboardSetupPrompt.hidden = true;
+  openSettingsModal({ clipboard: true });
+});
+const clipboardSetupDismiss = document.createElement("button");
+clipboardSetupDismiss.type = "button";
+clipboardSetupDismiss.textContent = "Remind me later";
+clipboardSetupDismiss.addEventListener("click", () => {
+  clipboardPromptDismissed = true;
+  clipboardSetupPrompt.hidden = true;
+  try {
+    window.localStorage.setItem(clipboardPromptSnoozeKey, String(Date.now() + 24 * 60 * 60 * 1000));
+  } catch {
+    // The in-memory dismissal still prevents repeated prompts on this page.
+  }
+});
+clipboardSetupActions.append(clipboardSetupButton, clipboardSetupDismiss);
+clipboardSetupPrompt.append(clipboardSetupCopy, clipboardSetupActions);
+document.body.appendChild(clipboardSetupPrompt);
+
 const renameWindowModal = document.createElement("div");
 renameWindowModal.className = "settings-modal rename-window-modal";
 renameWindowModal.hidden = true;
@@ -1160,6 +1231,13 @@ workspaceStatus.dataset.state = "idle";
 workspaceStatus.textContent = "Loading...";
 document.body.appendChild(workspaceStatus);
 
+const wakeRecoveryStatus = document.createElement("div");
+wakeRecoveryStatus.className = "wake-recovery-status";
+wakeRecoveryStatus.hidden = true;
+wakeRecoveryStatus.setAttribute("role", "status");
+wakeRecoveryStatus.setAttribute("aria-live", "polite");
+document.body.appendChild(wakeRecoveryStatus);
+
 board.addEventListener("pointerdown", startDrawing);
 board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
@@ -1167,6 +1245,11 @@ document.addEventListener("keydown", hideMenusOnEscape);
 document.addEventListener("keydown", handlePaneKeyboardShortcuts, { capture: true });
 document.addEventListener("keyup", handleWindowSwitcherKeyup, { capture: true });
 document.addEventListener("visibilitychange", handleDocumentVisibilityChange);
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted) return;
+  browserWakePending = true;
+  checkForBrowserWake();
+});
 // pagehide is the one teardown event that also fires when a tab is discarded
 // or frozen, where unload does not.
 window.addEventListener("pagehide", saveWorkspaceOnExit);
@@ -1185,6 +1268,7 @@ window.addEventListener("popstate", () => void handleSessionHistoryNavigation())
 window.addEventListener("message", handleBrowserPaneMessage);
 
 applyTheme(themeID, { save: false });
+void refreshClipboardBridgeAndPrompt();
 void startApp()
   .catch((error) => console.warn(error))
   .finally(startServerConnectionMonitor);
@@ -3847,6 +3931,7 @@ function updateTerminalRenderState(rect) {
 }
 
 function handleDocumentVisibilityChange() {
+  checkForBrowserWake();
   updateTerminalDocumentVisibility();
   if (document.hidden) {
     // A backgrounded tab may be discarded without ever running code again,
@@ -3863,6 +3948,76 @@ function handleDocumentVisibilityChange() {
   // having said so.
   resumeTerminalConnections();
   void checkServerConnection({ force: true });
+}
+
+function checkForBrowserWake() {
+  const sample = { wall: Date.now(), monotonic: performance.now() };
+  if (browserWakeDetected(browserWakeSample, sample)) browserWakePending = true;
+  browserWakeSample = sample;
+  if (!browserWakePending || document.hidden) return;
+  browserWakePending = false;
+  void recoverAfterBrowserWake();
+}
+
+async function recoverAfterBrowserWake() {
+  const recoveryID = ++wakeRecoveryID;
+  wakeRecoveryActive = true;
+  wakeRecoveryHealthReady = false;
+  wakeRecoveryTerminals.clear();
+  window.clearTimeout(wakeRecoveryStatusHideTimer);
+  wakeRecoveryStatusHideTimer = null;
+
+  for (const rect of rectangles) {
+    const terminalState = rect.kind === "terminal" ? rect.terminal : null;
+    if (!terminalState?.term) continue;
+    terminalState.term.requestFullRedraw?.();
+    if (rect.terminalStatus && !rect.terminalStatus.reconnect) continue;
+
+    wakeRecoveryTerminals.add(terminalState);
+    terminalState.wakeRecoveryID = recoveryID;
+    if (terminalState.reconnectTimer !== null) {
+      window.clearTimeout(terminalState.reconnectTimer);
+      terminalState.reconnectTimer = null;
+    }
+    terminalState.reconnectAttempts = 0;
+    const oldSocket = terminalState.socket;
+    connectTerminalSocket(rect);
+    if (oldSocket?.readyState === WebSocket.OPEN || oldSocket?.readyState === WebSocket.CONNECTING) {
+      oldSocket.close(1000, "Reconnecting after wake");
+    }
+  }
+  updateWakeRecoveryStatus();
+
+  const healthy = await checkServerConnection({ force: true });
+  if (recoveryID !== wakeRecoveryID) return;
+  if (healthy) wakeRecoveryHealthReady = true;
+  updateWakeRecoveryStatus();
+}
+
+function completeTerminalWakeRecovery(terminalState) {
+  if (!wakeRecoveryActive || terminalState?.wakeRecoveryID !== wakeRecoveryID) return;
+  terminalState.wakeRecoveryID = 0;
+  wakeRecoveryTerminals.delete(terminalState);
+  updateWakeRecoveryStatus();
+}
+
+function updateWakeRecoveryStatus() {
+  if (!wakeRecoveryActive) return;
+  const pending = wakeRecoveryTerminals.size;
+  if (!wakeRecoveryHealthReady || pending > 0) {
+    wakeRecoveryStatus.textContent = pending > 0
+      ? `Reconnecting after wake… ${pending} terminal${pending === 1 ? "" : "s"}`
+      : "Checking Tessera after wake…";
+    wakeRecoveryStatus.hidden = false;
+    return;
+  }
+  wakeRecoveryActive = false;
+  wakeRecoveryStatus.textContent = "Ready after wake";
+  wakeRecoveryStatus.hidden = false;
+  wakeRecoveryStatusHideTimer = window.setTimeout(() => {
+    wakeRecoveryStatus.hidden = true;
+    wakeRecoveryStatusHideTimer = null;
+  }, 2000);
 }
 
 function updateTerminalDocumentVisibility() {
@@ -4439,6 +4594,7 @@ function userSettingsPayload() {
       terminalTerm,
       terminalFont,
       terminalColorMode,
+      olderMacMode,
   };
 }
 
@@ -5041,6 +5197,9 @@ async function startTerminal(rect) {
       fontSize: rect.fontSize,
       fontFamily: terminalFontFamily(terminalFont),
       cursorBlink: activeRect === rect,
+      cursorBlinkEnabled: !olderMacMode,
+      renderPixelRatioCap: olderMacMode ? 1 : 0,
+      smoothScrollDuration: olderMacMode ? 0 : 100,
       theme: { ...terminalTheme },
     });
     const fit = new FitAddon();
@@ -5190,8 +5349,13 @@ function applyTerminalAttachMessage(rect, terminalState, data) {
   if (message?.type !== "attach") {
     return;
   }
-  try { terminalState.replica.attach(message); }
-  catch (error) { terminalState.socket?.close(4503, error.message.slice(0, 100)); }
+  try {
+    terminalState.replica.attach(message);
+  } catch (error) {
+    terminalState.socket?.close(4503, error.message.slice(0, 100));
+    return;
+  }
+  completeTerminalWakeRecovery(terminalState);
 }
 
 function handleTerminalSocketClose(rect, terminalState, closeEvent) {
@@ -5745,6 +5909,7 @@ function disposeTerminal(rect, options = {}) {
     return;
   }
   const terminalState = rect.terminal;
+  completeTerminalWakeRecovery(terminalState);
   rect.terminal = null;
   if (terminalState.reconnectTimer !== null) {
     window.clearTimeout(terminalState.reconnectTimer);
@@ -6657,11 +6822,15 @@ function openDestroySessionDialog(session) {
   window.requestAnimationFrame(() => cancelButton.focus());
 }
 
-function openSettingsModal() {
+function openSettingsModal(options = {}) {
   hideDeskbar();
   renderSettingsModal();
   settingsModal.hidden = false;
-  window.requestAnimationFrame(() => settingsModal.querySelector("button, select")?.focus());
+  window.requestAnimationFrame(() => {
+    const clipboardRow = options.clipboard ? settingsModal.querySelector("#settings-clipboard") : null;
+    clipboardRow?.scrollIntoView({ block: "center" });
+    (clipboardRow?.querySelector("button, a") || settingsModal.querySelector("button, select"))?.focus();
+  });
 }
 
 function hideSettingsModal() {
@@ -6694,6 +6863,8 @@ function renderSettingsModal() {
 
   const content = document.createElement("div");
   content.className = "settings-content";
+  content.appendChild(renderSettingsSection("Performance", [renderSettingsPerformanceRow()]));
+  content.appendChild(renderSettingsSection("Compatibility", [renderSettingsCompatibilityRow()]));
   content.appendChild(renderSettingsSection("Font size", [
     renderSettingsFontRow("Default", "Used for new terminal, worksheet, and text-editor panes in all sessions.", defaultPaneFontSize, (next) => {
       setDefaultPaneFontSize(next);
@@ -6734,9 +6905,94 @@ function renderSettingsModal() {
   settingsModal.appendChild(panel);
 }
 
+function currentCompatibility() {
+  return detectCompatibility({
+    userAgent: navigator.userAgent,
+    platform: navigator.userAgentData?.platform || navigator.platform || "Unknown",
+    secureContext: window.isSecureContext,
+    clipboard: navigator.clipboard,
+    extension: clipboardBridge.status,
+    displayPixelRatio: window.devicePixelRatio || 1,
+    olderMacMode,
+    online: navigator.onLine !== false,
+    serverHealthy: serverConnectionLastHealthy,
+    serverState: serverConnectionState.state,
+  });
+}
+
+function renderSettingsCompatibilityRow() {
+  const row = document.createElement("div");
+  row.className = "settings-compatibility";
+  row.id = "settings-compatibility";
+  const grid = document.createElement("dl");
+  grid.className = "settings-compatibility-grid";
+  const status = document.createElement("p");
+  status.className = "settings-compatibility-status";
+  status.setAttribute("role", "status");
+  const actions = document.createElement("div");
+  actions.className = "settings-compatibility-actions";
+  const refreshButton = document.createElement("button");
+  refreshButton.type = "button";
+  refreshButton.textContent = "Refresh checks";
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Copy diagnostics";
+
+  const update = () => {
+    const info = currentCompatibility();
+    const items = [
+      ["Clipboard support", info.nativeClipboard ? "Native API available" : "Native API unavailable"],
+      ["Extension connection", info.extension],
+      ["Terminal extension writes", info.terminalClipboard],
+      ["Rendering scale", `${info.renderScale} · ${info.performanceProfile} (${info.renderScaleDetail})`],
+      ["Connection status", info.connection],
+    ];
+    grid.replaceChildren();
+    for (const [name, value] of items) {
+      const term = document.createElement("dt");
+      term.textContent = name;
+      const description = document.createElement("dd");
+      description.textContent = value;
+      grid.append(term, description);
+    }
+    return info;
+  };
+
+  const refresh = async () => {
+    refreshButton.disabled = true;
+    status.textContent = "Checking browser and server…";
+    const [, healthResult] = await Promise.allSettled([
+      clipboardBridge.check(),
+      probeServerHealth(),
+    ]);
+    if (healthResult.status === "fulfilled") serverConnectionLastHealthy = healthResult.value;
+    if (!row.isConnected) return;
+    update();
+    status.textContent = "Checks updated.";
+    refreshButton.disabled = false;
+  };
+
+  refreshButton.addEventListener("click", refresh);
+  copyButton.addEventListener("click", async () => {
+    copyButton.disabled = true;
+    const copied = await writeClipboardText(compatibilityDiagnostics(update()));
+    if (!row.isConnected) return;
+    status.textContent = copied
+      ? "Diagnostics copied to the system clipboard."
+      : "The browser blocked the system clipboard. Diagnostics are available to Tessera Paste.";
+    copyButton.disabled = false;
+  });
+  actions.append(refreshButton, copyButton);
+  row.append(grid, actions, status);
+  update();
+  void refresh();
+  return row;
+}
+
 function renderSettingsClipboardRow() {
   const row = document.createElement("div");
   row.className = "settings-clipboard";
+  row.id = "settings-clipboard";
   const status = document.createElement("p");
   status.setAttribute("role", "status");
   const instructions = document.createElement("p");
@@ -6775,6 +7031,7 @@ function renderSettingsClipboardRow() {
     status.textContent = "Checking clipboard bridge…";
     await clipboardBridge.check();
     if (!row.isConnected) return;
+    if (clipboardBridge.status) clipboardSetupPrompt.hidden = true;
     check.disabled = false;
     update();
   });
@@ -6796,6 +7053,30 @@ function renderSettingsClipboardRow() {
   actions.append(check, download, help);
   row.append(status, instructions, address, actions, packageStatus);
   return row;
+}
+
+async function refreshClipboardBridgeAndPrompt() {
+  const checkID = ++clipboardPromptCheckID;
+  const connected = await clipboardBridge.check();
+  if (checkID !== clipboardPromptCheckID) return;
+  if (connected) {
+    clipboardSetupPrompt.hidden = true;
+    return;
+  }
+
+  const recommendation = firefoxClipboardExtensionRecommendation({
+    userAgent: navigator.userAgent,
+    isSecureContext: window.isSecureContext,
+    clipboard: navigator.clipboard,
+  });
+  if (!recommendation || clipboardPromptDismissed) return;
+  try {
+    if (Number(window.localStorage.getItem(clipboardPromptSnoozeKey)) > Date.now()) return;
+  } catch {
+    // Storage may be unavailable in hardened browser profiles.
+  }
+  clipboardSetupMessage.textContent = recommendation;
+  clipboardSetupPrompt.hidden = false;
 }
 
 function openHelpModal() {
@@ -7050,6 +7331,31 @@ function renderSettingsSection(titleText, rows) {
     section.appendChild(row);
   }
   return section;
+}
+
+function renderSettingsPerformanceRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Profile";
+  const detail = document.createElement("span");
+  detail.textContent = "Older Mac caps terminal rendering at 1×, keeps the cursor steady, and removes smooth scrolling and status animations.";
+  label.append(name, detail);
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", "Performance profile");
+  for (const [value, text] of [["standard", "Standard"], ["older-mac", "Older Mac"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = olderMacMode === (value === "older-mac");
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => setOlderMacMode(select.value === "older-mac"));
+  row.append(label, select);
+  return row;
 }
 
 function renderSettingsFontRow(labelText, description, value, onChange, disabled = false) {
@@ -7524,7 +7830,10 @@ function startServerConnectionMonitor() {
   window.addEventListener("offline", handleBrowserOffline);
   window.addEventListener("online", handleBrowserOnline);
   void checkServerConnection();
-  serverHealthMonitorTimer = window.setInterval(() => void checkServerConnection(), serverHealthPollInterval);
+  serverHealthMonitorTimer = window.setInterval(() => {
+    checkForBrowserWake();
+    void checkServerConnection();
+  }, serverHealthPollInterval);
 }
 
 function handleBrowserOffline() {
@@ -7547,6 +7856,7 @@ function handleBrowserOnline() {
   if (!serverConnectionModal.hidden) {
     showServerConnectionModal("checking");
   }
+  checkForBrowserWake();
   // The panes do not wait for the probe to confirm what the browser just
   // said; a failed attempt costs one round trip and reschedules itself.
   resumeTerminalConnections();
@@ -7585,8 +7895,13 @@ async function checkServerConnection({ manual = false, force = false } = {}) {
   }
   const previousState = serverConnectionState.state;
   const healthy = await probeServerHealth();
+  serverConnectionLastHealthy = healthy;
   if (serverUpdateRestarting) {
     return healthy;
+  }
+  if (healthy && wakeRecoveryActive) {
+    wakeRecoveryHealthReady = true;
+    updateWakeRecoveryStatus();
   }
   // The probe reaches the server over the same network the terminal sockets
   // use, so an answer after a spell of trouble is the earliest evidence a

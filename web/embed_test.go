@@ -10,7 +10,7 @@ import (
 )
 
 func TestTopLevelBrowserAssetsAreEmbedded(t *testing.T) {
-	for _, name := range []string{"manifest.webmanifest", "browser-pane.mjs", "oled-border-size.mjs", "pane-activation.mjs", "terminal-input.mjs", "terminal-keyboard.mjs", "terminal-settings.mjs", "workspace-concurrency.mjs", "clipboard-bridge.mjs", "extensions/firefox-clipboard.json", "extensions/tessera-clipboard-dev.zip", "extensions/firefox-clipboard-help.html", "extensions/clipboard-help.css", "assets/NotoSansSymbols2-Regular.ttf", "assets/NotoSansSymbols2-OFL.txt"} {
+	for _, name := range []string{"manifest.webmanifest", "browser-pane.mjs", "oled-border-size.mjs", "pane-activation.mjs", "terminal-input.mjs", "terminal-keyboard.mjs", "terminal-settings.mjs", "workspace-concurrency.mjs", "clipboard-bridge.mjs", "compatibility.mjs", "extensions/firefox-clipboard.json", "extensions/tessera-clipboard-dev.zip", "extensions/firefox-clipboard-help.html", "extensions/clipboard-help.css", "assets/NotoSansSymbols2-Regular.ttf", "assets/NotoSansSymbols2-OFL.txt"} {
 		if _, err := fs.Stat(Files, name); err != nil {
 			t.Errorf("embedded asset %q: %v", name, err)
 		}

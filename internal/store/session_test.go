@@ -59,7 +59,7 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		ThemeID: "hacker", DeskbarButtonEnabled: false,
 		TerminalWheelSensitivity: 0.5, EditorWheelSensitivity: 2,
 		OLEDWindowBorderSize: 16, TerminalTERM: "xterm-ghostty", TerminalFont: "fira-code",
-		TerminalColorMode: "light",
+		TerminalColorMode: "light", OlderMacMode: true,
 	}
 	if err := st.SaveUserSettings(ctx, settings); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -69,7 +69,7 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		t.Fatalf("load settings: %v", err)
 	}
 	if loaded.DefaultPaneFontSize != 18 || loaded.DefaultTheme != "studio" || loaded.ThemeID != "hacker" || loaded.DeskbarButtonEnabled ||
-		loaded.TerminalWheelSensitivity != 0.5 || loaded.EditorWheelSensitivity != 2 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalColorMode != "light" {
+		loaded.TerminalWheelSensitivity != 0.5 || loaded.EditorWheelSensitivity != 2 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalColorMode != "light" || !loaded.OlderMacMode {
 		t.Fatalf("loaded settings = %+v", loaded)
 	}
 }
@@ -224,7 +224,7 @@ VALUES ('alice', 'alice', 18, 'studio', 'hacker', '2026-01-01', '2026-01-02');`)
 		t.Fatalf("load migrated settings: %v", err)
 	}
 	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" || !settings.DeskbarButtonEnabled ||
-		settings.TerminalWheelSensitivity != 1 || settings.EditorWheelSensitivity != 1 || settings.OLEDWindowBorderSize != 10 {
+		settings.TerminalWheelSensitivity != 1 || settings.EditorWheelSensitivity != 1 || settings.OLEDWindowBorderSize != 10 || settings.OlderMacMode {
 		t.Fatalf("migrated settings = %+v", settings)
 	}
 }

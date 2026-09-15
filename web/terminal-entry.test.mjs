@@ -96,8 +96,43 @@ test("same-grid geometry forces a full redraw after clearing the canvas", () => 
   assert.equal(bitmap, "blank", "resizing clears the canvas before its scheduled frame");
   term.renderScheduledFrame();
   assert.equal(bitmap, "content");
+  assert.equal(term.renderer.cursorBlink, true, "scheduled blink frames repaint the cursor row");
   assert.deepEqual(forcedRenders, [true]);
 
   term.renderScheduledFrame();
   assert.deepEqual(forcedRenders, [true, false], "later idle frames retain dirty-row rendering");
+
+  term.requestFullRedraw();
+  term.renderScheduledFrame();
+  assert.deepEqual(forcedRenders, [true, false, true], "wake recovery can explicitly repaint the canvas");
+});
+
+test("a render ratio cap lowers Retina canvas resolution and can be removed", () => {
+  const resized = [];
+  class GhosttyTerminal {
+    constructor(options) {
+      this.options = options;
+      this.cols = 80; this.rows = 24; this.viewportY = 0; this.scrollbarOpacity = 0;
+      this.lastCursorY = 0; this.cursorMoveEmitter = { fire() {} };
+    }
+    onScroll() {}
+  }
+  const Terminal = loadTerminalClass({
+    GhosttyTerminal,
+    devicePixelRatio: 2,
+    renderScheduler: { request() {}, unregister() {} },
+  });
+  const term = new Terminal({ renderPixelRatioCap: 1 });
+  term.isOpen = true;
+  term.renderer = {
+    cursorVisible: false, devicePixelRatio: 2,
+    resize() { resized.push(this.devicePixelRatio); }, render() {},
+  };
+  term.wasmTerm = { getCursor() { return { y: 0 }; } };
+
+  term.renderScheduledFrame();
+  assert.deepEqual(resized, [1]);
+  term.setRenderPixelRatioCap(0);
+  term.renderScheduledFrame();
+  assert.deepEqual(resized, [1, 2]);
 });

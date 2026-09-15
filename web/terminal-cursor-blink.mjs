@@ -6,6 +6,7 @@ export class TerminalCursorBlink {
     this.timers = timers;
     this.active = false;
     this.visible = true;
+    this.enabled = true;
     this.cursorVisible = false;
     this.timer = null;
   }
@@ -22,11 +23,17 @@ export class TerminalCursorBlink {
     this.restart();
   }
 
+  setEnabled(enabled) {
+    if (this.enabled === enabled) return;
+    this.enabled = enabled;
+    this.restart();
+  }
+
   restart() {
     this.dispose();
     this.cursorVisible = this.active;
     this.render(this.cursorVisible);
-    if (this.active && this.visible) {
+    if (this.active && this.visible && this.enabled) {
       this.timer = this.timers.setInterval(() => {
         this.cursorVisible = !this.cursorVisible;
         this.render(this.cursorVisible);

@@ -8,6 +8,11 @@ listening port, or external clipboard service is needed.
 
 Open **Settings → Clipboard**. The section reports the connection and installed
 version, offers the bundled package, and links to installation instructions.
+When the bridge is absent, Tessera also shows a setup reminder on Firefox 115
+and older, or on newer Firefox when the current connection does not expose the
+native Clipboard API. The reminder opens this Settings section directly and
+can be snoozed for one day. It is not shown in other browsers or in newer
+Firefox when native clipboard access is available.
 
 A signed XPI uses Firefox's normal installation prompt. If direct installation
 is blocked, download it and use **about:addons → gear → Install Add-on From

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Add a live Compatibility panel under Settings showing native clipboard
+  support, Firefox extension connection and terminal permission, effective
+  rendering scale, performance profile, and server connection state. A Copy
+  diagnostics action uses Tessera's clipboard bridge and browser fallbacks.
+
+- Add a per-user Older Mac performance preset that caps terminal canvases at
+  1× resolution, uses a steady cursor, disables terminal smooth scrolling, and
+  stops decorative status animations. Changes apply to open terminals without
+  reconnecting them.
+
+- Detect macOS sleep and reconnect terminal streams from their last replicated
+  position after wake, force a complete terminal repaint, and show a compact
+  recovery status until the server and affected terminals are ready.
+
+- Prompt Firefox 115 ESR users to set up Tessera's clipboard extension when
+  its bridge is missing, with direct Clipboard settings guidance and a one-day
+  reminder snooze. Newer Firefox is prompted only when native clipboard access
+  is unavailable on the current connection.
+
+- Hide Firefox's native contenteditable caret in Terminal panes and repaint
+  Ghostty's canvas cursor row on each Tessera-managed blink frame.
+
 - Redraw every terminal row after a host geometry update clears its canvas,
   preventing an idle TUI from remaining blank after a Firefox page refresh.
 

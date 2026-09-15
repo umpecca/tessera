@@ -1775,6 +1775,9 @@ input {
   padding: 8px;
   background: var(--terminal-bg);
   color: var(--terminal-text);
+  /* Firefox paints a native insertion caret because ghostty-web makes this
+     container editable. The terminal cursor itself is rendered on canvas. */
+  caret-color: transparent;
   font-family: var(--tessera-font);
   font-size: 13px;
   user-select: text;
@@ -3217,6 +3220,13 @@ input {
   }
 }
 
+:root[data-performance-profile="older-mac"] .rectangle[data-running="true"] .window-tab::before,
+:root[data-performance-profile="older-mac"] .terminal-status-badge,
+:root[data-performance-profile="older-mac"] .server-update-status.is-busy::after,
+:root[data-performance-profile="older-mac"] .server-connection-status.is-busy::after {
+  animation: none;
+}
+
 @media (max-width: 560px) {
   .sessions-row {
     grid-template-columns: minmax(0, 1fr) auto auto;
@@ -3540,3 +3550,120 @@ input {
 .settings-clipboard-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
 .settings-clipboard a { color: var(--text); text-decoration: underline; }
 .settings-clipboard button { font: inherit; color: var(--text); background: var(--control-face); padding: 5px 10px; border: 1px solid var(--border-strong); cursor: pointer; }
+
+.settings-compatibility {
+  display: grid;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid var(--divider);
+  background: var(--pane-bg);
+  font-size: 12px;
+}
+
+.settings-compatibility-grid {
+  display: grid;
+  grid-template-columns: minmax(130px, auto) minmax(0, 1fr);
+  gap: 5px 14px;
+  margin: 0;
+}
+
+.settings-compatibility-grid dt { color: var(--text-faint); }
+.settings-compatibility-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.settings-compatibility-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.settings-compatibility button {
+  min-height: 26px;
+  border: 1px solid var(--border-strong);
+  padding: 3px 10px;
+  background: var(--control-face);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-compatibility button:focus,
+.settings-compatibility button:hover {
+  outline: 1px dotted var(--focus-outline);
+  outline-offset: -3px;
+  background: var(--highlight-bg);
+}
+
+.settings-compatibility button:disabled { color: var(--text-disabled); cursor: default; }
+
+.settings-compatibility-status {
+  min-height: 16px;
+  margin: 0;
+  color: var(--text-faint);
+  line-height: 16px;
+}
+
+@media (max-width: 460px) {
+  .settings-compatibility-grid { grid-template-columns: 1fr; gap: 2px; }
+  .settings-compatibility-grid dd { margin-bottom: 5px; }
+}
+
+.clipboard-setup-prompt {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 50%;
+  z-index: 96000;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: min(680px, calc(100vw - 24px));
+  padding: 10px 12px;
+  transform: translateX(-50%);
+  border: 2px solid var(--border-panel);
+  background: var(--chrome-bg);
+  box-shadow: inset 1px 1px 0 var(--bevel-hi), inset -1px -1px 0 var(--bevel-panel-lo), 3px 3px 0 var(--panel-shadow);
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wake-recovery-status {
+  position: fixed;
+  left: 50%;
+  bottom: calc(7px + env(safe-area-inset-bottom));
+  z-index: 90000;
+  min-width: 150px;
+  max-width: min(320px, calc(100vw - 24px));
+  height: 22px;
+  overflow: hidden;
+  transform: translateX(-50%);
+  border: 1px solid var(--border-strong);
+  padding: 1px 8px;
+  background: var(--chrome-bg);
+  box-shadow: inset 1px 1px 0 var(--bevel-hi), inset -1px -1px 0 var(--bevel-lo);
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.wake-recovery-status[hidden] { display: none; }
+
+.clipboard-setup-prompt[hidden] { display: none; }
+.clipboard-setup-prompt > div:first-child { display: grid; flex: 1 1 auto; gap: 2px; }
+.clipboard-setup-prompt-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+.clipboard-setup-prompt button {
+  border: 1px solid var(--border-strong);
+  padding: 5px 8px;
+  background: var(--control-face);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.clipboard-setup-prompt button:first-child { font-weight: 700; }
+
+@media (max-width: 620px) {
+  .clipboard-setup-prompt { align-items: stretch; flex-direction: column; gap: 8px; }
+  .clipboard-setup-prompt-actions { justify-content: flex-end; }
+}

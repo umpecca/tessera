@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ClipboardBridge, clipboardBridgeNeedsUpdate } from "./clipboard-bridge.mjs";
+import {
+  ClipboardBridge,
+  clipboardBridgeNeedsUpdate,
+  firefoxClipboardExtensionRecommendation,
+} from "./clipboard-bridge.mjs";
 
 function fixture(timeout = 30) {
   const listeners = new Set();
@@ -76,4 +80,20 @@ test("numeric extension updates never propose downgrades", () => {
   assert.equal(clipboardBridgeNeedsUpdate("1.0.0", "0.10.0"), false);
   assert.equal(clipboardBridgeNeedsUpdate("0.1.0", "0.1.0"), false);
   assert.equal(clipboardBridgeNeedsUpdate("invalid", "0.1.0"), false);
+});
+
+test("recommends the extension only for Firefox versions and connections that need it", () => {
+  const clipboard = { readText() {}, writeText() {} };
+  assert.match(firefoxClipboardExtensionRecommendation({
+    userAgent: "Mozilla/5.0 Firefox/115.37", isSecureContext: true, clipboard,
+  }), /115 ESR/);
+  assert.match(firefoxClipboardExtensionRecommendation({
+    userAgent: "Mozilla/5.0 Firefox/142.0", isSecureContext: false, clipboard,
+  }), /this connection/);
+  assert.equal(firefoxClipboardExtensionRecommendation({
+    userAgent: "Mozilla/5.0 Firefox/142.0", isSecureContext: true, clipboard,
+  }), "");
+  assert.equal(firefoxClipboardExtensionRecommendation({
+    userAgent: "Mozilla/5.0 Chrome/140.0", isSecureContext: false,
+  }), "");
 });

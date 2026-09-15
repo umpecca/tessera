@@ -80,6 +80,7 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 		"editorWheelSensitivity": 2.0, "oledWindowBorderSize": 16,
 		"terminalTerm": "xterm-ghostty", "terminalFont": "fira-code",
 		"terminalColorMode": "light",
+		"olderMacMode":      true,
 	}
 	response = request(http.MethodPut, "/api/users/alice/settings", settings)
 	if response.Code != http.StatusOK {
@@ -110,5 +111,8 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	}
 	if loadedSettings.TerminalColorMode != "light" {
 		t.Fatalf("terminal color mode setting was not persisted: %+v", loadedSettings)
+	}
+	if !loadedSettings.OlderMacMode {
+		t.Fatalf("older Mac mode setting was not persisted: %+v", loadedSettings)
 	}
 }

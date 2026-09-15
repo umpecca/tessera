@@ -1,0 +1,2 @@
+ALTER TABLE user_settings
+ADD COLUMN older_mac_mode INTEGER NOT NULL DEFAULT 0;

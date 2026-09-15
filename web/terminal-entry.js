@@ -19,13 +19,17 @@ globalThis.addEventListener?.("resize", () => {
 // Adapt that private loop here so the rest of Tessera can use explicit
 // visibility and activity state without depending on Ghostty internals.
 class Terminal extends GhosttyTerminal {
-  constructor(options) {
-    super({ ...options, cursorBlink: false });
+  constructor(options = {}) {
+    const { renderPixelRatioCap = 0, cursorBlinkEnabled = true, ...terminalOptions } = options;
+    super({ ...terminalOptions, cursorBlink: false });
     this.cursorBlink = new TerminalCursorBlink((visible) => {
       if (this.renderer) this.renderer.cursorVisible = visible;
       this.requestRender();
     });
     this.renderPaused = false;
+    this.renderPixelRatioCap = Number.isFinite(renderPixelRatioCap) && renderPixelRatioCap >= 1
+      ? renderPixelRatioCap : 0;
+    this.cursorBlink.setEnabled(cursorBlinkEnabled !== false);
     // CanvasRenderer.resize() clears the bitmap. Keep this state separate from
     // Ghostty's dirty rows because a same-grid geometry update is a no-op in
     // the terminal core and therefore does not dirty any rows itself.
@@ -63,8 +67,14 @@ class Terminal extends GhosttyTerminal {
       renderScheduler.unregister(this);
       return;
     }
-    const pixelRatio = globalThis.devicePixelRatio || 1;
+    const nativePixelRatio = globalThis.devicePixelRatio || 1;
+    const pixelRatio = this.renderPixelRatioCap > 0
+      ? Math.min(nativePixelRatio, this.renderPixelRatioCap) : nativePixelRatio;
     this.renderer.cursorVisible = this.cursorBlink.cursorVisible;
+    // Tessera owns the blink timer, but CanvasRenderer uses this flag to
+    // repaint the cursor row on a frame where no terminal cells are dirty.
+    // Setting it after construction does not start Ghostty's own timer.
+    this.renderer.cursorBlink = true;
     const resolutionChanged = this.renderer.devicePixelRatio !== pixelRatio;
     if (resolutionChanged) {
       this.renderer.devicePixelRatio = pixelRatio;
@@ -181,6 +191,22 @@ class Terminal extends GhosttyTerminal {
 
   requestRender() {
     renderScheduler.request(this);
+  }
+
+  requestFullRedraw() {
+    this.fullRedrawPending = true;
+    this.requestRender();
+  }
+
+  setRenderPixelRatioCap(cap) {
+    const next = Number.isFinite(cap) && cap >= 1 ? cap : 0;
+    if (next === this.renderPixelRatioCap) return;
+    this.renderPixelRatioCap = next;
+    this.requestFullRedraw();
+  }
+
+  setCursorBlinkEnabled(enabled) {
+    this.cursorBlink.setEnabled(enabled);
   }
 
   setCursorActive(active) {

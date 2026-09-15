@@ -60,7 +60,7 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 		"user_id", "default_pane_font_size", "default_theme", "theme_id",
 		"deskbar_button_enabled", "terminal_wheel_sensitivity",
 		"editor_wheel_sensitivity", "oled_window_border_size", "terminal_term",
-		"terminal_font", "terminal_color_mode", "created_at", "updated_at", "revision",
+		"terminal_font", "terminal_color_mode", "older_mac_mode", "created_at", "updated_at", "revision",
 	})
 	if err := st.Close(); err != nil {
 		t.Fatalf("close fresh store: %v", err)
@@ -196,7 +196,7 @@ func TestUnversionedCurrentSchemaAdoptionPreservesNamedSessions(t *testing.T) {
 		t.Fatalf("load adopted settings: %v", err)
 	}
 	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" || !settings.DeskbarButtonEnabled ||
-		settings.TerminalWheelSensitivity != 1.5 || settings.EditorWheelSensitivity != 1.5 || settings.OLEDWindowBorderSize != 10 || settings.TerminalTERM != DefaultTerminalTERM || settings.TerminalFont != DefaultTerminalFont || settings.TerminalColorMode != DefaultTerminalColorMode {
+		settings.TerminalWheelSensitivity != 1.5 || settings.EditorWheelSensitivity != 1.5 || settings.OLEDWindowBorderSize != 10 || settings.TerminalTERM != DefaultTerminalTERM || settings.TerminalFont != DefaultTerminalFont || settings.TerminalColorMode != DefaultTerminalColorMode || settings.OlderMacMode {
 		t.Fatalf("adopted settings changed: %+v", settings)
 	}
 }

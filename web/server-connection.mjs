@@ -1,5 +1,18 @@
 export const serverHealthFailureThreshold = 2;
 
+export const browserWakeClockGap = 10_000;
+
+// Date.now() advances while macOS sleeps, while Firefox's monotonic clock does
+// not. Comparing the two distinguishes a lid-close gap from an ordinary slow
+// or backgrounded callback, where both clocks advance together.
+export function browserWakeDetected(previous, current, threshold = browserWakeClockGap) {
+  if (!previous || !current) return false;
+  const wallElapsed = current.wall - previous.wall;
+  const monotonicElapsed = current.monotonic - previous.monotonic;
+  if (![wallElapsed, monotonicElapsed, threshold].every(Number.isFinite) || threshold <= 0) return false;
+  return wallElapsed >= threshold && wallElapsed - Math.max(0, monotonicElapsed) >= threshold;
+}
+
 // Reduces health-probe results into the small set of states the recovery modal
 // renders. Keeping this independent from the DOM makes transient-failure and
 // recovery behavior deterministic and directly testable.
