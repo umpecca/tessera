@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Reduce painting overhead for plain ASCII terminal rows by setting canvas font
+  and foreground once per row while preserving fixed cell positions.
+
+- Stabilize the 30 FPS terminal cap with anchored animation-frame deadlines,
+  avoiding dropped frames caused by small callback timing variations.
+
+- Slow hidden-tab health polling to every 30 seconds and refresh immediately
+  on return. Skip hidden countdown/spinner updates and use steady worksheet
+  spinners in Older Mac mode.
+
+- Show rolling five-second FPS and painting costs in Compatibility and copied
+  diagnostics. Measurements update once per second while Settings is visible.
+
+- Cap terminal painting at 30 FPS in Older Mac mode with a brief input bypass.
+  Show per-terminal frame counts and CPU painting costs in Compatibility and
+  copied diagnostics.
+
+- Pause painting and cursor blinking in terminals fully covered by another
+  window, and fully repaint them when exposed. Output continues processing.
+
+- Add Repair Terminal View (RV) to the command bar for the active terminal,
+  forcing a fresh fit and full repaint without restarting the shell.
+
+- Preserve a terminal's final fit request when rapid layout changes overlap
+  the fit add-on's resize guard, preventing an intermediate grid from leaving
+  content cropped until minimize, maximize, or refresh. Visible terminals also
+  remeasure after tab visibility and sleep recovery.
+
 - Add a live Compatibility panel under Settings showing native clipboard
   support, Firefox extension connection and terminal permission, effective
   rendering scale, performance profile, and server connection state. A Copy

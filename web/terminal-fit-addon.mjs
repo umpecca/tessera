@@ -5,12 +5,16 @@ const resizeDebounceMilliseconds = 100;
 // ghostty-web draws its scrollbar inside the terminal canvas, so Tessera does
 // not reserve a second scrollbar gutter while calculating the grid size.
 export class TesseraFitAddon {
-  constructor() {
+  constructor(options = {}) {
+    this.setTimer = options.setTimer || ((callback, delay) => setTimeout(callback, delay));
+    this.clearTimer = options.clearTimer || ((timerID) => clearTimeout(timerID));
     this.isResizing = false;
+    this.fitPending = false;
     this.lastColumns = undefined;
     this.lastRows = undefined;
     this.resizeObserver = undefined;
     this.resizeDebounceTimer = undefined;
+    this.resizeReleaseTimer = undefined;
     this.terminal = undefined;
   }
 
@@ -20,11 +24,17 @@ export class TesseraFitAddon {
 
   dispose() {
     this.resizeObserver?.disconnect();
-    if (this.resizeDebounceTimer) {
-      clearTimeout(this.resizeDebounceTimer);
+    if (this.resizeDebounceTimer !== undefined) {
+      this.clearTimer(this.resizeDebounceTimer);
+    }
+    if (this.resizeReleaseTimer !== undefined) {
+      this.clearTimer(this.resizeReleaseTimer);
     }
     this.resizeObserver = undefined;
     this.resizeDebounceTimer = undefined;
+    this.resizeReleaseTimer = undefined;
+    this.fitPending = false;
+    this.isResizing = false;
     this.lastColumns = undefined;
     this.lastRows = undefined;
     this.terminal = undefined;
@@ -32,8 +42,12 @@ export class TesseraFitAddon {
 
   fit() {
     if (this.isResizing) {
+      // The last pane-resize event can land during this short guard. Remember
+      // it or the canvas can remain on an intermediate grid indefinitely.
+      this.fitPending = true;
       return;
     }
+    this.fitPending = false;
     const dimensions = this.proposeDimensions();
     const terminal = this.terminal;
     if (!dimensions || !terminal) {
@@ -52,8 +66,13 @@ export class TesseraFitAddon {
     try {
       terminal.resize(dimensions.cols, dimensions.rows);
     } finally {
-      setTimeout(() => {
+      this.resizeReleaseTimer = this.setTimer(() => {
+        this.resizeReleaseTimer = undefined;
         this.isResizing = false;
+        if (this.fitPending) {
+          this.fitPending = false;
+          this.fit();
+        }
       }, 50);
     }
   }
@@ -88,13 +107,16 @@ export class TesseraFitAddon {
       return;
     }
     this.resizeObserver = new ResizeObserver((entries) => {
-      if (this.isResizing || !entries[0]) {
+      if (!entries[0]) {
         return;
       }
-      if (this.resizeDebounceTimer) {
-        clearTimeout(this.resizeDebounceTimer);
+      if (this.resizeDebounceTimer !== undefined) {
+        this.clearTimer(this.resizeDebounceTimer);
       }
-      this.resizeDebounceTimer = setTimeout(() => this.fit(), resizeDebounceMilliseconds);
+      this.resizeDebounceTimer = this.setTimer(() => {
+        this.resizeDebounceTimer = undefined;
+        this.fit();
+      }, resizeDebounceMilliseconds);
     });
     this.resizeObserver.observe(this.terminal.element);
   }
@@ -103,4 +125,3 @@ export class TesseraFitAddon {
 function cssPixels(value) {
   return Number.parseFloat(value) || 0;
 }
-

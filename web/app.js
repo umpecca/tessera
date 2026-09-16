@@ -85,6 +85,7 @@ import { activePaneOnLoad, focusPane, openTerminalWithoutFocus, paneNeedsRaise }
 import { paneContentFields } from "./pane-content-sync.mjs";
 import { adjacentWindowPane, windowSwitcherEntries } from "./window-switcher.mjs";
 import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
+import { terminalIsCovered } from "./terminal-visibility.mjs";
 import { TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
 import { TerminalReplica } from "./terminal-replica.mjs";
 import {
@@ -104,6 +105,7 @@ const board = document.querySelector("#board");
 const tabHeight = 24;
 const rectangles = [];
 let activeRect = null;
+let terminalVisibilityFrame = null;
 let activePaneID = "";
 let interaction = null;
 // "Cascade Arrange" snapshots every visible pane's box before its first tile;
@@ -356,6 +358,7 @@ function setOlderMacMode(enabled, { save = true } = {}) {
     const term = rect.kind === "terminal" ? rect.terminal?.term : null;
     if (!term) continue;
     term.setRenderPixelRatioCap?.(olderMacMode ? 1 : 0);
+    term.setPaintFPSLimit?.(olderMacMode ? 30 : 0);
     term.setCursorBlinkEnabled?.(!olderMacMode);
     term.options.smoothScrollDuration = olderMacMode ? 0 : 100;
     updateTerminalRenderState(rect);
@@ -3793,6 +3796,7 @@ function setActivePane(rect, options = {}) {
     rect.zIndex = nextZIndex;
     nextZIndex += 1;
     rect.element.style.zIndex = String(rect.zIndex);
+    scheduleTerminalVisibilityUpdate();
   }
   if (options.focusEditor) {
     focusPane(rect);
@@ -3911,7 +3915,7 @@ function setTerminalCursorBlink(rect, blink) {
   }
   try {
     const { term } = rect.terminal;
-    term.setCursorActive?.(blink && !rect.minimized);
+    term.setCursorActive?.(blink && !rect.minimized && !term.renderPaused);
   } catch {
     // Terminal not fully initialized yet; ignore.
   }
@@ -3922,17 +3926,27 @@ function updateTerminalRenderState(rect) {
   if (!term) {
     return;
   }
-  const paused = Boolean(rect.minimized);
+  const paused = Boolean(rect.minimized) || terminalIsCovered(rect, rectangles);
+  const wasPaused = term.renderPaused;
   term.setRenderPaused?.(paused);
   term.setCursorActive?.(!paused && activeRect === rect);
-  if (!paused) {
-    term.requestRender?.();
+  if (!paused && wasPaused) {
+    term.requestFullRedraw?.();
   }
+}
+
+function scheduleTerminalVisibilityUpdate() {
+  if (terminalVisibilityFrame !== null) return;
+  terminalVisibilityFrame = window.requestAnimationFrame(() => {
+    terminalVisibilityFrame = null;
+    for (const rect of rectangles) updateTerminalRenderState(rect);
+  });
 }
 
 function handleDocumentVisibilityChange() {
   checkForBrowserWake();
   updateTerminalDocumentVisibility();
+  if (serverHealthMonitorTimer !== null) scheduleServerHealthPolling();
   if (document.hidden) {
     // A backgrounded tab may be discarded without ever running code again,
     // so anything scheduled goes out now. This one takes the ordinary path:
@@ -3946,6 +3960,11 @@ function handleDocumentVisibilityChange() {
   // sleep waiting may be well past the moment it meant to try again — and
   // after a machine suspends, the socket it was holding can be gone without
   // having said so.
+  // ResizeObserver delivery can also be throttled while hidden, so measure
+  // every visible terminal before resuming its connection.
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal" && !rect.minimized) requestTerminalFit(rect);
+  }
   resumeTerminalConnections();
   void checkServerConnection({ force: true });
 }
@@ -3970,6 +3989,7 @@ async function recoverAfterBrowserWake() {
   for (const rect of rectangles) {
     const terminalState = rect.kind === "terminal" ? rect.terminal : null;
     if (!terminalState?.term) continue;
+    requestTerminalFit(rect);
     terminalState.term.requestFullRedraw?.();
     if (rect.terminalStatus && !rect.terminalStatus.reconnect) continue;
 
@@ -4448,6 +4468,7 @@ function setRectangle(rect, next) {
   rect.width = width;
   rect.height = height;
   rect.element.style.transform = `translate(${rect.x}px, ${rect.y}px)`;
+  scheduleTerminalVisibilityUpdate();
   if (sizeChanged) {
     rect.element.style.width = `${rect.width}px`;
     rect.element.style.height = `${rect.height}px`;
@@ -5199,6 +5220,7 @@ async function startTerminal(rect) {
       cursorBlink: activeRect === rect,
       cursorBlinkEnabled: !olderMacMode,
       renderPixelRatioCap: olderMacMode ? 1 : 0,
+      paintFPSLimit: olderMacMode ? 30 : 0,
       smoothScrollDuration: olderMacMode ? 0 : 100,
       theme: { ...terminalTheme },
     });
@@ -5245,6 +5267,7 @@ async function startTerminal(rect) {
     fit.fit();
     fit.observeResize();
     const dataDisposable = term.onData((data) => {
+      term.noteInteractiveInput?.();
       sendTerminalInput(rect.terminal?.socket, data);
     });
     const resizeDisposable = term.onResize(() => {
@@ -5433,7 +5456,9 @@ function setTerminalStatus(rect, status) {
   renderTerminalStatusBadge(rect);
   if (status?.retryAt) {
     // Twice a second, so the displayed count is never a stale second behind.
-    rect.terminalStatusTimer = window.setInterval(() => renderTerminalStatusBadge(rect), 500);
+    rect.terminalStatusTimer = window.setInterval(() => {
+      if (!document.hidden) renderTerminalStatusBadge(rect);
+    }, 500);
   }
 }
 
@@ -5891,6 +5916,23 @@ const terminalFits = new TerminalFitScheduler();
 
 function requestTerminalFit(rect) {
   terminalFits.request(rect?.terminal);
+}
+
+function repairTerminalView(rect) {
+  const state = rect?.kind === "terminal" ? rect.terminal : null;
+  if (!state?.term || !state.fit || !rectangles.includes(rect)) return;
+  setMinimized(rect, false);
+  // Discard cached fit/send decisions so an unchanged window can repair stale
+  // desired geometry and resend its measured size to the existing shell.
+  state.fit.lastColumns = undefined;
+  state.fit.lastRows = undefined;
+  state.term.desiredCols = state.term.cols;
+  state.term.desiredRows = state.term.rows;
+  state.sentCols = 0;
+  state.sentRows = 0;
+  requestTerminalFit(rect);
+  state.term.requestFullRedraw();
+  setWorkspaceStatus("saved", "Terminal view repair requested");
 }
 
 function sendTerminalGridSize(terminalState) {
@@ -6833,12 +6875,18 @@ function openSettingsModal(options = {}) {
   });
 }
 
+let compatibilityUpdateTimer = null;
+
 function hideSettingsModal() {
+  window.clearInterval(compatibilityUpdateTimer);
+  compatibilityUpdateTimer = null;
   settingsModal.hidden = true;
   settingsModal.replaceChildren();
 }
 
 function renderSettingsModal() {
+  window.clearInterval(compatibilityUpdateTimer);
+  compatibilityUpdateTimer = null;
   settingsModal.replaceChildren();
 
   const panel = document.createElement("section");
@@ -6906,7 +6954,7 @@ function renderSettingsModal() {
 }
 
 function currentCompatibility() {
-  return detectCompatibility({
+  const info = detectCompatibility({
     userAgent: navigator.userAgent,
     platform: navigator.userAgentData?.platform || navigator.platform || "Unknown",
     secureContext: window.isSecureContext,
@@ -6918,6 +6966,16 @@ function currentCompatibility() {
     serverHealthy: serverConnectionLastHealthy,
     serverState: serverConnectionState.state,
   });
+  info.renderingCosts = rectangles.filter(rect => rect.kind === "terminal" && rect.terminal?.term)
+    .map((rect, index) => {
+      const term = rect.terminal.term;
+      const stats = term.renderingStatistics?.();
+      if (!stats) return "";
+      const recent = stats.recent;
+      const activity = recent ? `Last 5 s: ${recent.fps.toFixed(1)} FPS, ${recent.paintMsPerSecond.toFixed(1)} ms painting/s, average ${recent.averageMs.toFixed(2)} ms/frame, peak ${recent.maxMs.toFixed(2)} ms. ` : "";
+      return `Terminal ${index + 1}: ${term.renderPaused ? "paused" : "visible"}. ${activity}Since opening: ${stats.frames} frames, average ${stats.averageMs.toFixed(2)} ms, peak ${stats.maxMs.toFixed(2)} ms, total ${stats.totalMs.toFixed(1)} ms`;
+    }).filter(Boolean);
+  return info;
 }
 
 function renderSettingsCompatibilityRow() {
@@ -6946,6 +7004,8 @@ function renderSettingsCompatibilityRow() {
       ["Terminal extension writes", info.terminalClipboard],
       ["Rendering scale", `${info.renderScale} · ${info.performanceProfile} (${info.renderScaleDetail})`],
       ["Connection status", info.connection],
+      ["Painting limit", olderMacMode ? "30 FPS (input temporarily bypasses cap)" : "Display refresh rate"],
+      ["Rendering costs", info.renderingCosts.join("; ") || "No terminals open"],
     ];
     grid.replaceChildren();
     for (const [name, value] of items) {
@@ -6985,6 +7045,9 @@ function renderSettingsCompatibilityRow() {
   actions.append(refreshButton, copyButton);
   row.append(grid, actions, status);
   update();
+  compatibilityUpdateTimer = window.setInterval(() => {
+    if (row.isConnected && !document.hidden) update();
+  }, 1000);
   void refresh();
   return row;
 }
@@ -7341,7 +7404,7 @@ function renderSettingsPerformanceRow() {
   const name = document.createElement("strong");
   name.textContent = "Profile";
   const detail = document.createElement("span");
-  detail.textContent = "Older Mac caps terminal rendering at 1×, keeps the cursor steady, and removes smooth scrolling and status animations.";
+  detail.textContent = "Older Mac caps terminal rendering at 1× and 30 FPS, keeps the cursor steady, and removes smooth scrolling and status animations.";
   label.append(name, detail);
   const select = document.createElement("select");
   select.className = "settings-theme-select";
@@ -7830,10 +7893,15 @@ function startServerConnectionMonitor() {
   window.addEventListener("offline", handleBrowserOffline);
   window.addEventListener("online", handleBrowserOnline);
   void checkServerConnection();
+  scheduleServerHealthPolling();
+}
+
+function scheduleServerHealthPolling() {
+  window.clearInterval(serverHealthMonitorTimer);
   serverHealthMonitorTimer = window.setInterval(() => {
     checkForBrowserWake();
     void checkServerConnection();
-  }, serverHealthPollInterval);
+  }, document.hidden ? 30000 : serverHealthPollInterval);
 }
 
 function handleBrowserOffline() {
@@ -8325,6 +8393,14 @@ function buildPaletteCommands() {
   }
   const dockTarget = getActivePane();
   if (dockTarget) {
+    if (dockTarget.kind === "terminal" && dockTarget.terminal?.term) {
+      commands.push({
+        id: "repair-terminal-view",
+        label: "Repair Terminal View",
+        hint: "refit and repaint",
+        run: () => repairTerminalView(dockTarget),
+      });
+    }
     commands.push({
       id: "rename-window",
       label: "Set Window Title...",
@@ -8384,6 +8460,7 @@ const paletteShortcutCodes = {
   "help": "HP",
   "browse-local-port-help": "BL",
   "new-terminal": "NN",
+  "repair-terminal-view": "RV",
   "new-worksheet": "NW",
   "new-file-browser": "NF",
   "new-text-editor": "NE",
@@ -9070,6 +9147,7 @@ function setMinimized(rect, on) {
   }
   rect.minimized = next;
   rect.element.classList.toggle("is-minimized", next);
+  scheduleTerminalVisibilityUpdate();
   updateTerminalRenderState(rect);
   if (next) {
     rect.element.setAttribute("aria-hidden", "true");
@@ -9572,6 +9650,7 @@ function createCommandTextSpinner(editor, position) {
     start() {
       dispatchSpinnerText(` ${commandSpinnerFrames[frameIndex]}`);
       timer = window.setInterval(() => {
+        if (document.hidden || olderMacMode) return;
         frameIndex = (frameIndex + 1) % commandSpinnerFrames.length;
         dispatchSpinnerText(` ${commandSpinnerFrames[frameIndex]}`);
       }, commandSpinnerIntervalMs);
@@ -9908,6 +9987,7 @@ function destroyRectangle(rect, options = {}) {
   rect.editor?.destroy();
   rect.editor = null;
   rect.element.remove();
+  scheduleTerminalVisibilityUpdate();
   if (wasActive && options.selectNext !== false) {
     focusTopVisiblePane();
   }

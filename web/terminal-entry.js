@@ -8,9 +8,11 @@ import {
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
 import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
 import { SixelRenderer, installSixelRenderer } from "./terminal-sixel-renderer.mjs";
+import { installPlainRenderer } from "./terminal-plain-renderer.mjs";
 
 const renderScheduler = new TerminalRenderScheduler();
 installSixelRenderer(CanvasRenderer);
+installPlainRenderer(CanvasRenderer);
 globalThis.addEventListener?.("resize", () => {
   for (const terminal of renderScheduler.entries.keys()) renderScheduler.request(terminal);
 });
@@ -20,13 +22,14 @@ globalThis.addEventListener?.("resize", () => {
 // visibility and activity state without depending on Ghostty internals.
 class Terminal extends GhosttyTerminal {
   constructor(options = {}) {
-    const { renderPixelRatioCap = 0, cursorBlinkEnabled = true, ...terminalOptions } = options;
+    const { renderPixelRatioCap = 0, cursorBlinkEnabled = true, paintFPSLimit = 0, ...terminalOptions } = options;
     super({ ...terminalOptions, cursorBlink: false });
     this.cursorBlink = new TerminalCursorBlink((visible) => {
       if (this.renderer) this.renderer.cursorVisible = visible;
       this.requestRender();
     });
     this.renderPaused = false;
+    this.paintFPSLimit = paintFPSLimit;
     this.renderPixelRatioCap = Number.isFinite(renderPixelRatioCap) && renderPixelRatioCap >= 1
       ? renderPixelRatioCap : 0;
     this.cursorBlink.setEnabled(cursorBlinkEnabled !== false);
@@ -191,6 +194,19 @@ class Terminal extends GhosttyTerminal {
 
   requestRender() {
     renderScheduler.request(this);
+  }
+
+  setPaintFPSLimit(limit) {
+    this.paintFPSLimit = limit === 30 ? 30 : 0;
+  }
+
+  noteInteractiveInput() {
+    // Let the next server echo paint promptly, even just after a capped frame.
+    this.interactivePaintUntil = performance.now() + 150;
+  }
+
+  renderingStatistics() {
+    return renderScheduler.statistics(this);
   }
 
   requestFullRedraw() {

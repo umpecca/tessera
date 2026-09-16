@@ -4,6 +4,24 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+test("background polling replaces its timer and restores the foreground cadence", () => {
+  const delays = [];
+  const cleared = [];
+  const document = { hidden: true };
+  const poll = appFunction("scheduleServerHealthPolling", {
+    document, serverHealthMonitorTimer: 7, serverHealthPollInterval: 5000,
+    window: {
+      clearInterval(id) { cleared.push(id); },
+      setInterval(callback, delay) { delays.push(delay); return 8; },
+    },
+  });
+  poll();
+  document.hidden = false;
+  poll();
+  assert.deepEqual(delays, [30000, 5000]);
+  assert.deepEqual(cleared, [7, 8]);
+});
+
 function appFunction(name, globals) {
   const start = source.indexOf(`function ${name}(`);
   const end = source.indexOf("\n}\n", start) + 2;
@@ -82,6 +100,7 @@ test("moving panes avoids size measurements, while resize and initial layout sti
   const setRectangle = appFunction("setRectangle", {
     requestTerminalFit() { fits++; },
     scheduleWorkspaceSave() { saves++; },
+    scheduleTerminalVisibilityUpdate() {},
     isArrangingWindows: false,
     arrangeOutSnapshot: null,
   });

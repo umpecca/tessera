@@ -37,6 +37,31 @@ function withComputedPadding(padding, run) {
   }
 }
 
+function timerQueue() {
+  const timers = new Map();
+  let nextID = 1;
+  return {
+    setTimer(callback) {
+      const id = nextID++;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimer(id) {
+      timers.delete(id);
+    },
+    runNext() {
+      const entry = timers.entries().next().value;
+      if (!entry) return;
+      const [id, callback] = entry;
+      timers.delete(id);
+      callback();
+    },
+    get pending() {
+      return timers.size;
+    },
+  };
+}
+
 test("fits whole cells without reserving a separate scrollbar gutter", () => {
   const { terminal } = testTerminal({ clientWidth: 101, clientHeight: 61 });
   const fit = new TesseraFitAddon();
@@ -73,3 +98,39 @@ test("resizes only when the calculated grid changes", () => {
   });
 });
 
+test("replays the final fit requested during the resize guard", () => {
+  const timers = timerQueue();
+  const { resizeCalls, terminal } = testTerminal({ clientWidth: 1000, clientHeight: 500 });
+  const fit = new TesseraFitAddon({ setTimer: timers.setTimer, clearTimer: timers.clearTimer });
+  fit.activate(terminal);
+
+  withComputedPadding({}, () => {
+    fit.fit();
+    terminal.element.clientWidth = 700;
+    terminal.element.clientHeight = 320;
+    fit.fit();
+    assert.deepEqual(resizeCalls, [{ cols: 100, rows: 25 }]);
+
+    timers.runNext();
+    assert.deepEqual(resizeCalls, [
+      { cols: 100, rows: 25 },
+      { cols: 70, rows: 16 },
+    ]);
+  });
+});
+
+test("dispose cancels resize guard timers and pending fits", () => {
+  const timers = timerQueue();
+  const { resizeCalls, terminal } = testTerminal();
+  const fit = new TesseraFitAddon({ setTimer: timers.setTimer, clearTimer: timers.clearTimer });
+  fit.activate(terminal);
+
+  withComputedPadding({}, () => {
+    fit.fit();
+    terminal.element.clientWidth = 700;
+    fit.fit();
+    fit.dispose();
+    assert.equal(timers.pending, 0);
+    assert.deepEqual(resizeCalls, [{ cols: 100, rows: 25 }]);
+  });
+});
