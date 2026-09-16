@@ -89,6 +89,7 @@ import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
 import { terminalIsCovered } from "./terminal-visibility.mjs";
 import { TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
 import { TerminalReplica } from "./terminal-replica.mjs";
+import { TerminalOutputTiming, formatOutputTiming } from "./terminal-output-timing.mjs";
 import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
@@ -196,11 +197,19 @@ let oledWindowBorderSize = defaultOLEDBorderSize;
 let terminalTerm = defaultTerminalTERM;
 let terminalFont = defaultTerminalFont;
 let terminalColorMode = defaultTerminalColorMode;
+const olderMacModeStorageKey = "tessera.older-mac-mode.v1";
 let olderMacMode = false;
 const experimentalTerminalRendererStorageKey = "tessera.experimental-terminal-renderer.v1";
 let experimentalTerminalRenderer = false;
+const terminalPaintCoalescingStorageKey = "tessera.terminal-paint-coalescing.v1";
+let terminalPaintCoalescing = true;
+const terminalOutputCoalescingStorageKey = "tessera.terminal-output-coalescing.v1";
+let terminalOutputCoalescing = false;
 try {
+  olderMacMode = window.localStorage.getItem(olderMacModeStorageKey) === "true";
   experimentalTerminalRenderer = window.localStorage.getItem(experimentalTerminalRendererStorageKey) === "true";
+  terminalPaintCoalescing = window.localStorage.getItem(terminalPaintCoalescingStorageKey) !== "false";
+  terminalOutputCoalescing = window.localStorage.getItem(terminalOutputCoalescingStorageKey) === "true";
 } catch {
   // Storage can be unavailable in hardened or private browser contexts.
 }
@@ -362,6 +371,13 @@ async function setTerminalColorMode(value, { save = true } = {}) {
 
 function setOlderMacMode(enabled, { save = true } = {}) {
   olderMacMode = enabled === true;
+  if (save) {
+    try {
+      window.localStorage.setItem(olderMacModeStorageKey, String(olderMacMode));
+    } catch {
+      // Keep the selection for this page when browser storage is unavailable.
+    }
+  }
   document.documentElement.dataset.performanceProfile = olderMacMode ? "older-mac" : "standard";
   for (const rect of rectangles) {
     const term = rect.kind === "terminal" ? rect.terminal?.term : null;
@@ -372,7 +388,6 @@ function setOlderMacMode(enabled, { save = true } = {}) {
     term.options.smoothScrollDuration = olderMacMode ? 0 : 100;
     updateTerminalRenderState(rect);
   }
-  if (save) scheduleUserSettingsSave();
 }
 
 function setExperimentalTerminalRenderer(enabled) {
@@ -386,6 +401,38 @@ function setExperimentalTerminalRenderer(enabled) {
     if (rect.kind === "terminal") {
       rect.terminal?.term?.setExperimentalRenderer?.(experimentalTerminalRenderer);
     }
+  }
+}
+
+function saveBrowserSetting(key, value) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    // Keep the selection for this page when browser storage is unavailable.
+  }
+}
+
+function setTerminalPaintCoalescing(enabled) {
+  terminalPaintCoalescing = enabled === true;
+  saveBrowserSetting(terminalPaintCoalescingStorageKey, terminalPaintCoalescing);
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal") {
+      rect.terminal?.term?.setPaintCoalescing?.(terminalPaintCoalescing);
+    }
+  }
+}
+
+function sendTerminalOutputCoalescing(terminalState) {
+  if (terminalState?.socket?.readyState === WebSocket.OPEN) {
+    terminalState.socket.send(JSON.stringify({ type: "output-coalescing", enabled: terminalOutputCoalescing }));
+  }
+}
+
+function setTerminalOutputCoalescing(enabled) {
+  terminalOutputCoalescing = enabled === true;
+  saveBrowserSetting(terminalOutputCoalescingStorageKey, terminalOutputCoalescing);
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal") sendTerminalOutputCoalescing(rect.terminal);
   }
 }
 
@@ -575,7 +622,10 @@ function applyUserSettings(settings) {
   terminalTerm = normalizeTerminalTERM(settings.terminalTerm);
   terminalFont = normalizeTerminalFont(settings.terminalFont);
   terminalColorMode = normalizeTerminalColorMode(settings.terminalColorMode);
-  setOlderMacMode(settings.olderMacMode === true, { save: false });
+  // Performance capabilities belong to this browser and device. Ignore the
+  // legacy account setting so an Older Mac cap cannot follow the user to a
+  // newer computer.
+  setOlderMacMode(olderMacMode, { save: false });
   setOLEDWindowBorderSize(settings.oledWindowBorderSize, { save: false });
   applyTheme(settings.themeId || defaultTheme, { save: false });
   updateDeskbar();
@@ -4638,7 +4688,8 @@ function userSettingsPayload() {
       terminalTerm,
       terminalFont,
       terminalColorMode,
-      olderMacMode,
+      // Clear the legacy account-wide value when settings are next saved.
+      olderMacMode: false,
   };
 }
 
@@ -5245,6 +5296,7 @@ async function startTerminal(rect) {
       cursorBlinkEnabled: !olderMacMode,
       renderPixelRatioCap: olderMacMode ? 1 : 0,
       paintFPSLimit: olderMacMode ? 30 : 0,
+      paintCoalescing: terminalPaintCoalescing,
       renderMetricsEnabled: !settingsModal.hidden,
       experimentalRenderer: experimentalTerminalRenderer,
       smoothScrollDuration: olderMacMode ? 0 : 100,
@@ -5354,6 +5406,8 @@ function connectTerminalSocket(rect) {
     clearTerminalStatus(rect);
     setPaneCwd(rect, rect.cwd, { silent: true });
     sendTerminalGridSize(terminalState);
+    if (terminalOutputCoalescing) sendTerminalOutputCoalescing(terminalState);
+    if (terminalState.replica.timing) sendTerminalTimingEnabled(terminalState);
     // Reconnection must not take keyboard focus away from a dialog.
     if (activeRect === rect && (document.activeElement === document.body || rect.element.contains(document.activeElement))) {
       term.focus();
@@ -5371,7 +5425,7 @@ function connectTerminalSocket(rect) {
     // Text carries the server's account of where this connection starts;
     // everything else is the stream itself.
     if (typeof event.data === "string") {
-      applyTerminalAttachMessage(rect, terminalState, event.data);
+      applyTerminalTextMessage(rect, terminalState, event.data);
       return;
     }
     try { terminalState.replica.receive(new Uint8Array(event.data)); }
@@ -5388,11 +5442,15 @@ function connectTerminalSocket(rect) {
 // where in that stream the bytes about to arrive belong. A reset means those
 // bytes are a fresh start rather than a continuation, so whatever the pane
 // still shows came from a stream it can no longer be lined up with.
-function applyTerminalAttachMessage(rect, terminalState, data) {
+function applyTerminalTextMessage(rect, terminalState, data) {
   let message = null;
   try {
     message = JSON.parse(data);
   } catch {
+    return;
+  }
+  if (message?.type === "timing") {
+    terminalState.replica.timing?.host(message);
     return;
   }
   if (message?.type !== "attach") {
@@ -5935,6 +5993,44 @@ function terminalWebSocketURL(rect, cols, rows) {
 function sendTerminalInput(socket, data) {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(terminalTextEncoder.encode(data));
+  }
+}
+
+const terminalTimingCaptureSeconds = 10;
+let terminalTimingCaptureTimer = null;
+
+function sendTerminalTimingEnabled(terminalState) {
+  if (terminalState?.socket?.readyState === WebSocket.OPEN) {
+    terminalState.socket.send(JSON.stringify({ type: "timing", enabled: Boolean(terminalState.replica?.timing) }));
+  }
+}
+
+function setTerminalTimingHooks(terminalState, timing) {
+  terminalState.replica.timing = timing;
+  terminalState.term.outputTiming = timing;
+  sendTerminalTimingEnabled(terminalState);
+}
+
+// Leaves Settings free to close: a capture runs for a fixed time while the
+// terminal is visible, and its results stay on the pane for later review.
+function startTerminalTimingCapture() {
+  stopTerminalTimingCapture();
+  for (const rect of rectangles) {
+    if (rect.kind !== "terminal" || !rect.terminal?.replica) continue;
+    rect.terminal.outputTiming = new TerminalOutputTiming();
+    setTerminalTimingHooks(rect.terminal, rect.terminal.outputTiming);
+  }
+  terminalTimingCaptureTimer = window.setTimeout(stopTerminalTimingCapture, terminalTimingCaptureSeconds * 1000);
+}
+
+function stopTerminalTimingCapture() {
+  window.clearTimeout(terminalTimingCaptureTimer);
+  terminalTimingCaptureTimer = null;
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal" && rect.terminal?.replica?.timing) {
+      rect.terminal.replica.timing.stop();
+      setTerminalTimingHooks(rect.terminal, null);
+    }
   }
 }
 
@@ -6950,6 +7046,18 @@ function renderSettingsModal() {
   content.appendChild(renderSettingsSection("Performance", [
     renderSettingsPerformanceRow(),
     renderSettingsExperimentalRendererRow(),
+    renderSettingsToggleRow(
+      "Paint coalescing",
+      "While terminal output is streaming, wait up to one frame for a 3 ms pause before painting so animation frames split across many writes are not drawn in pieces. Applies to this browser only.",
+      terminalPaintCoalescing,
+      setTerminalPaintCoalescing,
+    ),
+    renderSettingsToggleRow(
+      "Server output coalescing",
+      "Ask the server to join terminal output that arrives within 2 ms (holding at most 8 ms) into one WebSocket message. Applies to this browser's connections only.",
+      terminalOutputCoalescing,
+      setTerminalOutputCoalescing,
+    ),
   ]));
   content.appendChild(renderSettingsSection("Compatibility", [renderSettingsCompatibilityRow()]));
   content.appendChild(renderSettingsSection("Font size", [
@@ -7021,6 +7129,13 @@ function currentCompatibility() {
       const activity = recent ? `Last 5 s: ${recent.fps.toFixed(1)} FPS, ${recent.paintMsPerSecond.toFixed(1)} ms painting/s, average ${recent.averageMs.toFixed(2)} ms/frame, peak ${recent.maxMs.toFixed(2)} ms. ` : "";
       return `Terminal ${index + 1}: ${term.renderPaused ? "paused" : "visible"}. ${activity}Measurement sample: ${stats.frames} frames, average ${stats.averageMs.toFixed(2)} ms, peak ${stats.maxMs.toFixed(2)} ms, total ${stats.totalMs.toFixed(1)} ms`;
     }).filter(Boolean);
+  info.paintCoalescing = terminalPaintCoalescing;
+  info.outputCoalescing = terminalOutputCoalescing;
+  info.outputTiming = rectangles.filter(rect => rect.kind === "terminal" && rect.terminal?.term)
+    .map((rect, index) => rect.terminal.outputTiming
+      ? `Terminal ${index + 1}${rect.terminal.replica?.timing ? " (capturing)" : ""}: ${formatOutputTiming(rect.terminal.outputTiming.summary())}`
+      : "")
+    .filter(Boolean);
   return info;
 }
 
@@ -7041,6 +7156,14 @@ function renderSettingsCompatibilityRow() {
   const copyButton = document.createElement("button");
   copyButton.type = "button";
   copyButton.textContent = "Copy diagnostics";
+  const captureButton = document.createElement("button");
+  captureButton.type = "button";
+  captureButton.textContent = `Capture output timing (${terminalTimingCaptureSeconds} s)`;
+  captureButton.addEventListener("click", () => {
+    startTerminalTimingCapture();
+    update();
+    status.textContent = "Capturing output timing. Close Settings and keep the terminal visible.";
+  });
 
   const update = () => {
     const info = currentCompatibility();
@@ -7054,7 +7177,9 @@ function renderSettingsCompatibilityRow() {
       ["Terminal renderer", info.terminalRenderer],
       ["Renderer row paths", info.rendererRows.join("; ") || (experimentalTerminalRenderer ? "No rows painted yet" : "Available in Experimental mode")],
       ["Rendering costs", info.renderingCosts.join("; ") || "No terminals open"],
+      ["Output timing", info.outputTiming.join("; ") || `Not captured. Start a capture, close Settings, and leave the terminal visible for ${terminalTimingCaptureSeconds} s.`],
     ];
+    captureButton.disabled = terminalTimingCaptureTimer !== null;
     grid.replaceChildren();
     for (const [name, value] of items) {
       const term = document.createElement("dt");
@@ -7090,7 +7215,7 @@ function renderSettingsCompatibilityRow() {
       : "The browser blocked the system clipboard. Diagnostics are available to Tessera Paste.";
     copyButton.disabled = false;
   });
-  actions.append(refreshButton, copyButton);
+  actions.append(refreshButton, copyButton, captureButton);
   row.append(grid, actions, status);
   update();
   compatibilityUpdateTimer = window.setInterval(() => {
@@ -7452,7 +7577,7 @@ function renderSettingsPerformanceRow() {
   const name = document.createElement("strong");
   name.textContent = "Profile";
   const detail = document.createElement("span");
-  detail.textContent = "Older Mac caps terminal rendering at 1× and 30 FPS, keeps the cursor steady, and removes smooth scrolling and status animations.";
+  detail.textContent = "Older Mac caps terminal rendering at 1× and 30 FPS, keeps the cursor steady, and removes smooth scrolling and status animations on this browser only.";
   label.append(name, detail);
   const select = document.createElement("select");
   select.className = "settings-theme-select";
@@ -7490,6 +7615,31 @@ function renderSettingsExperimentalRendererRow() {
     select.appendChild(option);
   }
   select.addEventListener("change", () => setExperimentalTerminalRenderer(select.value === "experimental"));
+  row.append(label, select);
+  return row;
+}
+
+function renderSettingsToggleRow(nameText, description, enabled, onChange) {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = nameText;
+  const detail = document.createElement("span");
+  detail.textContent = description;
+  label.append(name, detail);
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", nameText);
+  for (const [value, text] of [["off", "Off"], ["on", "On"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = enabled === (value === "on");
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => onChange(select.value === "on"));
   row.append(label, select);
   return row;
 }

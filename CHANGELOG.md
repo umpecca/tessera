@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Store the Older Mac performance profile per browser so its 30 FPS cap does
+  not follow the same Tessera user to newer computers.
 - Restore Ghostty's terminal renderer by default and make the uniform
   plain-row fast path an optional per-browser experimental renderer.
 - Extend the experimental renderer to mixed ANSI text colors and merged runs
@@ -14,6 +16,16 @@
 - Keep the High Sierra symbol fallback out of the ordinary text canvas path,
   bypassing all symbol geometry work for ordinary cells and applying the
   fallback only to symbols so frequent ANSI color updates stay smooth.
+- Add a 10-second terminal output timing capture to Compatibility diagnostics.
+  It follows each output event from host PTY read through WebSocket delivery
+  to browser paint, and reports split or partially painted synchronized
+  updates, without comparing host and browser clocks.
+- Add per-browser Paint coalescing and Server output coalescing toggles under
+  Settings → Performance. Paint coalescing is on by default and waits briefly
+  for streaming output to pause so split animation frames are painted whole.
+  Server coalescing is off by default: it joins closely spaced output into
+  fewer WebSocket messages, but on lossy links larger messages caused longer
+  delivery stalls.
 
 - Reduce painting overhead for plain ASCII terminal rows by setting canvas font
   and foreground once per row while preserving fixed cell positions.

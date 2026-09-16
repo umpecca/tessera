@@ -142,3 +142,69 @@ test("standard rendering avoids timing work until metrics are requested", () => 
   assert.ok(clockReads >= 2);
   assert.equal(scheduler.statistics(terminal).frames, 1);
 });
+
+function coalescingScheduler() {
+  let clock = 0;
+  const frames = [];
+  const scheduler = new TerminalRenderScheduler({
+    requestFrame(callback) { frames.push(callback); return frames.length; },
+    cancelFrame() {},
+    now: () => clock,
+  });
+  return {
+    scheduler,
+    advance(ms) { clock += ms; },
+    flushFrame() { const callback = frames.shift(); assert.ok(callback, "expected a frame"); callback(clock); },
+  };
+}
+
+test("paint coalescing waits for output to go quiet before painting", () => {
+  const { scheduler, advance, flushFrame } = coalescingScheduler();
+  const terminal = { paintCoalescing: true };
+  let renders = 0;
+  scheduler.register(terminal, () => { renders++; });
+  flushFrame();
+  assert.equal(renders, 1);
+
+  scheduler.noteOutput(terminal);
+  advance(1);
+  scheduler.noteOutput(terminal);
+  advance(1);
+  flushFrame();
+  assert.equal(renders, 1, "output arrived within the quiet window");
+  advance(3);
+  flushFrame();
+  assert.equal(renders, 2, "paints once output has been quiet");
+});
+
+test("paint coalescing never holds continuous output past the cap", () => {
+  const { scheduler, advance, flushFrame } = coalescingScheduler();
+  const terminal = { paintCoalescing: true };
+  let renders = 0;
+  scheduler.register(terminal, () => { renders++; });
+  flushFrame();
+  for (let elapsed = 0; elapsed < 14; elapsed += 2) {
+    scheduler.noteOutput(terminal);
+    advance(2);
+    flushFrame();
+  }
+  assert.equal(renders, 1);
+  scheduler.noteOutput(terminal);
+  advance(2);
+  flushFrame();
+  assert.equal(renders, 2);
+});
+
+test("paint coalescing is bypassed while typing and when disabled", () => {
+  const { scheduler, flushFrame } = coalescingScheduler();
+  const typing = { paintCoalescing: true, interactivePaintUntil: 100 };
+  const disabled = { paintCoalescing: false };
+  let renders = 0;
+  scheduler.register(typing, () => { renders++; });
+  scheduler.register(disabled, () => { renders++; });
+  flushFrame();
+  scheduler.noteOutput(typing);
+  scheduler.noteOutput(disabled);
+  flushFrame();
+  assert.equal(renders, 4);
+});

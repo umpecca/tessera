@@ -113,6 +113,18 @@ type ManagedSession struct {
 	sequence                          uint64
 	stateEvents                       []stateEvent
 	stateBytes                        int
+	started                           time.Time
+	outputTimings                     [outputTimingSlots]OutputTiming
+}
+
+const outputTimingSlots = 512
+
+// OutputTiming locates one output event on the host's monotonic clock, in
+// microseconds since the session started.
+type OutputTiming struct {
+	Sequence uint64
+	ReadUs   int64
+	QueuedUs int64
 }
 
 func NewManager() *Manager {
@@ -166,6 +178,7 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 		epoch:       newEpoch(),
 		core:        core,
 		cols:        cols, rows: rows, cellWidth: 8, cellHeight: 16,
+		started: time.Now(),
 	}
 
 	m.mu.Lock()
@@ -412,7 +425,7 @@ func (s *ManagedSession) readLoop() {
 			// The PTY reuses buf on the next read. Give scrollback and
 			// subscribers an immutable chunk they can retain safely.
 			chunk := append([]byte(nil), buf[:n]...)
-			s.publish(chunk)
+			s.publishRead(chunk, time.Now())
 		}
 		if err != nil {
 			// The end of the shell reaches the browser as a close frame
@@ -529,6 +542,10 @@ func (s *ManagedSession) pump(sub *subscriber) {
 }
 
 func (s *ManagedSession) publish(chunk []byte) {
+	s.publishRead(chunk, time.Now())
+}
+
+func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 	if len(chunk) == 0 {
 		return
 	}
@@ -565,6 +582,11 @@ func (s *ManagedSession) publish(chunk []byte) {
 	s.published += int64(len(chunk))
 	if s.core != nil {
 		s.publishStateLocked(StateOutput, chunk)
+		s.outputTimings[s.sequence%outputTimingSlots] = OutputTiming{
+			Sequence: s.sequence,
+			ReadUs:   readAt.Sub(s.started).Microseconds(),
+			QueuedUs: time.Since(s.started).Microseconds(),
+		}
 		for _, text := range clipboard {
 			s.publishStateLocked(StateClipboard, text)
 		}
@@ -641,6 +663,20 @@ func (s *ManagedSession) finish() {
 	if s.manager != nil {
 		s.manager.remove(s.workspaceID, s.paneID, s)
 	}
+}
+
+// OutputTimingFor reports when an output event was read from the PTY and
+// queued for clients. Only recent events are retained.
+func (s *ManagedSession) OutputTimingFor(sequence uint64) (OutputTiming, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	timing := s.outputTimings[sequence%outputTimingSlots]
+	return timing, sequence != 0 && timing.Sequence == sequence
+}
+
+// ClockUs reads the clock used by OutputTiming.
+func (s *ManagedSession) ClockUs() int64 {
+	return time.Since(s.started).Microseconds()
 }
 
 func sessionKey(workspaceID, paneID string) string {

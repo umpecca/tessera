@@ -267,9 +267,10 @@ Choose **Older Mac** under **Settings → Performance → Profile** to cap termi
 canvases at 1× device resolution, use a steady active cursor, disable terminal
 smooth scrolling, and stop decorative status animations. On a 2× Retina
 display, the terminal paints one quarter as many canvas pixels while preserving
-the same rows, columns, font size, and terminal contents. The per-user setting
-applies immediately to open terminals and persists across sessions. Choose
-**Standard** to restore native display resolution and animation.
+the same rows, columns, font size, and terminal contents. The setting is stored
+in that browser, applies immediately to its open terminals, and does not cap a
+newer computer signed in as the same Tessera user. Choose **Standard** to
+restore native display resolution and animation.
 
 Settings also includes a **Compatibility** panel showing the clipboard APIs
 available to the current page, Firefox extension connection, effective

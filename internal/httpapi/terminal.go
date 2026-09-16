@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
@@ -42,10 +45,21 @@ type terminalClientMessage struct {
 	CellHeight       int    `json:"cellHeight"`
 	MemoryMiB        *int   `json:"memoryMiB"`
 	ShowPlaceholders *bool  `json:"showPlaceholders"`
+	Enabled          bool   `json:"enabled"`
 }
 
-// terminalAttachMessage opens every terminal socket. It is the only text
-// message the server sends; everything after it is stream bytes.
+// terminalTimingMessage follows an output frame while a client is capturing
+// output timing. Times use the session's monotonic clock in microseconds.
+type terminalTimingMessage struct {
+	Type     string `json:"type"`
+	Sequence uint64 `json:"sequence"`
+	ReadUs   int64  `json:"readUs"`
+	QueuedUs int64  `json:"queuedUs"`
+	SentUs   int64  `json:"sentUs"`
+}
+
+// terminalAttachMessage opens every terminal socket. Everything after it is
+// stream bytes, except timing messages a client has asked for.
 type terminalAttachMessage struct {
 	Type          string `json:"type"`
 	Epoch         string `json:"epoch"`
@@ -153,6 +167,7 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var writeMu sync.Mutex
+	var timingEnabled, coalescingEnabled atomic.Bool
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -192,14 +207,23 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		for chunk := range attachment.Events {
-			if len(chunk) > 0 {
-				writeMu.Lock()
-				writeErr := conn.WriteMessage(websocket.BinaryMessage, chunk)
-				writeMu.Unlock()
-				if writeErr != nil {
-					return
-				}
+		for open := true; open; {
+			var chunk []byte
+			chunk, open = <-attachment.Events
+			if open && coalescingEnabled.Load() {
+				chunk, open = coalesceTerminalFrames(chunk, attachment.Events, terminalCoalesceQuiet, terminalCoalesceHold, terminalCoalesceBytes)
+			}
+			if len(chunk) == 0 {
+				continue
+			}
+			writeMu.Lock()
+			writeErr := conn.WriteMessage(websocket.BinaryMessage, chunk)
+			if writeErr == nil && timingEnabled.Load() {
+				writeErr = writeTerminalTimings(conn, session, chunk)
+			}
+			writeMu.Unlock()
+			if writeErr != nil {
+				return
 			}
 		}
 		// The stream ends either because the shell finished or because this
@@ -230,6 +254,10 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 			}
 			if message.Type == "mouse" {
 				_, _ = session.WriteMouse([]byte(message.Data))
+			} else if message.Type == "timing" {
+				timingEnabled.Store(message.Enabled)
+			} else if message.Type == "output-coalescing" {
+				coalescingEnabled.Store(message.Enabled)
 			} else if message.Type == "resize" {
 				_ = session.ResizeWithMetrics(message.Cols, message.Rows, message.CellWidth, message.CellHeight)
 			} else if message.Type == "image-settings" || message.Type == "clear-images" {
@@ -257,6 +285,60 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 	}
+}
+
+const (
+	terminalCoalesceQuiet = 2 * time.Millisecond
+	terminalCoalesceHold  = 8 * time.Millisecond
+	terminalCoalesceBytes = 256 * 1024
+)
+
+// coalesceTerminalFrames joins state frames that follow first closely, so a
+// program's frame split across many PTY reads leaves as one WebSocket message.
+// It stops after a quiet gap, a total hold, or a size limit, and reports
+// whether events remains open.
+func coalesceTerminalFrames(first []byte, events <-chan []byte, quiet, hold time.Duration, limit int) ([]byte, bool) {
+	batch := first
+	deadline := time.Now().Add(hold)
+	timer := time.NewTimer(quiet)
+	defer timer.Stop()
+	for len(batch) < limit && time.Now().Before(deadline) {
+		select {
+		case next, open := <-events:
+			if !open {
+				return batch, false
+			}
+			if len(batch) == len(first) {
+				batch = append(make([]byte, 0, len(first)+len(next)), first...)
+			}
+			batch = append(batch, next...)
+			timer.Reset(min(quiet, max(0, time.Until(deadline))))
+		case <-timer.C:
+			return batch, true
+		}
+	}
+	return batch, true
+}
+
+func writeTerminalTimings(conn *websocket.Conn, session *terminal.ManagedSession, frames []byte) error {
+	sentUs := session.ClockUs()
+	for offset := 0; offset+terminal.StateFrameHeader <= len(frames); {
+		kind := frames[offset]
+		sequence := binary.LittleEndian.Uint64(frames[offset+1:])
+		offset += terminal.StateFrameHeader + int(binary.LittleEndian.Uint32(frames[offset+17:]))
+		if kind != terminal.StateOutput {
+			continue
+		}
+		if timing, ok := session.OutputTimingFor(sequence); ok {
+			if err := conn.WriteJSON(terminalTimingMessage{
+				Type: "timing", Sequence: timing.Sequence,
+				ReadUs: timing.ReadUs, QueuedUs: timing.QueuedUs, SentUs: sentUs,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (a *API) deleteTerminalSession(w http.ResponseWriter, r *http.Request) {

@@ -31,6 +31,7 @@ class Terminal extends GhosttyTerminal {
       cursorBlinkEnabled = true,
       experimentalRenderer = false,
       paintFPSLimit = 0,
+      paintCoalescing = false,
       renderMetricsEnabled = false,
       symbolFontFamily = "",
       ...terminalOptions
@@ -45,6 +46,7 @@ class Terminal extends GhosttyTerminal {
     this.renderPaused = false;
     this.experimentalRenderer = experimentalRenderer === true;
     this.paintFPSLimit = paintFPSLimit;
+    this.paintCoalescing = paintCoalescing === true;
     this.renderMetricsEnabled = renderMetricsEnabled === true;
     this.symbolFontFamily = symbolFontFamily;
     this.renderPixelRatioCap = Number.isFinite(renderPixelRatioCap) && renderPixelRatioCap >= 1
@@ -118,6 +120,7 @@ class Terminal extends GhosttyTerminal {
       this.cursorRedrawPending = false;
     }
     this.fullRedrawPending = false;
+    this.outputTiming?.painted();
     const cursor = this.wasmTerm.getCursor();
     if (cursor.y !== this.lastCursorY) {
       this.lastCursorY = cursor.y;
@@ -128,7 +131,7 @@ class Terminal extends GhosttyTerminal {
   write(data, callback) {
     super.write(data);
     this.sixelRenderer.prune(this.wasmTerm);
-    renderScheduler.request(this);
+    renderScheduler.noteOutput(this);
     if (callback) {
       globalThis.requestAnimationFrame(callback);
     }
@@ -224,6 +227,11 @@ class Terminal extends GhosttyTerminal {
 
   setPaintFPSLimit(limit) {
     this.paintFPSLimit = limit === 30 ? 30 : 0;
+  }
+
+  setPaintCoalescing(enabled) {
+    this.paintCoalescing = enabled === true;
+    this.requestRender();
   }
 
   setExperimentalRenderer(enabled) {

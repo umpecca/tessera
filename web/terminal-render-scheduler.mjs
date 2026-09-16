@@ -1,3 +1,8 @@
+// While output keeps arriving, a paint waits for this much silence so a frame
+// split across many writes is drawn once, but never longer than the hold cap.
+export const outputQuietMilliseconds = 3;
+export const outputHoldMilliseconds = 16;
+
 export class TerminalRenderScheduler {
   constructor(options = {}) {
     this.requestFrame = options.requestFrame
@@ -17,6 +22,8 @@ export class TerminalRenderScheduler {
       paused: false,
       render,
       nextPaint: null,
+      lastOutputAt: 0,
+      holdStartedAt: null,
       metricsEnabled: false,
       frames: 0,
       totalMs: 0,
@@ -39,6 +46,15 @@ export class TerminalRenderScheduler {
     }
     this.pending.add(terminal);
     this.scheduleFrame();
+  }
+
+  noteOutput(terminal) {
+    const entry = this.entries.get(terminal);
+    if (entry && terminal.paintCoalescing) {
+      entry.lastOutputAt = this.now();
+      entry.holdStartedAt ??= entry.lastOutputAt;
+    }
+    this.request(terminal);
   }
 
   setContinuous(terminal, continuous) {
@@ -127,6 +143,17 @@ export class TerminalRenderScheduler {
     for (const [terminal, entry] of this.entries) {
       if (entry.paused || (!entry.continuous && !requested.has(terminal))) {
         continue;
+      }
+      if (entry.holdStartedAt !== null) {
+        const now = this.now();
+        const typing = now < (terminal.interactivePaintUntil || 0);
+        if (terminal.paintCoalescing && !typing
+          && now - entry.lastOutputAt < outputQuietMilliseconds
+          && now - entry.holdStartedAt < outputHoldMilliseconds) {
+          this.pending.add(terminal);
+          continue;
+        }
+        entry.holdStartedAt = null;
       }
       const cap = terminal.paintFPSLimit || 0;
       const interval = cap > 0 ? 1000 / cap : 0;

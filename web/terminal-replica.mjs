@@ -13,6 +13,7 @@ export class TerminalReplica {
     this.cursor = { epoch: "", sequence: 0, offset: 0 };
     this.queuedSequence = 0;
     this.pending = null;
+    this.timing = null;
   }
 
   enqueue(task) {
@@ -73,10 +74,14 @@ export class TerminalReplica {
       }
       if (this.pending || sequence !== this.queuedSequence + 1) throw new Error("Terminal event sequence has a gap");
       this.queuedSequence = sequence;
+      if (kind === 1) this.timing?.received(sequence, payload);
       if (![1, 2, 3, 5, 6, 7].includes(kind) || (kind === 2 && length !== 16) || (kind === 5 && (length !== 1 || payload[0] > 1)) || (kind === 7 && length !== 0)) throw new Error("Unknown terminal event");
       if (kind === 6 && (length !== 5 || ![16, 32, 64].includes(new DataView(payload.buffer, payload.byteOffset, length).getUint32(0, true)) || payload[4] > 1)) throw new Error("Invalid image settings event");
       this.enqueue(() => {
-        if (kind === 1) this.term.write(payload);
+        if (kind === 1) {
+          this.term.write(payload);
+          this.timing?.applied(sequence);
+        }
         if (kind === 2) {
           const geometry = new DataView(payload.buffer, payload.byteOffset, payload.length);
           this.term.applyGeometry(...[0, 4, 8, 12].map((index) => geometry.getUint32(index, true)));

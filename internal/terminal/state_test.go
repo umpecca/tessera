@@ -152,3 +152,22 @@ func TestImageControlsSharedAndReplayed(t *testing.T) {
 		t.Fatal("image controls wrote shell input")
 	}
 }
+func TestOutputTimingRecordsReadAndQueueTimes(t *testing.T) {
+	s, _ := stateSession(t)
+	s.started = time.Now().Add(-time.Second)
+	s.publishRead([]byte("frame"), s.started.Add(500*time.Millisecond))
+	sequence := s.sequence
+	timing, ok := s.OutputTimingFor(sequence)
+	if !ok || timing.Sequence != sequence || timing.ReadUs != 500_000 || timing.QueuedUs < timing.ReadUs {
+		t.Fatalf("timing %+v ok=%v", timing, ok)
+	}
+	if err := s.ResizeWithMetrics(100, 30, 9, 18); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.OutputTimingFor(s.sequence); ok {
+		t.Fatal("non-output event has output timing")
+	}
+	if _, ok := s.OutputTimingFor(sequence + outputTimingSlots); ok {
+		t.Fatal("slot reuse matched a different sequence")
+	}
+}

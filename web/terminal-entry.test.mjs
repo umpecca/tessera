@@ -38,7 +38,7 @@ test("the terminal adapter suppresses startup autofocus and explicitly requests 
   }
   const Terminal = loadTerminalClass({
     GhosttyTerminal,
-    renderScheduler: { request() { frames++; }, unregister() {} },
+    renderScheduler: { request() { frames++; }, noteOutput() { frames++; }, unregister() {} },
   });
   const term = new Terminal({ cursorBlink: true });
   assert.equal(term.options.cursorBlink, false, "native blink timer is disabled");
