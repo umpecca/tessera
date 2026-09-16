@@ -121,3 +121,24 @@ test("unregister removes terminal work and cancels an idle frame", () => {
   assert.equal(frames.size, 0);
   assert.equal(canceled.length, 1);
 });
+
+test("standard rendering avoids timing work until metrics are requested", () => {
+  let callback;
+  let clockReads = 0;
+  const scheduler = new TerminalRenderScheduler({
+    now() { clockReads++; return 10; },
+    requestFrame(fn) { callback = fn; return 1; },
+    cancelFrame() {},
+  });
+  const terminal = { paintFPSLimit: 0 };
+  scheduler.register(terminal, () => {});
+  callback(0);
+  assert.equal(clockReads, 0);
+  assert.equal(scheduler.statistics(terminal).frames, 0);
+
+  scheduler.setMetricsEnabled(terminal, true);
+  scheduler.request(terminal);
+  callback(16);
+  assert.ok(clockReads >= 2);
+  assert.equal(scheduler.statistics(terminal).frames, 1);
+});

@@ -61,6 +61,7 @@ test("the terminal adapter suppresses startup autofocus and explicitly requests 
 test("same-grid geometry forces a full redraw after clearing the canvas", () => {
   let bitmap = "content";
   const forcedRenders = [];
+  const cursorInvalidations = [];
   class GhosttyTerminal {
     constructor(options) {
       this.options = options;
@@ -85,6 +86,7 @@ test("same-grid geometry forces a full redraw after clearing the canvas", () => 
     resize() { bitmap = "blank"; },
     render(_terminal, forceFullRedraw) {
       forcedRenders.push(forceFullRedraw);
+      cursorInvalidations.push(this.cursorBlink);
       if (forceFullRedraw) bitmap = "content";
     },
   };
@@ -95,19 +97,23 @@ test("same-grid geometry forces a full redraw after clearing the canvas", () => 
     getCursor() { return { y: 0 }; },
   };
 
+  term.setCursorActive(true);
   term.applyGeometry(80, 24, 9, 16);
   assert.equal(bitmap, "blank", "resizing clears the canvas before its scheduled frame");
   term.renderScheduledFrame();
   assert.equal(bitmap, "content");
-  assert.equal(term.renderer.cursorBlink, true, "scheduled blink frames repaint the cursor row");
+  assert.equal(cursorInvalidations[0], true, "a managed blink frame invalidates the cursor row");
+  assert.equal(term.renderer.cursorBlink, false, "cursor invalidation is cleared after that frame");
   assert.deepEqual(forcedRenders, [true]);
 
   term.renderScheduledFrame();
   assert.deepEqual(forcedRenders, [true, false], "later idle frames retain dirty-row rendering");
+  assert.equal(cursorInvalidations[1], false, "ordinary output frames do not repaint a clean cursor row");
 
   term.requestFullRedraw();
   term.renderScheduledFrame();
   assert.deepEqual(forcedRenders, [true, false, true], "wake recovery can explicitly repaint the canvas");
+  term.setCursorActive(false);
 });
 
 test("a render ratio cap lowers Retina canvas resolution and can be removed", () => {

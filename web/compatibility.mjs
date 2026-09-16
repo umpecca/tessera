@@ -78,7 +78,7 @@ export function compatibilityDiagnostics(info) {
     `Painting limit: ${info.performanceProfile === "Older Mac" ? "30 FPS; input temporarily bypasses cap" : "Display refresh rate"}`,
     "Renderer row paths:",
     ...(info.rendererRows || ["Not collected"]),
-    "Rendering costs (CPU paint time; recent rates use the last 5 seconds):",
+    "Rendering costs (sampled while Settings is open; recent rates use the last 5 seconds):",
     ...(info.renderingCosts || []),
     `Display pixel ratio: ${info.displayScale}`,
     `Terminal render ratio: ${info.renderScale} (${info.renderScaleDetail})`,

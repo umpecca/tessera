@@ -5242,6 +5242,7 @@ async function startTerminal(rect) {
       cursorBlinkEnabled: !olderMacMode,
       renderPixelRatioCap: olderMacMode ? 1 : 0,
       paintFPSLimit: olderMacMode ? 30 : 0,
+      renderMetricsEnabled: !settingsModal.hidden,
       experimentalRenderer: experimentalTerminalRenderer,
       smoothScrollDuration: olderMacMode ? 0 : 100,
       theme: { ...terminalTheme },
@@ -6888,6 +6889,7 @@ function openDestroySessionDialog(session) {
 
 function openSettingsModal(options = {}) {
   hideDeskbar();
+  setTerminalRenderingMetricsEnabled(true);
   renderSettingsModal();
   settingsModal.hidden = false;
   window.requestAnimationFrame(() => {
@@ -6904,6 +6906,15 @@ function hideSettingsModal() {
   compatibilityUpdateTimer = null;
   settingsModal.hidden = true;
   settingsModal.replaceChildren();
+  setTerminalRenderingMetricsEnabled(false);
+}
+
+function setTerminalRenderingMetricsEnabled(enabled) {
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal") {
+      rect.terminal?.term?.setRenderingMetricsEnabled?.(enabled);
+    }
+  }
 }
 
 function renderSettingsModal() {
@@ -7005,7 +7016,7 @@ function currentCompatibility() {
         info.rendererRows.push(`Terminal ${index + 1}: ${percent(rows.fastRows)} fast (${rows.fastRows}), ${percent(rows.hybridRows)} hybrid (${rows.hybridRows}), ${percent(rows.originalRows)} original (${rows.originalRows}); ${rows.totalRows} rows total`);
       }
       const activity = recent ? `Last 5 s: ${recent.fps.toFixed(1)} FPS, ${recent.paintMsPerSecond.toFixed(1)} ms painting/s, average ${recent.averageMs.toFixed(2)} ms/frame, peak ${recent.maxMs.toFixed(2)} ms. ` : "";
-      return `Terminal ${index + 1}: ${term.renderPaused ? "paused" : "visible"}. ${activity}Since opening: ${stats.frames} frames, average ${stats.averageMs.toFixed(2)} ms, peak ${stats.maxMs.toFixed(2)} ms, total ${stats.totalMs.toFixed(1)} ms`;
+      return `Terminal ${index + 1}: ${term.renderPaused ? "paused" : "visible"}. ${activity}Measurement sample: ${stats.frames} frames, average ${stats.averageMs.toFixed(2)} ms, peak ${stats.maxMs.toFixed(2)} ms, total ${stats.totalMs.toFixed(1)} ms`;
     }).filter(Boolean);
   return info;
 }

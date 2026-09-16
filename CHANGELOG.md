@@ -9,6 +9,8 @@
 - Keep simple cells on the experimental fast path in rows that also contain
   styled or Unicode cells, and report fast, hybrid, and original row rates in
   Compatibility diagnostics.
+- Restore terminal animation throughput by sampling paint costs only while
+  Settings is open and limiting cursor-row invalidation to actual blink frames.
 
 - Reduce painting overhead for plain ASCII terminal rows by setting canvas font
   and foreground once per row while preserving fixed cell positions.

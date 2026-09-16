@@ -31,16 +31,20 @@ class Terminal extends GhosttyTerminal {
       cursorBlinkEnabled = true,
       experimentalRenderer = false,
       paintFPSLimit = 0,
+      renderMetricsEnabled = false,
       ...terminalOptions
     } = options;
     super({ ...terminalOptions, cursorBlink: false });
+    this.cursorRedrawPending = false;
     this.cursorBlink = new TerminalCursorBlink((visible) => {
       if (this.renderer) this.renderer.cursorVisible = visible;
+      this.cursorRedrawPending = true;
       this.requestRender();
     });
     this.renderPaused = false;
     this.experimentalRenderer = experimentalRenderer === true;
     this.paintFPSLimit = paintFPSLimit;
+    this.renderMetricsEnabled = renderMetricsEnabled === true;
     this.renderPixelRatioCap = Number.isFinite(renderPixelRatioCap) && renderPixelRatioCap >= 1
       ? renderPixelRatioCap : 0;
     this.cursorBlink.setEnabled(cursorBlinkEnabled !== false);
@@ -57,6 +61,7 @@ class Terminal extends GhosttyTerminal {
 
   startRenderLoop() {
     renderScheduler.register(this, () => this.renderScheduledFrame());
+    renderScheduler.setMetricsEnabled(this, this.renderMetricsEnabled);
   }
 
   open(container) {
@@ -86,23 +91,27 @@ class Terminal extends GhosttyTerminal {
     const pixelRatio = this.renderPixelRatioCap > 0
       ? Math.min(nativePixelRatio, this.renderPixelRatioCap) : nativePixelRatio;
     this.renderer.cursorVisible = this.cursorBlink.cursorVisible;
-    // Tessera owns the blink timer, but CanvasRenderer uses this flag to
-    // repaint the cursor row on a frame where no terminal cells are dirty.
-    // Setting it after construction does not start Ghostty's own timer.
-    this.renderer.cursorBlink = true;
+    // Tessera owns the blink timer. Invalidate the cursor row only on the
+    // frame requested by that timer, not on unrelated output frames.
+    this.renderer.cursorBlink = this.cursorRedrawPending;
     const resolutionChanged = this.renderer.devicePixelRatio !== pixelRatio;
     if (resolutionChanged) {
       this.renderer.devicePixelRatio = pixelRatio;
       this.renderer.resize(this.cols, this.rows);
     }
     const forceFullRedraw = resolutionChanged || this.fullRedrawPending;
-    this.renderer.render(
-      this.wasmTerm,
-      forceFullRedraw,
-      this.viewportY,
-      this,
-      this.scrollbarOpacity,
-    );
+    try {
+      this.renderer.render(
+        this.wasmTerm,
+        forceFullRedraw,
+        this.viewportY,
+        this,
+        this.scrollbarOpacity,
+      );
+    } finally {
+      this.renderer.cursorBlink = false;
+      this.cursorRedrawPending = false;
+    }
     this.fullRedrawPending = false;
     const cursor = this.wasmTerm.getCursor();
     if (cursor.y !== this.lastCursorY) {
@@ -230,6 +239,11 @@ class Terminal extends GhosttyTerminal {
       ...renderScheduler.statistics(this),
       rendererRows: plainRendererStatistics(this.renderer),
     };
+  }
+
+  setRenderingMetricsEnabled(enabled) {
+    this.renderMetricsEnabled = enabled === true;
+    renderScheduler.setMetricsEnabled(this, this.renderMetricsEnabled);
   }
 
   requestFullRedraw() {

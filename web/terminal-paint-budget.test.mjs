@@ -45,6 +45,7 @@ test("caps output frames, preserves pending output, and allows input to bypass t
   });
   const terminal = { paintFPSLimit: 30 };
   scheduler.register(terminal, () => { paints++; now += 2; });
+  scheduler.setMetricsEnabled(terminal, true);
   callback();
   now = 16;
   scheduler.request(terminal);

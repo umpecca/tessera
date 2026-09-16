@@ -17,6 +17,7 @@ export class TerminalRenderScheduler {
       paused: false,
       render,
       nextPaint: null,
+      metricsEnabled: false,
       frames: 0,
       totalMs: 0,
       maxMs: 0,
@@ -94,6 +95,20 @@ export class TerminalRenderScheduler {
     this.scheduleFrame();
   }
 
+  setMetricsEnabled(terminal, enabled) {
+    const entry = this.entries.get(terminal);
+    if (!entry) return;
+    const next = Boolean(enabled);
+    if (entry.metricsEnabled === next) return;
+    entry.metricsEnabled = next;
+    if (next) {
+      entry.frames = 0;
+      entry.totalMs = 0;
+      entry.maxMs = 0;
+      entry.recentPaints = [];
+    }
+  }
+
   scheduleFrame() {
     if (!this.enabled || this.frameID !== null || !this.hasWork()) {
       return;
@@ -113,10 +128,10 @@ export class TerminalRenderScheduler {
       if (entry.paused || (!entry.continuous && !requested.has(terminal))) {
         continue;
       }
-      const now = this.now();
       const cap = terminal.paintFPSLimit || 0;
       const interval = cap > 0 ? 1000 / cap : 0;
-      const interactive = now < (terminal.interactivePaintUntil || 0);
+      const startedAt = interval || entry.metricsEnabled ? this.now() : 0;
+      const interactive = interval > 0 && startedAt < (terminal.interactivePaintUntil || 0);
       // RAF timestamps share one clock across every terminal in the frame.
       // Keep the deadline anchored instead of accumulating callback delays.
       // A 1 ms allowance absorbs rounding at 30/60/120 Hz boundaries.
@@ -133,13 +148,15 @@ export class TerminalRenderScheduler {
         entry.nextPaint += interval;
       }
       entry.render();
-      const duration = Math.max(0, this.now() - now);
+      if (!entry.metricsEnabled) continue;
+      const measuredAt = this.now();
+      const duration = Math.max(0, measuredAt - startedAt);
       entry.frames++;
       entry.totalMs += duration;
       entry.maxMs = Math.max(entry.maxMs, duration);
-      entry.recentPaints.push({ time: this.now(), duration });
+      entry.recentPaints.push({ time: measuredAt, duration });
       while (entry.recentPaints.length > 4096
-        || entry.recentPaints[0]?.time <= this.now() - 5000) {
+        || entry.recentPaints[0]?.time <= measuredAt - 5000) {
         entry.recentPaints.shift();
       }
     }
