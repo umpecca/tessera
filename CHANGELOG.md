@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Restore Ghostty's terminal renderer by default and make the uniform
+  plain-row fast path an optional per-browser experimental renderer.
+- Extend the experimental renderer to mixed ANSI text colors and merged runs
+  of colored cell backgrounds.
+- Keep simple cells on the experimental fast path in rows that also contain
+  styled or Unicode cells, and report fast, hybrid, and original row rates in
+  Compatibility diagnostics.
+
 - Reduce painting overhead for plain ASCII terminal rows by setting canvas font
   and foreground once per row while preserving fixed cell positions.
 

@@ -196,6 +196,13 @@ let terminalTerm = defaultTerminalTERM;
 let terminalFont = defaultTerminalFont;
 let terminalColorMode = defaultTerminalColorMode;
 let olderMacMode = false;
+const experimentalTerminalRendererStorageKey = "tessera.experimental-terminal-renderer.v1";
+let experimentalTerminalRenderer = false;
+try {
+  experimentalTerminalRenderer = window.localStorage.getItem(experimentalTerminalRendererStorageKey) === "true";
+} catch {
+  // Storage can be unavailable in hardened or private browser contexts.
+}
 let audioStationState = null;
 let audioStationEvents = null;
 let audioStationReconnectTimer = null;
@@ -364,6 +371,20 @@ function setOlderMacMode(enabled, { save = true } = {}) {
     updateTerminalRenderState(rect);
   }
   if (save) scheduleUserSettingsSave();
+}
+
+function setExperimentalTerminalRenderer(enabled) {
+  experimentalTerminalRenderer = enabled === true;
+  try {
+    window.localStorage.setItem(experimentalTerminalRendererStorageKey, String(experimentalTerminalRenderer));
+  } catch {
+    // Keep the selection for this page when browser storage is unavailable.
+  }
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal") {
+      rect.terminal?.term?.setExperimentalRenderer?.(experimentalTerminalRenderer);
+    }
+  }
 }
 
 function applyTheme(id, { save = true } = {}) {
@@ -5182,7 +5203,7 @@ function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
 
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
-    ghosttyModulePromise = import("./vendor/terminal.js?v=sixel-state-1").then(async (module) => {
+    ghosttyModulePromise = import("./vendor/terminal.js?v=renderer-mode-1").then(async (module) => {
       await module.init();
       installTerminalBlockRenderer(module.CanvasRenderer, module.CellFlags);
       module.setTerminalDocumentVisible?.(!document.hidden);
@@ -5221,6 +5242,7 @@ async function startTerminal(rect) {
       cursorBlinkEnabled: !olderMacMode,
       renderPixelRatioCap: olderMacMode ? 1 : 0,
       paintFPSLimit: olderMacMode ? 30 : 0,
+      experimentalRenderer: experimentalTerminalRenderer,
       smoothScrollDuration: olderMacMode ? 0 : 100,
       theme: { ...terminalTheme },
     });
@@ -6911,7 +6933,10 @@ function renderSettingsModal() {
 
   const content = document.createElement("div");
   content.className = "settings-content";
-  content.appendChild(renderSettingsSection("Performance", [renderSettingsPerformanceRow()]));
+  content.appendChild(renderSettingsSection("Performance", [
+    renderSettingsPerformanceRow(),
+    renderSettingsExperimentalRendererRow(),
+  ]));
   content.appendChild(renderSettingsSection("Compatibility", [renderSettingsCompatibilityRow()]));
   content.appendChild(renderSettingsSection("Font size", [
     renderSettingsFontRow("Default", "Used for new terminal, worksheet, and text-editor panes in all sessions.", defaultPaneFontSize, (next) => {
@@ -6962,16 +6987,23 @@ function currentCompatibility() {
     extension: clipboardBridge.status,
     displayPixelRatio: window.devicePixelRatio || 1,
     olderMacMode,
+    experimentalTerminalRenderer,
     online: navigator.onLine !== false,
     serverHealthy: serverConnectionLastHealthy,
     serverState: serverConnectionState.state,
   });
+  info.rendererRows = [];
   info.renderingCosts = rectangles.filter(rect => rect.kind === "terminal" && rect.terminal?.term)
     .map((rect, index) => {
       const term = rect.terminal.term;
       const stats = term.renderingStatistics?.();
       if (!stats) return "";
       const recent = stats.recent;
+      const rows = stats.rendererRows;
+      if (rows) {
+        const percent = count => rows.totalRows ? `${(count / rows.totalRows * 100).toFixed(1)}%` : "0.0%";
+        info.rendererRows.push(`Terminal ${index + 1}: ${percent(rows.fastRows)} fast (${rows.fastRows}), ${percent(rows.hybridRows)} hybrid (${rows.hybridRows}), ${percent(rows.originalRows)} original (${rows.originalRows}); ${rows.totalRows} rows total`);
+      }
       const activity = recent ? `Last 5 s: ${recent.fps.toFixed(1)} FPS, ${recent.paintMsPerSecond.toFixed(1)} ms painting/s, average ${recent.averageMs.toFixed(2)} ms/frame, peak ${recent.maxMs.toFixed(2)} ms. ` : "";
       return `Terminal ${index + 1}: ${term.renderPaused ? "paused" : "visible"}. ${activity}Since opening: ${stats.frames} frames, average ${stats.averageMs.toFixed(2)} ms, peak ${stats.maxMs.toFixed(2)} ms, total ${stats.totalMs.toFixed(1)} ms`;
     }).filter(Boolean);
@@ -7005,6 +7037,8 @@ function renderSettingsCompatibilityRow() {
       ["Rendering scale", `${info.renderScale} · ${info.performanceProfile} (${info.renderScaleDetail})`],
       ["Connection status", info.connection],
       ["Painting limit", olderMacMode ? "30 FPS (input temporarily bypasses cap)" : "Display refresh rate"],
+      ["Terminal renderer", info.terminalRenderer],
+      ["Renderer row paths", info.rendererRows.join("; ") || (experimentalTerminalRenderer ? "No rows painted yet" : "Available in Experimental mode")],
       ["Rendering costs", info.renderingCosts.join("; ") || "No terminals open"],
     ];
     grid.replaceChildren();
@@ -7417,6 +7451,31 @@ function renderSettingsPerformanceRow() {
     select.appendChild(option);
   }
   select.addEventListener("change", () => setOlderMacMode(select.value === "older-mac"));
+  row.append(label, select);
+  return row;
+}
+
+function renderSettingsExperimentalRendererRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Terminal renderer";
+  const detail = document.createElement("span");
+  detail.textContent = "Stable uses Ghostty's original renderer. Experimental enables the hybrid, color-aware ASCII fast path for testing on this browser only.";
+  label.append(name, detail);
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", "Terminal renderer");
+  for (const [value, text] of [["stable", "Stable"], ["experimental", "Experimental"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = experimentalTerminalRenderer === (value === "experimental");
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => setExperimentalTerminalRenderer(select.value === "experimental"));
   row.append(label, select);
   return row;
 }

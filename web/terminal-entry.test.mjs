@@ -3,12 +3,15 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
+import { plainRendererStatistics, setPlainRendererEnabled } from "./terminal-plain-renderer.mjs";
 
 function loadTerminalClass(overrides = {}) {
   const source = readFileSync(new URL("./terminal-entry.js", import.meta.url), "utf8");
   const classSource = source.slice(source.indexOf("class Terminal extends"), source.indexOf("\nfunction setTerminalDocumentVisible"));
   return vm.runInNewContext(`${classSource}; Terminal`, {
     TerminalCursorBlink,
+    plainRendererStatistics,
+    setPlainRendererEnabled,
     __TESSERA_CORE_ID__: "test",
     SixelRenderer: class { prune() {} clear() {} },
     ...overrides,

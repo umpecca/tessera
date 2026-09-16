@@ -8,7 +8,11 @@ import {
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
 import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
 import { SixelRenderer, installSixelRenderer } from "./terminal-sixel-renderer.mjs";
-import { installPlainRenderer } from "./terminal-plain-renderer.mjs";
+import {
+  installPlainRenderer,
+  plainRendererStatistics,
+  setPlainRendererEnabled,
+} from "./terminal-plain-renderer.mjs";
 
 const renderScheduler = new TerminalRenderScheduler();
 installSixelRenderer(CanvasRenderer);
@@ -22,13 +26,20 @@ globalThis.addEventListener?.("resize", () => {
 // visibility and activity state without depending on Ghostty internals.
 class Terminal extends GhosttyTerminal {
   constructor(options = {}) {
-    const { renderPixelRatioCap = 0, cursorBlinkEnabled = true, paintFPSLimit = 0, ...terminalOptions } = options;
+    const {
+      renderPixelRatioCap = 0,
+      cursorBlinkEnabled = true,
+      experimentalRenderer = false,
+      paintFPSLimit = 0,
+      ...terminalOptions
+    } = options;
     super({ ...terminalOptions, cursorBlink: false });
     this.cursorBlink = new TerminalCursorBlink((visible) => {
       if (this.renderer) this.renderer.cursorVisible = visible;
       this.requestRender();
     });
     this.renderPaused = false;
+    this.experimentalRenderer = experimentalRenderer === true;
     this.paintFPSLimit = paintFPSLimit;
     this.renderPixelRatioCap = Number.isFinite(renderPixelRatioCap) && renderPixelRatioCap >= 1
       ? renderPixelRatioCap : 0;
@@ -52,6 +63,7 @@ class Terminal extends GhosttyTerminal {
     this.opening = true;
     try {
       super.open(container);
+      setPlainRendererEnabled(this.renderer, this.experimentalRenderer);
     } finally {
       this.opening = false;
     }
@@ -200,13 +212,24 @@ class Terminal extends GhosttyTerminal {
     this.paintFPSLimit = limit === 30 ? 30 : 0;
   }
 
+  setExperimentalRenderer(enabled) {
+    this.experimentalRenderer = enabled === true;
+    if (this.renderer) {
+      setPlainRendererEnabled(this.renderer, this.experimentalRenderer);
+      this.requestFullRedraw();
+    }
+  }
+
   noteInteractiveInput() {
     // Let the next server echo paint promptly, even just after a capped frame.
     this.interactivePaintUntil = performance.now() + 150;
   }
 
   renderingStatistics() {
-    return renderScheduler.statistics(this);
+    return {
+      ...renderScheduler.statistics(this),
+      rendererRows: plainRendererStatistics(this.renderer),
+    };
   }
 
   requestFullRedraw() {
