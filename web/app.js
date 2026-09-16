@@ -57,6 +57,7 @@ import {
   loadTerminalFont,
   normalizeTerminalFont,
   terminalFontFamily,
+  terminalPrimaryFontFamily,
   terminalFonts,
 } from "./terminal-font.mjs";
 import {
@@ -339,9 +340,10 @@ async function setTerminalFont(value, { save = true } = {}) {
   const terminalPanes = rectangles.filter((rect) => rect.kind === "terminal" && rect.terminal?.term);
   await Promise.all([...new Set(terminalPanes.map((rect) => rect.fontSize))]
     .map((fontSize) => loadTerminalFont(document.fonts, terminalFont, fontSize)));
-  const family = terminalFontFamily(terminalFont);
+  const family = terminalPrimaryFontFamily(terminalFont);
+  const symbolFamily = terminalFontFamily(terminalFont);
   for (const rect of terminalPanes) {
-    rect.terminal.term.options.fontFamily = family;
+    rect.terminal.term.setFontFamilies(family, symbolFamily);
     requestTerminalFit(rect);
   }
 }
@@ -5237,7 +5239,8 @@ async function startTerminal(rect) {
       cols: 80,
       rows: 24,
       fontSize: rect.fontSize,
-      fontFamily: terminalFontFamily(terminalFont),
+      fontFamily: terminalPrimaryFontFamily(terminalFont),
+      symbolFontFamily: terminalFontFamily(terminalFont),
       cursorBlink: activeRect === rect,
       cursorBlinkEnabled: !olderMacMode,
       renderPixelRatioCap: olderMacMode ? 1 : 0,

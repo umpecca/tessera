@@ -11,6 +11,9 @@
   Compatibility diagnostics.
 - Restore terminal animation throughput by sampling paint costs only while
   Settings is open and limiting cursor-row invalidation to actual blink frames.
+- Keep the High Sierra symbol fallback out of the ordinary text canvas path,
+  bypassing all symbol geometry work for ordinary cells and applying the
+  fallback only to symbols so frequent ANSI color updates stay smooth.
 
 - Reduce painting overhead for plain ASCII terminal rows by setting canvas font
   and foreground once per row while preserving fixed cell positions.

@@ -71,21 +71,33 @@ export function installTerminalBlockRenderer(CanvasRenderer, CellFlags) {
   }
 
   prototype.renderCellText = function renderTesseraBlockCell(cell, column, row) {
+    // Almost every terminal cell is ordinary text. Keep the High Sierra
+    // symbol workaround out of that hot path before reading metrics or doing
+    // block geometry work. This matters for rapidly changing bold/ANSI text,
+    // which Ghostty renders cell by cell.
+    if (!terminalSymbolNeedsCellConstraint(cell.codepoint)) {
+      return originalRenderCellText.call(this, cell, column, row);
+    }
     const width = this.metrics.width * (cell.width || 1);
     const rects = terminalBlockRects(cell.codepoint, width, this.metrics.height);
-    if (!rects && terminalSymbolNeedsCellConstraint(cell.codepoint) && !(cell.flags & CellFlags.INVISIBLE)) {
+    if (!rects && !(cell.flags & CellFlags.INVISIBLE)) {
       // Symbol fonts are not necessarily monospaced. Canvas fillText otherwise
       // lets a wide fallback glyph overwrite neighboring cells. Its maxWidth
       // argument only condenses glyphs that exceed Ghostty's assigned width,
       // leaving already narrow symbols (including U+23F5) unchanged.
       const originalFillText = this.ctx.fillText;
+      const originalFontFamily = this.fontFamily;
       this.ctx.fillText = function fillTerminalSymbol(text, x, y, callerMaxWidth) {
         const maxWidth = Number.isFinite(callerMaxWidth) ? Math.min(callerMaxWidth, width) : width;
         return originalFillText.call(this, text, x, y, maxWidth);
       };
       try {
+        if (this.tesseraSymbolFontFamily) {
+          this.fontFamily = this.tesseraSymbolFontFamily;
+        }
         return originalRenderCellText.call(this, cell, column, row);
       } finally {
+        this.fontFamily = originalFontFamily;
         this.ctx.fillText = originalFillText;
       }
     }

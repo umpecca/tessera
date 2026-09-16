@@ -566,6 +566,7 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
+  unicode-range: U+2190-2BFF, U+1F000-1FBFF;
 }
 
 :root[data-theme="oled-terminal"] .resize-edge-e {

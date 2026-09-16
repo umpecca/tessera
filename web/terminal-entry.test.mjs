@@ -58,6 +58,33 @@ test("the terminal adapter suppresses startup autofocus and explicitly requests 
   assert.equal(focuses, 1);
 });
 
+test("ordinary text and fallback symbols use separate font stacks", () => {
+  let frames = 0;
+  class GhosttyTerminal {
+    constructor(options) { this.options = options; }
+    onScroll() {}
+  }
+  const Terminal = loadTerminalClass({
+    GhosttyTerminal,
+    renderScheduler: { request() { frames++; }, unregister() {} },
+  });
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono", monospace',
+    symbolFontFamily: '"JetBrains Mono", "Noto Sans Symbols 2", monospace',
+  });
+  term.renderer = {};
+
+  term.setFontFamilies(
+    '"Fira Code", monospace',
+    '"Fira Code", "Noto Sans Symbols 2", monospace',
+  );
+
+  assert.equal(term.options.fontFamily, '"Fira Code", monospace');
+  assert.equal(term.renderer.tesseraSymbolFontFamily, '"Fira Code", "Noto Sans Symbols 2", monospace');
+  assert.equal(term.fullRedrawPending, true);
+  assert.equal(frames, 1);
+});
+
 test("same-grid geometry forces a full redraw after clearing the canvas", () => {
   let bitmap = "content";
   const forcedRenders = [];

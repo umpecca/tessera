@@ -7,6 +7,7 @@ import {
   normalizeTerminalFont,
   terminalFontDescriptors,
   terminalFontFamily,
+  terminalPrimaryFontFamily,
   terminalSymbolFontFamily,
   terminalSymbolProbe,
 } from "./terminal-font.mjs";
@@ -18,6 +19,8 @@ test("normalizes terminal font IDs to the JetBrains Mono default", () => {
 });
 
 test("returns regular and bold browser font descriptors", () => {
+  assert.equal(terminalPrimaryFontFamily("jetbrains-mono"), '"JetBrains Mono", monospace');
+  assert.equal(terminalPrimaryFontFamily("fira-code"), '"Fira Code", monospace');
   assert.equal(terminalFontFamily("jetbrains-mono"), '"JetBrains Mono", "Noto Sans Symbols 2", monospace');
   assert.deepEqual(terminalFontDescriptors("fira-code", 16), [
     '16px "Fira Code", "Noto Sans Symbols 2", monospace',

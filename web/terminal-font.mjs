@@ -17,8 +17,12 @@ export function normalizeTerminalFont(value) {
   return terminalFonts[value] ? value : defaultTerminalFont;
 }
 
+export function terminalPrimaryFontFamily(value) {
+  return terminalFonts[normalizeTerminalFont(value)].family;
+}
+
 export function terminalFontFamily(value) {
-  const primary = terminalFonts[normalizeTerminalFont(value)].family.replace(/, monospace$/, "");
+  const primary = terminalPrimaryFontFamily(value).replace(/, monospace$/, "");
   // Keep terminal symbols independent of the operating system. In particular,
   // Firefox 115 on High Sierra otherwise falls back to an old macOS face whose
   // canvas advance widths can overlap adjacent terminal cells.

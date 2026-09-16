@@ -80,6 +80,7 @@ test("renderer extension replaces a block glyph with translated cell rectangles"
 test("renderer supplies a cell maxWidth to symbols and restores canvas state", () => {
   class Renderer {
     renderCellText(cell) {
+      this.fontFamilies.push(this.fontFamily);
       this.ctx.fillText(String.fromCodePoint(cell.codepoint), 18, 51);
     }
   }
@@ -88,6 +89,9 @@ test("renderer supplies a cell maxWidth to symbols and restores canvas state", (
   const originalFillText = (...args) => calls.push(args);
   const renderer = new Renderer();
   renderer.metrics = { width: 9, height: 17 };
+  renderer.fontFamily = '"JetBrains Mono", monospace';
+  renderer.tesseraSymbolFontFamily = '"JetBrains Mono", "Noto Sans Symbols 2", monospace';
+  renderer.fontFamilies = [];
   renderer.ctx = { fillText: originalFillText };
 
   renderer.renderCellText({ codepoint: 0x23f8, width: 1, flags: 0 }, 2, 3);
@@ -96,6 +100,11 @@ test("renderer supplies a cell maxWidth to symbols and restores canvas state", (
     ["⏸", 18, 51, 9],
     ["🖥", 18, 51, 18],
   ]);
+  assert.deepEqual(renderer.fontFamilies, [
+    '"JetBrains Mono", "Noto Sans Symbols 2", monospace',
+    '"JetBrains Mono", "Noto Sans Symbols 2", monospace',
+  ]);
+  assert.equal(renderer.fontFamily, '"JetBrains Mono", monospace');
   assert.equal(renderer.ctx.fillText, originalFillText);
 });
 
@@ -111,4 +120,19 @@ test("renderer does not constrain ordinary or invisible glyphs", () => {
   renderer.renderCellText({ codepoint: 0x41, width: 1, flags: 0 }, 0, 0);
   renderer.renderCellText({ codepoint: 0x23f5, width: 1, flags: 32 }, 0, 0);
   assert.deepEqual(calls, [["A", 0, 0], ["⏵", 0, 0]]);
+});
+
+test("ordinary text bypasses symbol metrics and geometry bookkeeping", () => {
+  let rendered = 0;
+  class Renderer {
+    renderCellText() { rendered++; }
+  }
+  installTerminalBlockRenderer(Renderer, { INVISIBLE: 32, FAINT: 128 });
+  const renderer = new Renderer();
+  Object.defineProperty(renderer, "metrics", {
+    get() { assert.fail("ordinary cells must not read symbol geometry metrics"); },
+  });
+
+  renderer.renderCellText({ codepoint: 0x41, width: 1, flags: 1 }, 0, 0);
+  assert.equal(rendered, 1);
 });

@@ -32,6 +32,7 @@ class Terminal extends GhosttyTerminal {
       experimentalRenderer = false,
       paintFPSLimit = 0,
       renderMetricsEnabled = false,
+      symbolFontFamily = "",
       ...terminalOptions
     } = options;
     super({ ...terminalOptions, cursorBlink: false });
@@ -45,6 +46,7 @@ class Terminal extends GhosttyTerminal {
     this.experimentalRenderer = experimentalRenderer === true;
     this.paintFPSLimit = paintFPSLimit;
     this.renderMetricsEnabled = renderMetricsEnabled === true;
+    this.symbolFontFamily = symbolFontFamily;
     this.renderPixelRatioCap = Number.isFinite(renderPixelRatioCap) && renderPixelRatioCap >= 1
       ? renderPixelRatioCap : 0;
     this.cursorBlink.setEnabled(cursorBlinkEnabled !== false);
@@ -68,6 +70,9 @@ class Terminal extends GhosttyTerminal {
     this.opening = true;
     try {
       super.open(container);
+      if (this.renderer) {
+        this.renderer.tesseraSymbolFontFamily = this.symbolFontFamily;
+      }
       setPlainRendererEnabled(this.renderer, this.experimentalRenderer);
     } finally {
       this.opening = false;
@@ -225,6 +230,15 @@ class Terminal extends GhosttyTerminal {
     this.experimentalRenderer = enabled === true;
     if (this.renderer) {
       setPlainRendererEnabled(this.renderer, this.experimentalRenderer);
+      this.requestFullRedraw();
+    }
+  }
+
+  setFontFamilies(fontFamily, symbolFontFamily) {
+    this.symbolFontFamily = symbolFontFamily;
+    this.options.fontFamily = fontFamily;
+    if (this.renderer) {
+      this.renderer.tesseraSymbolFontFamily = symbolFontFamily;
       this.requestFullRedraw();
     }
   }
