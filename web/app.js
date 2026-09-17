@@ -29,6 +29,8 @@ import {
 import { textEditorLanguageID } from "./text-editor-language.mjs";
 import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
+import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL, validateLocalHTTPSDraft } from "./local-https-settings.mjs";
+import { shouldShowIPadHTTPGuidance } from "./ipad-http-guidance.mjs";
 import {
   terminalCloseOutcome,
   terminalConnectingStatus,
@@ -162,6 +164,7 @@ const clipboardBridge = new ClipboardBridge();
 let clipboardPromptCheckID = 0;
 let clipboardPromptDismissed = false;
 const clipboardPromptSnoozeKey = "tessera.clipboard-extension-prompt-snoozed-until.v1";
+const ipadHTTPGuidanceDismissedKey = "tessera.ipad-http-guidance-dismissed.v1";
 window.addEventListener("focus", () => {
   checkForBrowserWake();
   void refreshClipboardBridgeAndPrompt();
@@ -1105,6 +1108,16 @@ settingsModal.addEventListener("pointerdown", (event) => {
 });
 document.body.appendChild(settingsModal);
 
+const localHTTPSModal = document.createElement("div");
+localHTTPSModal.className = "settings-modal local-https-modal";
+localHTTPSModal.hidden = true;
+localHTTPSModal.addEventListener("pointerdown", (event) => {
+  if (event.target === localHTTPSModal) {
+    hideLocalHTTPSModal();
+  }
+});
+document.body.appendChild(localHTTPSModal);
+
 const clipboardSetupPrompt = document.createElement("aside");
 clipboardSetupPrompt.className = "clipboard-setup-prompt";
 clipboardSetupPrompt.hidden = true;
@@ -1345,6 +1358,7 @@ window.addEventListener("message", handleBrowserPaneMessage);
 
 applyTheme(themeID, { save: false });
 void refreshClipboardBridgeAndPrompt();
+showIPadHTTPGuidanceIfNeeded();
 void startApp()
   .catch((error) => console.warn(error))
   .finally(startServerConnectionMonitor);
@@ -3557,6 +3571,20 @@ function setPaneFontSize(rect, fontSize) {
     rect.editor?.requestMeasure();
   }
   scheduleWorkspaceSave();
+}
+
+function adjustActivePaneFontSize(delta) {
+  const rect = getActivePane();
+  if (rect) {
+    setPaneFontSize(rect, rect.fontSize + delta);
+  }
+}
+
+function resetActivePaneFontSize() {
+  const rect = getActivePane();
+  if (rect) {
+    setPaneFontSize(rect, defaultPaneFontSize);
+  }
 }
 
 function updatePaneFontSizeUI(rect) {
@@ -7008,6 +7036,286 @@ function hideSettingsModal() {
   setTerminalRenderingMetricsEnabled(false);
 }
 
+async function openLocalHTTPSModal() {
+  hideDeskbar();
+  localHTTPSModal.hidden = false;
+  localHTTPSModal.replaceChildren();
+  const loading = document.createElement("section");
+  loading.className = "settings-panel local-https-panel";
+  loading.textContent = "Loading Local HTTPS settings...";
+  localHTTPSModal.appendChild(loading);
+  try {
+    const response = await fetch("/api/host/https", { cache: "no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+    body.config = localHTTPSConfigWithCurrentHostname(body.config, window.location.hostname);
+    renderLocalHTTPSModal(body);
+  } catch (error) {
+    renderLocalHTTPSError(error.message || String(error));
+  }
+}
+
+function hideLocalHTTPSModal() {
+  localHTTPSModal.hidden = true;
+  localHTTPSModal.replaceChildren();
+}
+
+function showIPadHTTPGuidanceIfNeeded() {
+  let dismissed = false;
+  try {
+    dismissed = window.localStorage.getItem(ipadHTTPGuidanceDismissedKey) === "true";
+  } catch {
+    // Show the guidance when persistent browser storage is unavailable.
+  }
+  const device = {
+    userAgent: navigator.userAgent || "",
+    platform: navigator.platform || "",
+    maxTouchPoints: navigator.maxTouchPoints || 0,
+  };
+  if (!shouldShowIPadHTTPGuidance({ protocol: window.location.protocol, device, dismissed })) return;
+
+  localHTTPSModal.replaceChildren();
+  localHTTPSModal.hidden = false;
+  const panel = document.createElement("section");
+  panel.className = "settings-panel ipad-http-info-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "ipad-http-info-title");
+
+  const title = document.createElement("h2");
+  title.id = "ipad-http-info-title";
+  title.textContent = "Use HTTPS for the best iPad experience";
+  const explanation = document.createElement("p");
+  explanation.textContent = "Tessera works over HTTP, but iPadOS limits clipboard access and other browser features on connections that are not secure.";
+  const recommendation = document.createElement("p");
+  recommendation.textContent = "Set up Tessera Local HTTPS for more reliable terminal copy and paste. HTTP will remain available on port 7331 for recovery and certificate enrollment.";
+
+  const actions = document.createElement("div");
+  actions.className = "rename-window-actions";
+  const continueHTTP = document.createElement("button");
+  continueHTTP.type = "button";
+  continueHTTP.textContent = "Continue with HTTP";
+  continueHTTP.addEventListener("click", () => {
+    try {
+      window.localStorage.setItem(ipadHTTPGuidanceDismissedKey, "true");
+    } catch {
+      // The modal still closes for this page when storage is unavailable.
+    }
+    hideLocalHTTPSModal();
+  });
+  const setupHTTPS = document.createElement("button");
+  setupHTTPS.type = "button";
+  setupHTTPS.textContent = "Set up HTTPS";
+  setupHTTPS.addEventListener("click", () => void openLocalHTTPSModal());
+  actions.append(continueHTTP, setupHTTPS);
+  panel.append(title, explanation, recommendation, actions);
+  localHTTPSModal.appendChild(panel);
+  window.requestAnimationFrame(() => setupHTTPS.focus());
+}
+
+function renderLocalHTTPSError(message) {
+  localHTTPSModal.replaceChildren();
+  const panel = document.createElement("section");
+  panel.className = "settings-panel local-https-panel";
+  const title = document.createElement("h2");
+  title.textContent = "Local HTTPS";
+  const error = document.createElement("p");
+  error.className = "local-https-error";
+  error.textContent = message;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "Close";
+  close.addEventListener("click", hideLocalHTTPSModal);
+  panel.append(title, error, close);
+  localHTTPSModal.appendChild(panel);
+}
+
+function localHTTPSField(labelText, detailText, control) {
+  const field = document.createElement("label");
+  field.className = "local-https-field";
+  const label = document.createElement("strong");
+  label.textContent = labelText;
+  const detail = document.createElement("span");
+  detail.textContent = detailText;
+  field.append(label, detail, control);
+  return field;
+}
+
+function renderLocalHTTPSModal(state, message = "") {
+  localHTTPSModal.replaceChildren();
+  const config = state.config || {};
+  const panel = document.createElement("section");
+  panel.className = "settings-panel local-https-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "local-https-title");
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "settings-title";
+  const title = document.createElement("h2");
+  title.id = "local-https-title";
+  title.textContent = "Local HTTPS";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "settings-close";
+  close.textContent = "X";
+  close.setAttribute("aria-label", "Close Local HTTPS settings");
+  close.addEventListener("click", hideLocalHTTPSModal);
+  titleBar.append(title, close);
+
+  const form = document.createElement("form");
+  form.className = "local-https-form";
+  const introduction = document.createElement("p");
+  introduction.className = "local-https-introduction";
+  introduction.textContent = "Tessera keeps the workspace available over HTTP and can also serve it over HTTPS with a private certificate authority. The root stays stable across service restarts and upgrades.";
+
+  const enabled = document.createElement("input");
+  enabled.type = "checkbox";
+  enabled.checked = Boolean(config.enabled);
+  const enabledField = localHTTPSField("Enable Local HTTPS", "HTTP remains available on the primary listener while HTTPS uses its own port.", enabled);
+  enabledField.classList.add("local-https-check-field");
+  const httpsAddress = document.createElement("input");
+  httpsAddress.type = "text";
+  httpsAddress.value = config.httpsAddress || "0.0.0.0:7332";
+  httpsAddress.placeholder = "0.0.0.0:7332";
+  const dnsNames = document.createElement("textarea");
+  dnsNames.rows = 2;
+  dnsNames.value = (config.dnsNames || []).join("\n");
+  dnsNames.placeholder = "tessera.local";
+  const ipAddresses = document.createElement("textarea");
+  ipAddresses.rows = 2;
+  ipAddresses.value = (config.ipAddresses || []).join("\n");
+  ipAddresses.placeholder = "192.168.1.50\n100.64.0.10";
+  const dependent = [httpsAddress, dnsNames, ipAddresses];
+  const updateDisabled = () => {
+    for (const control of dependent) control.disabled = !enabled.checked;
+  };
+  enabled.addEventListener("change", updateDisabled);
+  updateDisabled();
+
+  form.append(
+    introduction,
+    enabledField,
+    localHTTPSField("HTTPS listener", "Separate TLS address in host:port form. The default is port 7332; HTTP stays on port 7331.", httpsAddress),
+    localHTTPSField("Certificate DNS names", "One per line or comma-separated. Include every hostname used from the iPad.", dnsNames),
+    localHTTPSField("Certificate IP addresses", "Include LAN and VPN addresses that may be entered directly in Safari.", ipAddresses),
+  );
+
+  if (state.hasCA) {
+    const identity = document.createElement("div");
+    identity.className = "local-https-identity";
+    const identityTitle = document.createElement("strong");
+    identityTitle.textContent = state.rootName || "Tessera Root CA";
+    const fingerprint = document.createElement("code");
+    fingerprint.textContent = state.fingerprint || "Fingerprint unavailable";
+    const download = document.createElement("a");
+    download.href = "/api/host/https/ca";
+    download.textContent = "Download public root certificate";
+    identity.append(identityTitle, fingerprint, download);
+    if (state.enrollmentURL) {
+      const enrollment = document.createElement("a");
+      enrollment.href = state.enrollmentURL;
+      enrollment.target = "_blank";
+      enrollment.rel = "noopener";
+      enrollment.textContent = "Open HTTP enrollment page";
+      identity.appendChild(enrollment);
+    }
+    form.appendChild(identity);
+  }
+
+  const guidance = document.createElement("p");
+  guidance.className = "local-https-guidance";
+  guidance.textContent = "On iPadOS, install the downloaded profile, then enable it under General → About → Certificate Trust Settings. Private keys never leave this Tessera host.";
+  const status = document.createElement("div");
+  status.className = "local-https-status";
+  status.setAttribute("role", "status");
+  status.textContent = message;
+  const actions = document.createElement("div");
+  actions.className = "rename-window-actions local-https-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", hideLocalHTTPSModal);
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.textContent = "Save and apply";
+  actions.append(cancel, save);
+  form.append(guidance, status, actions);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const draft = localHTTPSDraft({
+      enabled: enabled.checked,
+      httpsAddress: httpsAddress.value,
+      dnsNames: dnsNames.value,
+      ipAddresses: ipAddresses.value,
+    });
+    const validation = validateLocalHTTPSDraft(draft);
+    if (validation) {
+      status.textContent = validation;
+      status.classList.add("is-error");
+      return;
+    }
+    status.classList.remove("is-error");
+    status.textContent = "Saving host settings and preparing certificates...";
+    save.disabled = true;
+    cancel.disabled = true;
+    let enrollmentTab = null;
+    if (draft.enabled) {
+      enrollmentTab = window.open("about:blank", "tessera-enrollment");
+      if (enrollmentTab) enrollmentTab.opener = null;
+    }
+    try {
+      const response = await fetch("/api/host/https", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+      if (!body.restarting) {
+        enrollmentTab?.close();
+        renderLocalHTTPSModal(body, "Settings are already applied.");
+        return;
+      }
+      localHTTPSModal.replaceChildren();
+      const restarting = document.createElement("section");
+      restarting.className = "settings-panel local-https-restarting";
+      const heading = document.createElement("h2");
+      heading.textContent = "Applying Local HTTPS";
+      const explanation = document.createElement("p");
+      const nextURL = localHTTPSNextURL(body, window.location.href);
+      explanation.textContent = body.config.enabled && body.enrollmentURL
+        ? "Tessera is applying HTTPS. The HTTP enrollment page is opening in a new tab."
+        : "Tessera is applying the listener settings and will reopen over HTTP.";
+      restarting.append(heading, explanation);
+      if (body.config.enabled && body.enrollmentURL) {
+        const enrollmentLink = document.createElement("a");
+        enrollmentLink.href = body.enrollmentURL;
+        enrollmentLink.target = "_blank";
+        enrollmentLink.rel = "noopener";
+        enrollmentLink.textContent = "Open enrollment page";
+        restarting.appendChild(enrollmentLink);
+        if (enrollmentTab) enrollmentTab.location.replace(body.enrollmentURL);
+      } else {
+        enrollmentTab?.close();
+        window.setTimeout(() => window.location.assign(nextURL), 1000);
+      }
+      localHTTPSModal.appendChild(restarting);
+    } catch (error) {
+      enrollmentTab?.close();
+      status.textContent = error.message || String(error);
+      status.classList.add("is-error");
+      save.disabled = false;
+      cancel.disabled = false;
+    }
+  });
+
+  panel.append(titleBar, form);
+  localHTTPSModal.appendChild(panel);
+  window.requestAnimationFrame(() => enabled.focus());
+}
+
 function setTerminalRenderingMetricsEnabled(enabled) {
   for (const rect of rectangles) {
     if (rect.kind === "terminal") {
@@ -8627,7 +8935,7 @@ function buildPaletteCommands() {
     commands.push({
       id: "rename-window",
       label: "Set Window Title...",
-      hint: dockTarget.title,
+      hint: "Ctrl+T",
       run: () => openRenameWindowModal(dockTarget),
     });
     commands.push({
@@ -8653,6 +8961,7 @@ function buildPaletteCommands() {
     commands.push({ id: "destroy-window", label: "Destroy Window", hint: "Ctrl+Backspace", run: () => destroyActivePane() });
   }
   commands.push({ id: "settings", label: "Settings...", hint: "workspace", run: () => openSettingsModal() });
+  commands.push({ id: "local-https", label: "Local HTTPS...", hint: "server and iPad certificates", run: () => void openLocalHTTPSModal() });
   commands.push({ id: "update-server", label: "Update Server", hint: "server", run: () => void runServerUpdate() });
   if (multiUser) {
     for (const name of userRoster) {
@@ -8702,6 +9011,7 @@ const paletteShortcutCodes = {
   "rename-window": "WT",
   "deskbar-button-toggle": "HB",
   "settings": "ST",
+  "local-https": "LH",
   "update-server": "UP",
 };
 
@@ -10242,7 +10552,7 @@ function handlePaneKeyboardShortcuts(event) {
 // iframes, which never reach this document on their own.
 function paneShortcutAction(keys) {
   // Dialogs and pickers own keyboard input, including relayed iframe keys.
-  if ([settingsModal, renameWindowModal, sessionsModal, sessionActionModal,
+  if ([settingsModal, localHTTPSModal, renameWindowModal, sessionsModal, sessionActionModal,
     serverUpdateModal, serverConnectionModal, workspaceConflictModal, helpModal,
     directoryBrowser, userSelect].some((overlay) => !overlay.hidden)) {
     return null;
@@ -10255,6 +10565,9 @@ function paneShortcutAction(keys) {
   }
   if (primary && (keys.key === "k" || keys.key === "K")) {
     return { run: toggleCommandPalette };
+  }
+  if (primary && (keys.key === "t" || keys.key === "T")) {
+    return { run: () => openRenameWindowModal(getActivePane()) };
   }
   if (!commandPalette.hidden || !windowList.hidden) {
     return null;
@@ -10270,6 +10583,15 @@ function paneShortcutAction(keys) {
   }
   if (primary && (keys.key === "[" || keys.code === "BracketLeft")) {
     return { run: () => focusAdjacentPane(-1, { showSwitcher: true }) };
+  }
+  if (primary && (keys.key === "+" || keys.key === "=" || keys.code === "NumpadAdd")) {
+    return { run: () => adjustActivePaneFontSize(1) };
+  }
+  if (primary && (keys.key === "-" || keys.key === "_" || keys.code === "NumpadSubtract")) {
+    return { run: () => adjustActivePaneFontSize(-1) };
+  }
+  if (primary && (keys.key === "0" || keys.code === "Numpad0")) {
+    return { run: resetActivePaneFontSize };
   }
   if (alt && keys.key === "F10") {
     return { run: () => toggleFullRestore(getActivePane()), propagate: true };
@@ -10376,6 +10698,7 @@ function hideAllMenus() {
   hideWindowList();
   hideDeskbar();
   hideSettingsModal();
+  hideLocalHTTPSModal();
   hideHelpModal();
   hideRenameWindowModal();
   hideSessionsModal();

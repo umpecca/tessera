@@ -47,7 +47,7 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 		"id", "occurred_at", "request_id", "client_ip", "method", "path",
 		"status", "outcome", "duration_ms",
 	})
-	for _, table := range []string{"command_runs", "workspace_backgrounds", "user_settings"} {
+	for _, table := range []string{"command_runs", "workspace_backgrounds", "user_settings", "host_settings"} {
 		exists, err := st.tableExists(ctx, table)
 		if err != nil {
 			t.Fatalf("inspect table %s: %v", table, err)

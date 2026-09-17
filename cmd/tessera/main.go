@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"tessera/internal/desktop"
+	"tessera/internal/localhttps"
 	"tessera/internal/server"
+	"tessera/internal/store"
 	"tessera/internal/update"
 )
 
@@ -59,6 +61,13 @@ func main() {
 	} else {
 		updater.CleanupOld()
 	}
+	localRestart := make(chan localhttps.Config, 1)
+	requestLocalRestart := func(previous localhttps.Config) {
+		select {
+		case localRestart <- previous:
+		default:
+		}
+	}
 
 	controller := desktop.NewController(server.Options{
 		Addr:               *addr,
@@ -74,6 +83,7 @@ func main() {
 		AuditEnabled:       *auditLog,
 		AuditRetentionDays: *auditRetention,
 		MaxUploadBytes:     *maxUploadSize,
+		RequestRestart:     requestLocalRestart,
 	})
 	if err := controller.Start(context.Background()); err != nil {
 		if signalErr := update.SignalReplacementFailure(err); signalErr != nil {
@@ -122,6 +132,32 @@ func main() {
 				}
 				log.Printf("updated server reported ready")
 				os.Exit(0)
+			case previousConfig := <-localRestart:
+				log.Printf("reloading listeners to apply Local HTTPS settings")
+				restartCtx, cancelRestart := context.WithTimeout(context.Background(), 10*time.Second)
+				reloadErr := controller.ReloadLocalHTTPS(restartCtx)
+				cancelRestart()
+				if reloadErr != nil {
+					log.Printf("reload Local HTTPS listeners: %v", reloadErr)
+					rollbackStore, rollbackErr := store.Open(context.Background(), *dbPath)
+					if rollbackErr == nil {
+						rollbackErr = rollbackStore.SaveLocalHTTPSConfig(context.Background(), previousConfig)
+						if closeErr := rollbackStore.Close(); closeErr != nil {
+							log.Printf("close Local HTTPS rollback store: %v", closeErr)
+						}
+					}
+					if rollbackErr != nil {
+						log.Printf("restore previous Local HTTPS settings: %v", rollbackErr)
+						continue
+					}
+					if recoveryErr := controller.ReloadLocalHTTPS(context.Background()); recoveryErr != nil {
+						log.Printf("reload previous Local HTTPS listeners: %v", recoveryErr)
+						continue
+					}
+					log.Printf("restored previous Local HTTPS settings at %s", controller.URL())
+					continue
+				}
+				log.Printf("Tessera listening at %s", controller.URL())
 			case <-exitTray:
 				shutdown <- struct{}{}
 				if useTray {

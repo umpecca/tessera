@@ -59,6 +59,18 @@ func (c *Controller) Stop(ctx context.Context) error {
 	return srv.Shutdown(ctx)
 }
 
+// ReloadLocalHTTPS applies saved listener and certificate settings while
+// preserving the server's stores, managers, and running terminal processes.
+func (c *Controller) ReloadLocalHTTPS(ctx context.Context) error {
+	c.mu.Lock()
+	srv := c.server
+	c.mu.Unlock()
+	if srv == nil {
+		return errors.New("Tessera server is not running")
+	}
+	return srv.ReloadLocalHTTPS(ctx)
+}
+
 // Configure makes sure the server is running and opens its current workspace
 // URL in the user's default browser.
 func (c *Controller) Configure(ctx context.Context) error {

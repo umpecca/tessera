@@ -30,7 +30,7 @@ function appFunction(name, globals) {
 }
 
 test("dialogs block destructive shortcuts from both the document and iframe resolver", () => {
-  const names = ["settingsModal", "renameWindowModal", "sessionsModal", "sessionActionModal",
+  const names = ["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal", "sessionActionModal",
     "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
     "directoryBrowser", "userSelect", "commandPalette", "windowList"];
   const globals = Object.fromEntries(names.map((name) => [name, { hidden: true }]));
@@ -50,6 +50,66 @@ test("dialogs block destructive shortcuts from both the document and iframe reso
   }
   globals.commandPalette.hidden = false;
   assert.ok(resolve({ ctrlKey: true, key: "k" }), "palette toggle remains available");
+});
+
+test("Ctrl+T opens the rename modal for the active pane", () => {
+  const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
+    "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
+    "directoryBrowser", "userSelect", "commandPalette", "windowList"].map((name) => [name, { hidden: true }]));
+  const rect = { title: "my-window" };
+  globals.getActivePane = () => rect;
+  let renamed;
+  globals.openRenameWindowModal = (target) => { renamed = target; };
+  const resolve = appFunction("paneShortcutAction", globals);
+  resolve({ ctrlKey: true, key: "t" }).run();
+  assert.equal(renamed, rect);
+});
+
+test("Ctrl+Plus and Ctrl+Minus resize the active pane's font", () => {
+  const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
+    "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
+    "directoryBrowser", "userSelect", "commandPalette", "windowList"].map((name) => [name, { hidden: true }]));
+  const deltas = [];
+  globals.adjustActivePaneFontSize = (delta) => deltas.push(delta);
+  const resolve = appFunction("paneShortcutAction", globals);
+  resolve({ ctrlKey: true, key: "=" }).run();
+  resolve({ ctrlKey: true, key: "+" }).run();
+  resolve({ ctrlKey: true, key: "-" }).run();
+  assert.deepEqual(deltas, [1, 1, -1]);
+});
+
+test("adjustActivePaneFontSize resizes the active pane via setPaneFontSize", () => {
+  const rect = { fontSize: 14 };
+  let call;
+  const adjust = appFunction("adjustActivePaneFontSize", {
+    getActivePane: () => rect,
+    setPaneFontSize: (target, size) => { call = [target, size]; },
+  });
+  adjust(1);
+  assert.deepEqual(call, [rect, 15]);
+});
+
+test("Ctrl+0 resets the active pane's font to the default size", () => {
+  const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
+    "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
+    "directoryBrowser", "userSelect", "commandPalette", "windowList"].map((name) => [name, { hidden: true }]));
+  let reset = 0;
+  globals.resetActivePaneFontSize = () => reset++;
+  const resolve = appFunction("paneShortcutAction", globals);
+  resolve({ ctrlKey: true, key: "0" }).run();
+  assert.equal(reset, 1);
+});
+
+test("resetActivePaneFontSize restores the default font size via setPaneFontSize", () => {
+  const rect = { fontSize: 22 };
+  let call;
+  const reset = appFunction("resetActivePaneFontSize", {
+    getActivePane: () => rect,
+    defaultPaneFontSize: 14,
+    setPaneFontSize: (target, size) => { call = [target, size]; },
+  });
+  reset();
+  assert.deepEqual(call, [rect, 14]);
 });
 
 test("a terminal removed while its dependencies load never opens or connects", async () => {

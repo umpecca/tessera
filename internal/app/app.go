@@ -6,6 +6,7 @@ import (
 
 	"tessera/internal/audio"
 	"tessera/internal/httpapi"
+	"tessera/internal/localhttps"
 	"tessera/internal/runs"
 	"tessera/internal/shell"
 	"tessera/internal/store"
@@ -24,8 +25,11 @@ type App struct {
 	// Users is the optional multi-user roster, passed through to the API.
 	Users []string
 	// Updater optionally enables the self-update endpoint.
-	Updater        *update.Updater
-	MaxUploadBytes int64
+	Updater             *update.Updater
+	MaxUploadBytes      int64
+	HTTPSDefaultAddress string
+	HTTPSPKIDir         string
+	RequestRestart      func(localhttps.Config)
 	// Security configures origin checks, proxy trust, rate limiting, response
 	// headers, and audit persistence around the complete application handler.
 	Security httpapi.SecurityOptions
@@ -49,15 +53,18 @@ func (a *App) Handler() http.Handler {
 		webFS = web.Files
 	}
 	api := &httpapi.API{
-		Store:          a.Store,
-		Runner:         a.Runner,
-		Runs:           runManager,
-		Terminals:      terminalManager,
-		Audio:          audioManager,
-		WebFS:          webFS,
-		Users:          a.Users,
-		Updater:        a.Updater,
-		MaxUploadBytes: a.MaxUploadBytes,
+		Store:               a.Store,
+		Runner:              a.Runner,
+		Runs:                runManager,
+		Terminals:           terminalManager,
+		Audio:               audioManager,
+		WebFS:               webFS,
+		Users:               a.Users,
+		Updater:             a.Updater,
+		MaxUploadBytes:      a.MaxUploadBytes,
+		HTTPSDefaultAddress: a.HTTPSDefaultAddress,
+		HTTPSPKIDir:         a.HTTPSPKIDir,
+		RequestRestart:      a.RequestRestart,
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)

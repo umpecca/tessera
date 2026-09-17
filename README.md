@@ -501,7 +501,32 @@ go run ./cmd/tessera -addr 0.0.0.0:7331
 
 Open `http://<host-address>:7331` in Safari and use **Share > Add to Home
 Screen** for standalone display. The command button provides touch access to
-context actions, and the window button opens the Deskbar.
+context actions, and the window button opens the Deskbar. On Windows, allow
+inbound TCP ports 7331 and 7332 through Windows Firewall for the active network
+profile.
+
+### Local HTTPS for iPadOS
+
+Open the command palette and run **Local HTTPS...** (`LH`) to configure HTTPS
+without changing the service command line. Choose the HTTPS listener, add every
+DNS name and LAN or VPN IP address used to open Tessera. Saving creates
+Tessera's private root CA, stores the host configuration, and reloads the
+listeners in the running process. The primary listener remains available over
+HTTP on port 7331 while HTTPS uses port 7332 by default.
+
+Open `http://<host-address>:7331/local-https/` to reach the enrollment page if
+the device does not trust HTTPS yet. It downloads only the public root
+certificate. On iPadOS, install the downloaded profile, then open **Settings >
+General > About > Certificate Trust Settings** and enable full trust for
+**Tessera &lt;hostname&gt; Root CA**. Verify the SHA-256 fingerprint against the value
+shown in Tessera before enabling trust.
+
+Local HTTPS settings are host-wide and persist in Tessera's SQLite database.
+Certificate material is stored in a protected `pki` directory beside the
+database. The Ubuntu service therefore keeps its database and CA under
+`/var/lib/tessera` across daemon restarts and binary upgrades. Tessera renews
+the server certificate when its configured names change or it approaches
+expiration; it does not silently replace the root CA.
 
 Only use LAN binding in the trusted-environment model described above. Any
 device that can reach the service should currently be treated as having the

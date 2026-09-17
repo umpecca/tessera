@@ -3,6 +3,7 @@ package terminal
 import (
 	"io"
 	"os"
+	"sync"
 )
 
 const (
@@ -12,8 +13,10 @@ const (
 )
 
 type Session struct {
-	pty  platformPty
-	done chan error
+	pty       platformPty
+	done      chan error
+	closeOnce sync.Once
+	closeErr  error
 }
 
 type platformPty interface {
@@ -79,5 +82,8 @@ func (s *Session) Done() <-chan error {
 }
 
 func (s *Session) Close() error {
-	return s.pty.Close()
+	s.closeOnce.Do(func() {
+		s.closeErr = s.pty.Close()
+	})
+	return s.closeErr
 }

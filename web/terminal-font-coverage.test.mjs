@@ -90,3 +90,13 @@ test("bundled symbol font carries its redistribution license", () => {
   assert.match(license, /Copyright 2022 The Noto Project Authors/);
   assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/);
 });
+
+test("IBM Plex Mono faces and redistribution license are bundled", () => {
+  const regular = readFileSync(new URL("./assets/IBMPlexMono-Regular.woff2", import.meta.url));
+  const bold = readFileSync(new URL("./assets/IBMPlexMono-Bold.woff2", import.meta.url));
+  const license = readFileSync(new URL("./assets/IBMPlexMono-OFL.txt", import.meta.url), "utf8");
+  assert.ok(regular.length > 10_000, "IBM Plex Mono regular face is unexpectedly small");
+  assert.ok(bold.length > 10_000, "IBM Plex Mono bold face is unexpectedly small");
+  assert.match(license, /Copyright © 2017 IBM Corp/);
+  assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/);
+});

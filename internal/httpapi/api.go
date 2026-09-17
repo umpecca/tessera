@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"tessera/internal/audio"
+	"tessera/internal/localhttps"
 	"tessera/internal/runs"
 	"tessera/internal/shell"
 	"tessera/internal/store"
@@ -34,6 +35,12 @@ type API struct {
 	// MaxUploadBytes limits one streamed File Browser upload. Values at or below
 	// zero use DefaultMaxUploadBytes.
 	MaxUploadBytes int64
+	// HTTPSDefaultAddress and HTTPSPKIDir back the host-level Local HTTPS
+	// settings endpoint. RequestRestart applies saved listener changes without
+	// requiring service-manager privileges.
+	HTTPSDefaultAddress string
+	HTTPSPKIDir         string
+	RequestRestart      func(localhttps.Config)
 
 	browserProxyOnce sync.Once
 	browserProxy     *browserProxyManager
@@ -61,6 +68,9 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/upload", a.uploadFile)
 	mux.HandleFunc("/api/files", a.fileOperations)
 	mux.HandleFunc("/api/update", a.selfUpdate)
+	mux.HandleFunc("/api/host/https", a.localHTTPSSettings)
+	mux.HandleFunc("/api/host/https/ca", a.localHTTPSRootCertificate)
+	mux.HandleFunc("/local-https/", a.localHTTPSEnrollment)
 	mux.HandleFunc("/api/browser-proxy", a.browserProxyControl)
 	mux.HandleFunc("/api/browser-proxy/", a.browserProxyControl)
 	mux.HandleFunc("/browser-proxy/", a.browserProxyRequest)

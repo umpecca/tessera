@@ -4,17 +4,21 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"tessera/internal/app"
 	"tessera/internal/audio"
 	"tessera/internal/httpapi"
+	"tessera/internal/localhttps"
 	"tessera/internal/runs"
 	"tessera/internal/shell"
 	"tessera/internal/store"
@@ -52,20 +56,31 @@ type Options struct {
 	// MaxUploadBytes limits one File Browser upload; zero selects the 1 GiB
 	// default.
 	MaxUploadBytes int64
+	// PKIDir overrides the directory beside DBPath used for Local HTTPS keys.
+	// It is primarily useful for tests and portable deployments.
+	PKIDir         string
+	RequestRestart func(localhttps.Config)
 }
 
 const DefaultMaxUploadBytes int64 = httpapi.DefaultMaxUploadBytes
 
 type Server struct {
-	Addr string // actual bound address, e.g. "127.0.0.1:53211"
-	URL  string // "http://" + Addr
+	Addr      string // actual HTTP address, e.g. "127.0.0.1:53211"
+	URL       string // "http://" + Addr
+	HTTPSAddr string // actual HTTPS address when Local HTTPS is enabled
+	HTTPSURL  string
 
-	httpServer *http.Server
-	store      *store.Store
-	runs       *runs.Manager
-	terminals  *terminal.Manager
-	audio      *audio.Manager
-	serveErr   chan error
+	httpServer     *http.Server
+	httpsServer    *http.Server
+	listenerMu     sync.Mutex
+	handler        http.Handler
+	defaultAddress string
+	pkiDir         string
+	store          *store.Store
+	runs           *runs.Manager
+	terminals      *terminal.Manager
+	audio          *audio.Manager
+	serveErr       chan error
 }
 
 func Start(ctx context.Context, opts Options) (*Server, error) {
@@ -101,7 +116,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
-
+	httpsConfig, err := st.LoadLocalHTTPSConfig(ctx, opts.Addr)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	pkiDir := opts.PKIDir
+	if pkiDir == "" {
+		pkiDir = filepath.Join(filepath.Dir(opts.DBPath), "pki")
+	}
 	runner := &shell.Runner{}
 	runManager := runs.NewManager(st, runner)
 	terminalManager := terminal.NewManager()
@@ -141,39 +164,156 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			AuditEnabled:   opts.AuditEnabled,
 			AuditRetention: auditRetention,
 		},
+		HTTPSDefaultAddress: opts.Addr,
+		HTTPSPKIDir:         pkiDir,
+		RequestRestart:      opts.RequestRestart,
 	}
 
-	ln, err := net.Listen("tcp", opts.Addr)
-	if err != nil {
+	srv := &Server{
+		handler:        application.Handler(),
+		defaultAddress: opts.Addr,
+		pkiDir:         pkiDir,
+		store:          st,
+		runs:           runManager,
+		terminals:      terminalManager,
+		audio:          audioManager,
+		serveErr:       make(chan error, 1),
+	}
+	if err := srv.startListeners(httpsConfig); err != nil {
 		audioManager.Close()
 		terminalManager.Close()
 		runManager.Close()
 		_ = st.Close()
-		return nil, fmt.Errorf("listen %s: %w", opts.Addr, err)
+		return nil, err
 	}
-
-	srv := &Server{
-		Addr: ln.Addr().String(),
-		httpServer: &http.Server{
-			Handler:           application.Handler(),
-			ReadHeaderTimeout: 5 * time.Second,
-		},
-		store:     st,
-		runs:      runManager,
-		terminals: terminalManager,
-		audio:     audioManager,
-		serveErr:  make(chan error, 1),
-	}
-	srv.URL = "http://" + srv.Addr
-
-	go func() {
-		srv.serveErr <- srv.httpServer.Serve(ln)
-	}()
 	return srv, nil
 }
 
-// ServeErr receives the result of the underlying http.Server once it stops
-// serving; http.ErrServerClosed follows a clean Shutdown.
+func (s *Server) startListeners(config localhttps.Config) error {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	return s.startListenersLocked(config)
+}
+
+func (s *Server) startListenersLocked(config localhttps.Config) error {
+	httpListener, err := listenTCP("Tessera HTTP", s.defaultAddress)
+	if err != nil {
+		return err
+	}
+	httpAddress := httpListener.Addr().String()
+	httpURL := "http://" + httpAddress
+
+	var httpsListener net.Listener
+	var httpsAddress, httpsURL string
+	if config.Enabled {
+		config, err = localhttps.NormalizeConfig(config)
+		if err != nil {
+			_ = httpListener.Close()
+			return fmt.Errorf("local HTTPS settings: %w", err)
+		}
+		if err := localhttps.ValidateSeparateListeners(config, s.defaultAddress); err != nil {
+			_ = httpListener.Close()
+			return fmt.Errorf("local HTTPS settings: %w", err)
+		}
+		material, ensureErr := localhttps.Ensure(s.pkiDir, config)
+		if ensureErr != nil {
+			_ = httpListener.Close()
+			return fmt.Errorf("prepare local HTTPS: %w", ensureErr)
+		}
+		httpsListener, err = listenTCP("Tessera HTTPS", config.HTTPSAddress)
+		if err != nil {
+			_ = httpListener.Close()
+			return err
+		}
+		httpsAddress = httpsListener.Addr().String()
+		httpsURL = localhttps.PublicURL(config, httpsAddress)
+		httpsListener = tls.NewListener(httpsListener, &tls.Config{
+			Certificates: []tls.Certificate{material.Certificate},
+			MinVersion:   tls.VersionTLS12,
+		})
+	}
+
+	httpServer := &http.Server{Handler: s.handler, ReadHeaderTimeout: 5 * time.Second}
+	var httpsServer *http.Server
+	if httpsListener != nil {
+		httpsServer = &http.Server{Handler: s.handler, ReadHeaderTimeout: 5 * time.Second}
+	}
+	s.Addr = httpAddress
+	s.URL = httpURL
+	s.HTTPSAddr = httpsAddress
+	s.HTTPSURL = httpsURL
+	s.httpServer = httpServer
+	s.httpsServer = httpsServer
+	s.serve(httpServer, httpListener)
+	if httpsServer != nil {
+		s.serve(httpsServer, httpsListener)
+	}
+	return nil
+}
+
+func (s *Server) serve(server *http.Server, listener net.Listener) {
+	go func() {
+		serveErr := server.Serve(listener)
+		if errors.Is(serveErr, http.ErrServerClosed) {
+			return
+		}
+		select {
+		case s.serveErr <- serveErr:
+		default:
+		}
+	}()
+}
+
+// ReloadLocalHTTPS replaces only Tessera's network listeners. The store,
+// terminal manager, and native PTYs stay alive so changing transport settings
+// cannot tear down active Windows ConPTY sessions.
+func (s *Server) ReloadLocalHTTPS(ctx context.Context) error {
+	config, err := s.store.LoadLocalHTTPSConfig(ctx, s.defaultAddress)
+	if err != nil {
+		return err
+	}
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	if err := s.shutdownListenersLocked(ctx); err != nil {
+		return err
+	}
+	return s.startListenersLocked(config)
+}
+
+func (s *Server) shutdownListenersLocked(ctx context.Context) error {
+	var result error
+	if s.httpServer != nil {
+		result = s.httpServer.Shutdown(ctx)
+		s.httpServer = nil
+	}
+	if s.httpsServer != nil {
+		if err := s.httpsServer.Shutdown(ctx); err != nil && result == nil {
+			result = err
+		}
+		s.httpsServer = nil
+	}
+	s.HTTPSAddr = ""
+	s.HTTPSURL = ""
+	return result
+}
+
+func listenTCP(serviceName, address string) (net.Listener, error) {
+	listener, err := net.Listen("tcp", address)
+	if err == nil {
+		return listener, nil
+	}
+	if isAddressInUse(err) {
+		_, port, splitErr := net.SplitHostPort(address)
+		if splitErr != nil || port == "" {
+			port = address
+		}
+		return nil, fmt.Errorf("port conflict: %s cannot listen on port %s because it is already in use; stop the other Tessera instance or choose a different port", serviceName, port)
+	}
+	return nil, fmt.Errorf("listen on %s: %w", address, err)
+}
+
+// ServeErr receives unexpected failures from the active HTTP server. Clean
+// listener reloads and shutdowns are not reported as failures.
 func (s *Server) ServeErr() <-chan error {
 	return s.serveErr
 }
@@ -181,7 +321,9 @@ func (s *Server) ServeErr() <-chan error {
 // Shutdown stops the HTTP server, then closes managers and storage in the
 // reverse of their startup order.
 func (s *Server) Shutdown(ctx context.Context) error {
-	err := s.httpServer.Shutdown(ctx)
+	s.listenerMu.Lock()
+	err := s.shutdownListenersLocked(ctx)
+	s.listenerMu.Unlock()
 	s.audio.Close()
 	s.terminals.Close()
 	s.runs.Close()

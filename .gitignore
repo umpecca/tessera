@@ -7,3 +7,5 @@ node_modules/
 *.sqlite3-wal
 cmd/tessera-desktop/build/bin/
 cmd/tessera-desktop/frontend/
+/.claude/*
+/.agents/*
