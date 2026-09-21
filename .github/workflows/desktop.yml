@@ -1,0 +1,48 @@
+name: Desktop macOS preview
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'cmd/tessera-desktop/**'
+      - 'internal/nativeapp/**'
+      - 'internal/server/**'
+      - 'web/**'
+      - 'scripts/build-desktop-macos.sh'
+      - '.github/workflows/desktop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    # Independent of release.yml: a desktop failure cannot block server releases.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run build:web
+      - run: node --test web/*.test.mjs
+      - run: go test ./...
+      - name: Verify existing server target
+        run: go build -o bin/tessera-server ./cmd/tessera
+      - name: Test desktop build
+        run: go test -tags desktop ./internal/nativeapp ./cmd/tessera-desktop
+      - name: Package Apple Silicon preview
+        run: bash scripts/build-desktop-macos.sh
+        env:
+          GOARCH: arm64
+      - name: Compile and package Intel preview
+        run: bash scripts/build-desktop-macos.sh
+        env:
+          GOARCH: amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tessera-desktop-macos-preview
+          path: bin/desktop/*/tessera-desktop-*.zip

@@ -93,6 +93,64 @@ func TestManagerPersistsOutputAfterSubscriberLeaves(t *testing.T) {
 	}
 }
 
+func TestShutdownWaitsForAllWorkspaceCommands(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := NewManager(st, &shell.Runner{})
+	defer m.Close()
+	command := "printf ready; sleep 30"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output ready; Start-Sleep -Seconds 30"
+	}
+	for _, id := range []string{"one", "two"} {
+		if err := st.SaveWorkspace(ctx, &store.Workspace{
+			ID: id, OwnerID: "default", Name: id, Layout: json.RawMessage(`{}`),
+			Panes: []store.Pane{{ID: "pane-" + id, Title: "Run", Cwd: t.TempDir(), Width: 320, Height: 200}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		events, unsubscribe, _, err := m.Start(StartRequest{WorkspaceID: id, PaneID: "pane-" + id, Command: command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unsubscribe()
+		// Observe output from the actual process, not just registration, before
+		// asserting that shutdown cancels and reaps the running command.
+		ready, cancelReady := context.WithTimeout(ctx, 10*time.Second)
+		var output strings.Builder
+		for !strings.Contains(output.String(), "ready") {
+			select {
+			case event, open := <-events:
+				if !open {
+					cancelReady()
+					t.Fatal("command exited before readiness")
+				}
+				if event.Type == "insert" {
+					output.WriteString(event.Text)
+				}
+			case <-ready.Done():
+				cancelReady()
+				t.Fatal("command did not start")
+			}
+		}
+		cancelReady()
+	}
+	deadline, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := m.Shutdown(deadline); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"one", "two"} {
+		if len(m.ActiveRuns(id)) != 0 {
+			t.Fatalf("workspace %s still has a running command", id)
+		}
+	}
+}
+
 func TestStopWorkspaceDoesNotCancelOtherWorkspace(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(ctx, ":memory:")

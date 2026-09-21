@@ -549,6 +549,13 @@ runs the Go test suite on every target runner.
 
 ## Future Considerations / Roadmap
 
+- Validate the additional macOS desktop target while keeping the webserver primary.
+  `cmd/tessera-desktop` and `internal/nativeapp` add a Cocoa/WKWebView host under
+  `darwin && desktop && cgo` build constraints. The shared server enables private
+  loopback/session policy only when this host supplies a desktop credential.
+  [Desktop build documentation](docs/native-desktop.md) covers packaging and the
+  remaining macOS validation; the server entry point and release workflow remain
+  independent. The [original proposal](docs/native-desktop-plan.md) records scope.
 - Implement the authentication and robust authorization plan described above
   before treating Tessera as safe for untrusted or public network access.
 - Split `web/app.js` into direct feature modules for API/persistence, workspace

@@ -92,6 +92,13 @@ go run ./cmd/tessera -addr 127.0.0.1:7331 -db .\tessera.sqlite3 -web .\web
 go run ./cmd/tessera -users alice,bob,carol
 ```
 
+## Native macOS application (preview)
+
+For the additional native macOS application, see
+[Tessera Desktop build instructions](docs/native-desktop.md). It uses a separate
+local-only profile and build target; the webserver deployment above remains the
+primary supported path. The desktop preview still requires macOS GUI validation.
+
 ## Install as an Ubuntu service
 
 On an Ubuntu amd64 or ARM64 host, download and run the installer as root:

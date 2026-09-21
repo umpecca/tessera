@@ -88,6 +88,30 @@ func (m *Manager) Close() {
 	}
 }
 
+// Shutdown cancels and waits for running command processes. Native hosts call
+// this after draining HTTP handlers and before exiting the process; Close keeps
+// its existing non-blocking behavior for other callers.
+func (m *Manager) Shutdown(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.Close()
+	m.mu.Lock()
+	done := make([]<-chan struct{}, 0, len(m.runs))
+	for _, run := range m.runs {
+		done = append(done, run.done)
+	}
+	m.mu.Unlock()
+	for _, ch := range done {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 func (m *Manager) Start(req StartRequest) (<-chan Event, func(), string, error) {
 	if m == nil {
 		return nil, nil, "", errors.New("run manager is not available")
