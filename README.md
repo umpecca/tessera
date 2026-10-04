@@ -268,6 +268,43 @@ never moved automatically: the up-arrow sends local clipboard text and the
 down-arrow copies the most recently received remote text. A visible text field
 is offered when the browser refuses clipboard access.
 
+### Terminal output backlog
+
+Under **Settings → Advanced → Performance**, **Terminal output backlog** limits
+output waiting to be processed in each terminal. **Auto** follows the server's
+retained-output window (normally 4 MiB); **8**, **16**, and **32 MiB** allow larger
+bursts. The choice is saved in this browser and applies to open terminals
+immediately. Exceeding the limit catches up from a fresh server snapshot while
+the shell keeps running. This budget is separate from scrollback and images.
+
+Minimized terminals, terminals fully covered by another window, and background
+browser tabs stop processing output in the browser. Their shells keep running
+on the server. Revealing a terminal catches up through a small ordered replay,
+or restores its latest screen and retained scrollback from a snapshot for a
+larger gap, then resumes live output. Replay is capped at 64 KiB and 128 events.
+Idle terminals keep their existing view. Hidden terminals pause server delivery
+and retain their connections for shell-exit notices without keeping an output
+backlog. Initially hidden panes start without transferring a snapshot. Frames
+already in flight when a pane hides are discarded by the browser.
+
+Visible terminals share a parsing turn of 64 KiB of output or roughly 5 ms
+of work. The active terminal gets three complete events per visit and other
+busy panes get one, keeping background builds moving while prioritizing the
+terminal you are using. This leaves time for typing, scrolling, and window
+controls during parallel builds. Complete stream events stay in order; an
+individual event or snapshot import can exceed the time budget.
+
+Painting also shares roughly 6 ms per animation frame. The active terminal
+normally paints first, while other ready panes rotate across frames. If one
+active paint uses the whole budget, a waiting background pane gets the first
+slot next frame. Deferred panes keep their redraw requests and paint the latest
+state. An individual terminal paint can exceed the budget.
+
+Retained Sixel images outside the visible viewport allow ordinary text updates
+and cursor blinking to repaint only changed rows. When the last visible image
+disappears, one full redraw clears its old pixels. Visible images still receive
+full redraws to preserve their layering with text, selections, and the cursor.
+
 ### Older Mac performance
 
 Choose **Older Mac** under **Settings → Performance → Profile** to cap terminal
@@ -279,13 +316,30 @@ in that browser, applies immediately to its open terminals, and does not cap a
 newer computer signed in as the same Tessera user. Choose **Standard** to
 restore native display resolution and animation.
 
-Settings also includes a **Compatibility** panel showing the clipboard APIs
+Open **Settings → Diagnostics** to see the clipboard APIs
 available to the current page, Firefox extension connection, effective
 terminal rendering scale, and Tessera server status. **Copy diagnostics**
 creates a troubleshooting summary without workspace, session, host, or
 clipboard contents.
 
+Settings opens with everyday font, theme, terminal appearance, scrolling, and
+background preferences. **Advanced** holds TERM, renderer experiments, and
+output/paint coalescing. **Advanced** and **Diagnostics** start collapsed;
+live diagnostic checks and rendering measurements run only while Diagnostics
+is expanded. Tab and Shift+Tab stay within visible Settings controls, Escape
+closes the dialog, and closing returns focus to its invoking control or pane.
+
+New browsers use the **Standard** performance profile, **Experimental** terminal
+renderer, **Paint coalescing On**, and **Server output coalescing Off**. These
+preferences are saved in the current browser; existing selections take priority
+over the defaults. The renderer and coalescing controls are under **Advanced**.
+
 ### Terminal appearance
+
+Use `Ctrl+Plus`/`Cmd+Plus` and `Ctrl+Minus`/`Cmd+Minus` to adjust the active
+pane's text size. A brief indicator shows the size as a percentage of the
+configured default; `Ctrl+0`/`Cmd+0` restores that default and shows 100%.
+The same shortcuts work in Worksheet and Text Editor panes.
 
 Terminal panes use the locally bundled JetBrains Mono font by default. Choose
 JetBrains Mono or Fira Code under **Settings → Terminal → Font**; the per-user
@@ -321,10 +375,16 @@ terminal at all, so `Cmd+S` in a full-screen editor does nothing instead of
 typing an `s`.
 
 A mouse-aware program owns unmodified dragging, so dragging inside one moves
-that program's cursor rather than selecting terminal text. Hold `Shift` (or
-`Ctrl`, or `Cmd`) while dragging to select on the terminal's own layer instead,
-then copy as usual. A copy that finds nothing selected reports "Nothing to
-copy" in the workspace status rather than doing nothing silently.
+that program's cursor rather than selecting terminal text. Hold `Shift` while
+dragging to select on the terminal's own layer, then copy as usual. `Cmd`-drag
+also works on macOS; `Ctrl`-drag works on other platforms. A copy that finds
+nothing selected reports "Nothing to copy" in the workspace status rather than
+doing nothing silently.
+
+Open terminal hyperlinks with `Cmd`-click on macOS or `Ctrl`-click elsewhere.
+On macOS, `Ctrl`-click opens the terminal context menu and preserves selected
+text for Copy. Interrupted selection drags stop when focus is lost or the
+mouse is released, and selection changes redraw even while output is idle.
 
 The platform paste key is handled by the browser's paste event, so it works
 without clipboard permission and on insecure origins. Tessera takes that event
@@ -422,8 +482,26 @@ Workspace behavior includes:
 - Minimize, maximize, restore, dock, rename, and destroy panes.
 - Use the Deskbar to list, focus, and restore open panes.
 - Use `Ctrl+K`/`Cmd+K` to search commands, pane types, sessions, themes, and
-  open windows.
+  open windows. Exact shortcut codes appear first. Use ↑/↓ to select a result
+  and Enter to run it; typing never runs a palette command automatically.
+  Search aliases include `preferences` for Settings, `rename` for Set Window
+  Title, and `close` for Destroy Window.
+- Open the experimental **Command Wheel** with `Ctrl+;`/`Cmd+;`, or from the
+  workspace menu. Hover or type a first key to reveal valid second keys, then type or
+  click the next key to run its command (for example, `N` → `W` creates a
+  worksheet). Settings opens directly with `S` in the wheel and `S` then Enter
+  in the palette.
+  **Tessera Sessions** uses `T` → `S` in the wheel and `TS` in the palette.
+  Backspace goes back, Escape closes, and **Search all commands**
+  opens the existing palette. Clicking or typing a group keeps it selected.
+  Dark radial wedges surround a context hub, with next keys in an outer arc.
 - Cycle active panes with `Ctrl+]` and `Ctrl+[`.
+- Move the active window earlier/later with `Ctrl+Shift+Up`/`Ctrl+Shift+Down`
+  (`Cmd+Shift+Up/Down` on macOS). Open **Window List** with `Ctrl+L`/`Cmd+L`
+  and drag a row by its grip or name to a new position, or use its ↑/↓ buttons.
+  You can also select a row with arrow keys and use
+  `Ctrl+Up/Down`/`Cmd+Up/Down` to reorder it. Shift also works inside the list.
+  Enter opens the highlighted window; Escape closes the list.
 - Choose a theme, default pane font size, per-session background image, and
   independent Terminal and editor wheel-scroll speeds.
 - Persist the active pane and complete workspace document to SQLite.
@@ -433,6 +511,12 @@ Workspace behavior includes:
   actions. Recovery is confirmed before the current session route is reloaded.
 - Reconnect an unexpectedly closed Terminal WebSocket automatically without
   treating that pane transport failure as a server outage.
+
+Window order saves with each session and is shared by keyboard cycling, the
+window switcher, Window List, Deskbar, and window menus. Focusing a window keeps
+this order. Reordering preserves window positions, stacking, and contents;
+minimized windows keep their place and can be moved in the list. Cycling skips
+minimized windows. New windows append, and reorder controls stop at the ends.
 
 ## Users and named sessions
 

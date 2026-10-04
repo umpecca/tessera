@@ -2,6 +2,103 @@
 
 ## Unreleased
 
+- Catch up small terminal visibility and reconnect gaps through ordered replay,
+  capped at 64 KiB and 128 events. Keep snapshots for larger gaps, overflow, and
+  interrupted imports; preserve hidden delivery pauses and clipboard suppression.
+
+- Reuse host terminal WASM input and response buffers across PTY reads. Bound
+  retained input space, release oversized temporary writes and all buffers on
+  close, and preserve complete query replies and clipboard effects.
+
+- Pause server delivery to hidden terminal connections, clear their output
+  queues, and preserve shell-exit notices and visible clients. Initially hidden
+  panes skip snapshot transfer; revealing restores changed state from a fresh
+  snapshot while idle panes preserve their selection and scroll position.
+
+- Reuse each browser terminal's 4 KiB clipboard cleanup buffer across writes,
+  resets, and snapshot restores. Release it on disposal and preserve complete
+  clipboard draining and host-only query replies.
+
+- Restore dirty-row terminal painting when retained Sixel images are offscreen.
+  Clear old image pixels with one full redraw when the last visible fragment
+  disappears, and preserve visible-image layering, cache cleanup, and scrolling.
+
+- Share an approximately 6 ms terminal painting budget per animation frame.
+  Prioritize the active pane, rotate other ready panes, and preserve deferred
+  redraws. Keep background panes progressing when an active paint uses a whole
+  frame, while preserving FPS limits, typing responsiveness, and visibility.
+
+- Prioritize the active visible terminal within the shared parsing budget.
+  Give it three events per visit while other busy panes get one, transfer
+  priority on focus changes, and keep background builds progressing across
+  costly events and frequent small updates.
+
+- Share a 64 KiB / approximately 5 ms browser parsing turn across terminals.
+  Count live output bytes, rotate complete events fairly between busy panes,
+  and yield through posted tasks without nested-timer delays. Preserve each
+  pane's event ordering and independent pause, reconnect, and cleanup.
+
+- Suspend browser parsing for minimized, fully covered, and background-tab
+  terminals. Discard pending output and restore the latest host snapshot on
+  reveal while shells keep running and shell-exit notices stay connected.
+
+- Speed up terminal output with retained Sixel images by skipping text-only
+  pages during image cleanup. Preserve image attachments across page copies,
+  reflow, snapshots, erasure, and history eviction.
+
+- Default to the Standard performance profile, Experimental terminal renderer,
+  paint coalescing on, and server output coalescing off. Preserve saved browser
+  preferences, including an explicit Stable renderer selection.
+
+- Correct terminal text sitting too high in editors such as Fresh. Use full
+  font ascent and descent for the shared cell metrics, with room for accents
+  and descenders and a compatible measurement fallback for older browsers.
+
+- Prevent Safari Control-click on terminal hyperlinks from selecting the whole
+  canvas or leaving a local drag latched. Keep macOS Control-click contextual
+  and Command-click for links. Recover interrupted selections, stop autoscroll,
+  and redraw selection changes even with idle output and cursor blinking off.
+
+- Run palette commands only with Enter or a click. Put exact shortcut matches
+  first and let arrow or pointer selection control what Enter runs. Add
+  preferences, rename, and close search aliases; wheel shortcuts stay immediate.
+
+- Name the session manager Tessera Sessions in the palette and Command Wheel,
+  with code TS. Searching se highlights Settings before other prefix matches.
+
+- Change the Settings command code to S in both the palette and Command Wheel.
+  Typing S or clicking Settings in the wheel opens it directly; the palette
+  uses S then Enter.
+
+- Add an experimental game-style Command Wheel on Ctrl/Cmd+; and the workspace
+  menu. Translucent radial wedges highlight the selected group in gold and
+  reveal valid second keys in an outer arc. Support hover, keyboard, touch,
+  and palette search.
+  Ctrl/Cmd+K continues to open the searchable command palette.
+
+- Drag Window List rows by their grip or name to reorder them, with an insertion
+  indicator and one save per changed drop. Preserve minimized state and window
+  contents; canceled and unchanged drops keep the current order.
+
+- Add per-session window reordering with Ctrl/Cmd+Shift+Up/Down and Up/Down row
+  buttons in Window List. Use a stable saved order across cycling and window
+  menus, preserve row focus while moving, and contain keyboard focus in the list.
+
+- Lead Settings with everyday preferences and move technical terminal controls
+  into collapsed Advanced and Diagnostics sections. Contain Tab and Shift+Tab,
+  preserve focus and scroll across redraws, and restore focus after dismissal.
+  Run live diagnostic checks and rendering measurements only while expanded.
+
+- Bound each browser terminal's unapplied output queue and catch up from an
+  authoritative snapshot on overflow without restarting the shell. Add a
+  device-local Terminal output backlog control under Advanced → Performance
+  with Auto (normally 4 MiB), 8, 16, and 32 MiB choices. Apply changes to open
+  terminals immediately and back off repeated overload recovery attempts.
+
+- Show a brief text-size percentage in the active pane after Ctrl/Cmd+Plus,
+  Ctrl/Cmd+Minus, or Ctrl/Cmd+0, using the configured default size as 100%.
+  Accept the shifted Plus key as well as unshifted and numpad shortcuts.
+
 - Store the Older Mac performance profile per browser so its 30 FPS cap does
   not follow the same Tessera user to newer computers.
 - Restore Ghostty's terminal renderer by default and make the uniform

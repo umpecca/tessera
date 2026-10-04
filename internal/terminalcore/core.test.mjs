@@ -158,6 +158,46 @@ test("cell and line insertion/deletion preserve surviving fragments", async () =
   } finally { t.dispose(); }
 });
 
+test("images survive line copies across multiple pages and are reclaimed on erasure", async () => {
+  const t = await terminal(256, 128);
+  try {
+    for (const row of [1, 30, 60, 90, 120]) t.write(`\x1b[${row};3H` + sixel);
+    const before = t.tiles();
+    assert.equal(before.length, 20);
+    t.write("\x1b[H\x1b[L");
+    assert.deepEqual(t.tiles(), before.map(tile => tile.map((value, index) => index === 2 ? value + 1 : value)));
+    assert.equal(t.e.tessera_sixel_image_count(t.handle), 5);
+    t.write("\x1b[H\x1b[M");
+    assert.deepEqual(t.tiles(), before);
+    t.restore(t.snapshot());
+    t.write("\x1b[128;1Hstatus");
+    assert.deepEqual(t.tiles(), before);
+    t.write("\x1b[2J");
+    assert.equal(t.e.tessera_sixel_image_count(t.handle), 0);
+    assert.equal(t.tiles().length, 0);
+  } finally { t.dispose(); }
+});
+
+test("image pages remain live through large-history reflow, snapshots, and history clearing", async () => {
+  const t = await terminal(80, 24);
+  try {
+    t.write(sixel);
+    t.write("\r\n" + ("x".repeat(79) + "\r\n").repeat(600));
+    const historyTiles = () => t.tiles(t.e.ghostty_terminal_get_scrollback_length(t.handle));
+    const before = historyTiles();
+    assert.equal(before.length, 4);
+    t.resize(40, 24);
+    assert.deepEqual(historyTiles(), before);
+    t.restore(t.snapshot());
+    t.write("\x1b[Hstatus");
+    assert.deepEqual(historyTiles(), before);
+    assert.equal(t.e.tessera_sixel_image_count(t.handle), 1);
+    t.write("\x1b[3J");
+    assert.equal(t.e.tessera_sixel_image_count(t.handle), 0);
+    assert.equal(historyTiles().length, 0);
+  } finally { t.dispose(); }
+});
+
 test("bottom scrolling, scrolling region, and DECSDM placement", async () => {
   const t = await terminal();
   try {

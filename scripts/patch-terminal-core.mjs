@@ -23,6 +23,24 @@ await edit("src/terminal/page.zig", (source) => {
   source = replace(source, "if (cell.hasText()) return true;", "if (cell.hasText() or cell.sixel != 0) return true;");
   return source;
 });
+await edit("src/terminal/page.zig", (source) => {
+  if (source.includes("sixel_present: bool")) return source;
+  source = replace(source, "    dirty: bool,", `    dirty: bool,
+
+    // Conservative Sixel membership, independent of renderer dirty flags.
+    // Collection clears this after checking a page; copies may set it early.
+    sixel_present: bool = false,`);
+  source = replace(source, "        // This whole operation breaks integrity until the end.", "        self.sixel_present = self.sixel_present or other.sixel_present;\n\n        // This whole operation breaks integrity until the end.");
+  return source;
+});
+await edit("src/terminal/PageList.zig", (source) => {
+  const marker = "    fn copyRowMetadata(self: *ReflowCursor, other: *const Row) void {";
+  if (source.includes("// Reflow may move Sixel cells")) return source;
+  return replace(source, marker, marker + `
+        // Reflow may move Sixel cells to any destination page. Check these
+        // pages once after resizing; ordinary copies carry page membership.
+        self.page.sixel_present = true;`);
+});
 await edit("src/terminal/c/terminal.zig", (source) => {
   if (source.includes("// Tessera Sixel API")) return source.slice(0, source.indexOf("// Tessera Sixel API")) + awaitExtension;
   source = replace(source, 'const log = std.log.scoped(.terminal_c);', 'const log = std.log.scoped(.terminal_c);\nconst SixelStore = @import("sixel_store.zig").Store;');

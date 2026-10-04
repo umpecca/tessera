@@ -4,6 +4,7 @@ import {
   firefoxClipboardExtensionRecommendation,
 } from "./clipboard-bridge.mjs";
 import { compatibilityDiagnostics, detectCompatibility } from "./compatibility.mjs";
+import { CommandWheel } from "./command-wheel.mjs";
 import {
   basicSetup,
   EditorSelection,
@@ -33,6 +34,7 @@ import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL
 import { shouldShowIPadHTTPGuidance } from "./ipad-http-guidance.mjs";
 import { installNativeClose } from "./native-desktop.mjs";
 import {
+  terminalBacklogCloseCode,
   terminalCloseOutcome,
   terminalConnectingStatus,
   terminalShouldRetry,
@@ -51,6 +53,7 @@ import {
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
   emptyTerminalCopyGuidance,
+  isTerminalContextMenuGesture,
   terminalMouseMessage,
   terminalPasteText,
 } from "./terminal-input.mjs";
@@ -87,11 +90,11 @@ import { formatFileSize } from "./file-size.mjs";
 import { newWorkspaceRevision, workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
 import { activePaneOnLoad, focusPane, openTerminalWithoutFocus, paneNeedsRaise } from "./pane-activation.mjs";
 import { paneContentFields } from "./pane-content-sync.mjs";
-import { adjacentWindowPane, windowSwitcherEntries } from "./window-switcher.mjs";
+import { adjacentWindowPane, moveWindowPane, placeWindowPaneBefore, windowSwitcherEntries } from "./window-switcher.mjs";
 import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
 import { terminalIsCovered } from "./terminal-visibility.mjs";
 import { TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
-import { TerminalReplica } from "./terminal-replica.mjs";
+import { normalizeTerminalBacklogLimit, TerminalReplica } from "./terminal-replica.mjs";
 import { TerminalOutputTiming, formatOutputTiming } from "./terminal-output-timing.mjs";
 import {
   defaultOLEDBorderSize,
@@ -204,16 +207,19 @@ let terminalColorMode = defaultTerminalColorMode;
 const olderMacModeStorageKey = "tessera.older-mac-mode.v1";
 let olderMacMode = false;
 const experimentalTerminalRendererStorageKey = "tessera.experimental-terminal-renderer.v1";
-let experimentalTerminalRenderer = false;
+let experimentalTerminalRenderer = true;
 const terminalPaintCoalescingStorageKey = "tessera.terminal-paint-coalescing.v1";
 let terminalPaintCoalescing = true;
 const terminalOutputCoalescingStorageKey = "tessera.terminal-output-coalescing.v1";
 let terminalOutputCoalescing = false;
+const terminalBacklogLimitStorageKey = "tessera.terminal-output-backlog.v1";
+let terminalBacklogLimit = "auto";
 try {
   olderMacMode = window.localStorage.getItem(olderMacModeStorageKey) === "true";
-  experimentalTerminalRenderer = window.localStorage.getItem(experimentalTerminalRendererStorageKey) === "true";
+  experimentalTerminalRenderer = window.localStorage.getItem(experimentalTerminalRendererStorageKey) !== "false";
   terminalPaintCoalescing = window.localStorage.getItem(terminalPaintCoalescingStorageKey) !== "false";
   terminalOutputCoalescing = window.localStorage.getItem(terminalOutputCoalescingStorageKey) === "true";
+  terminalBacklogLimit = normalizeTerminalBacklogLimit(window.localStorage.getItem(terminalBacklogLimitStorageKey));
 } catch {
   // Storage can be unavailable in hardened or private browser contexts.
 }
@@ -437,6 +443,14 @@ function setTerminalOutputCoalescing(enabled) {
   saveBrowserSetting(terminalOutputCoalescingStorageKey, terminalOutputCoalescing);
   for (const rect of rectangles) {
     if (rect.kind === "terminal") sendTerminalOutputCoalescing(rect.terminal);
+  }
+}
+
+function setTerminalBacklogLimit(value) {
+  terminalBacklogLimit = normalizeTerminalBacklogLimit(value);
+  saveBrowserSetting(terminalBacklogLimitStorageKey, terminalBacklogLimit);
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal") rect.terminal?.replica?.setBacklogLimit(terminalBacklogLimit);
   }
 }
 
@@ -923,7 +937,7 @@ const appleKeyboardLayout = /mac|iphone|ipad/i.test(
 
 const browserPaneKind = "browser";
 // Window-management keystrokes a browser pane's iframe may relay to the app.
-const browserPaneRelayedKeys = new Set(["[", "]", "BracketLeft", "BracketRight", "k", "K", "l", "L", "F7", "F9", "F10"]);
+const browserPaneRelayedKeys = new Set(["[", "]", "BracketLeft", "BracketRight", "k", "K", "l", "L", ";", "Semicolon", "F7", "F9", "F10", "ArrowUp", "ArrowDown"]);
 const textEditorFileExtensions = new Set([
   ".txt", ".md", ".markdown", ".log", ".csv", ".tsv",
   ".json", ".jsonc", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
@@ -1224,7 +1238,7 @@ commandPalettePanel.className = "command-palette-panel";
 const commandPaletteInput = document.createElement("input");
 commandPaletteInput.className = "command-palette-input";
 commandPaletteInput.type = "text";
-commandPaletteInput.placeholder = "Type a command or window name...";
+commandPaletteInput.placeholder = "Command, shortcut, or window name · Enter to run";
 commandPaletteInput.spellcheck = false;
 commandPaletteInput.setAttribute("aria-label", "Command palette");
 const commandPaletteList = document.createElement("div");
@@ -1240,40 +1254,59 @@ commandPalette.addEventListener("pointerdown", (event) => {
   }
 });
 commandPaletteInput.addEventListener("input", () => renderPaletteResults());
-commandPaletteInput.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-    event.preventDefault();
-    movePaletteSelection(event.key === "ArrowDown" ? 1 : -1);
-  } else if (event.key === "Enter") {
-    event.preventDefault();
-    const commands = buildPaletteCommands();
-    assignPaletteShortcutCodes(commands);
-    const codeMatch = findPaletteCodeMatch(commandPaletteInput.value, commands);
-    if (codeMatch) {
-      runPaletteCommand(codeMatch);
-    } else {
-      runPaletteSelection();
-    }
-  }
-});
+commandPaletteInput.addEventListener("keydown", handlePaletteKeyboard);
 
-// A small floating launcher for the command palette — the persistent,
-// touch-reachable entry point (tapping it focuses the input, which raises the
-// on-screen keyboard). Bottom-right, clear of each window's title-bar controls
-// (grip at top-left, minimize/maximize at top-right).
+// The experimental wheel shares the palette's available commands and codes.
+const commandWheel = document.createElement("div");
+commandWheel.className = "command-wheel";
+commandWheel.hidden = true;
+const commandWheelUI = new CommandWheel(commandWheel, {
+  onCommand: command => runPaletteCommand(command),
+  onClose: () => hideCommandWheel(),
+  onSearch: () => openCommandPalette(),
+});
+document.body.appendChild(commandWheel);
+
 const windowList = document.createElement("div");
 windowList.className = "command-palette window-list";
 windowList.hidden = true;
 const windowListPanel = document.createElement("div");
 windowListPanel.className = "command-palette-panel window-list-panel";
 windowListPanel.tabIndex = 0;
-windowListPanel.setAttribute("aria-label", "Window list");
+windowListPanel.setAttribute("role", "dialog");
+windowListPanel.setAttribute("aria-modal", "true");
+windowListPanel.setAttribute("aria-labelledby", "window-list-title");
+windowListPanel.setAttribute("aria-describedby", "window-list-hint");
 const windowListTitle = document.createElement("div");
 windowListTitle.className = "window-list-title";
-windowListTitle.textContent = "Window List";
+const windowListHeading = document.createElement("span");
+windowListHeading.id = "window-list-title";
+windowListHeading.textContent = "Window List";
+const windowListClose = document.createElement("button");
+windowListClose.type = "button";
+windowListClose.className = "settings-close";
+windowListClose.textContent = "X";
+windowListClose.setAttribute("aria-label", "Close window list");
+windowListClose.addEventListener("click", hideWindowList);
+windowListTitle.append(windowListHeading, windowListClose);
 const windowListItems = document.createElement("div");
 windowListItems.className = "command-palette-list window-list-items";
-windowListPanel.append(windowListTitle, windowListItems);
+document.addEventListener("pointermove", updateWindowListDrop);
+document.addEventListener("pointerup", dropWindowListEntry);
+document.addEventListener("pointercancel", (event) => {
+  if (windowListDrag?.pointerID === event.pointerId) clearWindowListDrag();
+});
+windowListItems.addEventListener("lostpointercapture", (event) => {
+  if (windowListDrag?.pointerID === event.pointerId) clearWindowListDrag();
+});
+const windowListHint = document.createElement("p");
+windowListHint.id = "window-list-hint";
+windowListHint.className = "window-list-hint";
+windowListHint.textContent = "Drag rows to reorder · ↑/↓ selects · Enter opens · Ctrl/Cmd+↑/↓ reorders";
+const windowListStatus = document.createElement("div");
+windowListStatus.className = "window-list-status";
+windowListStatus.setAttribute("role", "status");
+windowListPanel.append(windowListTitle, windowListItems, windowListHint, windowListStatus);
 windowList.appendChild(windowListPanel);
 document.body.appendChild(windowList);
 
@@ -1332,6 +1365,10 @@ board.addEventListener("pointerdown", startDrawing);
 board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
 document.addEventListener("keydown", hideMenusOnEscape);
+document.addEventListener("keydown", handleSettingsKeyboard, { capture: true });
+document.addEventListener("focusin", containSettingsFocus);
+document.addEventListener("focusin", containWindowListFocus);
+document.addEventListener("focusin", containCommandWheelFocus);
 document.addEventListener("keydown", handlePaneKeyboardShortcuts, { capture: true });
 document.addEventListener("keyup", handleWindowSwitcherKeyup, { capture: true });
 document.addEventListener("visibilitychange", handleDocumentVisibilityChange);
@@ -1562,6 +1599,8 @@ function createRectangle(x, y, width, height, options = {}) {
     fontSizeValue: null,
     fontSizeDecreaseButton: null,
     fontSizeIncreaseButton: null,
+    fontSizeIndicator: null,
+    fontSizeIndicatorTimer: null,
     filePathInput: null,
     browserStatusInput: null,
     fileBrowserView: null,
@@ -3578,6 +3617,7 @@ function adjustActivePaneFontSize(delta) {
   const rect = getActivePane();
   if (rect) {
     setPaneFontSize(rect, rect.fontSize + delta);
+    showPaneFontSizeIndicator(rect);
   }
 }
 
@@ -3585,7 +3625,33 @@ function resetActivePaneFontSize() {
   const rect = getActivePane();
   if (rect) {
     setPaneFontSize(rect, defaultPaneFontSize);
+    showPaneFontSizeIndicator(rect);
   }
+}
+
+function showPaneFontSizeIndicator(rect) {
+  if (!rect.body || (rect.kind !== "terminal" && rect.kind !== "worksheet" && rect.kind !== textEditorPaneKind)) {
+    return;
+  }
+  if (rect.fontSizeIndicator?.parentElement !== rect.body) {
+    const indicator = document.createElement("div");
+    indicator.className = "window-font-size-indicator";
+    indicator.setAttribute("role", "status");
+    indicator.setAttribute("aria-atomic", "true");
+    rect.body.appendChild(indicator);
+    rect.fontSizeIndicator = indicator;
+  }
+  const indicator = rect.fontSizeIndicator;
+  const percentage = Math.round(rect.fontSize / defaultPaneFontSize * 100);
+  indicator.setAttribute("aria-hidden", "false");
+  indicator.textContent = `Text size ${percentage}%`;
+  indicator.classList.add("is-visible");
+  window.clearTimeout(rect.fontSizeIndicatorTimer);
+  rect.fontSizeIndicatorTimer = window.setTimeout(() => {
+    indicator.classList.remove("is-visible");
+    indicator.setAttribute("aria-hidden", "true");
+    rect.fontSizeIndicatorTimer = null;
+  }, 1200);
 }
 
 function updatePaneFontSizeUI(rect) {
@@ -4011,13 +4077,16 @@ function clearActivePaneClass() {
 
 // Only the active pane blinks. The adapter requests a frame per blink tick
 // and hides inactive cursors without keeping an idle animation loop alive.
+// Selection also transfers parsing priority to the active visible terminal.
 function setTerminalCursorBlink(rect, blink) {
   if (rect?.kind !== "terminal" || !rect.terminal?.term) {
     return;
   }
   try {
     const { term } = rect.terminal;
-    term.setCursorActive?.(blink && !rect.minimized && !term.renderPaused);
+    const active = blink && !document.hidden && !rect.minimized && !term.renderPaused;
+    rect.terminal.output?.setActive?.(active);
+    term.setCursorActive?.(active);
   } catch {
     // Terminal not fully initialized yet; ignore.
   }
@@ -4028,12 +4097,47 @@ function updateTerminalRenderState(rect) {
   if (!term) {
     return;
   }
-  const paused = Boolean(rect.minimized) || terminalIsCovered(rect, rectangles);
+  const paused = document.hidden || Boolean(rect.minimized) || terminalIsCovered(rect, rectangles);
   const wasPaused = term.renderPaused;
   term.setRenderPaused?.(paused);
+  rect.terminal.output?.setActive?.(!paused && activeRect === rect);
   term.setCursorActive?.(!paused && activeRect === rect);
   if (!paused && wasPaused) {
     term.requestFullRedraw?.();
+  }
+  setTerminalOutputPaused(rect, paused);
+}
+
+function setTerminalOutputPaused(rect, paused) {
+  const terminalState = rect.terminal;
+  if (!terminalState || Boolean(terminalState.outputPaused) === paused) return;
+  terminalState.outputPaused = paused;
+  if (paused) {
+    // Keep shell-exit notices connected while pausing server delivery. Reveal
+    // requests bounded replay from the applied cutoff, or a fresh snapshot for
+    // a larger gap. Older hosts retain their snapshot-on-change fallback.
+    terminalState.snapshotIfChanged = true;
+    if (terminalState.socket?.readyState === WebSocket.OPEN) {
+      terminalState.socket.send(JSON.stringify({ type: "pause-output" }));
+    }
+    const replica = terminalState.replica;
+    replica.disconnect();
+    if (terminalState.reconnectTimer !== null) {
+      window.clearTimeout(terminalState.reconnectTimer);
+      terminalState.reconnectTimer = null;
+    }
+    completeTerminalWakeRecovery(terminalState);
+    return;
+  }
+  if (rect.terminalStatus && !rect.terminalStatus.reconnect) return;
+  // Small gaps replay from the applied cursor; larger gaps use a snapshot.
+  // An unchanged terminal keeps selection and scroll. Replace the socket so late
+  // messages from the discarded stream stay inert.
+  const oldSocket = terminalState.socket;
+  terminalState.reconnectAttempts = 0;
+  connectTerminalSocket(rect);
+  if (oldSocket?.readyState === WebSocket.OPEN || oldSocket?.readyState === WebSocket.CONNECTING) {
+    oldSocket.close(1000, "Restoring visible terminal");
   }
 }
 
@@ -4091,6 +4195,7 @@ async function recoverAfterBrowserWake() {
   for (const rect of rectangles) {
     const terminalState = rect.kind === "terminal" ? rect.terminal : null;
     if (!terminalState?.term) continue;
+    if (terminalState.outputPaused) continue;
     requestTerminalFit(rect);
     terminalState.term.requestFullRedraw?.();
     if (rect.terminalStatus && !rect.terminalStatus.reconnect) continue;
@@ -4143,6 +4248,8 @@ function updateWakeRecoveryStatus() {
 }
 
 function updateTerminalDocumentVisibility() {
+  // Do this synchronously: a hidden document can throttle both timers and RAF.
+  for (const rect of rectangles) updateTerminalRenderState(rect);
   if (!ghosttyModulePromise) {
     return;
   }
@@ -4653,6 +4760,7 @@ function clearRectanglesForLoad() {
   // last pushed, so the next save carries its documents again.
   savedPaneContent = new Map();
   for (const rect of rectangles.splice(0)) {
+    window.clearTimeout(rect.fontSizeIndicatorTimer);
     disposeTerminal(rect);
     disposeBrowserPane(rect);
     disposeVNCPane(rect);
@@ -5287,7 +5395,7 @@ function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
 
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
-    ghosttyModulePromise = import("./vendor/terminal.js?v=renderer-mode-1").then(async (module) => {
+    ghosttyModulePromise = import("./vendor/terminal.js?v=selection-recovery-1").then(async (module) => {
       await module.init();
       installTerminalBlockRenderer(module.CanvasRenderer, module.CellFlags);
       module.setTerminalDocumentVisible?.(!document.hidden);
@@ -5328,7 +5436,7 @@ async function startTerminal(rect) {
       renderPixelRatioCap: olderMacMode ? 1 : 0,
       paintFPSLimit: olderMacMode ? 30 : 0,
       paintCoalescing: terminalPaintCoalescing,
-      renderMetricsEnabled: !settingsModal.hidden,
+      renderMetricsEnabled: settingsDiagnosticsOpen(),
       experimentalRenderer: experimentalTerminalRenderer,
       smoothScrollDuration: olderMacMode ? 0 : 100,
       theme: { ...terminalTheme },
@@ -5386,7 +5494,8 @@ async function startTerminal(rect) {
       term, fit, socket: null, dataDisposable, resizeDisposable, mouseBridge: null,
       pasteBridge: attachTerminalPasteBridge(rect, term),
       output: new TerminalWriteScheduler((data) => term.write(data)),
-      reconnectTimer: null, reconnectAttempts: 0,
+      reconnectTimer: null, reconnectAttempts: 0, outputPaused: false, snapshotIfChanged: false,
+      backlogRecoveryAttempts: 0, lastBacklogRecoveryAt: 0,
       sentCols: 0, sentRows: 0,
       // What this pane holds of the server's stream, so a reconnect can ask
       // for the remainder instead of the whole scrollback.
@@ -5394,7 +5503,10 @@ async function startTerminal(rect) {
     };
     rect.terminal.replica = new TerminalReplica(term, rect.terminal.output, term.coreID, (text) => {
       void applyTerminalClipboardWrite(text);
-    }, (error) => rect.terminal?.socket?.close(4500, error.message.slice(0, 100)));
+    }, (error) => rect.terminal?.socket?.close(4500, error.message.slice(0, 100)), {
+      backlogLimit: terminalBacklogLimit,
+      onBacklogExceeded: () => recoverTerminalBacklog(rect),
+    });
     updateTerminalRenderState(rect);
     connectTerminalSocket(rect);
     requestTerminalFit(rect);
@@ -5404,6 +5516,15 @@ async function startTerminal(rect) {
       rect.terminalContainer.textContent = error.message || "Terminal failed to start";
     }
   }
+}
+
+function recoverTerminalBacklog(rect) {
+  const terminalState = rect.terminal;
+  if (!terminalState) return;
+  const now = Date.now();
+  if (now - terminalState.lastBacklogRecoveryAt > 30000) terminalState.backlogRecoveryAttempts = 0;
+  terminalState.lastBacklogRecoveryAt = now;
+  terminalState.socket?.close(terminalBacklogCloseCode, "terminal output backlog exceeded");
 }
 
 function connectTerminalSocket(rect) {
@@ -5436,11 +5557,13 @@ function connectTerminalSocket(rect) {
     terminalState.reconnectAttempts = 0;
     clearTerminalStatus(rect);
     setPaneCwd(rect, rect.cwd, { silent: true });
+    // It may have become hidden while the connection was opening.
+    if (terminalState.outputPaused) socket.send(JSON.stringify({ type: "pause-output" }));
     sendTerminalGridSize(terminalState);
     if (terminalOutputCoalescing) sendTerminalOutputCoalescing(terminalState);
     if (terminalState.replica.timing) sendTerminalTimingEnabled(terminalState);
     // Reconnection must not take keyboard focus away from a dialog.
-    if (activeRect === rect && (document.activeElement === document.body || rect.element.contains(document.activeElement))) {
+    if (!terminalState.outputPaused && activeRect === rect && (document.activeElement === document.body || rect.element.contains(document.activeElement))) {
       term.focus();
     }
     if (rect.terminalStartupCommand) {
@@ -5451,6 +5574,11 @@ function connectTerminalSocket(rect) {
   });
   socket.addEventListener("message", (event) => {
     if (rect.terminal?.socket !== socket) {
+      return;
+    }
+    if (terminalState.outputPaused) {
+      // Discarded output never advances the applied cursor. The next host
+      // attachment decides whether its missing suffix is small enough to replay.
       return;
     }
     // Text carries the server's account of where this connection starts;
@@ -5474,6 +5602,9 @@ function connectTerminalSocket(rect) {
 // bytes are a fresh start rather than a continuation, so whatever the pane
 // still shows came from a stream it can no longer be lined up with.
 function applyTerminalTextMessage(rect, terminalState, data) {
+  if (terminalState.outputPaused) {
+    return;
+  }
   let message = null;
   try {
     message = JSON.parse(data);
@@ -5493,6 +5624,7 @@ function applyTerminalTextMessage(rect, terminalState, data) {
     terminalState.socket?.close(4503, error.message.slice(0, 100));
     return;
   }
+  terminalState.snapshotIfChanged = false;
   completeTerminalWakeRecovery(terminalState);
 }
 
@@ -5502,7 +5634,10 @@ function handleTerminalSocketClose(rect, terminalState, closeEvent) {
     return;
   }
   const outcome = terminalCloseOutcome(closeEvent, {
-    attempt: terminalState.reconnectAttempts,
+    // Successful socket opens reset ordinary connection backoff. Overloads
+    // keep their own counter so a busy shell cannot cause a tight retry loop.
+    attempt: closeEvent?.code === terminalBacklogCloseCode
+      ? terminalState.backlogRecoveryAttempts++ : terminalState.reconnectAttempts,
     serverReported: !serverConnectionModal.hidden,
   });
   // A shell that exited takes its pane with it, the way a terminal emulator
@@ -5513,7 +5648,7 @@ function handleTerminalSocketClose(rect, terminalState, closeEvent) {
     return;
   }
   setTerminalStatus(rect, outcome);
-  if (!outcome.reconnect) {
+  if (!outcome.reconnect || terminalState.outputPaused) {
     return;
   }
   terminalState.reconnectAttempts += 1;
@@ -5532,7 +5667,7 @@ function handleTerminalSocketClose(rect, terminalState, closeEvent) {
 // while nobody was looking.
 function retryTerminalNow(rect) {
   const terminalState = rect?.terminal;
-  if (!terminalState || !terminalShouldRetry(rect.terminalStatus)) {
+  if (!terminalState || terminalState.outputPaused || !terminalShouldRetry(rect.terminalStatus)) {
     return;
   }
   const socket = terminalState.socket;
@@ -5740,7 +5875,8 @@ function attachTerminalMouseBridge(rect, term, socket) {
 
   const onPointerDown = (event) => {
     selectionAtReportedPress = null;
-    if (event.button === 2 && !terminalShouldReportMouse(term, event)) {
+    if (isTerminalContextMenuGesture(event, { appleKeyboard: appleKeyboardLayout })
+        && !terminalShouldReportMouse(term, event)) {
       // ghostty-web's selection manager handles every mouse-down. Cancel the
       // compatibility mouse event so a secondary click cannot replace the
       // selection that Tessera's context-menu Copy action is about to read.
@@ -5771,6 +5907,13 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 
   const onMouseDown = (event) => {
+    // Safari may send a Control-primary mousedown without a PointerEvent.
+    // Keep macOS's contextual click out of Ghostty's left-drag selection.
+    if (isTerminalContextMenuGesture(event, { appleKeyboard: appleKeyboardLayout })
+        && !terminalShouldReportMouse(term, event)) {
+      stopTerminalMouseEvent(event);
+      return;
+    }
     if (selectionAtReportedPress !== null || !terminalShouldReportMouse(term, event)) {
       return;
     }
@@ -5871,6 +6014,12 @@ function attachTerminalMouseBridge(rect, term, socket) {
     openTerminalMenu(event, rect);
   };
 
+  const onClick = (event) => {
+    // Control-click is a macOS context-menu gesture. Command-click remains
+    // the link accelerator for both detected URLs and OSC 8 hyperlinks.
+    if (appleKeyboardLayout && event.ctrlKey) stopTerminalMouseEvent(event);
+  };
+
   const onWheel = (event) => {
     if (event.deltaY === 0) {
       return false;
@@ -5920,6 +6069,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   container.addEventListener("pointercancel", onPointerCancel, { capture: true });
   container.addEventListener("lostpointercapture", onLostPointerCapture, { capture: true });
   container.addEventListener("contextmenu", onContextMenu, { capture: true });
+  container.addEventListener("click", onClick, { capture: true });
   term.attachCustomWheelEventHandler?.(onWheel);
 
   return {
@@ -5931,6 +6081,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
       container.removeEventListener("pointercancel", onPointerCancel, { capture: true });
       container.removeEventListener("lostpointercapture", onLostPointerCapture, { capture: true });
       container.removeEventListener("contextmenu", onContextMenu, { capture: true });
+      container.removeEventListener("click", onClick, { capture: true });
       term.attachCustomWheelEventHandler?.(null);
     },
   };
@@ -6010,10 +6161,14 @@ function terminalWebSocketURL(rect, cols, rows) {
     core: rect.terminal.term.coreID,
   });
   // Saying what this pane already holds lets the server send only what it
-  // missed. A pane opening for the first time says nothing and is sent the
-  // scrollback in full.
+  // missed. Bound every replay, including interrupted visibility recovery.
+  // An overrun or incomplete snapshot omits the cursor to request a fresh
+  // snapshot; the applied cursor stays intact until that import completes.
   const stream = rect.terminal?.replica?.cursor;
-  if (stream?.epoch) {
+  if (rect.terminal.outputPaused) params.set("outputPaused", "1");
+  if (rect.terminal.snapshotIfChanged) params.set("snapshotIfChanged", "1");
+  if (stream?.epoch && !rect.terminal.replica.needsSnapshot) {
+    params.set("catchUpReplay", "1");
     params.set("resumeEpoch", stream.epoch);
     params.set("resumeOffset", String(stream.offset));
     params.set("resumeSequence", String(stream.sequence));
@@ -6431,7 +6586,7 @@ function renderWorkspaceMenu() {
   });
   workspaceMenu.appendChild(audioButton);
 
-  const panes = rectangles.filter((rect) => rect.kind !== "pending").sort((a, b) => b.zIndex - a.zIndex);
+  const panes = rectangles.filter((rect) => rect.kind !== "pending");
   if (panes.length === 0) {
     const empty = document.createElement("button");
     empty.type = "button";
@@ -6520,6 +6675,17 @@ function renderWorkspaceMenu() {
     openCommandPalette();
   });
   workspaceMenu.appendChild(paletteButton);
+  const wheelButton = document.createElement("button");
+  wheelButton.type = "button";
+  wheelButton.className = "has-hint";
+  const wheelLabel = document.createElement("span");
+  wheelLabel.textContent = "Command Wheel";
+  const wheelHint = document.createElement("span");
+  wheelHint.className = "menu-hint";
+  wheelHint.textContent = "Ctrl/Cmd+;";
+  wheelButton.append(wheelLabel, wheelHint);
+  wheelButton.addEventListener("click", () => openCommandWheel());
+  workspaceMenu.appendChild(wheelButton);
 }
 
 // The Deskbar lists windows and restores minimized panes in place.
@@ -6658,7 +6824,7 @@ function renderDeskbar() {
   count.textContent = minimizedCount === 1 ? "1 minimized" : `${minimizedCount} minimized`;
   title.appendChild(count);
   deskbarPanel.appendChild(title);
-  const panes = rectangles.filter((rect) => rect.kind !== "pending").sort((a, b) => b.zIndex - a.zIndex);
+  const panes = rectangles.filter((rect) => rect.kind !== "pending");
   if (panes.length === 0) {
     const empty = document.createElement("button");
     empty.type = "button";
@@ -7018,11 +7184,12 @@ function openDestroySessionDialog(session) {
 }
 
 function openSettingsModal(options = {}) {
+  if (settingsModal.hidden) settingsReturnFocus = document.activeElement;
   hideDeskbar();
-  setTerminalRenderingMetricsEnabled(true);
   renderSettingsModal();
   settingsModal.hidden = false;
   window.requestAnimationFrame(() => {
+    if (!settingsOwnsFocus()) return;
     const clipboardRow = options.clipboard ? settingsModal.querySelector("#settings-clipboard") : null;
     clipboardRow?.scrollIntoView({ block: "center" });
     (clipboardRow?.querySelector("button, a") || settingsModal.querySelector("button, select"))?.focus();
@@ -7030,13 +7197,72 @@ function openSettingsModal(options = {}) {
 }
 
 let compatibilityUpdateTimer = null;
+let settingsReturnFocus = null;
+
+function settingsOwnsFocus() {
+  return !settingsModal.hidden && ![...document.querySelectorAll(".settings-modal")]
+    .some(modal => modal !== settingsModal && !modal.hidden);
+}
+
+function settingsFocusControls() {
+  return [...settingsModal.querySelectorAll("button, a[href], input, select, textarea, summary, [tabindex]")]
+    .filter(control => control.tabIndex >= 0 && !control.matches(":disabled")
+      && !control.closest("[hidden], [inert]") && control.getClientRects().length > 0);
+}
+
+function containSettingsFocus(event) {
+  if (settingsOwnsFocus() && !settingsModal.contains(event.target)) {
+    settingsFocusControls()[0]?.focus();
+  }
+}
+
+function handleSettingsKeyboard(event) {
+  if (event.defaultPrevented || !settingsOwnsFocus()) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    hideSettingsModal();
+    return;
+  }
+  if (event.key !== "Tab" || event.ctrlKey || event.metaKey || event.altKey) return;
+  const controls = settingsFocusControls();
+  const current = controls.indexOf(document.activeElement);
+  // Leave normal movement to the browser; wrap only at the visible boundaries.
+  if (current < 0 || (event.shiftKey ? current === 0 : current === controls.length - 1)) {
+    event.preventDefault();
+    event.stopPropagation();
+    (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+  }
+}
+
+function settingsDiagnosticsOpen() {
+  return !settingsModal.hidden && settingsModal.querySelector("#settings-diagnostics")?.open === true;
+}
 
 function hideSettingsModal() {
+  const wasOpen = !settingsModal.hidden;
+  const returnFocus = settingsReturnFocus;
+  settingsReturnFocus = null;
   window.clearInterval(compatibilityUpdateTimer);
   compatibilityUpdateTimer = null;
   settingsModal.hidden = true;
   settingsModal.replaceChildren();
   setTerminalRenderingMetricsEnabled(false);
+  if (!wasOpen) return;
+  window.requestAnimationFrame(() => {
+    if (!settingsModal.hidden || [...document.querySelectorAll(".settings-modal")].some(modal => !modal.hidden)
+      || !commandPalette.hidden || !commandWheel.hidden || !windowList.hidden) return;
+    // A close can hand off to another UI in the same tick. Preserve that focus.
+    if (document.activeElement !== document.body) return;
+    if (returnFocus?.isConnected && !returnFocus.matches(":disabled")
+      && !returnFocus.closest("[hidden], [inert]") && returnFocus.getClientRects().length) {
+      returnFocus.focus();
+    } else if (getActivePane()) {
+      focusPane(getActivePane());
+    } else if (!deskbarButton.hidden) {
+      deskbarButton.focus();
+    }
+  });
 }
 
 async function openLocalHTTPSModal() {
@@ -7329,6 +7555,10 @@ function setTerminalRenderingMetricsEnabled(enabled) {
 }
 
 function renderSettingsModal() {
+  const scrollTop = settingsModal.querySelector(".settings-content")?.scrollTop || 0;
+  const advancedOpen = settingsModal.querySelector("#settings-advanced")?.open === true;
+  const diagnosticsOpen = settingsModal.querySelector("#settings-diagnostics")?.open === true;
+  const focused = settingsModal.contains(document.activeElement) ? document.activeElement : null;
   window.clearInterval(compatibilityUpdateTimer);
   compatibilityUpdateTimer = null;
   settingsModal.replaceChildren();
@@ -7355,29 +7585,21 @@ function renderSettingsModal() {
 
   const content = document.createElement("div");
   content.className = "settings-content";
-  content.appendChild(renderSettingsSection("Performance", [
-    renderSettingsPerformanceRow(),
-    renderSettingsExperimentalRendererRow(),
-    renderSettingsToggleRow(
-      "Paint coalescing",
-      "While terminal output is streaming, wait up to one frame for a 3 ms pause before painting so animation frames split across many writes are not drawn in pieces. Applies to this browser only.",
-      terminalPaintCoalescing,
-      setTerminalPaintCoalescing,
-    ),
-    renderSettingsToggleRow(
-      "Server output coalescing",
-      "Ask the server to join terminal output that arrives within 2 ms (holding at most 8 ms) into one WebSocket message. Applies to this browser's connections only.",
-      terminalOutputCoalescing,
-      setTerminalOutputCoalescing,
-    ),
-  ]));
-  content.appendChild(renderSettingsSection("Compatibility", [renderSettingsCompatibilityRow()]));
   content.appendChild(renderSettingsSection("Font size", [
     renderSettingsFontRow("Default", "Used for new terminal, worksheet, and text-editor panes in all sessions.", defaultPaneFontSize, (next) => {
       setDefaultPaneFontSize(next);
       renderSettingsModal();
     }),
     renderCurrentPaneFontRow(),
+  ]));
+  content.appendChild(renderSettingsSection("Theme", [
+    renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
+    renderSettingsThemeRow("Current", "Applied across this user's sessions immediately.", themeID, (next) => applyTheme(next)),
+    renderSettingsOLEDWindowBorderRow(),
+  ]));
+  content.appendChild(renderSettingsSection("Terminal", [
+    renderSettingsTerminalFontRow(),
+    renderSettingsTerminalColorModeRow(),
   ]));
   content.appendChild(renderSettingsSection("Scroll wheel", [
     renderSettingsWheelRow(
@@ -7393,23 +7615,77 @@ function renderSettingsModal() {
       (next) => setWheelSensitivity("editor", next),
     ),
   ]));
-  content.appendChild(renderSettingsSection("Terminal", [
-    renderSettingsTerminalFontRow(),
-    renderSettingsTerminalColorModeRow(),
-    renderSettingsTerminalTERMRow(),
-  ]));
-  content.appendChild(renderSettingsSection("Clipboard", [renderSettingsClipboardRow()]));
-  content.appendChild(renderSettingsSection("Theme", [
-    renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
-    renderSettingsThemeRow("Current", "Applied across this user's sessions immediately.", themeID, (next) => applyTheme(next)),
-    renderSettingsOLEDWindowBorderRow(),
-  ]));
   content.appendChild(renderSettingsSection("Background", [
     renderSettingsBackgroundRow(),
     renderSettingsBackgroundModeRow(),
   ]));
+  content.appendChild(renderSettingsSection("Clipboard", [renderSettingsClipboardRow()]));
+  content.appendChild(renderSettingsSection("Performance", [renderSettingsPerformanceRow()]));
+
+  const advanced = document.createElement("details");
+  advanced.id = "settings-advanced";
+  advanced.className = "settings-disclosure";
+  advanced.open = advancedOpen;
+  const advancedSummary = document.createElement("summary");
+  advancedSummary.textContent = "Advanced";
+  const advancedContent = document.createElement("div");
+  advancedContent.className = "settings-disclosure-content";
+  advancedContent.append(
+    renderSettingsSection("Terminal", [renderSettingsTerminalTERMRow()]),
+    renderSettingsSection("Performance", [
+      renderSettingsExperimentalRendererRow(),
+      renderSettingsToggleRow(
+        "Paint coalescing",
+        "While terminal output is streaming, wait up to one frame for a 3 ms pause before painting so animation frames split across many writes are not drawn in pieces. Applies to this browser only.",
+        terminalPaintCoalescing,
+        setTerminalPaintCoalescing,
+      ),
+      renderSettingsToggleRow(
+        "Server output coalescing",
+        "Ask the server to join terminal output that arrives within 2 ms (holding at most 8 ms) into one WebSocket message. Applies to this browser's connections only.",
+        terminalOutputCoalescing,
+        setTerminalOutputCoalescing,
+      ),
+      renderSettingsTerminalBacklogRow(),
+    ]),
+  );
+  advanced.append(advancedSummary, advancedContent);
+
+  const diagnostics = document.createElement("details");
+  diagnostics.id = "settings-diagnostics";
+  diagnostics.className = "settings-disclosure";
+  diagnostics.open = diagnosticsOpen;
+  const diagnosticsSummary = document.createElement("summary");
+  diagnosticsSummary.textContent = "Diagnostics";
+  const diagnosticsContent = document.createElement("div");
+  diagnosticsContent.className = "settings-disclosure-content";
+  let diagnosticsRendered = null;
+  const updateDiagnostics = () => {
+    if (!diagnostics.isConnected || settingsModal.hidden || diagnosticsRendered === diagnostics.open) return;
+    diagnosticsRendered = diagnostics.open;
+    window.clearInterval(compatibilityUpdateTimer);
+    compatibilityUpdateTimer = null;
+    setTerminalRenderingMetricsEnabled(diagnostics.open);
+    diagnosticsContent.replaceChildren();
+    if (diagnostics.open) diagnosticsContent.appendChild(renderSettingsCompatibilityRow());
+  };
+  diagnostics.addEventListener("toggle", updateDiagnostics);
+  diagnostics.append(diagnosticsSummary, diagnosticsContent);
+  content.append(advanced, diagnostics);
   panel.appendChild(content);
   settingsModal.appendChild(panel);
+  updateDiagnostics();
+  if (focused && settingsOwnsFocus()) {
+    const controls = settingsFocusControls();
+    const replacement = controls.find(control => {
+      if (control.tagName !== focused.tagName) return false;
+      if (focused.id) return control.id === focused.id;
+      const label = focused.getAttribute("aria-label");
+      return label ? control.getAttribute("aria-label") === label : control.textContent === focused.textContent;
+    });
+    (replacement || controls[0])?.focus({ preventScroll: true });
+  }
+  content.scrollTop = scrollTop;
 }
 
 function currentCompatibility() {
@@ -7809,11 +8085,14 @@ function renderHelpModal() {
     ["Change the active title", "Run Set Window Title... from the command palette."],
   ]));
   content.appendChild(renderHelpSection("Keyboard shortcuts", [
-    ["Command palette", "Ctrl/Cmd+K"],
+    ["Command palette", "Ctrl/Cmd+K — search or type a code, ↑/↓ to select, Enter to run"],
+    ["Command wheel", "Ctrl/Cmd+; — S opens Settings; other commands use two keys, Backspace to go back"],
     ["Window list", "Ctrl/Cmd+L"],
     ["Run worksheet command", "Ctrl/Cmd+Enter"],
     ["Destroy active window", "Ctrl/Cmd+Backspace"],
     ["Next / previous window", "Ctrl/Cmd+] / Ctrl/Cmd+["],
+    ["Move window earlier / later", "Ctrl/Cmd+Shift+↑ / Ctrl/Cmd+Shift+↓"],
+    ["Reorder highlighted window in Window List", "Ctrl/Cmd+↑ / Ctrl/Cmd+↓"],
     ["Maximize / restore", "Alt+F10"],
     ["Minimize / restore", "Alt+F9"],
     ["Cascade / restore arrangement", "Alt+F7"],
@@ -7889,7 +8168,7 @@ function renderSettingsPerformanceRow() {
   const name = document.createElement("strong");
   name.textContent = "Profile";
   const detail = document.createElement("span");
-  detail.textContent = "Older Mac caps terminal rendering at 1× and 30 FPS, keeps the cursor steady, and removes smooth scrolling and status animations on this browser only.";
+  detail.textContent = "Use Older Mac to reduce visual effects and improve responsiveness on slower devices. Saved in this browser; applies immediately.";
   label.append(name, detail);
   const select = document.createElement("select");
   select.className = "settings-theme-select";
@@ -7906,6 +8185,31 @@ function renderSettingsPerformanceRow() {
   return row;
 }
 
+function renderSettingsTerminalBacklogRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Terminal output backlog";
+  const detail = document.createElement("span");
+  detail.textContent = "Caps output waiting to be processed per terminal. Auto uses the server's budget (normally 4 MiB). A full queue catches up automatically while commands keep running. Saved in this browser; applies immediately.";
+  label.append(name, detail);
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", "Terminal output backlog");
+  for (const value of ["auto", "8", "16", "32"]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value === "auto" ? "Auto" : `${value} MiB`;
+    option.selected = terminalBacklogLimit === value;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => setTerminalBacklogLimit(select.value));
+  row.append(label, select);
+  return row;
+}
+
 function renderSettingsExperimentalRendererRow() {
   const row = document.createElement("label");
   row.className = "settings-row";
@@ -7914,7 +8218,7 @@ function renderSettingsExperimentalRendererRow() {
   const name = document.createElement("strong");
   name.textContent = "Terminal renderer";
   const detail = document.createElement("span");
-  detail.textContent = "Stable uses Ghostty's original renderer. Experimental enables the hybrid, color-aware ASCII fast path for testing on this browser only.";
+  detail.textContent = "Experimental is the default hybrid, color-aware ASCII fast path. Stable uses Ghostty's original renderer. Saved in this browser; applies immediately.";
   label.append(name, detail);
   const select = document.createElement("select");
   select.className = "settings-theme-select";
@@ -8233,9 +8537,9 @@ function renderSettingsBackgroundModeRow() {
 
 let paletteEntries = [];
 let paletteSelection = 0;
-let paletteCodeInvokeTimer = null;
 let windowListEntries = [];
 let windowListSelection = 0;
+let windowListDrag = null;
 let windowSwitcherHideTimer = null;
 
 function toggleCommandPalette() {
@@ -8243,6 +8547,31 @@ function toggleCommandPalette() {
     openCommandPalette();
   } else {
     hideCommandPalette();
+  }
+}
+
+function toggleCommandWheel() {
+  if (commandWheel.hidden) openCommandWheel();
+  else hideCommandWheel();
+}
+
+function openCommandWheel() {
+  if (!userSelect.hidden) return;
+  hideAllMenus();
+  const commands = buildPaletteCommands();
+  assignPaletteShortcutCodes(commands);
+  commandWheelUI.open(commands);
+}
+
+function hideCommandWheel() {
+  const restorePaneFocus = !commandWheel.hidden && commandWheel.contains(document.activeElement);
+  commandWheel.hidden = true;
+  if (restorePaneFocus) restorePaneFocusAfterOverlayDismiss(commandWheel);
+}
+
+function containCommandWheelFocus(event) {
+  if (!commandWheel.hidden && !commandWheel.contains(event.target)) {
+    commandWheelUI.panel.focus({ preventScroll: true });
   }
 }
 
@@ -8260,8 +8589,6 @@ function openCommandPalette() {
 function hideCommandPalette() {
   const restorePaneFocus = !commandPalette.hidden && commandPalette.contains(document.activeElement);
   commandPalette.hidden = true;
-  window.clearTimeout(paletteCodeInvokeTimer);
-  paletteCodeInvokeTimer = null;
   if (restorePaneFocus) {
     restorePaneFocusAfterOverlayDismiss(commandPalette);
   }
@@ -8281,11 +8608,15 @@ function openWindowList() {
   }
   hideAllMenus();
   windowList.hidden = false;
-  renderWindowList();
-  window.requestAnimationFrame(() => windowListPanel.focus());
+  windowListStatus.textContent = "";
+  renderWindowList(activePaneID);
+  window.requestAnimationFrame(() => {
+    if (!windowList.hidden) windowListPanel.focus();
+  });
 }
 
 function hideWindowList() {
+  clearWindowListDrag();
   const restorePaneFocus = !windowList.hidden && windowList.contains(document.activeElement);
   windowList.hidden = true;
   if (restorePaneFocus) {
@@ -8298,7 +8629,8 @@ function restorePaneFocusAfterOverlayDismiss(overlay) {
     // One overlay can hand off to another in the same tick (running Window
     // List from the command palette). The overlay that is still open owns
     // keyboard focus, so returning it to the pane would swallow its arrow keys.
-    if (!commandPalette.hidden || !windowList.hidden || !renameWindowModal.hidden) {
+    if ([commandPalette, commandWheel, windowList, settingsModal, localHTTPSModal,
+      renameWindowModal, sessionsModal, sessionActionModal, helpModal].some(modal => !modal.hidden)) {
       return;
     }
     const focused = document.activeElement;
@@ -8308,8 +8640,8 @@ function restorePaneFocusAfterOverlayDismiss(overlay) {
   });
 }
 
-function showWindowSwitcher() {
-  const entries = windowSwitcherEntries(rectangles, activePaneID);
+function showWindowSwitcher(options = {}) {
+  const entries = windowSwitcherEntries(rectangles, activePaneID, options);
   if (entries.length === 0) {
     hideWindowSwitcher();
     return;
@@ -8330,7 +8662,7 @@ function showWindowSwitcher() {
     order.textContent = String(entry.position);
     const name = document.createElement("span");
     name.className = "window-switcher-name";
-    name.textContent = entry.name;
+    name.textContent = `${entry.name}${entry.pane.minimized ? " (minimized)" : ""}`;
     row.append(order, name);
     windowSwitcherList.appendChild(row);
   }
@@ -8353,12 +8685,15 @@ function handleWindowSwitcherKeyup(event) {
   }
 }
 
-function renderWindowList() {
-  windowListEntries = rectangles
-    .filter((rect) => rect.kind !== "pending")
-    .sort((a, b) => b.zIndex - a.zIndex);
+function renderWindowList(selectedPaneID = windowListEntries[windowListSelection]?.id || activePaneID) {
+  clearWindowListDrag();
+  const focused = windowListItems.contains(document.activeElement) ? document.activeElement : null;
+  const focusedPaneID = focused?.closest(".window-list-item")?.dataset.paneId;
+  const focusedAction = focused?.dataset.windowListAction;
+  windowListEntries = rectangles.filter((rect) => rect.kind !== "pending");
+  const selectedIndex = windowListEntries.findIndex((rect) => rect.id === selectedPaneID);
   const activeIndex = windowListEntries.findIndex((rect) => rect.id === activePaneID);
-  windowListSelection = activeIndex >= 0 ? activeIndex : 0;
+  windowListSelection = selectedIndex >= 0 ? selectedIndex : Math.max(0, activeIndex);
   windowListItems.replaceChildren();
 
   if (windowListEntries.length === 0) {
@@ -8370,18 +8705,184 @@ function renderWindowList() {
   }
 
   windowListEntries.forEach((rect, index) => {
-    const row = document.createElement("button");
-    row.type = "button";
+    const row = document.createElement("div");
     row.className = "command-palette-item window-list-item";
-    row.tabIndex = -1;
-    row.textContent = workspaceMenuLabel(rect);
-    row.title = rect.minimized ? "Minimized" : "Focus window";
-    row.setAttribute("aria-label", `${row.textContent}${rect.minimized ? ", minimized" : ""}`);
-    row.addEventListener("pointermove", () => setWindowListSelection(index));
-    row.addEventListener("click", () => selectWindowListEntry(index));
+    row.dataset.paneId = rect.id;
+    row.addEventListener("pointerdown", (event) => startWindowListDrag(event, rect));
+    row.addEventListener("click", (event) => {
+      if (row.dataset.suppressClick) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }, true);
+    const grip = document.createElement("span");
+    grip.className = "window-list-grip";
+    grip.textContent = "⠿";
+    grip.title = "Drag to reorder window";
+    grip.setAttribute("aria-hidden", "true");
+    const name = document.createElement("button");
+    name.type = "button";
+    name.className = "window-list-name";
+    name.dataset.windowListAction = "focus";
+    name.textContent = `${index + 1}. ${workspaceMenuLabel(rect)}${rect.minimized ? " (minimized)" : ""}`;
+    name.title = rect.minimized ? "Drag to reorder, or click to restore and focus" : "Drag to reorder, or click to focus";
+    name.setAttribute("aria-label", name.textContent);
+    name.addEventListener("click", () => selectWindowListEntry(index));
+    const actions = document.createElement("div");
+    actions.className = "window-list-actions";
+    for (const [direction, text, action] of [[-1, "↑", "up"], [1, "↓", "down"]]) {
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "window-list-move";
+      move.dataset.windowListAction = action;
+      move.textContent = text;
+      move.title = `Move ${action} in window order`;
+      move.setAttribute("aria-label", `Move ${workspaceMenuLabel(rect)} ${action}`);
+      move.disabled = direction < 0 ? index === 0 : index === windowListEntries.length - 1;
+      move.addEventListener("click", () => {
+        setWindowListSelection(index);
+        moveWindowInOrder(rect, direction);
+      });
+      actions.appendChild(move);
+    }
+    row.addEventListener("pointermove", () => {
+      if (!windowListDrag) setWindowListSelection(index);
+    });
+    row.addEventListener("focusin", () => setWindowListSelection(index));
+    row.append(grip, name, actions);
     windowListItems.appendChild(row);
   });
   setWindowListSelection(windowListSelection);
+  if (focusedPaneID) {
+    const row = [...windowListItems.querySelectorAll(".window-list-item")].find(row => row.dataset.paneId === focusedPaneID);
+    const control = row?.querySelector(`[data-window-list-action="${focusedAction}"]`);
+    (control && !control.disabled ? control : row?.querySelector(".window-list-name") || windowListPanel).focus({ preventScroll: true });
+  }
+}
+
+function moveWindowInOrder(rect, direction, options = {}) {
+  const moved = moveWindowPane(rectangles, rect, direction);
+  return finishWindowOrderMove(rect, moved, options);
+}
+
+function finishWindowOrderMove(rect, moved, options = {}) {
+  if (moved) {
+    updateDeskbar();
+    scheduleWorkspaceSave();
+    if (!windowList.hidden) {
+      const index = windowListEntries.indexOf(rect);
+      windowListStatus.textContent = `${workspaceMenuLabel(rect)} moved to ${index + 1} of ${windowListEntries.length}.`;
+    }
+  }
+  if (rect && rect.kind !== "pending" && options.showSwitcher) showWindowSwitcher({ includeMinimized: true });
+  return moved;
+}
+
+function startWindowListDrag(event, rect) {
+  if (event.button !== 0 || !event.isPrimary || event.target.closest(".window-list-actions")
+    || !windowListEntries.includes(rect)) return;
+  clearWindowListDrag();
+  windowListDrag = { paneID: rect.id, beforePaneID: null, valid: false, started: false,
+    pointerID: event.pointerId, startX: event.clientX, startY: event.clientY,
+    clientX: event.clientX, clientY: event.clientY, row: event.currentTarget, scrollFrame: null };
+}
+
+function clearWindowListDropIndicator() {
+  if (windowListDrag) windowListDrag.valid = false;
+  windowListItems.querySelectorAll(".window-list-item").forEach(row => {
+    row.classList.remove("is-drop-before", "is-drop-after");
+  });
+}
+
+function clearWindowListDrag() {
+  if (windowListDrag) {
+    const { pointerID, scrollFrame, row, started } = windowListDrag;
+    if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+    if (windowListItems.hasPointerCapture(pointerID)) windowListItems.releasePointerCapture(pointerID);
+    if (started) {
+      // The following click must not open the window after a drag or cancel.
+      row.dataset.suppressClick = "true";
+      setTimeout(() => delete row.dataset.suppressClick, 0);
+    }
+  }
+  clearWindowListDropIndicator();
+  windowListItems.querySelectorAll(".is-dragging").forEach(row => row.classList.remove("is-dragging"));
+  windowListItems.classList.remove("is-reordering");
+  windowListDrag = null;
+}
+
+function updateWindowListDrop(event) {
+  if (!windowListDrag || windowList.hidden || event.pointerId !== windowListDrag.pointerID) return;
+  if (windowListDrag.canceled) return;
+  if (!windowListDrag.started) {
+    if (Math.hypot(event.clientX - windowListDrag.startX, event.clientY - windowListDrag.startY) < 5) return;
+    windowListDrag.started = true;
+    setWindowListSelection(windowListEntries.findIndex(pane => pane.id === windowListDrag.paneID));
+    windowListItems.setPointerCapture(event.pointerId);
+    windowListDrag.row.classList.add("is-dragging");
+    windowListItems.classList.add("is-reordering");
+  }
+  event.preventDefault();
+  windowListDrag.clientX = event.clientX;
+  windowListDrag.clientY = event.clientY;
+  updateWindowListDropIndicator();
+  if (windowListDrag.scrollFrame === null) windowListDrag.scrollFrame = requestAnimationFrame(scrollWindowListDrag);
+}
+
+function updateWindowListDropIndicator() {
+  clearWindowListDropIndicator();
+  const { clientX, clientY } = windowListDrag;
+  const listBounds = windowListItems.getBoundingClientRect();
+  if (clientX < listBounds.left || clientX > listBounds.right || clientY < listBounds.top || clientY > listBounds.bottom) return;
+  const rows = [...windowListItems.querySelectorAll(".window-list-item")];
+  const before = rows.find(row => {
+    const bounds = row.getBoundingClientRect();
+    return clientY < bounds.top + bounds.height / 2;
+  });
+  windowListDrag.beforePaneID = before?.dataset.paneId || null;
+  windowListDrag.valid = rows.length > 0;
+  if (before) before.classList.add("is-drop-before");
+  else rows.at(-1)?.classList.add("is-drop-after");
+}
+
+function scrollWindowListDrag() {
+  if (!windowListDrag) return;
+  windowListDrag.scrollFrame = null;
+  if (!windowListDrag.valid) return;
+  const bounds = windowListItems.getBoundingClientRect();
+  const y = windowListDrag.clientY;
+  const amount = y < bounds.top + 24 ? -6 : y > bounds.bottom - 24 ? 6 : 0;
+  const previous = windowListItems.scrollTop;
+  windowListItems.scrollTop += amount;
+  if (windowListItems.scrollTop !== previous) {
+    updateWindowListDropIndicator();
+    windowListDrag.scrollFrame = requestAnimationFrame(scrollWindowListDrag);
+  }
+}
+
+function dropWindowListEntry(event) {
+  if (!windowListDrag || event.pointerId !== windowListDrag.pointerID) return;
+  const started = windowListDrag.started;
+  if (started && !windowListDrag.canceled) {
+    event.preventDefault();
+    windowListDrag.clientX = event.clientX;
+    windowListDrag.clientY = event.clientY;
+    updateWindowListDropIndicator();
+  }
+  const { paneID, beforePaneID, valid } = windowListDrag;
+  clearWindowListDrag();
+  if (!started || !valid || windowList.hidden) return;
+  const rect = rectangles.find(pane => pane.id === paneID);
+  const before = beforePaneID === null ? null : rectangles.find(pane => pane.id === beforePaneID);
+  finishWindowOrderMove(rect, placeWindowPaneBefore(rectangles, rect, before));
+  const row = [...windowListItems.querySelectorAll(".window-list-item")].find(row => row.dataset.paneId === paneID);
+  row?.querySelector(".window-list-name")?.focus({ preventScroll: true });
+}
+
+function containWindowListFocus(event) {
+  if (!windowList.hidden && commandPalette.hidden
+    && ![...document.querySelectorAll(".settings-modal")].some(modal => !modal.hidden)
+    && !windowList.contains(event.target)) windowListPanel.focus();
 }
 
 function setWindowListSelection(index) {
@@ -8405,18 +8906,48 @@ function selectWindowListEntry(index = windowListSelection) {
 }
 
 function handleWindowListKeyboard(event) {
-  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+  if (event.defaultPrevented) return;
+  if (windowListDrag?.started) {
+    if (event.key === "Escape") {
+      windowListDrag.canceled = true;
+      clearWindowListDropIndicator();
+      windowListItems.querySelectorAll(".is-dragging").forEach(row => row.classList.remove("is-dragging"));
+      windowListItems.classList.remove("is-reordering");
+    }
     event.preventDefault();
-    setWindowListSelection(windowListSelection + (event.key === "ArrowDown" ? 1 : -1));
+    event.stopPropagation();
     return;
   }
-  if (event.key === "Enter" || event.key === " ") {
+  if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const controls = [...windowListPanel.querySelectorAll("button:not(:disabled)")];
+    const current = controls.indexOf(document.activeElement);
+    if (current < 0 || (event.shiftKey ? current === 0 : current === controls.length - 1)) {
+      event.preventDefault();
+      (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+    }
+    return;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (event.altKey || (event.shiftKey && !event.ctrlKey && !event.metaKey)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    if (event.ctrlKey || event.metaKey) {
+      moveWindowInOrder(windowListEntries[windowListSelection], direction);
+    } else {
+      setWindowListSelection(windowListSelection + direction);
+      windowListItems.querySelectorAll(".window-list-name")[windowListSelection]?.focus();
+    }
+    return;
+  }
+  if ((event.key === "Enter" || event.key === " ") && event.target === windowListPanel) {
     event.preventDefault();
     selectWindowListEntry();
     return;
   }
   if (event.key === "Escape") {
     event.preventDefault();
+    event.stopPropagation();
     hideWindowList();
   }
 }
@@ -8858,6 +9389,7 @@ async function runServerUpdate() {
 // plus jump-to-window entries (which also restore minimized panes).
 function buildPaletteCommands() {
   const commands = [];
+  commands.push({ id: "command-wheel", label: "Command Wheel", hint: "Ctrl/Cmd+;", run: () => openCommandWheel() });
   commands.push({ id: "help", label: "Help", hint: "shortcuts and commands", run: () => openHelpModal() });
   commands.push({ ...browseLocalPortHelpCommand, run: () => {
     const active = getActivePane();
@@ -8870,7 +9402,9 @@ function buildPaletteCommands() {
     hint: "interface",
     run: () => toggleDeskbarButton(),
   });
-  commands.push({ id: "sessions", label: "Sessions...", hint: currentSessionName || "manage", run: () => void openSessionsModal() });
+  // Keep Settings ahead of other equally ranked "se" prefix matches.
+  commands.push({ id: "settings", label: "Settings...", aliases: ["preferences"], hint: "workspace", run: () => openSettingsModal() });
+  commands.push({ id: "sessions", label: "Tessera Sessions...", hint: currentSessionName || "manage", run: () => void openSessionsModal() });
   commands.push({ id: "new-session", label: "Create Session...", hint: "session", run: () => openSessionNameDialog("create") });
   if (sessions.length > 1) {
     const current = sessions.find((session) => session.id === currentSessionID);
@@ -8940,6 +9474,7 @@ function buildPaletteCommands() {
     commands.push({
       id: "rename-window",
       label: "Set Window Title...",
+      aliases: ["rename", "rename window"],
       hint: "Ctrl+T",
       run: () => openRenameWindowModal(dockTarget),
     });
@@ -8963,9 +9498,8 @@ function buildPaletteCommands() {
         run: () => applyDockAction(action, dockTarget),
       });
     }
-    commands.push({ id: "destroy-window", label: "Destroy Window", hint: "Ctrl+Backspace", run: () => destroyActivePane() });
+    commands.push({ id: "destroy-window", label: "Destroy Window", aliases: ["close", "close window"], hint: "Ctrl+Backspace", run: () => destroyActivePane() });
   }
-  commands.push({ id: "settings", label: "Settings...", hint: "workspace", run: () => openSettingsModal() });
   if (window.__tesseraDesktop !== true) {
     commands.push({ id: "local-https", label: "Local HTTPS...", hint: "server and iPad certificates", run: () => void openLocalHTTPSModal() });
     commands.push({ id: "update-server", label: "Update Server", hint: "server", run: () => void runServerUpdate() });
@@ -8977,7 +9511,7 @@ function buildPaletteCommands() {
       }
     }
   }
-  const panes = rectangles.filter((rect) => rect.kind !== "pending").sort((a, b) => b.zIndex - a.zIndex);
+  const panes = rectangles.filter((rect) => rect.kind !== "pending");
   for (const rect of panes) {
     commands.push({
       label: workspaceMenuLabel(rect),
@@ -8991,7 +9525,7 @@ function buildPaletteCommands() {
   return commands;
 }
 
-// Fixed, hand-picked 2-letter codes for the static commands (identified by
+// Fixed, hand-picked codes for the static commands (identified by
 // `id`, since a toggle command's label changes but its code shouldn't).
 // Dynamic per-window/per-user entries have no `id` and so show no code —
 // a "fixed set" can't cover an unbounded, runtime-dependent list.
@@ -9017,7 +9551,8 @@ const paletteShortcutCodes = {
   "destroy-window": "DD",
   "rename-window": "WT",
   "deskbar-button-toggle": "HB",
-  "settings": "ST",
+  "settings": "S",
+  "sessions": "TS",
   "local-https": "LH",
   "update-server": "UP",
 };
@@ -9031,7 +9566,7 @@ function assignPaletteShortcutCodes(commands) {
 
 function findPaletteCodeMatch(query, commands) {
   const typedCode = query.trim().toUpperCase();
-  return typedCode.length === 2
+  return /^[A-Z]{1,2}$/.test(typedCode)
     ? commands.find((command) => command.code === typedCode) || null
     : null;
 }
@@ -9062,29 +9597,20 @@ function paletteScore(query, label) {
 }
 
 function renderPaletteResults() {
-  window.clearTimeout(paletteCodeInvokeTimer);
-  paletteCodeInvokeTimer = null;
-
   const rawQuery = commandPaletteInput.value;
   const query = rawQuery.trim();
   const allCommands = buildPaletteCommands();
   assignPaletteShortcutCodes(allCommands);
 
-  // Typing exactly one command's 2-letter code invokes it, after a short
-  // pause — long enough to tell "typed a code" apart from "typing the start
-  // of a longer search," which may briefly pass through a valid code too.
-  const typedCode = query.toUpperCase();
+  // Exact codes rank first even when their letters don't match the label.
+  // Typing only selects results; Enter or a click runs the selected command.
   const codeMatch = findPaletteCodeMatch(query, allCommands);
-  if (codeMatch) {
-      paletteCodeInvokeTimer = window.setTimeout(() => {
-        if (commandPaletteInput.value.trim().toUpperCase() === typedCode) {
-          runPaletteCommand(codeMatch);
-        }
-      }, 350);
-  }
 
   paletteEntries = allCommands
-    .map((command) => ({ command, score: paletteScore(query, command.label) }))
+    .map((command) => ({ command, score: command === codeMatch ? 2000 : Math.max(
+      paletteScore(query, command.label),
+      ...(command.aliases || []).map(alias => paletteScore(query, alias)),
+    ) }))
     .filter((entry) => entry.score >= 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 12)
@@ -9128,6 +9654,17 @@ function renderPaletteResults() {
   });
 }
 
+function handlePaletteKeyboard(event) {
+  if (event.isComposing) return;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    movePaletteSelection(event.key === "ArrowDown" ? 1 : -1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    runPaletteSelection();
+  }
+}
+
 function setPaletteSelection(index) {
   paletteSelection = index;
   const rows = commandPaletteList.querySelectorAll(".command-palette-item");
@@ -9154,6 +9691,7 @@ function runPaletteSelection() {
 
 function runPaletteCommand(command) {
   hideCommandPalette();
+  hideCommandWheel();
   command.run();
 }
 
@@ -10526,6 +11064,8 @@ function destroyRectangle(rect, options = {}) {
   cancelWorksheetLineSelection(rect.editor);
   rect.editor?.destroy();
   rect.editor = null;
+  window.clearTimeout(rect.fontSizeIndicatorTimer);
+  rect.fontSizeIndicatorTimer = null;
   rect.element.remove();
   scheduleTerminalVisibilityUpdate();
   if (wasActive && options.selectNext !== false) {
@@ -10573,11 +11113,19 @@ function paneShortcutAction(keys) {
   if (primary && (keys.key === "k" || keys.key === "K")) {
     return { run: toggleCommandPalette };
   }
+  if (primary && !keys.repeat && !keys.isComposing && (keys.key === ";" || keys.code === "Semicolon")) {
+    return { run: toggleCommandWheel };
+  }
+  if (!commandWheel.hidden) return null;
   if (primary && (keys.key === "t" || keys.key === "T")) {
     return { run: () => openRenameWindowModal(getActivePane()) };
   }
-  if (!commandPalette.hidden || !windowList.hidden) {
+  if (!commandPalette.hidden || !commandWheel.hidden || !windowList.hidden) {
     return null;
+  }
+  if ((keys.ctrlKey || keys.metaKey) && keys.shiftKey && !keys.altKey
+    && (keys.key === "ArrowUp" || keys.key === "ArrowDown")) {
+    return { run: () => moveWindowInOrder(getActivePane(), keys.key === "ArrowUp" ? -1 : 1, { showSwitcher: true }) };
   }
   if (primary && keys.key === "Enter") {
     return { run: () => runPaneCommand(getActivePane()), propagate: true };
@@ -10591,10 +11139,11 @@ function paneShortcutAction(keys) {
   if (primary && (keys.key === "[" || keys.code === "BracketLeft")) {
     return { run: () => focusAdjacentPane(-1, { showSwitcher: true }) };
   }
-  if (primary && (keys.key === "+" || keys.key === "=" || keys.code === "NumpadAdd")) {
+  const fontSizeShortcut = (keys.ctrlKey || keys.metaKey) && !keys.altKey && (!keys.shiftKey || keys.key === "+");
+  if (fontSizeShortcut && (keys.key === "+" || keys.key === "=" || keys.code === "NumpadAdd")) {
     return { run: () => adjustActivePaneFontSize(1) };
   }
-  if (primary && (keys.key === "-" || keys.key === "_" || keys.code === "NumpadSubtract")) {
+  if (fontSizeShortcut && (keys.key === "-" || keys.key === "_" || keys.code === "NumpadSubtract")) {
     return { run: () => adjustActivePaneFontSize(-1) };
   }
   if (primary && (keys.key === "0" || keys.code === "Numpad0")) {
@@ -10702,6 +11251,7 @@ function hideAllMenus() {
   hideFloatingMenus();
   hideDirectoryBrowser();
   hideCommandPalette();
+  hideCommandWheel();
   hideWindowList();
   hideDeskbar();
   hideSettingsModal();

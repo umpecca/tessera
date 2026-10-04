@@ -2,6 +2,7 @@
 // split across many writes is drawn once, but never longer than the hold cap.
 export const outputQuietMilliseconds = 3;
 export const outputHoldMilliseconds = 16;
+const defaultTimeBudgetMilliseconds = 6;
 
 export class TerminalRenderScheduler {
   constructor(options = {}) {
@@ -10,13 +11,19 @@ export class TerminalRenderScheduler {
     this.cancelFrame = options.cancelFrame
       || ((frameID) => globalThis.cancelAnimationFrame(frameID));
     this.entries = new Map();
+    this.paintOrder = new Set();
     this.pending = new Set();
     this.frameID = null;
     this.enabled = true;
     this.now = options.now || (() => performance.now());
+    this.timeBudgetMilliseconds = options.timeBudgetMilliseconds ?? defaultTimeBudgetMilliseconds;
+    this.activeTerminal = null;
+    this.backgroundFirst = false;
+    this.rendering = false;
   }
 
   register(terminal, render) {
+    this.paintOrder.add(terminal);
     this.entries.set(terminal, {
       continuous: false,
       paused: false,
@@ -34,7 +41,9 @@ export class TerminalRenderScheduler {
   }
 
   unregister(terminal) {
+    this.setActive(terminal, false);
     this.entries.delete(terminal);
+    this.paintOrder.delete(terminal);
     this.pending.delete(terminal);
     this.cancelFrameIfIdle();
   }
@@ -70,6 +79,13 @@ export class TerminalRenderScheduler {
     }
   }
 
+  setActive(terminal, active) {
+    if (active ? this.activeTerminal === terminal : this.activeTerminal !== terminal) return;
+    if (active && (!this.entries.has(terminal) || this.entries.get(terminal).paused)) return;
+    this.activeTerminal = active ? terminal : null;
+    this.backgroundFirst = false;
+  }
+
   setPaused(terminal, paused) {
     const entry = this.entries.get(terminal);
     if (!entry) {
@@ -83,6 +99,7 @@ export class TerminalRenderScheduler {
     entry.nextPaint = null;
     this.pending.delete(terminal);
     if (next) {
+      this.setActive(terminal, false);
       this.cancelFrameIfIdle();
     } else {
       this.request(terminal);
@@ -126,7 +143,7 @@ export class TerminalRenderScheduler {
   }
 
   scheduleFrame() {
-    if (!this.enabled || this.frameID !== null || !this.hasWork()) {
+    if (!this.enabled || this.rendering || this.frameID !== null || !this.hasWork()) {
       return;
     }
     this.frameID = this.requestFrame(timestamp => this.renderFrame(timestamp));
@@ -138,56 +155,95 @@ export class TerminalRenderScheduler {
       return;
     }
 
-    const requested = this.pending;
+    const requested = [];
+    for (const terminal of this.paintOrder) {
+      const entry = this.entries.get(terminal);
+      if (!entry.paused && (entry.continuous || this.pending.has(terminal))) requested.push(terminal);
+    }
     this.pending = new Set();
-    for (const [terminal, entry] of this.entries) {
-      if (entry.paused || (!entry.continuous && !requested.has(terminal))) {
-        continue;
-      }
-      if (entry.holdStartedAt !== null) {
-        const now = this.now();
-        const typing = now < (terminal.interactivePaintUntil || 0);
-        if (terminal.paintCoalescing && !typing
-          && now - entry.lastOutputAt < outputQuietMilliseconds
-          && now - entry.holdStartedAt < outputHoldMilliseconds) {
+    const active = this.activeTerminal;
+    const activeIndex = requested.indexOf(active);
+    if (activeIndex >= 0) {
+      requested.splice(activeIndex, 1);
+      requested.splice(this.backgroundFirst && requested.length ? 1 : 0, 0, active);
+    }
+    // One atomic paint needs no aggregate limit. Keep the ordinary single-pane
+    // path free of clock reads unless FPS caps or diagnostics need them.
+    const budgeted = requested.length > 1;
+    const frameStartedAt = budgeted ? this.now() : 0;
+    let next = 0, paintedActive = false, paintedBackground = false;
+    this.rendering = true;
+    try {
+      while (next < requested.length && this.enabled) {
+        const terminal = requested[next++];
+        const entry = this.entries.get(terminal);
+        if (!entry || entry.paused) continue;
+        if (entry.holdStartedAt !== null) {
+          const now = this.now();
+          const typing = now < (terminal.interactivePaintUntil || 0);
+          if (terminal.paintCoalescing && !typing
+            && now - entry.lastOutputAt < outputQuietMilliseconds
+            && now - entry.holdStartedAt < outputHoldMilliseconds) {
+            this.pending.add(terminal);
+            continue;
+          }
+          entry.holdStartedAt = null;
+        }
+        const cap = terminal.paintFPSLimit || 0;
+        const interval = cap > 0 ? 1000 / cap : 0;
+        const startedAt = interval || entry.metricsEnabled ? this.now() : 0;
+        const interactive = interval > 0 && startedAt < (terminal.interactivePaintUntil || 0);
+        // RAF timestamps share one clock across every terminal in the frame.
+        // Keep the deadline anchored instead of accumulating callback delays.
+        // A 1 ms allowance absorbs rounding at 30/60/120 Hz boundaries.
+        if (interval && !interactive && entry.nextPaint !== null
+          && timestamp + 1 < entry.nextPaint) {
           this.pending.add(terminal);
           continue;
         }
-        entry.holdStartedAt = null;
+        if (!interval) entry.nextPaint = null;
+        else if (interactive || entry.nextPaint === null || timestamp - entry.nextPaint >= interval) {
+          // Rebase after idle periods; never replay a backlog of missed frames.
+          entry.nextPaint = timestamp + interval;
+        } else {
+          entry.nextPaint += interval;
+        }
+        try { entry.render(); }
+        finally {
+          this.paintOrder.delete(terminal);
+          if (this.entries.has(terminal)) this.paintOrder.add(terminal);
+          if (terminal === active) paintedActive = true;
+          else paintedBackground = true;
+        }
+        const measuredAt = budgeted || entry.metricsEnabled ? this.now() : 0;
+        if (entry.metricsEnabled) {
+          const duration = Math.max(0, measuredAt - startedAt);
+          entry.frames++;
+          entry.totalMs += duration;
+          entry.maxMs = Math.max(entry.maxMs, duration);
+          entry.recentPaints.push({ time: measuredAt, duration });
+          while (entry.recentPaints.length > 4096
+            || entry.recentPaints[0]?.time <= measuredAt - 5000) {
+            entry.recentPaints.shift();
+          }
+        }
+        if (budgeted && measuredAt - frameStartedAt >= this.timeBudgetMilliseconds) break;
       }
-      const cap = terminal.paintFPSLimit || 0;
-      const interval = cap > 0 ? 1000 / cap : 0;
-      const startedAt = interval || entry.metricsEnabled ? this.now() : 0;
-      const interactive = interval > 0 && startedAt < (terminal.interactivePaintUntil || 0);
-      // RAF timestamps share one clock across every terminal in the frame.
-      // Keep the deadline anchored instead of accumulating callback delays.
-      // A 1 ms allowance absorbs rounding at 30/60/120 Hz boundaries.
-      if (interval && !interactive && entry.nextPaint !== null
-        && timestamp + 1 < entry.nextPaint) {
-        this.pending.add(terminal);
-        continue;
+    } finally {
+      // Keep deferred requests while the paint order rotates completed panes
+      // to the back. Reentrant requests survive; removal or hiding drops them.
+      const deferred = requested.slice(next).filter(terminal => {
+        const entry = this.entries.get(terminal);
+        return entry && !entry.paused;
+      });
+      this.pending = new Set([...deferred, ...this.pending]);
+      if (active === this.activeTerminal) {
+        if (paintedBackground) this.backgroundFirst = false;
+        else if (paintedActive) this.backgroundFirst = [...this.pending].some(terminal => terminal !== active);
       }
-      if (!interval) entry.nextPaint = null;
-      else if (interactive || entry.nextPaint === null || timestamp - entry.nextPaint >= interval) {
-        // Rebase after idle periods; never replay a backlog of missed frames.
-        entry.nextPaint = timestamp + interval;
-      } else {
-        entry.nextPaint += interval;
-      }
-      entry.render();
-      if (!entry.metricsEnabled) continue;
-      const measuredAt = this.now();
-      const duration = Math.max(0, measuredAt - startedAt);
-      entry.frames++;
-      entry.totalMs += duration;
-      entry.maxMs = Math.max(entry.maxMs, duration);
-      entry.recentPaints.push({ time: measuredAt, duration });
-      while (entry.recentPaints.length > 4096
-        || entry.recentPaints[0]?.time <= measuredAt - 5000) {
-        entry.recentPaints.shift();
-      }
+      this.rendering = false;
+      this.scheduleFrame();
     }
-    this.scheduleFrame();
   }
 
   hasWork() {

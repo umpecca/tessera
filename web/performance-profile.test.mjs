@@ -2,8 +2,58 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { normalizeTerminalBacklogLimit } from "./terminal-replica.mjs";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
+function loadBrowserPerformanceSettings(localStorage) {
+  const start = source.indexOf("const olderMacModeStorageKey =");
+  const end = source.indexOf("\nlet audioStationState =", start);
+  assert.ok(start >= 0 && end > start);
+  return { ...vm.runInNewContext(`${source.slice(start, end)}
+    ({ olderMacMode, experimentalTerminalRenderer, terminalPaintCoalescing, terminalOutputCoalescing })`, {
+    window: { localStorage }, normalizeTerminalBacklogLimit,
+  }) };
+}
+
+test("new browsers default to Standard, Experimental, paint coalescing on, and server coalescing off", () => {
+  const stored = new Map();
+  const settings = loadBrowserPerformanceSettings({
+    getItem: key => stored.get(key) ?? null,
+    setItem() { assert.fail("loading defaults must not write browser preferences"); },
+  });
+  assert.deepEqual(settings, {
+    olderMacMode: false, experimentalTerminalRenderer: true,
+    terminalPaintCoalescing: true, terminalOutputCoalescing: false,
+  });
+});
+
+test("saved browser performance choices override the defaults, including Stable", () => {
+  const stored = new Map([
+    ["tessera.older-mac-mode.v1", "true"],
+    ["tessera.experimental-terminal-renderer.v1", "false"],
+    ["tessera.terminal-paint-coalescing.v1", "false"],
+    ["tessera.terminal-output-coalescing.v1", "true"],
+  ]);
+  const settings = loadBrowserPerformanceSettings({
+    getItem: key => stored.get(key) ?? null,
+    setItem() { assert.fail("loading settings must not overwrite browser preferences"); },
+  });
+  assert.deepEqual(settings, {
+    olderMacMode: true, experimentalTerminalRenderer: false,
+    terminalPaintCoalescing: false, terminalOutputCoalescing: true,
+  });
+});
+
+test("unavailable browser storage retains the standard performance defaults", () => {
+  const settings = loadBrowserPerformanceSettings({
+    getItem() { throw new Error("Storage unavailable"); },
+  });
+  assert.deepEqual(settings, {
+    olderMacMode: false, experimentalTerminalRenderer: true,
+    terminalPaintCoalescing: true, terminalOutputCoalescing: false,
+  });
+});
 
 function loadFunction(name, globals) {
   const start = source.indexOf(`function ${name}(`);

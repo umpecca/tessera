@@ -32,7 +32,7 @@ function appFunction(name, globals) {
 test("dialogs block destructive shortcuts from both the document and iframe resolver", () => {
   const names = ["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal", "sessionActionModal",
     "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "windowList"];
+    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"];
   const globals = Object.fromEntries(names.map((name) => [name, { hidden: true }]));
   let destroyed = 0;
   globals.destroyActivePane = () => destroyed++;
@@ -55,7 +55,7 @@ test("dialogs block destructive shortcuts from both the document and iframe reso
 test("Ctrl+T opens the rename modal for the active pane", () => {
   const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
     "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "windowList"].map((name) => [name, { hidden: true }]));
+    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
   const rect = { title: "my-window" };
   globals.getActivePane = () => rect;
   let renamed;
@@ -68,14 +68,20 @@ test("Ctrl+T opens the rename modal for the active pane", () => {
 test("Ctrl+Plus and Ctrl+Minus resize the active pane's font", () => {
   const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
     "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "windowList"].map((name) => [name, { hidden: true }]));
+    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
   const deltas = [];
   globals.adjustActivePaneFontSize = (delta) => deltas.push(delta);
   const resolve = appFunction("paneShortcutAction", globals);
   resolve({ ctrlKey: true, key: "=" }).run();
   resolve({ ctrlKey: true, key: "+" }).run();
   resolve({ ctrlKey: true, key: "-" }).run();
-  assert.deepEqual(deltas, [1, 1, -1]);
+  resolve({ ctrlKey: true, shiftKey: true, key: "+", code: "Equal" }).run();
+  resolve({ metaKey: true, shiftKey: true, key: "+", code: "Equal" }).run();
+  resolve({ ctrlKey: true, key: "+", code: "NumpadAdd" }).run();
+  resolve({ ctrlKey: true, key: "-", code: "NumpadSubtract" }).run();
+  assert.equal(resolve({ ctrlKey: true, altKey: true, key: "+" }), null);
+  assert.equal(resolve({ ctrlKey: true, shiftKey: true, key: "_", code: "Minus" }), null);
+  assert.deepEqual(deltas, [1, 1, -1, 1, 1, 1, -1]);
 });
 
 test("adjustActivePaneFontSize resizes the active pane via setPaneFontSize", () => {
@@ -84,6 +90,7 @@ test("adjustActivePaneFontSize resizes the active pane via setPaneFontSize", () 
   const adjust = appFunction("adjustActivePaneFontSize", {
     getActivePane: () => rect,
     setPaneFontSize: (target, size) => { call = [target, size]; },
+    showPaneFontSizeIndicator: () => {},
   });
   adjust(1);
   assert.deepEqual(call, [rect, 15]);
@@ -92,7 +99,7 @@ test("adjustActivePaneFontSize resizes the active pane via setPaneFontSize", () 
 test("Ctrl+0 resets the active pane's font to the default size", () => {
   const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
     "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "windowList"].map((name) => [name, { hidden: true }]));
+    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
   let reset = 0;
   globals.resetActivePaneFontSize = () => reset++;
   const resolve = appFunction("paneShortcutAction", globals);
@@ -107,6 +114,7 @@ test("resetActivePaneFontSize restores the default font size via setPaneFontSize
     getActivePane: () => rect,
     defaultPaneFontSize: 14,
     setPaneFontSize: (target, size) => { call = [target, size]; },
+    showPaneFontSizeIndicator: () => {},
   });
   reset();
   assert.deepEqual(call, [rect, 14]);

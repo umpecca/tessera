@@ -22,7 +22,7 @@ fn saveScreen(out: *snapshot.Writer, screen: *Screen) !void {
     while (node) |n| : (node = n.next) {
         try out.value(n.data.capacity);
         inline for (@typeInfo(Page).@"struct".fields) |f| {
-            if (comptime !std.mem.eql(u8, f.name, "memory")) try out.value(@field(n.data, f.name));
+            if (comptime !std.mem.eql(u8, f.name, "memory") and !std.mem.eql(u8, f.name, "sixel_present")) try out.value(@field(n.data, f.name));
         }
         try out.value(@as([]const u8, n.data.memory));
     }
@@ -51,11 +51,14 @@ fn loadScreen(input: *snapshot.Reader, screen: *Screen) !void {
         const node = try screen.pages.createPage(cap);
         screen.pages.pages.append(node);
         inline for (@typeInfo(Page).@"struct".fields) |f| {
-            if (comptime !std.mem.eql(u8, f.name, "memory")) @field(node.data, f.name) = try input.value(f.type);
+            if (comptime !std.mem.eql(u8, f.name, "memory") and !std.mem.eql(u8, f.name, "sixel_present")) @field(node.data, f.name) = try input.value(f.type);
         }
         const size_bytes = try input.value(u32);
         if (size_bytes != node.data.memory.len or !std.meta.eql(cap, node.data.capacity)) return error.InvalidSnapshot;
         @memcpy(node.data.memory, try input.take(size_bytes));
+        // Page membership is a derived cache, never snapshot state. Rebuild
+        // it after both screens and the image descriptors have been restored.
+        node.data.sixel_present = true;
         node.data.dirty = true;
         screen.pages.total_rows += node.data.size.rows;
     }
@@ -161,6 +164,7 @@ fn loadState(input: *snapshot.Reader) !*anyopaque {
     }
     w.sixel.tiles = .fromOwnedSlice(try input.value([]@import("sixel_store.zig").Tile));
     if (input.offset != input.data.len) return error.InvalidSnapshot;
+    try w.sixel.collect(w.alloc, &w.terminal);
     w.terminal.flags.dirty.clear = true;
     w.response_buffer.clearRetainingCapacity();
     return ptr;

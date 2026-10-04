@@ -7,6 +7,8 @@ import {
 
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
 import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
+import { installTerminalSelection } from "./terminal-selection.mjs";
+import { installTerminalFontMetrics } from "./terminal-font-metrics.mjs";
 import { SixelRenderer, installSixelRenderer } from "./terminal-sixel-renderer.mjs";
 import {
   installPlainRenderer,
@@ -15,6 +17,7 @@ import {
 } from "./terminal-plain-renderer.mjs";
 
 const renderScheduler = new TerminalRenderScheduler();
+installTerminalFontMetrics(CanvasRenderer);
 installSixelRenderer(CanvasRenderer);
 installPlainRenderer(CanvasRenderer);
 globalThis.addEventListener?.("resize", () => {
@@ -58,6 +61,7 @@ class Terminal extends GhosttyTerminal {
     this.fullRedrawPending = false;
     this.coreID = __TESSERA_CORE_ID__;
     this.sixelRenderer = new SixelRenderer();
+    this.clipboardReadBuffer = null;
     this.desiredCols = this.cols;
     this.desiredRows = this.rows;
     this.onScroll(() => this.requestRender());
@@ -65,6 +69,7 @@ class Terminal extends GhosttyTerminal {
 
   startRenderLoop() {
     renderScheduler.register(this, () => this.renderScheduledFrame());
+    renderScheduler.setActive(this, this.cursorBlink.active && !this.renderPaused);
     renderScheduler.setMetricsEnabled(this, this.renderMetricsEnabled);
   }
 
@@ -76,6 +81,7 @@ class Terminal extends GhosttyTerminal {
         this.renderer.tesseraSymbolFontFamily = this.symbolFontFamily;
       }
       setPlainRendererEnabled(this.renderer, this.experimentalRenderer);
+      this.selectionIntegration = installTerminalSelection(this);
     } finally {
       this.opening = false;
     }
@@ -86,6 +92,7 @@ class Terminal extends GhosttyTerminal {
     // timer. Startup must never steal focus from the restored pane or dialog.
     if (!this.opening && this.isOpen && !this.isDisposed) {
       this.element?.focus({ preventScroll: true });
+      this.selectionIntegration?.clearNativeSelection();
     }
   }
 
@@ -153,9 +160,10 @@ class Terminal extends GhosttyTerminal {
     while (this.wasmTerm.readResponse()) {}
     const b = this.wasmTerm, e = b.exports;
     if (!e.tessera_sixel_clipboard_read) return;
-    const ptr = e.ghostty_wasm_alloc_u8_array(4096);
-    try { while (e.tessera_sixel_clipboard_read(b.handle, ptr, 4096)) {} }
-    finally { e.ghostty_wasm_free_u8_array(ptr, 4096); }
+    // The allocation belongs to the module, so it survives reset and snapshot
+    // handle replacement. Keep only its pointer; WASM memory can grow.
+    this.clipboardReadBuffer ??= { exports: e, ptr: e.ghostty_wasm_alloc_u8_array(4096) };
+    while (e.tessera_sixel_clipboard_read(b.handle, this.clipboardReadBuffer.ptr, 4096)) {}
   }
 
   resize(cols, rows) {
@@ -285,6 +293,7 @@ class Terminal extends GhosttyTerminal {
   }
 
   setCursorActive(active) {
+    renderScheduler.setActive(this, active);
     this.cursorBlink.setActive(active);
   }
 
@@ -295,9 +304,15 @@ class Terminal extends GhosttyTerminal {
   }
 
   dispose() {
+    this.selectionIntegration?.dispose();
     this.cursorBlink.dispose();
     this.sixelRenderer.clear();
     renderScheduler.unregister(this);
+    if (this.clipboardReadBuffer) {
+      const { exports, ptr } = this.clipboardReadBuffer;
+      this.clipboardReadBuffer = null;
+      exports.ghostty_wasm_free_u8_array(ptr, 4096);
+    }
     super.dispose();
   }
 }

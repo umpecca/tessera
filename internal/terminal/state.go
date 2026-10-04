@@ -17,6 +17,11 @@ const StateConfiguration byte = 5
 const StateImageSettings byte = 6
 const StateClearImages byte = 7
 
+// Bound both copying and parser visits when a paused browser catches up. Tiny
+// progress/control writes must not fit an arbitrarily long replay by byte size.
+const maximumCatchUpReplayBytes = 64 * 1024
+const maximumCatchUpReplayEvents = 128
+
 // Optional fields avoid overwriting a different browser's latest setting.
 func (s *ManagedSession) ConfigureImages(memoryMiB *int, placeholders *bool) error {
 	s.mu.Lock()
@@ -125,27 +130,60 @@ func (s *ManagedSession) stateAttachLocked(cursor Cursor, attachment *Attachment
 	attachment.CellWidth, attachment.CellHeight = s.cellWidth, s.cellHeight
 	attachment.Replay = nil
 	attachment.Reset = true
+	attachment.RetainedOutputBytes = s.scrollback.limit
+	if attachment.RetainedOutputBytes <= 0 {
+		attachment.RetainedOutputBytes = defaultScrollbackLimit
+	}
 	if s.core == nil {
 		attachment.Err = errors.New("terminal state is unavailable")
 		return
 	}
+	if cursor.OutputPaused {
+		// A hidden client cannot import the state. Its later visible attachment
+		// decides whether its applied cursor admits a small replay or a snapshot.
+		attachment.Reset = false
+		return
+	}
 	resumable := cursor.Epoch == s.epoch && cursor.Sequence <= s.sequence && cursor.Core == terminalcore.Compatibility
+	if cursor.SnapshotIfChanged && !cursor.CatchUpReplay && cursor.Sequence != s.sequence {
+		resumable = false
+	}
+	replayStart := len(s.stateEvents)
 	if resumable && cursor.Sequence == s.sequence {
 		resumable = cursor.Offset == s.published
 	}
 	if resumable && cursor.Sequence != s.sequence {
 		resumable = len(s.stateEvents) > 0 && cursor.Sequence+1 >= s.stateEvents[0].sequence
 		if resumable {
-			for _, event := range s.stateEvents {
-				if event.sequence != cursor.Sequence+1 {
-					continue
-				}
+			// Retained state sequences are contiguous. Locate only the missing
+			// suffix instead of scanning the entire retained event window.
+			replayStart = int(cursor.Sequence + 1 - s.stateEvents[0].sequence)
+			resumable = replayStart < len(s.stateEvents) && s.stateEvents[replayStart].sequence == cursor.Sequence+1
+			if resumable {
+				event := s.stateEvents[replayStart]
 				expected := int64(binary.LittleEndian.Uint64(event.data[9:]))
 				if event.data[0] == StateOutput {
 					expected -= int64(len(event.data) - StateFrameHeader)
 				}
 				resumable = cursor.Offset == expected
-				break
+			}
+		}
+	}
+	replayBytes := 0
+	if resumable {
+		if cursor.CatchUpReplay && len(s.stateEvents)-replayStart > maximumCatchUpReplayEvents {
+			resumable = false
+		} else {
+			for _, event := range s.stateEvents[replayStart:] {
+				if event.data[0] == StateClipboard {
+					replayBytes += StateFrameHeader
+				} else {
+					replayBytes += len(event.data)
+				}
+				if cursor.CatchUpReplay && replayBytes > maximumCatchUpReplayBytes {
+					resumable = false
+					break
+				}
 			}
 		}
 	}
@@ -153,8 +191,9 @@ func (s *ManagedSession) stateAttachLocked(cursor Cursor, attachment *Attachment
 		attachment.Reset = false
 		attachment.Sequence = cursor.Sequence
 		attachment.Offset = cursor.Offset
-		for _, event := range s.stateEvents {
-			if event.sequence > cursor.Sequence {
+		if replayBytes > 0 {
+			attachment.Replay = make([]byte, 0, replayBytes)
+			for _, event := range s.stateEvents[replayStart:] {
 				// Clipboard effects are delivered only to live subscribers.
 				data := event.data
 				if data[0] == StateClipboard {

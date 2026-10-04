@@ -40,7 +40,16 @@ type Core struct {
 	module    api.Module
 	handle    uint64
 	functions map[string]api.Function
+	// Scratch allocations belong to this module, not a retained memory view.
+	// A managed session serializes all writes and response drains.
+	inputPtr      uint64
+	inputCapacity int
+	responsePtr   uint64
 }
+
+const minimumInputBufferBytes = 8 * 1024
+const maximumInputBufferBytes = 64 * 1024
+const responseBufferBytes = 4 * 1024
 
 func New(cols, rows int) (*Core, error) {
 	if cols < 2 || cols > 4096 || rows < 1 || rows > 4096 {
@@ -110,6 +119,9 @@ func (c *Core) ClearImages() error {
 }
 
 func (c *Core) call(name string, args ...uint64) (uint64, error) {
+	if c == nil || c.module == nil {
+		return 0, errors.New("terminal core is closed")
+	}
 	f := c.functions[name]
 	if f == nil {
 		f = c.module.ExportedFunction(name)
@@ -132,18 +144,39 @@ func (c *Core) Write(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-	p, err := c.call("ghostty_wasm_alloc_u8_array", uint64(len(data)))
-	if err != nil {
-		return err
+	if c == nil || c.module == nil {
+		return errors.New("terminal core is closed")
 	}
-	if p == 0 {
-		return errors.New("terminal input allocation failed")
+	p := c.inputPtr
+	if len(data) > c.inputCapacity {
+		capacity := minimumInputBufferBytes
+		for capacity < len(data) && capacity < maximumInputBufferBytes {
+			capacity *= 2
+		}
+		capacity = max(capacity, len(data))
+		var err error
+		p, err = c.call("ghostty_wasm_alloc_u8_array", uint64(capacity))
+		if err != nil {
+			return err
+		}
+		if p == 0 {
+			return errors.New("terminal input allocation failed")
+		}
+		if capacity > maximumInputBufferBytes {
+			// Exceptional writes must not retain an oversized scratch region.
+			defer c.call("ghostty_wasm_free_u8_array", p, uint64(capacity))
+		} else {
+			// Allocate first so a failed growth leaves the previous buffer usable.
+			if c.inputPtr != 0 {
+				_, _ = c.call("ghostty_wasm_free_u8_array", c.inputPtr, uint64(c.inputCapacity))
+			}
+			c.inputPtr, c.inputCapacity = p, capacity
+		}
 	}
-	defer c.call("ghostty_wasm_free_u8_array", p, uint64(len(data)))
 	if !c.module.Memory().Write(uint32(p), data) {
 		return errors.New("terminal input exceeds memory")
 	}
-	_, err = c.call("ghostty_terminal_write", c.handle, p, uint64(len(data)))
+	_, err := c.call("ghostty_terminal_write", c.handle, p, uint64(len(data)))
 	return err
 }
 
@@ -205,23 +238,31 @@ func (c *Core) Clipboard() ([][]byte, error) {
 
 func (c *Core) drain(name string) ([]byte, error) {
 	var result []byte
-	p, err := c.call("ghostty_wasm_alloc_u8_array", 4096)
-	if err != nil {
-		return nil, err
+	if c == nil || c.module == nil {
+		return nil, errors.New("terminal core is closed")
 	}
-	defer c.call("ghostty_wasm_free_u8_array", p, 4096)
+	if c.responsePtr == 0 {
+		p, err := c.call("ghostty_wasm_alloc_u8_array", responseBufferBytes)
+		if err != nil {
+			return nil, err
+		}
+		if p == 0 {
+			return nil, errors.New("terminal response allocation failed")
+		}
+		c.responsePtr = p
+	}
 	for {
-		n, err := c.call(name, c.handle, p, 4096)
+		n, err := c.call(name, c.handle, c.responsePtr, responseBufferBytes)
 		if err != nil {
 			return nil, err
 		}
 		if n == 0 {
 			return result, nil
 		}
-		if n > 4096 {
+		if n > responseBufferBytes {
 			return nil, errors.New("invalid terminal reply length")
 		}
-		data, ok := c.module.Memory().Read(uint32(p), uint32(n))
+		data, ok := c.module.Memory().Read(uint32(c.responsePtr), uint32(n))
 		if !ok {
 			return nil, errors.New("terminal reply exceeds memory")
 		}
@@ -233,6 +274,13 @@ func (c *Core) Close() {
 	if c == nil || c.module == nil {
 		return
 	}
+	if c.inputPtr != 0 {
+		_, _ = c.call("ghostty_wasm_free_u8_array", c.inputPtr, uint64(c.inputCapacity))
+	}
+	if c.responsePtr != 0 {
+		_, _ = c.call("ghostty_wasm_free_u8_array", c.responsePtr, responseBufferBytes)
+	}
+	c.inputPtr, c.inputCapacity, c.responsePtr = 0, 0, 0
 	_, _ = c.call("ghostty_terminal_free", c.handle)
 	_ = c.module.Close(context.Background())
 	c.module = nil

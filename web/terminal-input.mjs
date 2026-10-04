@@ -2,6 +2,10 @@ export function terminalMouseMessage(data) {
   return JSON.stringify({ type: "mouse", data });
 }
 
+export function isTerminalContextMenuGesture(event, { appleKeyboard = false } = {}) {
+  return event.button === 2 || Boolean(appleKeyboard && event.button === 0 && event.ctrlKey);
+}
+
 // Bracketed paste wraps pasted text in `ESC [ 200~` and `ESC [ 201~` so an
 // application can tell it apart from typing. Clipboard text carrying those
 // markers would close the bracket early and leave the rest of the paste looking

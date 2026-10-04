@@ -82,6 +82,63 @@ func TestWorkspaceSaveRejectsReusedNextRevision(t *testing.T) {
 	}
 }
 
+func TestWindowOrderPersistsWithoutChangingStackingOrContents(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "window-order.sqlite3")
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := st.LoadOrCreateWorkspace(ctx, "ordered-session", "Flow")
+	if err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	ws.ActivePaneID = "editor"
+	ws.Panes = []Pane{
+		{ID: "build", Kind: "terminal", Title: "Build", ZIndex: 30, X: 10, Y: 20},
+		{ID: "editor", Kind: "worksheet", Title: "Editor", BufferText: "keep my text", ZIndex: 40, X: 50, Y: 60},
+		{ID: "notes", Kind: "worksheet", Title: "Notes", BufferText: "saved notes", ZIndex: 10, Minimized: true},
+	}
+	if err := st.SaveWorkspace(ctx, ws); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	// The frontend sends the reordered pane array and omits unchanged buffers.
+	ws.Panes = []Pane{ws.Panes[2], ws.Panes[0], ws.Panes[1]}
+	for i := range ws.Panes {
+		ws.Panes[i].BufferText = ""
+		ws.Panes[i].BufferTextUnchanged = true
+		ws.Panes[i].EditorTabsUnchanged = true
+	}
+	if err := st.SaveWorkspace(ctx, ws); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	st.Close()
+	st, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	loaded, err := st.LoadWorkspace(ctx, ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"notes", "build", "editor"} {
+		if loaded.Panes[i].ID != id || loaded.Panes[i].Position != i {
+			t.Fatalf("window %d = %+v, want %s in saved position", i, loaded.Panes[i], id)
+		}
+	}
+	if loaded.ActivePaneID != "editor" || !loaded.Panes[0].Minimized || loaded.Panes[0].BufferText != "saved notes" || loaded.Panes[0].ZIndex != 10 {
+		t.Fatalf("reorder changed active or minimized window state: %+v", loaded)
+	}
+	editor := loaded.Panes[2]
+	if editor.BufferText != "keep my text" || editor.ZIndex != 40 || editor.X != 50 || editor.Y != 60 {
+		t.Fatalf("reorder changed editor state: %+v", editor)
+	}
+}
+
 func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))

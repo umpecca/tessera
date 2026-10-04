@@ -3,6 +3,7 @@ package terminalcore
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -90,5 +91,37 @@ func BenchmarkCoreTextOutput(b *testing.B) {
 		if err := c.Write(data); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkCoreSmallWritesWithRetainedImage(b *testing.B) {
+	for _, lines := range []int{0, 1000, 10000} {
+		b.Run(fmt.Sprintf("history_%d", lines), func(b *testing.B) {
+			c, err := New(80, 24)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer c.Close()
+			line := append(bytes.Repeat([]byte("x"), 79), '\r', '\n')
+			history := bytes.Repeat(line, lines)
+			if err := c.Write(history); err != nil {
+				b.Fatal(err)
+			}
+			// Retain a tiny image in history while rewriting a different row.
+			if err := c.Write([]byte("\x1b[H\x1bPq\"1;1;8;6#1;2;100;0;0!8~\x1b\\\x1b[24;1H\r\n\r\n")); err != nil {
+				b.Fatal(err)
+			}
+			if count, err := c.call("tessera_sixel_image_count", c.handle); err != nil || count != 1 {
+				b.Fatalf("retained image count=%d err=%v", count, err)
+			}
+			data := []byte("\rtick")
+			b.SetBytes(int64(len(data)))
+			b.ResetTimer()
+			for range b.N {
+				if err := c.Write(data); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

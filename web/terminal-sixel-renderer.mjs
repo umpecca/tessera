@@ -1,8 +1,9 @@
 // Keep decoded bitmaps outside the render loop. Native cell attachments are
 // authoritative; deleted/overwritten fragments simply disappear from the list.
 export class SixelRenderer {
-  constructor() { this.images = new Map(); }
+  constructor() { this.images = new Map(); this.hadVisibleTiles = false; }
   clear() {
+    // Keep hadVisibleTiles until painting clears the old canvas overlays.
     for (const image of this.images.values()) { image.canvas.width = 0; image.canvas.height = 0; }
     this.images.clear();
   }
@@ -14,7 +15,7 @@ export class SixelRenderer {
       this.images.delete(id);
     }
   }
-  render(renderer, buffer, viewportY) {
+  render(renderer, buffer, viewportY, tileCount) {
     const e = buffer.exports;
     const handle = buffer.handle;
     if (!e.tessera_sixel_image_count) return;
@@ -49,7 +50,7 @@ export class SixelRenderer {
       this.images.delete(id);
     }
     if (!count) return;
-    const tileCount = e.tessera_sixel_tiles(handle, Math.floor(viewportY), 0, 0);
+    tileCount ??= e.tessera_sixel_tiles(handle, Math.floor(viewportY), 0, 0);
     if (!tileCount) return;
     const ptr = e.ghostty_wasm_alloc_u8_array(tileCount * 28);
     try {
@@ -104,14 +105,26 @@ export function installSixelRenderer(CanvasRenderer) {
   CanvasRenderer.prototype.render = function(buffer, force, viewportY = 0, provider, opacity) {
     const owner = provider?.sixelRenderer;
     const images = buffer.exports?.tessera_sixel_image_count?.(buffer.handle) || 0;
-    if (!owner || (!images && !owner.images.size)) return render.call(this, buffer, force, viewportY, provider, opacity);
+    if (!owner || (!images && !owner.images.size && !owner.hadVisibleTiles)) {
+      return render.call(this, buffer, force, viewportY, provider, opacity);
+    }
+    const tileCount = images ? buffer.exports.tessera_sixel_tiles(buffer.handle, Math.floor(viewportY), 0, 0) : 0;
+    if (!tileCount) {
+      owner.prune(buffer);
+      // Clear the previous image overlay once, even after a cache clear or
+      // per-write pruning. Later text and blink frames retain dirty-row paints.
+      const result = render.call(this, buffer, force || owner.hadVisibleTiles, viewportY, provider, opacity);
+      owner.hadVisibleTiles = false;
+      return result;
+    }
     const cursor = this.renderCursor, scrollbar = this.renderScrollbar;
     const overlays = [];
     this.renderCursor = (...args) => overlays.push(() => cursor.apply(this, args));
     this.renderScrollbar = (...args) => overlays.push(() => scrollbar.apply(this, args));
     try {
       render.call(this, buffer, true, viewportY, provider, opacity);
-      owner.render(this, buffer, viewportY);
+      owner.render(this, buffer, viewportY, tileCount);
+      owner.hadVisibleTiles = true;
     } finally {
       this.renderCursor = cursor;
       this.renderScrollbar = scrollbar;

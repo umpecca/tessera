@@ -23,6 +23,11 @@ type Cursor struct {
 	Protocol int
 	Sequence uint64
 	Core     string
+	// Hidden attachments deliver lifecycle notices only. CatchUpReplay bounds
+	// the missing suffix on reveal/retry; older clients keep snapshot-on-change.
+	OutputPaused      bool
+	SnapshotIfChanged bool
+	CatchUpReplay     bool
 }
 
 // Attachment is one client's view of a session at the moment it attaches.
@@ -38,10 +43,12 @@ type Attachment struct {
 	Replay                            []byte
 	Events                            <-chan []byte
 	Unsubscribe                       func()
+	PauseOutput                       func()
 	Protocol                          int
 	Sequence                          uint64
 	Core                              string
 	Snapshot                          []byte
+	RetainedOutputBytes               int
 	Cols, Rows, CellWidth, CellHeight int
 	Err                               error
 }
@@ -72,16 +79,20 @@ type Manager struct {
 // and a client that falls further behind than the scrollback itself keeps is
 // disconnected — a dropped connection is something the browser notices and
 // resumes from, which lost bytes are not.
+// Hidden clients explicitly pause their delivery and restore changed state
+// from a snapshot when revealed; their lifecycle channel remains connected.
 type subscriber struct {
 	protocol int
 	events   chan []byte
 	wake     chan struct{}
 	quit     chan struct{}
+	pause    chan struct{}
 	pending  [][]byte
 	bytes    int
 	limit    int
 	overrun  bool
 	done     bool
+	paused   bool
 }
 
 type ManagedSession struct {
@@ -447,22 +458,26 @@ func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 		events:   make(chan []byte),
 		wake:     make(chan struct{}, 1),
 		quit:     make(chan struct{}),
+		pause:    make(chan struct{}),
 		limit:    s.scrollback.limit,
+		paused:   cursor.OutputPaused,
+	}
+	if sub.paused {
+		close(sub.pause)
 	}
 	s.mu.Lock()
 	// The replay and the live subscription are decided under one lock, so
 	// nothing the shell prints can fall between them.
-	replay, offset, reset := s.replayForLocked(cursor)
 	attachment := &Attachment{
 		Epoch:       s.epoch,
-		Offset:      offset,
-		Reset:       reset,
-		Replay:      replay,
 		Events:      sub.events,
 		Unsubscribe: func() {},
+		PauseOutput: func() {},
 	}
 	if cursor.Protocol == StateProtocol {
 		s.stateAttachLocked(cursor, attachment)
+	} else {
+		attachment.Replay, attachment.Offset, attachment.Reset = s.replayForLocked(cursor)
 	}
 	if s.isClosed() {
 		close(sub.events)
@@ -482,6 +497,20 @@ func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 			// The pump may be parked on a send nobody is reading any more.
 			close(sub.quit)
 		})
+	}
+	// Pausing is permanent for this attachment; visibility resumes through a
+	// new atomic snapshot/live subscription. The pump still closes on exit.
+	attachment.PauseOutput = func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if sub.paused {
+			return
+		}
+		sub.paused = true
+		clear(sub.pending)
+		sub.pending = nil
+		sub.bytes = 0
+		close(sub.pause)
 	}
 	return attachment
 }
@@ -534,6 +563,8 @@ func (s *ManagedSession) pump(sub *subscriber) {
 
 			select {
 			case sub.events <- chunk:
+			case <-sub.pause:
+				// Release a chunk already taken from the queue when hiding.
 			case <-sub.quit:
 				return
 			}
@@ -603,7 +634,7 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 }
 
 func (s *ManagedSession) enqueueLocked(sub *subscriber, chunk []byte) {
-	if sub.done {
+	if sub.done || sub.paused {
 		return
 	}
 	// A client this far behind has already lost more than the scrollback

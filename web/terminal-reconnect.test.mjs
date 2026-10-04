@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  terminalBacklogCloseCode,
   terminalCloseOutcome,
   terminalConnectingStatus,
   terminalExitFailedCloseCode,
@@ -13,6 +14,18 @@ import {
 } from "./terminal-reconnect.mjs";
 
 const dropped = { code: 1006, reason: "" };
+
+test("output overload reports catch-up and uses capped retry backoff without closing the pane", () => {
+  const event = { code: terminalBacklogCloseCode, reason: "terminal output backlog exceeded" };
+  for (const [attempt, delay] of [[0, 500], [1, 1000], [2, 2000], [5, 10000], [20, 10000]]) {
+    const outcome = terminalCloseOutcome(event, { attempt, now: 1000 });
+    assert.equal(outcome.summary, "Catching up with terminal output");
+    assert.equal(outcome.reconnect, true);
+    assert.equal(outcome.closesPane, false);
+    assert.equal(outcome.delay, delay);
+    assert.equal(outcome.retryAt, 1000 + delay);
+  }
+});
 
 test("incompatible terminal core requires reload instead of retrying", () => {
   const outcome = terminalCloseOutcome({ code: 4503, reason: "terminal core changed; reload Tessera" });

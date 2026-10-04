@@ -6,9 +6,19 @@ import {
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
   emptyTerminalCopyGuidance,
+  isTerminalContextMenuGesture,
   terminalMouseMessage,
   terminalPasteText,
 } from "./terminal-input.mjs";
+
+test("macOS Control-primary-click is contextual while other link modifiers remain primary", () => {
+  const controlClick = { button: 0, ctrlKey: true };
+  assert.equal(isTerminalContextMenuGesture(controlClick, { appleKeyboard: true }), true);
+  assert.equal(isTerminalContextMenuGesture(controlClick, { appleKeyboard: false }), false);
+  assert.equal(isTerminalContextMenuGesture({ button: 0, metaKey: true }, { appleKeyboard: true }), false);
+  assert.equal(isTerminalContextMenuGesture({ button: 0, shiftKey: true }, { appleKeyboard: true }), false);
+  assert.equal(isTerminalContextMenuGesture({ button: 2 }), true);
+});
 
 test("an empty copy inside a mouse-aware program names both ways to copy", () => {
   const inside = emptyTerminalCopyGuidance(true);

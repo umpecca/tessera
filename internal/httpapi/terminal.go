@@ -58,21 +58,22 @@ type terminalTimingMessage struct {
 	SentUs   int64  `json:"sentUs"`
 }
 
-// terminalAttachMessage opens every terminal socket. Everything after it is
-// stream bytes, except timing messages a client has asked for.
+// terminalAttachMessage opens visible terminal sockets. Initially hidden
+// sockets deliver lifecycle notices only until visibility creates a new one.
 type terminalAttachMessage struct {
-	Type          string `json:"type"`
-	Epoch         string `json:"epoch"`
-	Offset        int64  `json:"offset"`
-	Reset         bool   `json:"reset"`
-	Protocol      int    `json:"protocol"`
-	Core          string `json:"core"`
-	Sequence      uint64 `json:"sequence"`
-	SnapshotBytes int    `json:"snapshotBytes"`
-	Cols          int    `json:"cols"`
-	Rows          int    `json:"rows"`
-	CellWidth     int    `json:"cellWidth"`
-	CellHeight    int    `json:"cellHeight"`
+	Type                string `json:"type"`
+	Epoch               string `json:"epoch"`
+	Offset              int64  `json:"offset"`
+	Reset               bool   `json:"reset"`
+	Protocol            int    `json:"protocol"`
+	Core                string `json:"core"`
+	Sequence            uint64 `json:"sequence"`
+	SnapshotBytes       int    `json:"snapshotBytes"`
+	RetainedOutputBytes int    `json:"retainedOutputBytes"`
+	Cols                int    `json:"cols"`
+	Rows                int    `json:"rows"`
+	CellWidth           int    `json:"cellWidth"`
+	CellHeight          int    `json:"cellHeight"`
 }
 
 // terminalResumeCursor reads what the client says it already holds. A client
@@ -82,7 +83,9 @@ func terminalResumeCursor(r *http.Request) terminal.Cursor {
 	if r.URL.Query().Get("protocol") == "2" {
 		sequence, _ := strconv.ParseUint(r.URL.Query().Get("resumeSequence"), 10, 64)
 		offset, _ := strconv.ParseInt(r.URL.Query().Get("resumeOffset"), 10, 64)
-		return terminal.Cursor{Protocol: terminal.StateProtocol, Core: r.URL.Query().Get("core"), Epoch: r.URL.Query().Get("resumeEpoch"), Sequence: sequence, Offset: offset}
+		return terminal.Cursor{Protocol: terminal.StateProtocol, Core: r.URL.Query().Get("core"), Epoch: r.URL.Query().Get("resumeEpoch"), Sequence: sequence, Offset: offset,
+			OutputPaused: r.URL.Query().Get("outputPaused") == "1", SnapshotIfChanged: r.URL.Query().Get("snapshotIfChanged") == "1",
+			CatchUpReplay: r.URL.Query().Get("catchUpReplay") == "1"}
 	}
 	offset, err := strconv.ParseInt(r.URL.Query().Get("resumeOffset"), 10, 64)
 	if err != nil || offset < 0 {
@@ -148,9 +151,10 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		closeTerminalWithFailure(conn, err)
 		return
 	}
+	cursor := terminalResumeCursor(r)
 	session, attachment, err := a.Terminals.Attach(
 		workspaceID, paneID, r.URL.Query().Get("cwd"), settings.TerminalTERM, cols, rows,
-		terminalResumeCursor(r),
+		cursor,
 	)
 	if err != nil {
 		closeTerminalWithFailure(conn, err)
@@ -167,7 +171,8 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var writeMu sync.Mutex
-	var timingEnabled, coalescingEnabled atomic.Bool
+	var timingEnabled, coalescingEnabled, outputPaused atomic.Bool
+	outputPaused.Store(cursor.OutputPaused)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -176,24 +181,34 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		// it continues what the client already has is said out of band,
 		// before the first of them.
 		writeMu.Lock()
-		err := conn.WriteJSON(terminalAttachMessage{
-			Type:     "attach",
-			Epoch:    attachment.Epoch,
-			Offset:   attachment.Offset,
-			Reset:    attachment.Reset,
-			Protocol: attachment.Protocol, Core: attachment.Core, Sequence: attachment.Sequence,
-			SnapshotBytes: len(attachment.Snapshot), Cols: attachment.Cols, Rows: attachment.Rows,
-			CellWidth: attachment.CellWidth, CellHeight: attachment.CellHeight,
-		})
+		var err error
+		if !outputPaused.Load() {
+			err = conn.WriteJSON(terminalAttachMessage{
+				Type:     "attach",
+				Epoch:    attachment.Epoch,
+				Offset:   attachment.Offset,
+				Reset:    attachment.Reset,
+				Protocol: attachment.Protocol, Core: attachment.Core, Sequence: attachment.Sequence,
+				SnapshotBytes: len(attachment.Snapshot), Cols: attachment.Cols, Rows: attachment.Rows,
+				RetainedOutputBytes: attachment.RetainedOutputBytes,
+				CellWidth:           attachment.CellWidth, CellHeight: attachment.CellHeight,
+			})
+		}
 		writeMu.Unlock()
 		if err != nil {
 			return
 		}
 		for offset := 0; offset < len(attachment.Snapshot); offset += 64 * 1024 {
+			if outputPaused.Load() {
+				break
+			}
 			end := min(offset+64*1024, len(attachment.Snapshot))
 			frame := terminal.StateFrame(terminal.StateSnapshot, attachment.Sequence, attachment.Offset, attachment.Snapshot[offset:end])
 			writeMu.Lock()
-			err := conn.WriteMessage(websocket.BinaryMessage, frame)
+			var err error
+			if !outputPaused.Load() {
+				err = conn.WriteMessage(websocket.BinaryMessage, frame)
+			}
 			writeMu.Unlock()
 			if err != nil {
 				return
@@ -201,15 +216,25 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(attachment.Replay) > 0 {
 			writeMu.Lock()
-			err := conn.WriteMessage(websocket.BinaryMessage, attachment.Replay)
+			var err error
+			if !outputPaused.Load() {
+				err = conn.WriteMessage(websocket.BinaryMessage, attachment.Replay)
+			}
 			writeMu.Unlock()
 			if err != nil {
 				return
 			}
 		}
+		// Startup state is copied or abandoned now. Do not retain its buffers
+		// while an idle or hidden lifecycle connection remains open.
+		attachment.Snapshot = nil
+		attachment.Replay = nil
 		for open := true; open; {
 			var chunk []byte
 			chunk, open = <-attachment.Events
+			if outputPaused.Load() {
+				continue
+			}
 			if open && coalescingEnabled.Load() {
 				chunk, open = coalesceTerminalFrames(chunk, attachment.Events, terminalCoalesceQuiet, terminalCoalesceHold, terminalCoalesceBytes)
 			}
@@ -217,9 +242,12 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			writeMu.Lock()
-			writeErr := conn.WriteMessage(websocket.BinaryMessage, chunk)
-			if writeErr == nil && timingEnabled.Load() {
-				writeErr = writeTerminalTimings(conn, session, chunk)
+			var writeErr error
+			if !outputPaused.Load() {
+				writeErr = conn.WriteMessage(websocket.BinaryMessage, chunk)
+				if writeErr == nil && timingEnabled.Load() {
+					writeErr = writeTerminalTimings(conn, session, chunk)
+				}
 			}
 			writeMu.Unlock()
 			if writeErr != nil {
@@ -258,6 +286,19 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 				timingEnabled.Store(message.Enabled)
 			} else if message.Type == "output-coalescing" {
 				coalescingEnabled.Store(message.Enabled)
+			} else if message.Type == "pause-output" {
+				// Serialize the acknowledgement after every in-flight write.
+				// Exit frames remain live; visibility resumes on a new socket.
+				writeMu.Lock()
+				outputPaused.Store(true)
+				attachment.PauseOutput()
+				pauseErr := conn.WriteJSON(struct {
+					Type string `json:"type"`
+				}{Type: "output-paused"})
+				writeMu.Unlock()
+				if pauseErr != nil {
+					return
+				}
 			} else if message.Type == "resize" {
 				_ = session.ResizeWithMetrics(message.Cols, message.Rows, message.CellWidth, message.CellHeight)
 			} else if message.Type == "image-settings" || message.Type == "clear-images" {

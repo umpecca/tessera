@@ -74,6 +74,7 @@ pub const Store = struct {
                     for (row.cells.ptr(page.memory)[0..page.size.cols]) |*cell| cell.sixel = 0;
                     row.dirty = true;
                 }
+                page.sixel_present = false;
                 page.dirty = true;
             }
         }
@@ -158,6 +159,7 @@ pub const Store = struct {
             const y = if (self.scrolling) t.screens.active.cursor.y else start_y + @as(u32, @intCast(row));
             if (y >= t.rows) break;
             const pin = t.screens.active.pages.pin(.{ .active = .{ .y = @intCast(y) } }) orelse break;
+            pin.node.data.sixel_present = true;
             const cells = pin.cells(.all);
             for (0..cols) |col| {
                 const tile: Tile = .{ .image = image_id, .x = @intCast(col * self.cell_width), .y = @intCast(row * self.cell_height), .underneath = cells[start_x + col].sixel };
@@ -188,6 +190,11 @@ pub const Store = struct {
             var node = entry.value.*.pages.pages.first;
             while (node) |n| : (node = n.next) {
                 const page = &n.data;
+                // Image attachments move with cells. Placement, page copies,
+                // and reflow conservatively mark their destination pages, so
+                // text-only history needs only a page membership check.
+                if (!page.sixel_present) continue;
+                page.sixel_present = false;
                 for (page.rows.ptr(page.memory)[0..page.size.rows]) |*row| {
                     for (row.cells.ptr(page.memory)[0..page.size.cols]) |*cell| {
                         // Unlink descriptors removed to reclaim fragment capacity.
@@ -200,6 +207,7 @@ pub const Store = struct {
                                 id = tile.underneath;
                                 continue;
                             }
+                            page.sixel_present = true;
                             if (tile.marked) break;
                             tile.marked = true;
                             previous = id;
