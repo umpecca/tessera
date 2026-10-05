@@ -3,9 +3,13 @@
 package terminal
 
 import (
+	"errors"
+	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/creack/pty"
 )
@@ -48,7 +52,13 @@ func terminalEnvironment(environment []string, terminalTerm string) []string {
 }
 
 func (p *unixPty) Read(buf []byte) (int, error) {
-	return p.file.Read(buf)
+	n, err := p.file.Read(buf)
+	// Linux returns EIO after the PTY slave closes and buffered output drains.
+	// This is an end-of-stream notice; the process waiter supplies exit status.
+	if runtime.GOOS == "linux" && errors.Is(err, syscall.EIO) {
+		err = io.EOF
+	}
+	return n, err
 }
 
 func (p *unixPty) Write(buf []byte) (int, error) {

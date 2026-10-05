@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Treat Linux PTY hangups as end-of-stream and use the shell's process result
+  for exit notices. Clean exits now close paused terminal connections normally,
+  while nonzero process exits retain their failure status.
+
 - Fix a macOS shutdown-test startup race by waiting until its long-lived command
   child has started before cancelling both workspace runs.
 

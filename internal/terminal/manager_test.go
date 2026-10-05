@@ -98,6 +98,38 @@ func TestReadLoopReportsAShellThatEndedOnItsOwn(t *testing.T) {
 	}
 }
 
+func TestReadLoopEOFWaitsForTheProcessResult(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "clean"},
+		{name: "failed", err: errors.New("exit status 7")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session := &Session{pty: &pidTestPTY{pid: 7}, done: make(chan error, 1)}
+			managed := &ManagedSession{session: session, subscribers: map[*subscriber]struct{}{}}
+			attachment := managed.subscribe(Cursor{OutputPaused: true})
+			defer attachment.Unsubscribe()
+
+			// Force EOF to arrive before the process watcher has a result.
+			managed.readLoop()
+			if exited, _ := managed.Exited(); exited || managed.isClosed() {
+				t.Fatal("PTY EOF reported a clean exit before the process result")
+			}
+
+			session.done <- test.err
+			managed.watchProcess()
+			if exited, err := managed.Exited(); !exited || !errors.Is(err, test.err) {
+				t.Fatalf("Exited() = (%v, %v), want (true, %v)", exited, err, test.err)
+			}
+			if _, open := receiveChunk(t, attachment.Events); open {
+				t.Fatal("paused lifecycle did not close after the process exited")
+			}
+		})
+	}
+}
+
 func TestReadLoopCarriesTheErrorThatEndedTheShell(t *testing.T) {
 	failure := errors.New("read /dev/ptmx: input/output error")
 	managed := &ManagedSession{

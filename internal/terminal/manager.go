@@ -443,6 +443,11 @@ func (s *ManagedSession) readLoop() {
 			// rather than a line of output, which would land in scrollback
 			// and read like something the shell itself printed.
 			if errors.Is(err, io.EOF) {
+				// EOF only says the PTY ended. The process watcher owns the
+				// exit result, so EOF must not win a race with a failed exit.
+				if s.session.Done() != nil {
+					return
+				}
 				err = nil
 			}
 			s.markExited(err)
