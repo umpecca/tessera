@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Synchronize the subscriber-disconnect persistence test with actual command
+  startup and gated output. Verify the full transcript from a reopened database
+  and distinguish startup timeouts from command-completion failures.
+
 - Treat Linux PTY hangups as end-of-stream and use the shell's process result
   for exit notices. Clean exits now close paused terminal connections normally,
   while nonzero process exits retain their failure status.

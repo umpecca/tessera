@@ -1,6 +1,6 @@
 # Fix macOS shutdown-test readiness
 
-Status: implemented; native macOS CI confirmation pending.
+Status: complete; confirmed in macOS CI.
 
 ## Request
 
@@ -32,6 +32,8 @@ the background child before printing its readiness marker.
 - Passed `go vet ./...` and `git diff --check`.
 - Compiled `internal/runs` and `internal/shell` test executables for Darwin arm64
   and amd64 with CGO disabled.
-- Native macOS execution is unavailable on this Windows host. Confirm in macOS
-  CI, or run the focused tests above on a Mac. The timeout remains five seconds;
-  no production shutdown logic was changed.
+- Native macOS execution was unavailable on the Windows development host.
+  The subsequent [macOS arm64 CI job](https://github.com/umpecca/tessera/actions/runs/37377848086/job/111992164168)
+  passed the full Go suite on commit
+  `e6e614927a879c1482c150b33380993002428a06`, confirming the revised test on macOS.
+  The timeout remains five seconds; no production shutdown logic was changed.

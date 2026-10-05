@@ -1,6 +1,6 @@
 # Report Linux PTY hangups as shell exits
 
-Status: implemented; native Linux CI confirmation pending.
+Status: complete; confirmed in Ubuntu amd64 and macOS arm64 CI.
 
 ## Request
 
@@ -38,8 +38,13 @@ race: a clean EOF could hide a nonzero process exit.
 - Added Linux-only real PTY tests for raw EIO versus adapted EOF, buffered output
   before hangup, and preservation of other read errors. Added a Unix real-shell
   regression for paused lifecycle delivery of both exit 0 and exit 7.
-- Native Linux/macOS execution is unavailable on the Windows development host;
-  the platform-only regressions were compiled but not run. Confirm on Ubuntu:
+- Native Linux/macOS execution was unavailable on the Windows development host;
+  platform-only regressions were compiled but not run locally. The subsequent
+  [Ubuntu amd64 CI job](https://github.com/umpecca/tessera/actions/runs/37377848086/job/111992164136)
+  and [macOS arm64 CI job](https://github.com/umpecca/tessera/actions/runs/37377848086/job/111992164168)
+  passed the full Go suite on commit
+  `e6e614927a879c1482c150b33380993002428a06`, confirming the platform regressions.
+  For additional repetitions on Ubuntu:
 
   ```sh
   go test ./internal/terminal ./internal/httpapi -run 'TestLinuxPty|TestUnixTerminalExitReportsProcessStatus|TestHiddenTerminalWebSocketStopsOutputAndKeepsExitLive|TestSmallHiddenGapReplaysOverRealTerminalWebSocket' -count=20

@@ -3,6 +3,7 @@ package runs
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,15 +16,20 @@ import (
 
 func TestManagerPersistsOutputAfterSubscriberLeaves(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	databasePath := filepath.Join(t.TempDir(), "tessera.sqlite3")
+	st, err := store.Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
 
-	command := "sleep 1\nprintf 'done\\n'"
+	const readyText = "run-ready\n"
+	const outputText = "persisted-after-unsubscribe\n"
+	// Gate output so subscriber removal happens after actual shell startup
+	// and before the output being checked, independent of scheduling delays.
+	command := "printf 'run-ready\\n'\nwhile [ ! -f release-output ]; do sleep 0.05; done\nprintf 'persisted-after-unsubscribe\\n'"
 	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Milliseconds 400\nWrite-Output done"
+		command = "[Console]::WriteLine('run-ready')\nwhile (-not [System.IO.File]::Exists('release-output')) { [System.Threading.Thread]::Sleep(10) }\n[Console]::WriteLine('persisted-after-unsubscribe')"
 	}
 
 	workspace := &store.Workspace{
@@ -48,9 +54,15 @@ func TestManagerPersistsOutputAfterSubscriberLeaves(t *testing.T) {
 	}
 
 	manager := NewManager(st, &shell.Runner{})
-	defer manager.Close()
+	defer func() {
+		cleanup, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := manager.Shutdown(cleanup); err != nil {
+			t.Errorf("clean up run: %v", err)
+		}
+	}()
 
-	_, unsubscribe, runID, err := manager.Start(StartRequest{
+	events, unsubscribe, runID, err := manager.Start(StartRequest{
 		WorkspaceID: store.DefaultWorkspaceID,
 		PaneID:      "pane-test",
 		Command:     command,
@@ -60,24 +72,60 @@ func TestManagerPersistsOutputAfterSubscriberLeaves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start run: %v", err)
 	}
+	defer unsubscribe()
 	manager.mu.Lock()
 	run := manager.runs[runID]
 	manager.mu.Unlock()
 	if run == nil {
 		t.Fatalf("run %s was not registered", runID)
 	}
+	// Cold PowerShell startup on a shared Windows worker is separate from
+	// command completion. The ready marker comes from the actual process.
+	readyDeadline := time.NewTimer(60 * time.Second)
+	defer readyDeadline.Stop()
+	var observed strings.Builder
+	for !strings.Contains(observed.String(), readyText) {
+		select {
+		case event, open := <-events:
+			if !open {
+				t.Fatal("command exited before readiness")
+			}
+			if event.Type == "error" {
+				t.Fatalf("command startup failed: %s", event.Error)
+			}
+			if event.Type == "insert" {
+				observed.WriteString(event.Text)
+			}
+		case <-readyDeadline.C:
+			t.Fatalf("run %s did not produce readiness output within 60 seconds; transcript=%q", runID, run.buffer())
+		}
+	}
+	if strings.Contains(observed.String(), outputText) {
+		t.Fatal("command produced its gated output before unsubscribe")
+	}
 	unsubscribe()
+	if err := os.WriteFile(filepath.Join(workspace.Panes[0].Cwd, "release-output"), []byte("release"), 0o600); err != nil {
+		t.Fatalf("release command output: %v", err)
+	}
 
 	select {
 	case <-run.done:
 	case <-time.After(20 * time.Second):
-		t.Fatalf("run %s was still active after deadline", runID)
+		t.Fatalf("run %s was still active 20 seconds after releasing output; transcript=%q", runID, run.buffer())
 	}
 	if len(manager.ActiveRuns(store.DefaultWorkspaceID)) != 0 {
 		t.Fatalf("run %s completed but remained active", runID)
 	}
 
-	loaded, err := st.LoadWorkspace(ctx, store.DefaultWorkspaceID)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	reopened, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reopened.Close()
+	loaded, err := reopened.LoadWorkspace(ctx, store.DefaultWorkspaceID)
 	if err != nil {
 		t.Fatalf("load workspace: %v", err)
 	}
@@ -85,11 +133,8 @@ func TestManagerPersistsOutputAfterSubscriberLeaves(t *testing.T) {
 		t.Fatalf("pane count = %d, want 1", len(loaded.Panes))
 	}
 	buffer := loaded.Panes[0].BufferText
-	if !strings.Contains(buffer, command+"\n") {
-		t.Fatalf("buffer missing command/output separator: %q", buffer)
-	}
-	if !strings.Contains(buffer, "done") {
-		t.Fatalf("buffer = %q, want command output", buffer)
+	if want := command + "\n" + readyText + outputText; buffer != want {
+		t.Fatalf("persisted buffer = %q, want %q", buffer, want)
 	}
 }
 
