@@ -36,7 +36,10 @@ pub fn sixel_configure(ptr: ?*anyopaque, light: u32) callconv(.c) void {
 fn trimHistory(w: *TerminalWrapper) void {
     const pages = &w.terminal.screens.get(.primary).?.pages;
     const history = pages.total_rows -| pages.rows;
-    if (history > w.history_limit) pages.eraseRows(.{ .history = .{} }, .{ .history = .{ .y = @intCast(history - w.history_limit - 1) } });
+    if (history > w.history_limit) {
+        pages.eraseRows(.{ .history = .{} }, .{ .history = .{ .y = @intCast(history - w.history_limit - 1) } });
+        w.sixel.collection_pending = true;
+    }
 }
 
 pub fn sixel_clipboard_read(ptr: ?*anyopaque, out: [*]u8, capacity: u32) callconv(.c) u32 {
@@ -57,7 +60,13 @@ pub fn sixel_geometry(ptr: ?*anyopaque, width: u32, height: u32) callconv(.c) vo
     w.terminal.width_px = @as(u32, w.terminal.cols) * width;
     w.terminal.height_px = @as(u32, w.terminal.rows) * height;
     trimHistory(w);
+    w.sixel.collection_pending = true;
     w.sixel.collect(w.alloc, &w.terminal) catch {};
+}
+
+// Shares the full viewport's color/style conversion, with one native row only.
+pub fn sixel_viewport_row(ptr: ?*anyopaque, row: u32, out: [*]GhosttyCell, capacity: usize) callconv(.c) c_int {
+    return renderStateReadRows(ptr, row, 1, out, capacity);
 }
 
 pub fn sixel_image_count(ptr: ?*anyopaque) callconv(.c) u32 {

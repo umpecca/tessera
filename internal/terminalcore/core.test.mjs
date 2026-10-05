@@ -3,9 +3,8 @@ import fs from "node:fs/promises";
 import test from "node:test";
 
 const bytes = await fs.readFile(new URL("./ghostty-vt.wasm", import.meta.url));
-async function terminal(cols = 20, rows = 6) {
-  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
-  const e = instance.exports;
+async function terminal(cols = 20, rows = 6, sharedExports) {
+  const e = sharedExports || (await WebAssembly.instantiate(bytes, { env: { log() {} } })).instance.exports;
   let handle = e.ghostty_terminal_new(cols, rows);
   assert.ok(handle);
   e.tessera_sixel_geometry(handle, 2, 6);
@@ -50,10 +49,179 @@ async function terminal(cols = 20, rows = 6) {
     e.ghostty_wasm_free_u8_array(p, value.length);
     return value;
   }
+  function grapheme(row, col, history = false) {
+    e.ghostty_render_state_update(handle);
+    const p = e.ghostty_wasm_alloc_u8_array(128);
+    try {
+      const read = history ? e.ghostty_terminal_get_scrollback_grapheme : e.ghostty_render_state_get_grapheme;
+      const count = read(handle, row, col, p, 32);
+      assert.ok(count >= 0);
+      return [...new Uint32Array(e.memory.buffer, p, count)];
+    } finally { e.ghostty_wasm_free_u8_array(p, 128); }
+  }
   function resize(c, r) { cols = c; rows = r; e.ghostty_terminal_resize(handle, c, r); e.tessera_sixel_geometry(handle, 2, 6); }
-  return { e, get handle() { return handle; }, write, cursor, tiles, snapshot, restore, cells, resize, dispose() { e.ghostty_terminal_free(handle); } };
+  return { e, get handle() { return handle; }, write, cursor, tiles, snapshot, restore, cells, grapheme, resize, dispose() { e.ghostty_terminal_free(handle); } };
 }
 const sixel = '\x1bPq"1;1;4;12#1;2;100;0;0!4~-!4~\x1b\\';
+
+test("closed terminals leave clean initial cells when WASM page memory is reused", async () => {
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports;
+  // Browsers share one module across panes. Each former fixture loaded its own
+  // module, hiding cells left in the allocator when a terminal's pool closes.
+  for (let cycle = 0; cycle < 20; cycle++) {
+    const terminals = await Promise.all(Array.from({ length: 8 }, () => terminal(80, 24, e)));
+    try {
+      for (const t of terminals) {
+        t.write("ordinary build output for module\r\n".repeat(248));
+        t.cells();
+      }
+    } finally { for (const t of terminals) t.dispose(); }
+  }
+  for (let cycle = 0; cycle < 6; cycle++) {
+    const t = await terminal(160, 60, e);
+    try {
+      const initial = t.cells();
+      const view = new DataView(initial.buffer, initial.byteOffset, initial.byteLength);
+      for (let cell = 0; cell < 160 * 60; cell++) assert.equal(view.getUint32(cell * 16, true), 0, "new cell is blank");
+      t.write("\x1b[H" + Array.from({ length: 60 }, (_, row) => `compiling module ${row}: `.repeat(12).slice(0, 159)).join("\r\n"));
+      t.write("\x1b[5;3H" + sixel);
+      assert.equal(e.tessera_sixel_image_count(t.handle), 1);
+      for (let tick = 0; tick < 96; tick++) {
+        t.write(`\x1b[60;1Hprogress ${tick.toString().padStart(6, "0")} \x1b[1;31mÅ界é नमस्ते\x1b[0m`);
+        t.cells();
+        e.ghostty_render_state_mark_clean(t.handle);
+      }
+      assert.equal(e.tessera_sixel_image_count(t.handle), 1);
+      assert.deepEqual(t.grapheme(59, 19), [0x65, 0x301]);
+      const cells = t.cells();
+      t.restore(t.snapshot());
+      assert.deepEqual(t.cells(), cells);
+    } finally { t.dispose(); }
+  }
+});
+
+test("image tracking preserves partial OSC and UTF-8 when switching back to ordinary parsing", async () => {
+  const whole = await terminal(), split = await terminal();
+  try {
+    whole.write(sixel); split.write(sixel);
+    const link = "\x1b[4;1H\x1b]8;;https://example.test\x1b\\linked\x1b]8;;\x1b\\";
+    whole.write(link);
+    split.write(link.slice(0, 24)); split.restore(split.snapshot()); split.write(link.slice(24));
+    assert.deepEqual(split.cells(), whole.cells());
+    const tail = new TextEncoder().encode("\x1b[H\x1b[2J😀é");
+    whole.write(tail);
+    split.write(tail.slice(0, 9));
+    assert.equal(split.e.tessera_sixel_image_count(split.handle), 0);
+    split.restore(split.snapshot()); split.write(tail.slice(9));
+    assert.deepEqual(split.cells(), whole.cells());
+    assert.deepEqual(split.grapheme(0, 2), [0x65, 0x301]);
+    split.write(sixel + "\x1b[H\x1b[2J");
+    assert.equal(split.e.tessera_sixel_image_count(split.handle), 0, "placement and erasure in one image-free write");
+  } finally { split.dispose(); whole.dispose(); }
+});
+
+test("image-free row updates preserve attachments, then mutations reclaim them before any render", async () => {
+  for (const erase of ["xxxx", "界界", "\x1b[4X", "\x1b[K", "\x1b[2K", "\x1b[18P", "\x1b[18@", "\x1b[4h" + "x".repeat(20)]) {
+    const t = await terminal(20, 6);
+    try {
+      t.write('\x1b[2;3H\x1bPq"1;1;8;6#1;2;100;0;0!8~\x1b\\');
+      const fragments = t.tiles();
+      const pixels = t.e.tessera_sixel_image_pixels(t.handle, 1);
+      for (let tick = 0; tick < 50; tick++) {
+        t.write(`\x1b[6;1H\r\x1b[32mstatus ${tick}\x1b[0m\x1b[K`);
+        t.cells(); t.e.ghostty_render_state_mark_clean(t.handle);
+      }
+      assert.deepEqual(t.tiles(), fragments);
+      assert.equal(t.e.tessera_sixel_image_pixels(t.handle, 1), pixels);
+      t.write("\x1b[2;3H" + erase);
+      assert.equal(t.e.tessera_sixel_image_count(t.handle), 0, JSON.stringify(erase));
+      assert.equal(t.e.tessera_sixel_image_pixels(t.handle, 1), 0);
+    } finally { t.dispose(); }
+  }
+});
+
+test("single native row reads match full viewport bytes and reject out-of-range requests", async () => {
+  const t = await terminal(40, 12);
+  const p = t.e.ghostty_wasm_alloc_u8_array(40 * 16);
+  try {
+    t.write("\x1b[31;1mÅ 界 é नमस्ते\x1b[0m\x1b[4;1H\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\");
+    const full = t.cells();
+    for (let row = 0; row < 12; row++) {
+      assert.equal(t.e.tessera_sixel_viewport_row(t.handle, row, p, 40), 40);
+      assert.deepEqual(new Uint8Array(t.e.memory.buffer, p, 40 * 16), full.subarray(row * 40 * 16, (row + 1) * 40 * 16));
+    }
+    assert.equal(t.e.tessera_sixel_viewport_row(t.handle, 12, p, 40), -1);
+    assert.equal(t.e.tessera_sixel_viewport_row(t.handle, 0, p, 39), -1);
+    assert.equal(t.e.tessera_sixel_viewport_row(t.handle, 0xffffffff, p, 40), -1);
+  } finally { t.e.ghostty_wasm_free_u8_array(p, 40 * 16); t.dispose(); }
+});
+
+for (const [name, text, first] of [
+  ["combining", "é output", [0x65, 0x301]],
+  ["Devanagari", "देवनागरी output", [0x926, 0x947]],
+  ["mixed Unicode", "ÅÉgyp 界 é देवनागरी output", [0xc5]],
+]) test(`${name} survives page growth, history eviction, reflow, and snapshots`, async () => {
+  const t = await terminal(80, 24);
+  try {
+    const chunk = (`\x1b[32m${text}\x1b[0m\r\n`).repeat(128);
+    for (let batch = 0; batch < 100; batch++) {
+      t.write(chunk);
+      // Exercise both deferred render updates and clean-state updates.
+      if (batch % 2) { t.cells(); t.e.ghostty_render_state_mark_clean(t.handle); }
+    }
+    assert.equal(t.e.ghostty_terminal_get_scrollback_length(t.handle), 10000);
+    assert.deepEqual(t.grapheme(0, 0), first);
+    assert.deepEqual(t.grapheme(0, 0, true), first);
+    t.resize(100, 30);
+    const cells = t.cells(), cursor = t.cursor();
+    assert.deepEqual(t.grapheme(0, 0), first);
+    t.restore(t.snapshot());
+    assert.deepEqual(t.cells(), cells);
+    assert.deepEqual(t.cursor(), cursor);
+    assert.deepEqual(t.grapheme(0, 0), first);
+    assert.deepEqual(t.grapheme(0, 0, true), first);
+    t.write("\x1b[Hé देवनागरी\x1b[K");
+    assert.deepEqual(t.grapheme(0, 0), [0x65, 0x301]);
+    assert.deepEqual(t.grapheme(0, 2), [0x926, 0x947]);
+  } finally { t.dispose(); }
+});
+
+test("dense Sixel fits a 16 MiB budget and retains pixels through snapshots", async () => {
+  const t = await terminal(80, 24);
+  try {
+    assert.equal(t.e.tessera_sixel_image_settings(t.handle, 16, 1), 1);
+    const stripes = Array.from({ length: 120 }, (_, band) => band % 2 ? "#2!1024~-" : "#1!1024~-").join("");
+    const image = '\x1bPq"1;1;1024;720#1;2;100;0;0#2;2;0;100;0' + stripes + "\x1b\\";
+    // A snapshot during construction must preserve its growth capacity.
+    const midpoint = Math.floor(image.length / 2);
+    t.write(image.slice(0, midpoint));
+    t.restore(t.snapshot());
+    t.write(image.slice(midpoint));
+    assert.equal(t.e.tessera_sixel_image_count(t.handle), 1);
+    function pixels() {
+      const info = t.e.ghostty_wasm_alloc_u8_array(28);
+      try {
+        assert.equal(t.e.tessera_sixel_image_info(t.handle, 0, info), 1);
+        const [, width, height, stride] = new Uint32Array(t.e.memory.buffer, info, 7);
+        assert.equal(width, 1024); assert.equal(height, 720); assert.equal(stride, 1024);
+        const p = t.e.tessera_sixel_image_pixels(t.handle, 1);
+        assert.ok(p, "image pixels are retained rather than evicted");
+        const data = new Uint32Array(t.e.memory.buffer, p, stride * height);
+        for (let y = 0; y < height; y++) {
+          const expected = Math.floor(y / 6) % 2 ? 0xff00ff00 : 0xff0000ff;
+          for (let x = 0; x < width; x++) assert.equal(data[y * stride + x], expected);
+        }
+      } finally { t.e.ghostty_wasm_free_u8_array(info, 28); }
+    }
+    pixels();
+    assert.ok(t.tiles().length > 0);
+    t.restore(t.snapshot());
+    pixels();
+    t.write("ok\x1b[6n");
+    assert.deepEqual(t.cursor(), [2, 23]);
+  } finally { t.dispose(); }
+});
 
 test("decoded storage evicts the oldest image deterministically", async () => {
   const t = await terminal(80, 24);

@@ -7,8 +7,98 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestRepeatedUnicodePageGrowth(t *testing.T) {
+	for _, text := range []string{"é output", "देवनागरी output", "ÅÉgyp 界 é देवनागरी output"} {
+		t.Run(text, func(t *testing.T) {
+			c, err := New(80, 24)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			data := []byte(strings.Repeat("\x1b[32m"+text+"\x1b[0m\r\n", 128))
+			for batch := range 100 {
+				if err := c.Write(data); err != nil {
+					t.Fatalf("batch %d: %v", batch, err)
+				}
+			}
+			if err := c.Resize(100, 30, 9, 20); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.Snapshot(); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Write([]byte("\x1b[Hé देवनागरी\x1b[6n")); err != nil {
+				t.Fatal(err)
+			}
+			if reply, err := c.Replies(); err != nil || string(reply) != "\x1b[1;8R" {
+				t.Fatalf("reply=%q err=%v", reply, err)
+			}
+		})
+	}
+}
+
+func TestDenseSixelFitsImageBudget(t *testing.T) {
+	c, err := New(80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.call("tessera_sixel_image_settings", c.handle, 16, 1); err != nil {
+		t.Fatal(err)
+	}
+	image := "\x1bPq\"1;1;1024;720#1;2;100;0;0#2;2;0;100;0" + strings.Repeat("#1!1024~-#2!1024~-", 60) + "\x1b\\"
+	if err := c.Write([]byte(image)); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := c.call("tessera_sixel_image_count", c.handle); err != nil || count != 1 {
+		t.Fatalf("image count=%d err=%v", count, err)
+	}
+	if pixels, err := c.call("tessera_sixel_image_pixels", c.handle, 1); err != nil || pixels == 0 {
+		t.Fatalf("image pixel pointer=%d err=%v", pixels, err)
+	}
+	if _, err := c.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestImageCollectionSurvivesCleanRenderingAndReclaimsOverwrites(t *testing.T) {
+	for _, overwrite := range []string{"xxxx", "界界", "\x1b[4X", "\x1b[K", "\x1b[2K", "\x1b[78P", "\x1b[78@"} {
+		t.Run(fmt.Sprintf("%q", overwrite), func(t *testing.T) {
+			c, err := New(80, 24)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			if err := c.Write([]byte("\x1b[2;3H\x1bPq\"1;1;32;6#1;2;100;0;0!32~\x1b\\")); err != nil {
+				t.Fatal(err)
+			}
+			for tick := range 50 {
+				if err := c.Write([]byte(fmt.Sprintf("\x1b[24;1H\r\x1b[32mstatus %d\x1b[0m\x1b[K", tick))); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := c.call("ghostty_render_state_update", c.handle); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := c.call("ghostty_render_state_mark_clean", c.handle); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if count, err := c.call("tessera_sixel_image_count", c.handle); err != nil || count != 1 {
+				t.Fatalf("retained image count=%d err=%v", count, err)
+			}
+			if err := c.Write([]byte("\x1b[2;3H" + overwrite)); err != nil {
+				t.Fatal(err)
+			}
+			if count, err := c.call("tessera_sixel_image_count", c.handle); err != nil || count != 0 {
+				t.Fatalf("overwritten image count=%d err=%v", count, err)
+			}
+		})
+	}
+}
 
 func TestWazeroSnapshotRestoresInJavaScript(t *testing.T) {
 	node, err := exec.LookPath("node")

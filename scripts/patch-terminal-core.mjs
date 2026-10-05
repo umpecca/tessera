@@ -33,6 +33,9 @@ await edit("src/terminal/page.zig", (source) => {
   source = replace(source, "        // This whole operation breaks integrity until the end.", "        self.sixel_present = self.sixel_present or other.sixel_present;\n\n        // This whole operation breaks integrity until the end.");
   return source;
 });
+await edit("src/terminal/page.zig", (source) => source.includes("// Tessera row image membership") ? source : replace(source,
+  "    _padding: u22 = 0,",
+  "    // Tessera row image membership; rebuilt by collection after mutations.\n    sixel_present: bool = false,\n    _padding: u21 = 0,"));
 await edit("src/terminal/PageList.zig", (source) => {
   const marker = "    fn copyRowMetadata(self: *ReflowCursor, other: *const Row) void {";
   if (source.includes("// Reflow may move Sixel cells")) return source;
@@ -40,6 +43,30 @@ await edit("src/terminal/PageList.zig", (source) => {
         // Reflow may move Sixel cells to any destination page. Check these
         // pages once after resizing; ordinary copies carry page membership.
         self.page.sixel_present = true;`);
+});
+await edit("src/terminal/PageList.zig", (source) => {
+  if (source.includes("// Tessera: initialize recycled initial page buffers.")) return source;
+  source = replace(source, `        // In runtime safety modes we have to memset because the Zig allocator
+        // interface will always memset to 0xAA for undefined. In non-safe modes
+        // we use a page allocator and the OS guarantees zeroed memory.
+        if (comptime std.debug.runtime_safety) @memset(page_buf, 0);`,
+    `        // Tessera: initialize recycled initial page buffers.
+        // WASM's page allocator reuses freed heap memory, including allocations
+        // from closed terminals. initBuf initializes row offsets, not cells.
+        @memset(page_buf, 0);`);
+  const before = source.includes("// Tessera: grown pages may reuse dirty WASM allocation bytes.")
+    ? `    // Tessera: grown pages may reuse dirty WASM allocation bytes.
+    // Pooled pages are cleared on return; unpooled pages need blank cells
+    // before initBuf and cloning, including cells beyond the copied rows.
+    if (!pooled or std.debug.runtime_safety) @memset(page_buf, 0);`
+    : `    // Required only with runtime safety because allocators initialize
+    // to undefined, 0xAA.
+    if (comptime std.debug.runtime_safety) @memset(page_buf, 0);`;
+  return replace(source, before,
+    `    // Tessera: initialize every growing page, including fresh pool items.
+    // Pool return clears used page memory, but newly allocated items and any
+    // capacity beyond a former layout may still contain recycled heap bytes.
+    @memset(page_buf, 0);`);
 });
 await edit("src/terminal/c/terminal.zig", (source) => {
   if (source.includes("// Tessera Sixel API")) return source.slice(0, source.indexOf("// Tessera Sixel API")) + awaitExtension;
@@ -57,6 +84,29 @@ await edit("src/terminal/c/terminal.zig", (source) => {
   source = replace(source, "    wrapper.stream.deinit();", "    wrapper.sixel.deinit(alloc);\n    wrapper.stream.deinit();");
   source = replace(source, "    wrapper.stream.nextSlice(data[0..len]) catch return;", "    wrapper.stream.nextSlice(data[0..len]) catch return;\n    wrapper.sixel.collect(wrapper.alloc, &wrapper.terminal) catch {}; ");
   return source + awaitExtension;
+});
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (!source.includes("// Tessera resize invalidates image membership")) source = replace(source,
+    "    wrapper.terminal.resize(wrapper.alloc, @intCast(cols), @intCast(rows)) catch return;",
+    "    wrapper.terminal.resize(wrapper.alloc, @intCast(cols), @intCast(rows)) catch return;\n    // Tessera resize invalidates image membership, including reflow copies.\n    wrapper.sixel.collection_pending = true;\n    wrapper.sixel.collect(wrapper.alloc, &wrapper.terminal) catch {};");
+  return source;
+});
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("fn renderStateReadRows(")) return source;
+  const start = source.indexOf("pub fn renderStateGetViewport(");
+  const end = source.indexOf("/// Get grapheme codepoints", start);
+  if (start < 0 || end < 0) throw new Error("Pinned viewport reader changed");
+  let reader = source.slice(start, end);
+  reader = replace(reader, "pub fn renderStateGetViewport(", "fn renderStateReadRows(");
+  reader = replace(reader, "    ptr: ?*anyopaque,", "    ptr: ?*anyopaque,\n    first: usize,\n    count: usize,");
+  reader = replace(reader, "    const rows = rs.rows;", "    if (first > rs.rows or count > rs.rows - first) return -1;\n    const rows = count;");
+  reader = replace(reader, "    for (0..rows) |y| {", "    for (first..first + rows) |y| {");
+  return source.slice(0, start) + `pub fn renderStateGetViewport(ptr: ?*anyopaque, out: [*]GhosttyCell, capacity: usize) callconv(.c) c_int {
+    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return -1));
+    return renderStateReadRows(ptr, 0, wrapper.render_state.rows, out, capacity);
+}
+
+` + reader + source.slice(end);
 });
 
 await edit("src/terminal/c/terminal.zig", (source) => {
@@ -147,7 +197,7 @@ await edit("src/terminal/stream.zig", (source) => {
 await edit("src/lib_vt.zig", (source) => {
   const marker = '@export(&c.terminal_write, .{ .name = "ghostty_terminal_write" });';
   source = source.replace(/^\s*@export\(&c\.terminal\.sixel_[^\n]+\n/gm, "");
-  const exports = ["version", "configure", "geometry", "image_count", "image_info", "image_pixels", "image_settings", "image_settings_read", "clear_images", "tiles", "snapshot_export", "snapshot_release", "snapshot_data", "snapshot_import", "clipboard_read"];
+  const exports = ["version", "configure", "geometry", "image_count", "image_info", "image_pixels", "image_settings", "image_settings_read", "clear_images", "tiles", "viewport_row", "snapshot_export", "snapshot_release", "snapshot_data", "snapshot_import", "clipboard_read"];
   return replace(source, marker, marker + "\n" + exports.map((name) => `        @export(&c.terminal.sixel_${name}, .{ .name = "tessera_sixel_${name}" });`).join("\n"));
 });
 for (const file of ["props_uucode.zig", "symbols_uucode.zig"]) {
@@ -167,4 +217,51 @@ await edit("src/terminal/c/terminal.zig", (source) => {
   source = replace(source, "    wrapper.sixel = .{};", "    wrapper.history_limit = scrollback_limit;\n    wrapper.sixel = .{};");
   source = replace(source, "    wrapper.stream.nextSlice(data[0..len]) catch return;", "    wrapper.stream.nextSlice(data[0..len]) catch return;\n    trimHistory(wrapper);");
   return source;
+});
+
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("const ImageResponseHandler = struct")) return source;
+  source = replace(source, "const ResponseStream = stream.Stream(ResponseHandler);", `const ResponseStream = stream.Stream(ResponseHandler);
+
+// Specialize the parser at the write boundary. Ordinary output keeps the
+// original handler with no per-character image branch or image lookup.
+const ImageResponseHandler = struct {
+    base: *ResponseHandler,
+    pub fn vt(self: *ImageResponseHandler, comptime action: Action.Tag, value: Action.Value(action)) !void {
+        self.base.sixel.beforeAction(self.base.terminal, action, value);
+        try self.base.vt(action, value);
+    }
+    pub fn observeControl(self: *ImageResponseHandler, state: anytype, ch: u8) !void {
+        try self.base.observeControl(state, ch);
+    }
+    pub fn graphicsQuery(self: *ImageResponseHandler, input: anytype) !bool {
+        return self.base.graphicsQuery(input);
+    }
+    pub fn cancelDcs(self: *ImageResponseHandler) void { self.base.cancelDcs(); }
+};
+const ImageResponseStream = stream.Stream(ImageResponseHandler);
+
+// Keep the specialized parser's code and stack frame out of the text hot path.
+noinline fn writeWithImageTracking(wrapper: *TerminalWrapper, input: []const u8) !void {
+    // Transfer both state fields, including partial UTF-8/DCS/OSC. The canonical
+    // handler owns buffers; the temporary stream borrows them without deinit.
+    var images: ImageResponseStream = .{
+        .handler = .{ .base = &wrapper.stream.handler },
+        .parser = wrapper.stream.parser,
+        .utf8decoder = wrapper.stream.utf8decoder,
+    };
+    defer {
+        wrapper.stream.parser = images.parser;
+        wrapper.stream.utf8decoder = images.utf8decoder;
+    }
+    try images.nextSlice(input);
+}`);
+  return replace(source, "    wrapper.stream.nextSlice(data[0..len]) catch return;", `    if (wrapper.sixel.images.count() == 0) {
+        // New placement already requests final collection, even when the image
+        // and its overwrite arrive together in this previously image-free write.
+        wrapper.sixel.collection_pending = true;
+        wrapper.stream.nextSlice(data[0..len]) catch return;
+    } else {
+        writeWithImageTracking(wrapper, data[0..len]) catch return;
+    }`);
 });

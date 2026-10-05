@@ -6,6 +6,7 @@ import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
 import { installTerminalSelection } from "./terminal-selection.mjs";
 import { plainRendererStatistics, setPlainRendererEnabled } from "./terminal-plain-renderer.mjs";
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
+import { TerminalInputBuffer } from "./terminal-input-buffer.mjs";
 
 function loadTerminalClass(overrides = {}) {
   const source = readFileSync(new URL("./terminal-entry.js", import.meta.url), "utf8");
@@ -15,6 +16,7 @@ function loadTerminalClass(overrides = {}) {
     installTerminalSelection,
     plainRendererStatistics,
     setPlainRendererEnabled,
+    TerminalInputBuffer,
     __TESSERA_CORE_ID__: "test",
     SixelRenderer: class { prune() {} clear() {} },
     ...overrides,
@@ -86,6 +88,55 @@ test("ordinary text and fallback symbols use separate font stacks", () => {
   assert.equal(term.renderer.tesseraSymbolFontFamily, '"Fira Code", "Noto Sans Symbols 2", monospace');
   assert.equal(term.fullRedrawPending, true);
   assert.equal(frames, 1);
+});
+
+test("canvas context loss retains output and redraws text and images on restoration", () => {
+  const canvas = new EventTarget(), paints = [], requests = [], resizes = [];
+  let lost = false, painted = 0, writes = 0, clearImages = 0, loseDuringPaint = false;
+  class GhosttyTerminal {
+    constructor(options) {
+      this.options = options; this.cols = 80; this.rows = 24;
+      this.viewportY = 0; this.scrollbarOpacity = 0; this.lastCursorY = 0;
+      this.cursorMoveEmitter = { fire() {} };
+      this.wasmTerm = { getCursor: () => ({ y: 0 }) };
+    }
+    onScroll() {}
+    open() {
+      this.isOpen = true;
+      this.renderer = { canvas, ctx: { isContextLost: () => lost }, devicePixelRatio: 1,
+        resize(...args) { resizes.push(args); },
+        render(_buffer, force) { paints.push(force); if (loseDuringPaint) lost = true; } };
+    }
+    write() { writes++; }
+    dispose() { this.isDisposed = true; }
+  }
+  const Terminal = loadTerminalClass({ GhosttyTerminal, installTerminalSelection: () => null,
+    SixelRenderer: class { prune() {} clear() { clearImages++; } },
+    renderScheduler: { request() { requests.push(true); }, noteOutput() {}, unregister() {} } });
+  const term = new Terminal({ cursorBlinkEnabled: false });
+  term.open({}); term.outputTiming = { painted() { painted++; } };
+  term.renderScheduledFrame(); assert.equal(painted, 1);
+  lost = true; // The context can become lost before the event is dispatched.
+  term.write("output while graphics unavailable"); term.renderScheduledFrame();
+  assert.equal(writes, 1); assert.equal(paints.length, 1); assert.equal(painted, 1);
+  const event = new Event("contextlost", { cancelable: true });
+  canvas.dispatchEvent(event);
+  assert.equal(event.defaultPrevented, false, "2D automatic restoration remains enabled");
+  assert.equal(term.fullRedrawPending, true);
+  const requestsBeforeRestore = requests.length;
+  lost = false; canvas.dispatchEvent(new Event("contextrestored"));
+  assert.deepEqual(resizes, [[80, 24]]); assert.equal(clearImages, 1);
+  assert.equal(requests.length, requestsBeforeRestore + 1, "restoration schedules a paint even without new output");
+  term.renderScheduledFrame(); assert.equal(paints.at(-1), true); assert.equal(painted, 2);
+  term.renderScheduledFrame(); assert.equal(paints.at(-1), false);
+  const paintedBeforeLoss = painted;
+  loseDuringPaint = true; term.renderScheduledFrame();
+  assert.equal(painted, paintedBeforeLoss, "a context lost during painting does not acknowledge output");
+  assert.equal(term.fullRedrawPending, true);
+  term.dispose(); const resizeCount = resizes.length, requestCount = requests.length;
+  canvas.dispatchEvent(new Event("contextrestored")); canvas.dispatchEvent(new Event("contextlost"));
+  assert.equal(resizes.length, resizeCount); assert.equal(requests.length, requestCount);
+  assert.equal(term.canvasContextRecovery, null, "disposed terminals release their recovery listeners");
 });
 
 test("same-grid geometry forces a full redraw after clearing the canvas", () => {

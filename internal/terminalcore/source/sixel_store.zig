@@ -34,6 +34,34 @@ pub const Store = struct {
     free_tiles: std.ArrayList(u18) = .{},
     next_image: u32 = 1,
     revision: u32 = 1,
+    collection_pending: bool = true,
+
+    // Cursor-only actions and writes to image-free rows cannot remove an
+    // attachment. Keep this separate from renderer dirty flags, which clients
+    // may clear at any time. Unknown/structural actions take the full scan.
+    pub inline fn beforeAction(self: *Store, t: *Terminal, comptime action: anytype, value: anytype) void {
+        if (self.collection_pending) return;
+        switch (action) {
+            .print => self.collection_pending = printMayChangeAttachments(t, value.cp),
+            .erase_line_right, .erase_line_left, .erase_line_complete,
+            .erase_line_right_unless_pending_wrap, .erase_chars, .delete_chars, .insert_blanks,
+            => self.collection_pending = t.screens.active.cursor.page_row.sixel_present,
+            .carriage_return, .backspace, .cursor_up, .cursor_down, .cursor_left, .cursor_right,
+            .cursor_pos, .cursor_col, .cursor_row, .cursor_col_relative, .cursor_row_relative,
+            .cursor_style, .set_attribute, .device_status, .device_attributes,
+            => {},
+            else => self.collection_pending = true,
+        }
+    }
+
+    // Keep conservative image checks out of the ordinary parser's hot print
+    // function. Most writes have no images or already requested collection.
+    noinline fn printMayChangeAttachments(t: *Terminal, cp: u21) bool {
+        const cursor = &t.screens.active.cursor;
+        const right = if (cursor.x > t.scrolling_region.right) t.cols else t.scrolling_region.right + 1;
+        return cursor.page_row.sixel_present or cursor.pending_wrap or
+            @as(usize, cursor.x) + 2 >= right or cp > 127 or t.modes.get(.insert);
+    }
 
     pub fn deinit(self: *Store, alloc: Allocator) void {
         self.decoder.deinit(alloc);
@@ -72,6 +100,7 @@ pub const Store = struct {
                 const page = &n.data;
                 for (page.rows.ptr(page.memory)[0..page.size.rows]) |*row| {
                     for (row.cells.ptr(page.memory)[0..page.size.cols]) |*cell| cell.sixel = 0;
+                    row.sixel_present = false;
                     row.dirty = true;
                 }
                 page.sixel_present = false;
@@ -129,6 +158,7 @@ pub const Store = struct {
         defer self.decoder.deinit(alloc);
         if (self.decoder.failed or self.decoder.width == 0 or self.decoder.height == 0) return;
         self.enforceBudget(alloc, self.decoder.pixels.len * 4);
+        self.collection_pending = true;
         try self.collect(alloc, t);
         const d = &self.decoder;
         const cursor = t.screens.active.cursor;
@@ -143,6 +173,7 @@ pub const Store = struct {
             alloc.free(self.images.values()[0].pixels);
             _ = self.images.orderedRemove(self.images.keys()[0]);
             self.revision +%= 1;
+            self.collection_pending = true;
             try self.collect(alloc, t);
         }
         const image_id = self.next_image;
@@ -160,6 +191,7 @@ pub const Store = struct {
             if (y >= t.rows) break;
             const pin = t.screens.active.pages.pin(.{ .active = .{ .y = @intCast(y) } }) orelse break;
             pin.node.data.sixel_present = true;
+            pin.rowAndCell().row.sixel_present = true;
             const cells = pin.cells(.all);
             for (0..cols) |col| {
                 const tile: Tile = .{ .image = image_id, .x = @intCast(col * self.cell_width), .y = @intCast(row * self.cell_height), .underneath = cells[start_x + col].sixel };
@@ -179,10 +211,14 @@ pub const Store = struct {
             t.screens.active.cursor.pending_wrap = false;
         }
         self.revision +%= 1;
+        self.collection_pending = true;
         t.flags.dirty.clear = true;
     }
 
     pub fn collect(self: *Store, alloc: Allocator, t: *Terminal) !void {
+        if (!self.collection_pending) return;
+        self.collection_pending = false;
+        errdefer self.collection_pending = true;
         if (self.images.count() == 0 and self.tiles.items.len == 0) return;
         for (self.tiles.items) |*tile| tile.marked = false;
         var screens = t.screens.all.iterator();
@@ -196,6 +232,7 @@ pub const Store = struct {
                 if (!page.sixel_present) continue;
                 page.sixel_present = false;
                 for (page.rows.ptr(page.memory)[0..page.size.rows]) |*row| {
+                    row.sixel_present = false;
                     for (row.cells.ptr(page.memory)[0..page.size.cols]) |*cell| {
                         // Unlink descriptors removed to reclaim fragment capacity.
                         var previous: u18 = 0;
@@ -208,6 +245,7 @@ pub const Store = struct {
                                 continue;
                             }
                             page.sixel_present = true;
+                            row.sixel_present = true;
                             if (tile.marked) break;
                             tile.marked = true;
                             previous = id;

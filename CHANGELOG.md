@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- Document unresolved Windows Chrome terminal graphics stalls and rare canvas
+  corruption, including tested scope, recovery guidance, and investigation
+  results. Refresh README terminal behavior, validation instructions, and Local
+  HTTPS support.
+
+- Recover terminal canvases after browser graphics context loss. Preserve output
+  while graphics are unavailable, restore the drawing state, recreate image
+  bitmaps, and repaint retained content in both terminal renderers.
+
+- Skip retained-image cleanup after writes that cannot change image attachments,
+  while reclaiming overwritten and evicted images immediately. Read only needed
+  native rows for small terminal paints, retaining one bulk read for full paints.
+  Create browser image bitmaps when their visible fragments are painted, avoiding
+  eager pixel copies for images retained in history or on the alternate screen.
+
+- Fix native terminal crashes during sustained combining-character and
+  Devanagari output by clearing reused memory before growing terminal pages.
+  Preserve graphemes across scrolling, history eviction, reflow, and snapshots.
+- Clear initial and pooled terminal page memory as well, fixing native crashes
+  after repeatedly closing and opening terminals with image and Unicode output.
+- Grow Sixel raster width and height independently. Dense 1024x720 images now
+  fit the configured budget instead of wasting width and being rejected; keep
+  transient-copy accounting and decoded-image limits enforced.
+
+- Reuse a bounded browser terminal WASM input buffer across output, reset, and
+  snapshot restore; release temporary oversized writes and retained memory on
+  disposal. Align terminal rectangles, images, damage clips, and decorations to
+  physical pixels, allowing incremental paints at fractional display scaling.
+  Round canvas size allocation and comparisons consistently for odd grids.
+
+- Disable browser writing suggestions and spellchecking on terminal input
+  surfaces, preventing Edge's writing-assistance marker from appearing over
+  terminal windows. Disable writing suggestions on window title fields too.
+
+- Add the Operator theme with charcoal surfaces, mint active-window glow,
+  compact title bars, dotted grips, and minimize/maximize/restore/close controls.
+  Keep the title bar accessible when maximized, use unsuffixed names for new
+  Operator panes, and confirm closing live shells. Optional browser-local
+  window wobble adds bounded tilt/stretch during drag without resizing terminal
+  content; reduced motion and Older Mac mode disable it.
+
+- Read and decode each terminal viewport at most once per paint, sharing it
+  across text, selection, hover, cursor, and image rows. Keep subsequent frames
+  fresh, preserve independent row copies, and avoid eager reads for idle or
+  history-only frames.
+
+- Preserve incremental terminal painting while Sixel images are visible. Redraw
+  fragments only in repainted rows, protect neighboring glyph edges, and keep
+  transparency, selection, cursor, scrollbar, and recovery layering intact.
+
 - Catch up small terminal visibility and reconnect gaps through ordered replay,
   capped at 64 KiB and 128 events. Keep snapshots for larger gaps, overflow, and
   interrupted imports; preserve hidden delivery pauses and clipboard suppression.

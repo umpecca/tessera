@@ -5,6 +5,7 @@ import {
 } from "./clipboard-bridge.mjs";
 import { compatibilityDiagnostics, detectCompatibility } from "./compatibility.mjs";
 import { CommandWheel } from "./command-wheel.mjs";
+import { WindowWobble } from "./window-wobble.mjs";
 import {
   basicSetup,
   EditorSelection,
@@ -214,12 +215,15 @@ const terminalOutputCoalescingStorageKey = "tessera.terminal-output-coalescing.v
 let terminalOutputCoalescing = false;
 const terminalBacklogLimitStorageKey = "tessera.terminal-output-backlog.v1";
 let terminalBacklogLimit = "auto";
+const windowWobbleStorageKey = "tessera.window-wobble.v1";
+let windowWobbleEnabled = true;
 try {
   olderMacMode = window.localStorage.getItem(olderMacModeStorageKey) === "true";
   experimentalTerminalRenderer = window.localStorage.getItem(experimentalTerminalRendererStorageKey) !== "false";
   terminalPaintCoalescing = window.localStorage.getItem(terminalPaintCoalescingStorageKey) !== "false";
   terminalOutputCoalescing = window.localStorage.getItem(terminalOutputCoalescingStorageKey) === "true";
   terminalBacklogLimit = normalizeTerminalBacklogLimit(window.localStorage.getItem(terminalBacklogLimitStorageKey));
+  windowWobbleEnabled = window.localStorage.getItem(windowWobbleStorageKey) !== "false";
 } catch {
   // Storage can be unavailable in hardened or private browser contexts.
 }
@@ -263,9 +267,24 @@ const themes = {
   "oled-terminal": {
     label: "OLED Terminal",
   },
+  operator: {
+    label: "Operator",
+  },
 };
 let defaultTheme = defaultThemeID;
 let themeID = defaultThemeID;
+const reducedWindowMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const windowWobble = new WindowWobble({
+  enabled: () => themeID === "operator" && windowWobbleEnabled && !olderMacMode && !reducedWindowMotion.matches,
+});
+reducedWindowMotion.addEventListener("change", () => windowWobble.stop());
+document.addEventListener("visibilitychange", () => { if (document.hidden) windowWobble.stop(); });
+
+function setWindowWobbleEnabled(enabled) {
+  windowWobbleEnabled = enabled === true;
+  saveBrowserSetting(windowWobbleStorageKey, windowWobbleEnabled);
+  if (!windowWobbleEnabled) windowWobble.stop();
+}
 
 const tesseraEditorTheme = EditorView.theme({
   "&": {
@@ -455,12 +474,20 @@ function setTerminalBacklogLimit(value) {
 }
 
 function applyTheme(id, { save = true } = {}) {
+  windowWobble.stop();
   themeID = themes[id] ? id : defaultThemeID;
   if (themeID !== "oled-terminal") {
     rectangles.forEach((rect) => setOLEDMoveMode(rect, false));
   }
   document.documentElement.dataset.theme = themeID;
   reflowDockedPanesForTheme();
+  // Operator puts its title bar inside the window; other themes use an
+  // external tab. Re-measure contents after the chrome changes, never on move.
+  for (const rect of rectangles) {
+    rect.editor?.requestMeasure();
+    requestTerminalFit(rect);
+  }
+  scheduleTerminalVisibilityUpdate();
   if (save) {
     scheduleUserSettingsSave();
   }
@@ -1449,9 +1476,11 @@ function startMoving(event, rect) {
     original: { ...rect },
   };
   rect.element.setPointerCapture(event.pointerId);
+  windowWobble.start(rect.element, rect.x, rect.y, point.x - rect.x, point.y - rect.y);
 }
 
 function startResizing(event, rect, handle) {
+  windowWobble.stop();
   if (themeID === "oled-terminal" && rect.oledMoveMode && event.button === 0) {
     startMoving(event, rect);
     return;
@@ -1520,6 +1549,7 @@ function continueInteraction(event) {
     };
     clampIntoBoard(next);
     setRectangle(interaction.rect, next);
+    windowWobble.move(interaction.rect.x, interaction.rect.y);
     return;
   }
 
@@ -1549,6 +1579,8 @@ function finishInteraction(event) {
 
   if (finishedInteraction.type === "move") {
     setOLEDMoveMode(finishedInteraction.rect, false);
+    if (event.type === "pointercancel") windowWobble.stop();
+    else windowWobble.release();
   }
 
 }
@@ -1626,6 +1658,11 @@ function createRectangle(x, y, width, height, options = {}) {
     syncActiveTextEditorTab(rect);
   }
   element.dataset.paneId = rect.id;
+  element.addEventListener("lostpointercapture", (event) => {
+    if (interaction?.rect === rect && interaction.id === event.pointerId) {
+      finishInteraction({ pointerId: event.pointerId, type: "pointercancel" });
+    }
+  });
   element.dataset.paneKind = rect.kind;
   element.dataset.oledMoveMode = "false";
   element.style.setProperty("--pane-editor-font-size", `${rect.fontSize}px`);
@@ -1669,6 +1706,7 @@ function createRectangle(x, y, width, height, options = {}) {
   const grip = document.createElement("div");
   grip.className = "window-grip";
   grip.addEventListener("pointerdown", (event) => {
+    if (themeID === "operator") return; // The dotted grip drags; right-click still opens the window menu.
     if (event.button === 0) {
       // Keep the menu below the grip so a second click still lands on the
       // title bar and can complete a double-click.
@@ -1683,6 +1721,7 @@ function createRectangle(x, y, width, height, options = {}) {
   title.value = rect.title;
   title.readOnly = true;
   title.spellcheck = false;
+  title.setAttribute("writingsuggestions", "false");
   title.setAttribute("aria-label", "Window title");
   rect.titleInput = title;
   title.addEventListener("pointerdown", (event) => {
@@ -1725,9 +1764,15 @@ function createRectangle(x, y, width, height, options = {}) {
   const maxButton = document.createElement("button");
   maxButton.type = "button";
   maxButton.className = "window-control window-control-max";
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "window-control window-control-close";
+  closeButton.dataset.glyph = "close";
+  closeButton.title = "Close";
+  closeButton.setAttribute("aria-label", "Close window");
   rect.minButton = minButton;
   rect.maxButton = maxButton;
-  for (const [button, run] of [[minButton, () => toggleMinimize(rect)], [maxButton, () => toggleFullRestore(rect)]]) {
+  for (const [button, run] of [[minButton, () => toggleMinimize(rect)], [maxButton, () => toggleFullRestore(rect)], [closeButton, () => closeWindowFromTitleBar(rect)]]) {
     // Keep clicks on the buttons from starting a tab drag or triggering the
     // tab's double-click (maximize) handler.
     button.addEventListener("pointerdown", (event) => event.stopPropagation());
@@ -1740,6 +1785,7 @@ function createRectangle(x, y, width, height, options = {}) {
   }
   controls.appendChild(minButton);
   controls.appendChild(maxButton);
+  controls.appendChild(closeButton);
 
   const status = document.createElement("div");
   status.className = "window-status";
@@ -1939,6 +1985,12 @@ function createRectangle(x, y, width, height, options = {}) {
     body.classList.add("is-terminal");
     const terminalContainer = document.createElement("div");
     terminalContainer.className = "terminal-container";
+    // Ghostty makes this surface editable for keyboard input. Browser writing
+    // assistants must not treat its painted output as a prose text field.
+    terminalContainer.spellcheck = false;
+    terminalContainer.setAttribute("writingsuggestions", "false");
+    terminalContainer.setAttribute("autocorrect", "off");
+    terminalContainer.setAttribute("autocapitalize", "off");
     body.appendChild(terminalContainer);
     rect.terminalContainer = terminalContainer;
     void startTerminal(rect);
@@ -6317,6 +6369,7 @@ function defaultPaneTitle(kind) {
       : kind === "worksheet"
         ? "Worksheet"
         : "Window";
+  if (themeID === "operator") return base;
   let highest = 0;
   for (const rect of rectangles) {
     const match = rect.title.trim().match(new RegExp(`^${base} (\\d+)$`));
@@ -7596,6 +7649,7 @@ function renderSettingsModal() {
     renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
     renderSettingsThemeRow("Current", "Applied across this user's sessions immediately.", themeID, (next) => applyTheme(next)),
     renderSettingsOLEDWindowBorderRow(),
+    renderSettingsToggleRow("Wobbly windows", "Gentle elasticity when dragging Operator windows. Applies to this browser; reduced motion and Older Mac mode disable the effect.", windowWobbleEnabled, setWindowWobbleEnabled),
   ]));
   content.appendChild(renderSettingsSection("Terminal", [
     renderSettingsTerminalFontRow(),
@@ -10005,6 +10059,7 @@ function applyDockAction(action, rect) {
   if (!rect) {
     return;
   }
+  windowWobble.stop(rect.element);
 
   if (action === "destroy") {
     destroyRectangle(rect, { closeServerTerminal: true });
@@ -10059,7 +10114,7 @@ function applyDockAction(action, rect) {
 }
 
 function dockTopInset() {
-  return themeID === "oled-terminal" ? 0 : tabHeight;
+  return themeID === "oled-terminal" || themeID === "operator" ? 0 : tabHeight;
 }
 
 function dockedPaneBox(action, bounds, inset = dockTopInset()) {
@@ -10087,7 +10142,8 @@ function sameRectangleBox(rect, box) {
 }
 
 // Docked panes from every theme use one of two exact geometry families: the
-// normal title-tab inset or the OLED theme's titleless edge-to-edge layout.
+// normal title-tab inset or the OLED/Operator edge-to-edge layout. Operator
+// reserves its title height within the pane rather than above its saved box.
 // Recognizing either form lets existing saved docks update on theme changes.
 function reflowDockedPanesForTheme() {
   const bounds = board.getBoundingClientRect();
@@ -10121,6 +10177,12 @@ function toggleFullRestore(rect) {
 // screen after the workspace reloads, or the browser window being resized
 // while a pane is maximized.
 function applyFullGeometry(rect) {
+  if (themeID === "operator") {
+    // Focusing an offscreen control can scroll an overflow:hidden desktop.
+    // A maximized Operator window must start at the visible desktop origin.
+    board.scrollLeft = 0;
+    board.scrollTop = 0;
+  }
   const bounds = board.getBoundingClientRect();
   setRectangle(rect, { x: 0, y: 0, width: bounds.width, height: bounds.height });
 }
@@ -10165,7 +10227,8 @@ function arrangeWindowsOut() {
   }
 
   const bounds = board.getBoundingClientRect();
-  const usableHeight = Math.max(16, bounds.height - tabHeight);
+  const inset = themeID === "operator" ? 0 : tabHeight;
+  const usableHeight = Math.max(16, bounds.height - inset);
   const columns = Math.ceil(Math.sqrt(panes.length));
   const rows = Math.ceil(panes.length / columns);
   const cellWidth = Math.max(16, Math.floor(bounds.width / columns));
@@ -10178,7 +10241,7 @@ function arrangeWindowsOut() {
     const row = Math.floor(index / columns);
     setRectangle(rect, {
       x: column * cellWidth,
-      y: tabHeight + row * cellHeight,
+      y: inset + row * cellHeight,
       width: cellWidth,
       height: cellHeight,
     });
@@ -10213,9 +10276,18 @@ function destroyActivePane() {
   }
 }
 
+function closeWindowFromTitleBar(rect) {
+  if (rect.kind === "terminal" && rect.terminalStatus?.state !== "exited"
+      && !window.confirm(`Close "${rect.title}"? This ends its shell and any running processes.`)) {
+    return;
+  }
+  destroyRectangle(rect, { closeServerTerminal: true });
+}
+
 // Minimize hides the pane but keeps its live editor or terminal intact. The
 // Deskbar is the persistent visual handle that restores it.
 function setMinimized(rect, on) {
+  windowWobble.stop(rect?.element);
   if (!rect) {
     return;
   }
@@ -11021,6 +11093,7 @@ function pasteTextWithHiddenField() {
 }
 
 function destroyRectangle(rect, options = {}) {
+  windowWobble.stop(rect.element);
   const index = rectangles.indexOf(rect);
   const wasActive = activePaneID === rect.id;
   if (index >= 0) {

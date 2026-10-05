@@ -26,7 +26,7 @@ For core development, install Git, Node 22 or newer, and **Zig 0.15.2**. Set
 npm ci
 npm run build:terminal-core
 npm run build:web
-node --test internal/terminalcore/core.test.mjs web/*.test.mjs
+node --test internal/terminalcore/core.test.mjs web/*.test.mjs scripts/*.test.mjs extensions/firefox-clipboard/bridge.test.mjs
 go test ./...
 npm run verify:terminal-core
 ```
@@ -39,6 +39,14 @@ tracked Zig extensions in `internal/terminalcore/source/`. Each build gets a
 fresh checkout under `.cache/terminal-core`; existing checkouts are untouched.
 The verification command compares the rebuilt bytes with the bundled artifact.
 CI runs this comparison, regenerates the JavaScript bundle, and runs tests.
+
+The pinned-source patch clears newly allocated, non-pooled terminal pages
+before initializing and copying their cells. On WASM, the page allocator can
+reuse freed memory rather than returning zeroed OS pages. This prevents stale
+cell/grapheme metadata from corrupting sustained Unicode output when the
+grapheme capacity grows. Ordinary pooled pages retain their existing cleanup
+path. Sixel raster capacity grows each exhausted axis independently and still
+reserves the combined old/new raster bytes before allocating a growth copy.
 
 Upstream licenses are beside the WASM. Windows additionally embeds Microsoft's
 MIT-licensed ConPTY 1.24.260710001 for amd64, arm64, and 386. Older inbox ConPTY
@@ -201,6 +209,12 @@ history. It does not cover server restarts, evicted images, or unlimited history
 
 ## Compatibility and resource limits
 
+Initial and growing terminal pages explicitly clear their backing memory before
+initialization, including pooled pages. The WASM allocator can recycle memory
+from closed terminals and other allocations; a fresh allocation does not imply
+blank cells. The lifecycle regression reuses one WASM instance across terminals
+before checking new blank cells, images, Unicode/graphemes, and snapshots.
+
 The terminal context menu offers 16, 32, or 64 MiB image budgets (64 MiB by
 default), a **Show discarded image markers** toggle (on by default), and
 **Clear terminal images**. These controls apply to the running shell and all
@@ -222,16 +236,46 @@ emulation are intentionally excluded. The practical reference is the
 Images attach to native cells, so overwrite, erase, insertion/deletion, scroll
 regions, reflow, and alternate screens move or remove their fragments with the
 text. Font metric changes scale existing cell attachments; device pixel ratio
-affects canvas resolution. Decoded browser bitmaps are cached once and released
-on eviction, replacement, reset, and disposal. Cursor and scrollbar paint after
+affects canvas resolution. Browser bitmaps are created when their visible
+fragments need painting, cached once, and released on eviction, replacement,
+reset, and disposal. Offscreen retained images do not allocate browser bitmaps
+until revealed. Cursor and scrollbar paint after
 images; selection remains visible over selected fragments.
 
-Image cleanup checks page membership before scanning cells, so retained images
-do not make every output write scan text-only history. Placement and copies
+Browser canvas context loss leaves native terminal state intact. The adapter
+keeps accepting output while drawing is unavailable and defers paint
+acknowledgement. Restoration resets the drawing state and DPR transform,
+invalidates derived image bitmaps, and requests a full repaint; later frames
+return to dirty-row painting. Both renderers use this recovery. The browser's
+normal canvas allocation policy is preserved. See the
+[graphics investigation](terminal-graphics-reliability-2026-10-05.md) for real
+GPU-process restart controls and the remaining Chrome graphics limitations.
+Open limitations and recovery/reporting guidance are tracked in
+[Known issues](known-issues.md); the
+[follow-up isolation](terminal-graphics-isolation-2026-10-05.md) distinguishes
+the original offscreen pixel damage from readback rounding and profiled stalls.
+
+Writes beginning without retained images use the ordinary parser. Writes with
+images specialize the handler to track attachment mutations, transferring the
+same UTF-8 and escape-parser state back afterward, including on failure. This
+keeps per-character image checks out of ordinary output without parsing VT twice.
+New placement in an ordinary write always requests its final cleanup.
+
+Image cleanup tracks row and page membership and whether terminal actions can
+change attachments. ASCII status writes on image-free rows skip collection;
+wrap, insertion, structural changes, and Unicode writes conservatively request
+it. Rendering dirty flags do not govern cleanup. Placement and copies
 mark destination pages; reflow conservatively marks its pages for one cleanup
 pass. Membership is a derived cache rebuilt during snapshot import and does
 not change the snapshot schema. Erasure and history eviction still reclaim
 unreferenced image pixels and fragments at the end of the write.
+
+Small live-viewport paints read only their needed native rows through
+`tessera_sixel_viewport_row`, using the pinned Ghostty cell decoder. Each row
+cache contains owned JavaScript cells, so history reads and native memory growth
+cannot invalidate it. Forced paints, history/scrollbar paints, and eight or more
+dirty rows retain a single bulk viewport read. The cache lasts one paint;
+selection and link reads outside painting always see fresh cells.
 
 - At most 16,000,000 pixels per image and 32 MiB encoded DCS payload.
 - At most 64 MiB of decoded image storage, including construction and growth

@@ -10,6 +10,9 @@ import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
 import { installTerminalSelection } from "./terminal-selection.mjs";
 import { installTerminalFontMetrics } from "./terminal-font-metrics.mjs";
 import { SixelRenderer, installSixelRenderer } from "./terminal-sixel-renderer.mjs";
+import { installTerminalViewportReader } from "./terminal-viewport.mjs";
+import { TerminalInputBuffer } from "./terminal-input-buffer.mjs";
+import { installTerminalPixelGrid } from "./terminal-pixel-grid.mjs";
 import {
   installPlainRenderer,
   plainRendererStatistics,
@@ -19,6 +22,8 @@ import {
 const renderScheduler = new TerminalRenderScheduler();
 installTerminalFontMetrics(CanvasRenderer);
 installSixelRenderer(CanvasRenderer);
+installTerminalPixelGrid(CanvasRenderer);
+installTerminalViewportReader(CanvasRenderer);
 installPlainRenderer(CanvasRenderer);
 globalThis.addEventListener?.("resize", () => {
   for (const terminal of renderScheduler.entries.keys()) renderScheduler.request(terminal);
@@ -62,6 +67,7 @@ class Terminal extends GhosttyTerminal {
     this.coreID = __TESSERA_CORE_ID__;
     this.sixelRenderer = new SixelRenderer();
     this.clipboardReadBuffer = null;
+    this.inputBuffer = new TerminalInputBuffer();
     this.desiredCols = this.cols;
     this.desiredRows = this.rows;
     this.onScroll(() => this.requestRender());
@@ -77,11 +83,32 @@ class Terminal extends GhosttyTerminal {
     this.opening = true;
     try {
       super.open(container);
+      this.inputBuffer.attach(this.wasmTerm);
       if (this.renderer) {
         this.renderer.tesseraSymbolFontFamily = this.symbolFontFamily;
       }
       setPlainRendererEnabled(this.renderer, this.experimentalRenderer);
       this.selectionIntegration = installTerminalSelection(this);
+      const canvas = this.renderer?.canvas;
+      if (canvas) {
+        const lost = () => {
+          this.canvasContextLost = true;
+          this.fullRedrawPending = true;
+          // Cancelling a 2D contextlost event prevents automatic restoration.
+        };
+        const restored = () => {
+          if (this.isDisposed) return;
+          this.canvasContextLost = false;
+          this.sixelRenderer.clear();
+          // A restored context has a blank bitmap and default drawing state.
+          // Restore the DPR transform and invalidate pixels, not native history.
+          this.renderer.resize(this.cols, this.rows);
+          this.requestFullRedraw();
+        };
+        canvas.addEventListener("contextlost", lost);
+        canvas.addEventListener("contextrestored", restored);
+        this.canvasContextRecovery = { canvas, lost, restored };
+      }
     } finally {
       this.opening = false;
     }
@@ -99,6 +126,10 @@ class Terminal extends GhosttyTerminal {
   renderScheduledFrame() {
     if (this.isDisposed || !this.isOpen || !this.renderer || !this.wasmTerm) {
       renderScheduler.unregister(this);
+      return;
+    }
+    if (this.canvasContextLost || this.renderer.ctx?.isContextLost?.()) {
+      this.fullRedrawPending = true;
       return;
     }
     const nativePixelRatio = globalThis.devicePixelRatio || 1;
@@ -126,6 +157,10 @@ class Terminal extends GhosttyTerminal {
       this.renderer.cursorBlink = false;
       this.cursorRedrawPending = false;
     }
+    if (this.canvasContextLost || this.renderer.ctx?.isContextLost?.()) {
+      this.fullRedrawPending = true;
+      return;
+    }
     this.fullRedrawPending = false;
     this.outputTiming?.painted();
     const cursor = this.wasmTerm.getCursor();
@@ -147,6 +182,7 @@ class Terminal extends GhosttyTerminal {
   reset() {
     this.sixelRenderer.clear();
     super.reset();
+    this.inputBuffer.attach(this.wasmTerm);
     this.requestRender();
   }
 
@@ -304,10 +340,17 @@ class Terminal extends GhosttyTerminal {
   }
 
   dispose() {
+    if (this.canvasContextRecovery) {
+      const { canvas, lost, restored } = this.canvasContextRecovery;
+      canvas.removeEventListener("contextlost", lost);
+      canvas.removeEventListener("contextrestored", restored);
+      this.canvasContextRecovery = null;
+    }
     this.selectionIntegration?.dispose();
     this.cursorBlink.dispose();
     this.sixelRenderer.clear();
     renderScheduler.unregister(this);
+    this.inputBuffer.dispose();
     if (this.clipboardReadBuffer) {
       const { exports, ptr } = this.clipboardReadBuffer;
       this.clipboardReadBuffer = null;

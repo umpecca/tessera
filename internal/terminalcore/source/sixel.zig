@@ -187,9 +187,10 @@ pub const Decoder = struct {
         if (width <= self.stride and height <= self.capacity_height) return;
         var stride = @max(width, self.stride);
         var rows = @max(height, self.capacity_height);
-        // Geometric growth avoids quadratic copies for dimensionless images.
-        const wider = @max(stride, self.stride * 2);
-        const taller = @max(rows, self.capacity_height * 2);
+        // Grow only the exhausted dimension. Doubling both on every new band
+        // wastes width until an otherwise small image exceeds the budget.
+        const wider = if (width > self.stride) @max(stride, self.stride * 2) else stride;
+        const taller = if (height > self.capacity_height) @max(rows, self.capacity_height * 2) else rows;
         if (@as(u64, wider) * taller <= pixel_limit) {
             stride = wider;
             rows = taller;
@@ -265,5 +266,59 @@ test "oversized raster and repeat are rejected before allocation" {
         for (data) |ch| d.put(std.testing.allocator, &palette, ch);
         try std.testing.expect(d.failed);
         try std.testing.expectEqual(@as(usize, 0), d.pixels.len);
+    }
+}
+
+test "dense raster bands grow height independently and retain their colors" {
+    var d: Decoder = .{};
+    defer d.deinit(std.testing.allocator);
+    var palette = defaultPalette();
+    var peak: usize = 0;
+    const Budget = struct {
+        peak: *usize,
+        pub fn reserve(self: @This(), bytes: usize) error{TooLarge}!void {
+            self.peak.* = @max(self.peak.*, bytes);
+            if (bytes > storage_limit) return error.TooLarge;
+        }
+    };
+    const budget: Budget = .{ .peak = &peak };
+    for ("\"1;1;1024;720#1;2;100;0;0#2;2;0;100;0") |ch| d.putBudget(std.testing.allocator, &palette, ch, budget);
+    for (0..120) |band| {
+        const stripe = if (band % 2 == 0) "#1!1024~-" else "#2!1024~-";
+        for (stripe) |ch| d.putBudget(std.testing.allocator, &palette, ch, budget);
+    }
+    d.finishBudget(std.testing.allocator, &palette, budget);
+    try std.testing.expect(!d.failed);
+    try std.testing.expectEqual(@as(u32, 1024), d.width);
+    try std.testing.expectEqual(@as(u32, 720), d.height);
+    try std.testing.expectEqual(@as(u32, 1024), d.stride);
+    try std.testing.expect(peak <= 5 * 1024 * 1024);
+    for (0..720) |y| {
+        const expected = if (y / 6 % 2 == 0) rgba(255, 0, 0) else rgba(0, 255, 0);
+        for (d.pixels[y * d.stride .. y * d.stride + d.width]) |pixel| try std.testing.expectEqual(expected, pixel);
+    }
+}
+
+test "horizontal raster growth preserves height and checks transient copies" {
+    var d: Decoder = .{};
+    defer d.deinit(std.testing.allocator);
+    var palette = defaultPalette();
+    for ("#1;2;100;0;0!1024~") |ch| d.put(std.testing.allocator, &palette, ch);
+    try std.testing.expectEqual(@as(u32, 6), d.capacity_height);
+    try std.testing.expectEqual(@as(u32, 1024), d.stride);
+    const RejectCopy = struct {
+        pub fn reserve(_: @This(), bytes: usize) error{TooLarge}!void {
+            // The 2048x6 destination fits; destination plus old raster does not.
+            if (bytes > 2048 * 6 * 4) return error.TooLarge;
+        }
+    };
+    try std.testing.expectError(error.TooLarge, d.ensureSize(std.testing.allocator, 2048, 6, RejectCopy{}));
+    try std.testing.expectEqual(@as(u32, 1024), d.stride);
+    try d.ensureSize(std.testing.allocator, 2048, 6, Decoder.Unlimited{});
+    try std.testing.expectEqual(@as(u32, 6), d.capacity_height);
+    try std.testing.expectEqual(@as(u32, 2048), d.stride);
+    for (0..6) |y| {
+        for (d.pixels[y * d.stride .. y * d.stride + 1024]) |pixel| try std.testing.expectEqual(rgba(255, 0, 0), pixel);
+        for (d.pixels[y * d.stride + 1024 .. (y + 1) * d.stride]) |pixel| try std.testing.expectEqual(@as(u32, 0), pixel);
     }
 }

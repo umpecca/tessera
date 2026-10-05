@@ -26,7 +26,7 @@ jobs:
       - run: npm run verify:terminal-core
       - run: npm run build:web
       - run: git diff --exit-code -- web/vendor/terminal.js
-      - run: node --test internal/terminalcore/core.test.mjs web/*.test.mjs
+      - run: node --test internal/terminalcore/core.test.mjs web/*.test.mjs scripts/*.test.mjs extensions/firefox-clipboard/bridge.test.mjs
 
   build:
     needs: terminal-core

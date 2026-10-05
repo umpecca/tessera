@@ -8,6 +8,12 @@ resizable panes with BeOS-inspired window chrome and a Deskbar.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries, data flow,
 deployment details, and the security roadmap.
 
+Start with [Run](#run) or the [Ubuntu service installer](#install-as-an-ubuntu-service).
+The [workspace guide](#workspace-model) covers pane types and terminal behavior;
+[development and testing](#development-and-testing) covers builds and checks.
+See [Known issues](#known-issues) for the unresolved terminal graphics limitations
+and [CHANGELOG.md](CHANGELOG.md) for recent changes.
+
 Terminal panes support Sixel images and restore retained text and images from
 the running host when a browser reconnects. Right-click a terminal to choose an
 image-memory budget, toggle discarded-image markers, or clear images while
@@ -37,8 +43,9 @@ This is an important operational boundary:
   audit events.
   These controls reduce common HTTP risks but do not authenticate a client or
   authorize what it may do.
-- Tessera does not currently terminate TLS. Do not expose it directly to the
-  public internet.
+- Optional [Local HTTPS](#local-https-for-ipados) provides TLS using Tessera's
+  private certificate authority. It does not add authentication or authorization;
+  direct public-internet exposure remains unsupported.
 
 Future security work is expected to add real authentication, robust
 authorization for users, sessions, files, commands, and administrative
@@ -206,7 +213,7 @@ short HSTS lifetime when Tessera knows the request arrived over HTTPS. HSTS is
 not emitted for ordinary localhost or intranet HTTP access.
 
 These controls do not make direct public hosting safe. Authentication,
-authorization, TLS termination, filesystem roots, and command policies remain
+authorization, filesystem roots, and command policies remain
 required before exposing Tessera to untrusted networks.
 
 ## Workspace model
@@ -279,7 +286,9 @@ the shell keeps running. This budget is separate from scrollback and images.
 
 Minimized terminals, terminals fully covered by another window, and background
 browser tabs stop processing output in the browser. Their shells keep running
-on the server. Revealing a terminal catches up through a small ordered replay,
+on the server. Partially overlapping windows continue processing and painting
+their terminal output; only complete coverage pauses a pane. Revealing a
+terminal catches up through a small ordered replay,
 or restores its latest screen and retained scrollback from a snapshot for a
 larger gap, then resumes live output. Replay is capped at 64 KiB and 128 events.
 Idle terminals keep their existing view. Hidden terminals pause server delivery
@@ -300,10 +309,31 @@ active paint uses the whole budget, a waiting background pane gets the first
 slot next frame. Deferred panes keep their redraw requests and paint the latest
 state. An individual terminal paint can exceed the budget.
 
-Retained Sixel images outside the visible viewport allow ordinary text updates
-and cursor blinking to repaint only changed rows. When the last visible image
-disappears, one full redraw clears its old pixels. Visible images still receive
-full redraws to preserve their layering with text, selections, and the cursor.
+Small paints read and decode only the native rows they need. Full paints read
+and decode the live terminal viewport once, sharing it across the rows being
+drawn. Later frames read fresh output; history rows
+retain their separate reads. Idle and history-only paints skip the live read.
+
+Each browser terminal also reuses a lazy WASM input buffer across output events,
+reset, and snapshot restore. It grows up to 64 KiB; larger events use temporary
+space. Closing the terminal releases the retained allocation.
+
+Sixel images allow ordinary text updates and cursor blinking to repaint only
+changed rows, including while images remain visible. Image fragments are
+composited only where text was repainted, preserving transparency, selection,
+and cursor layering. When the last visible image disappears, one full redraw
+clears its old pixels. Scrolling, resizing, image changes, visible scrollbar
+updates retain full redraws. At fractional display scaling, cell backgrounds,
+images, selection, cursors, and damage clips share rounded physical pixel edges,
+and decoration strokes use whole-pixel thickness. This keeps partial paints
+consistent with full redraws at 125%/150% and other fractional scales. Canvas
+dimensions use the same rounding, including odd-sized terminal grids.
+
+If the browser reports a canvas context loss, both terminal renderers keep
+accepting output and repaint retained text and images when graphics recover.
+This recovery preserves the running shell and works even if no fresh output
+arrives after restoration. Intermittent graphics stalls and silent canvas
+corruption remain [known issues](docs/known-issues.md).
 
 ### Older Mac performance
 
@@ -333,6 +363,21 @@ New browsers use the **Standard** performance profile, **Experimental** terminal
 renderer, **Paint coalescing On**, and **Server output coalescing Off**. These
 preferences are saved in the current browser; existing selections take priority
 over the defaults. The renderer and coalescing controls are under **Advanced**.
+
+**Experimental** accelerates ordinary text rows while retaining the established
+drawing paths for complex characters, styling, selection, and links. **Stable**
+uses the classic renderer. Both support Sixel images and canvas recovery;
+changing renderers is not a confirmed workaround for Windows graphics stalls.
+
+Choose **Operator** under **Settings → Theme → Current** for charcoal surfaces,
+mint accents, a softly lit active pane, and dotted title-bar grips. Windows stay
+movable and resizable, with 32px desktop title bars (48px for touch), ordinary
+titles for new panes, and minimize, maximize/restore, and close controls. The
+title bar stays available when maximized; closing a live terminal confirms
+ending its shell. Existing titles and terminal color preferences are preserved.
+**Wobbly windows** in the same section adds gentle whole-window tilt and stretch
+while dragging. It is saved per browser, does not change window or terminal
+dimensions, and is disabled by reduced motion or **Older Mac** mode.
 
 ### Terminal appearance
 
@@ -623,6 +668,24 @@ Only use LAN binding in the trusted-environment model described above. Any
 device that can reach the service should currently be treated as having the
 ability to operate Tessera and, through Tessera, the host machine.
 
+## Known issues
+
+Two terminal graphics limitations remain under investigation:
+
+- **Windows Chrome graphics stalls:** occasional delayed painting and keyboard
+  echo have been measured with both Stable and Experimental renderers. Captured
+  long GPU-thread intervals point to the browser/Windows graphics path; the exact native
+  cause and a general workaround remain unconfirmed.
+- **Rare canvas corruption:** one automated Stable renderer check captured
+  colored, translucent pixels below the visible viewport. The saved bitmap
+  confirms the damage, but on-screen occurrence is unverified and the severe
+  failure did not repeat in 64 standalone checks.
+
+See [Known issues](docs/known-issues.md) for tested scope, recovery/reporting
+guidance, and links to the measurements. Automatic canvas context-loss recovery
+and the native page-initialization crash repairs are implemented; these two
+remaining graphics issues are open.
+
 ## Development and testing
 
 Frontend dependencies are bundled with esbuild and committed under
@@ -642,14 +705,34 @@ Routine checks:
 go test ./...
 go vet ./...
 node --check web/app.js
-node --test web/text-editor-language.test.mjs
-node --test web/server-connection.test.mjs
+node --test internal/terminalcore/core.test.mjs web/*.test.mjs scripts/*.test.mjs extensions/firefox-clipboard/bridge.test.mjs
 ```
 
 The Go tests cover store migrations and persistence, session lifecycle,
 workspace isolation, command streaming, terminals, file operations, desktop
 server control, and update behavior. Browser-visible interaction changes still
 require focused browser smoke testing.
+
+The host and browser must use the same terminal core. `npm run build:web`
+embeds the checked-in WASM artifact; follow the
+[terminal core build instructions](docs/terminal-core.md#building-the-patched-core)
+when changing native parsing or image behavior.
+
+For browser paint/output measurements, use
+[the browser terminal benchmark](scripts/benchmark-terminal-browser.mjs)
+with a separately installed Playwright module and Chrome executable:
+
+```text
+node scripts/benchmark-terminal-browser.mjs --playwright=<module> --chrome=<executable> --headed=true --group=load --repeats=1
+```
+
+The [standalone graphics runner](scripts/terminal-benchmark/graphics-isolation.mjs)
+isolates Canvas2D drawing without terminal parsing. It launches its own visible
+browser and temporary loopback server. Use untraced runs for latency comparisons;
+GPU device timing can change the behavior being measured. See the
+[isolation report](docs/terminal-graphics-isolation-2026-10-05.md) for commands
+and the [graphics reliability report](docs/terminal-graphics-reliability-2026-10-05.md)
+for the real test-browser GPU-process recovery control.
 
 Database schema changes belong in the next contiguous numbered SQL file under
 `migrations/`. Those files are embedded into the executable and applied in
@@ -660,26 +743,24 @@ immutable; append a new migration instead of editing an existing one.
 
 ### Building all encoder artifacts in GitHub Actions
 
-The release workflow builds the Windows x64, macOS Intel, and macOS Apple
-silicon encoders on their matching GitHub-hosted runners. Nothing from the
-Windows or macOS toolchain needs to be installed on the computer that pushes
-the repository. Ensure Actions are enabled for the repository, then either:
-
-- Push `main` to build the artifacts and download them from that workflow run.
-- Push a `v*` tag to build them and attach them to a GitHub Release.
+The release workflow builds Windows x64, Linux x64/ARM64, and macOS Apple
+silicon encoders on GitHub-hosted runners. The workflow runs when a `v*` tag
+is pushed and attaches its artifacts to a GitHub Release. Ensure Actions are
+enabled, commit the intended source and generated assets, and tag that commit.
 
 For example, after choosing the next version:
 
 ```powershell
 git push origin main
-git tag v0.2.0
-git push origin v0.2.0
+$releaseTag = "vX.Y.Z" # Replace with the chosen version.
+git tag $releaseTag
+git push origin $releaseTag
 ```
 
 The Windows job provisions an MSYS2 MINGW64 environment, builds the pinned
 LAME 3.100 source with the repository's MinGW compatibility patch, and verifies
-the resulting `.exe`. The two macOS jobs compile natively on Intel and Apple
-silicon runners. Their outputs are named exactly as listed below.
+the resulting `.exe`. The macOS job compiles natively on an Apple silicon
+runner. Their outputs are named exactly as listed below.
 
 ### Building an encoder locally
 
@@ -711,28 +792,25 @@ xcode-select --install
 ```
 
 Build on an Intel Mac for `tessera-lame-darwin-amd64`, or on an Apple silicon
-Mac for `tessera-lame-darwin-arm64`. Cross-compiling is not required by the
-release process because GitHub Actions uses native runners for both.
+Mac for `tessera-lame-darwin-arm64`. The current release workflow enables only
+the Apple silicon macOS target.
 
 Pushing a `v*` tag runs the GitHub Actions release workflow and publishes:
 
-- `tessera-freebsd-amd64`
 - `tessera-linux-amd64`
 - `tessera-linux-arm64`
-- `tessera-openbsd-amd64`
 - `tessera-windows-amd64.exe`
-- `tessera-darwin-amd64`
 - `tessera-darwin-arm64`
 - `tessera-lame-linux-amd64`
 - `tessera-lame-linux-arm64`
 - `tessera-lame-windows-amd64.exe`
-- `tessera-lame-darwin-amd64`
 - `tessera-lame-darwin-arm64`
 - `lame-3.100.tar.gz` and `LICENSE.LAME.txt`
 
-FreeBSD, Linux, OpenBSD, and Windows builds use `CGO_ENABLED=0`. The BSD and
-Linux builds run server-only without tray support. macOS Intel and ARM builds
-run on native macOS runners with `CGO_ENABLED=1` for tray support.
+Linux and Windows builds use `CGO_ENABLED=0`. Linux builds run server-only
+without tray support. The macOS ARM build runs on a native macOS runner with
+`CGO_ENABLED=1` for tray support. Intel macOS and BSD targets are currently
+disabled in the workflow.
 
 The in-app updater checks the latest GitHub Release, downloads the Tessera and
 LAME assets matching the current operating system and architecture, installs

@@ -86,7 +86,8 @@ function fixture() {
     document, settingsModal, deskbarButton,
     commandPalette: { hidden: true }, commandWheel: { hidden: true }, windowList: { hidden: true },
     compatibilityUpdateTimer: null, settingsReturnFocus: null,
-    defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos",
+    defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,
+    setWindowWobbleEnabled() {},
     terminalWheelSensitivity: 1, editorWheelSensitivity: 1,
     terminalPaintCoalescing: true, terminalOutputCoalescing: false,
     window: {
