@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix a macOS shutdown-test startup race by waiting until its long-lived command
+  child has started before cancelling both workspace runs.
+
 - Document unresolved Windows Chrome terminal graphics stalls and rare canvas
   corruption, including tested scope, recovery guidance, and investigation
   results. Refresh README terminal behavior, validation instructions, and Local

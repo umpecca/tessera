@@ -102,7 +102,9 @@ func TestShutdownWaitsForAllWorkspaceCommands(t *testing.T) {
 	defer st.Close()
 	m := NewManager(st, &shell.Runner{})
 	defer m.Close()
-	command := "printf ready; sleep 30"
+	// Start the child before reporting readiness. Otherwise shutdown can race
+	// with the shell's fork on macOS and miss a child that keeps output pipes open.
+	command := "sleep 30 &\nchild=$!\nprintf 'ready\\n'\nwait \"$child\""
 	if runtime.GOOS == "windows" {
 		command = "Write-Output ready; Start-Sleep -Seconds 30"
 	}
