@@ -3,6 +3,26 @@
  * These are the full (non-subset) faces so Fira Code's programming
  * ligatures survive. It ships no italic; the browser synthesizes an
  * oblique when a highlight style asks for italic. */
+.terminal-audio-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 50px);
+  z-index: 3;
+  padding: 4px 8px;
+  border: 1px solid var(--border-panel);
+  border-radius: 4px;
+  background: var(--pane-bg);
+  color: var(--text);
+  font: 12px sans-serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.terminal-audio-badge[hidden] { display: none; }
+
 @font-face {
   font-family: "Fira Code";
   src: url("/assets/FiraCode-Regular.woff2") format("woff2");
@@ -1407,121 +1427,6 @@ input {
 
 .text-editor-host .cm-editor {
   height: 100%;
-}
-
-.window-body.is-audio {
-  cursor: default;
-  overflow: auto;
-  background: var(--pane-bg);
-}
-
-.audio-pane {
-  display: grid;
-  gap: 12px;
-  box-sizing: border-box;
-  min-width: 280px;
-  min-height: 100%;
-  padding: 18px;
-  color: var(--text);
-  font: 12px/1.4 var(--tessera-font);
-}
-
-.audio-source {
-  overflow: hidden;
-  color: var(--text);
-  font-size: 16px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.audio-source-actions,
-.audio-source-editor,
-.audio-transport,
-.audio-listener-controls,
-.audio-seek-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.audio-source-editor input,
-.audio-source-editor select {
-  flex: 1 1 220px;
-  min-width: 140px;
-  height: 28px;
-  box-sizing: border-box;
-  border: 1px solid var(--divider);
-  padding: 3px 6px;
-  background: var(--pane-bg);
-  color: var(--text);
-  font: inherit;
-}
-
-.audio-pane button {
-  min-height: 28px;
-  border: 1px solid var(--divider);
-  padding: 4px 9px;
-  background: var(--chrome-bg);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}
-
-.audio-pane button:hover,
-.audio-pane button:focus {
-  outline: 1px solid var(--accent-border);
-  background: var(--highlight-bg);
-}
-
-.audio-pane button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.audio-transport button:first-child {
-  min-width: 70px;
-}
-
-.audio-join {
-  color: var(--accent-text, var(--text));
-  font-weight: 700;
-}
-
-.audio-seek-row input[type="range"],
-.audio-listener-controls input[type="range"] {
-  flex: 1 1 140px;
-  min-width: 90px;
-}
-
-.audio-seek-row[hidden],
-.audio-join[hidden],
-.audio-source-editor[hidden] {
-  display: none;
-}
-
-.audio-seek-row output {
-  width: 52px;
-  text-align: right;
-}
-
-.audio-listener-controls label {
-  white-space: nowrap;
-}
-
-.audio-message {
-  min-height: 18px;
-  color: var(--text-muted);
-}
-
-.audio-message.is-error {
-  color: var(--danger, #a31d1d);
-}
-
-.audio-pane audio {
-  display: none;
 }
 
 .pane-file-browser {
@@ -4259,8 +4164,7 @@ input {
   box-shadow: none;
 }
 
-:root[data-theme="operator"] .rectangle.is-full { border-radius: 0; }
-:root[data-theme="operator"] .rectangle.is-full .window-tab { display: block; border-radius: 0; }
+:root[data-theme="operator"] .rectangle.is-full { border: 0; border-radius: 0; box-shadow: none; }
 
 :root[data-theme="operator"] .window-tab {
   top: 0;
@@ -4337,6 +4241,11 @@ input {
 :root[data-theme="operator"] .window-body { top: var(--operator-title-height); border-top: 0; border-radius: 0 0 7px 7px; }
 :root[data-theme="operator"] .rectangle[data-pane-kind="terminal"] .window-body.is-terminal { inset: var(--operator-title-height) 0 0; }
 :root[data-theme="operator"] .window-status { border-radius: 0 0 7px 7px; font-family: var(--operator-ui-font); }
+
+/* Full-size panes use the same undecorated surface as OLED Terminal. */
+:root[data-theme="operator"] .rectangle.is-full .window-body { top: 0; border-radius: 0; }
+:root[data-theme="operator"] .rectangle.is-full[data-pane-kind="terminal"] .window-body.is-terminal { inset: 0; }
+:root[data-theme="operator"] .rectangle.is-full .window-status { border-radius: 0; }
 
 /* Edges surround the whole Operator window rather than its external tab. */
 :root[data-theme="operator"] .resize-edge-n { top: -6px; height: 10px; }

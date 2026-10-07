@@ -12,4 +12,6 @@ import "embed"
 //go:embed native-desktop.mjs
 //go:embed command-wheel.mjs
 //go:embed window-wobble.mjs
+//go:embed terminal-audio.mjs
+//go:embed terminal-audio-stream.mjs
 var Files embed.FS

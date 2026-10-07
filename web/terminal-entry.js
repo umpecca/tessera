@@ -9,6 +9,7 @@ import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
 import { TerminalCursorBlink } from "./terminal-cursor-blink.mjs";
 import { installTerminalSelection } from "./terminal-selection.mjs";
 import { installTerminalFontMetrics } from "./terminal-font-metrics.mjs";
+import { defaultTerminalRowSpacing, normalizeTerminalRowSpacing } from "./terminal-settings.mjs";
 import { SixelRenderer, installSixelRenderer } from "./terminal-sixel-renderer.mjs";
 import { installTerminalViewportReader } from "./terminal-viewport.mjs";
 import { TerminalInputBuffer } from "./terminal-input-buffer.mjs";
@@ -42,6 +43,7 @@ class Terminal extends GhosttyTerminal {
       paintCoalescing = false,
       renderMetricsEnabled = false,
       symbolFontFamily = "",
+      rowSpacing = defaultTerminalRowSpacing,
       ...terminalOptions
     } = options;
     super({ ...terminalOptions, cursorBlink: false });
@@ -57,6 +59,7 @@ class Terminal extends GhosttyTerminal {
     this.paintCoalescing = paintCoalescing === true;
     this.renderMetricsEnabled = renderMetricsEnabled === true;
     this.symbolFontFamily = symbolFontFamily;
+    this.rowSpacing = normalizeTerminalRowSpacing(rowSpacing);
     this.renderPixelRatioCap = Number.isFinite(renderPixelRatioCap) && renderPixelRatioCap >= 1
       ? renderPixelRatioCap : 0;
     this.cursorBlink.setEnabled(cursorBlinkEnabled !== false);
@@ -67,6 +70,7 @@ class Terminal extends GhosttyTerminal {
     this.coreID = __TESSERA_CORE_ID__;
     this.sixelRenderer = new SixelRenderer();
     this.clipboardReadBuffer = null;
+    this.audioReadBuffer = null;
     this.inputBuffer = new TerminalInputBuffer();
     this.desiredCols = this.cols;
     this.desiredRows = this.rows;
@@ -86,6 +90,8 @@ class Terminal extends GhosttyTerminal {
       this.inputBuffer.attach(this.wasmTerm);
       if (this.renderer) {
         this.renderer.tesseraSymbolFontFamily = this.symbolFontFamily;
+        this.renderer.tesseraRowSpacing = this.rowSpacing;
+        if (this.rowSpacing !== defaultTerminalRowSpacing) this.setRowSpacing(this.rowSpacing);
       }
       setPlainRendererEnabled(this.renderer, this.experimentalRenderer);
       this.selectionIntegration = installTerminalSelection(this);
@@ -192,6 +198,12 @@ class Terminal extends GhosttyTerminal {
   }
 
   processTerminalResponses() {
+    const audioCore = this.wasmTerm;
+    const audioExports = audioCore.exports;
+    if (audioExports.tessera_audio_read) {
+      this.audioReadBuffer ??= { exports: audioExports, ptr: audioExports.ghostty_wasm_alloc_u8_array(4096) };
+      while (audioExports.tessera_audio_read(audioCore.handle, this.audioReadBuffer.ptr, 4096)) {}
+    }
     // The host answers queries exactly once, independent of browser count.
     while (this.wasmTerm.readResponse()) {}
     const b = this.wasmTerm, e = b.exports;
@@ -295,6 +307,16 @@ class Terminal extends GhosttyTerminal {
     }
   }
 
+  setRowSpacing(value) {
+    this.rowSpacing = normalizeTerminalRowSpacing(value);
+    if (this.renderer) {
+      this.renderer.tesseraRowSpacing = this.rowSpacing;
+      this.renderer.remeasureFont();
+      this.renderer.resize(this.cols, this.rows);
+      this.requestFullRedraw();
+    }
+  }
+
   noteInteractiveInput() {
     // Let the next server echo paint promptly, even just after a capped frame.
     this.interactivePaintUntil = performance.now() + 150;
@@ -340,6 +362,11 @@ class Terminal extends GhosttyTerminal {
   }
 
   dispose() {
+    if (this.audioReadBuffer) {
+      const { exports, ptr } = this.audioReadBuffer;
+      this.audioReadBuffer = null;
+      exports.ghostty_wasm_free_u8_array(ptr, 4096);
+    }
     if (this.canvasContextRecovery) {
       const { canvas, lost, restored } = this.canvasContextRecovery;
       canvas.removeEventListener("contextlost", lost);

@@ -19,7 +19,7 @@ function frame(kind, sequence, offset, payload = new Uint8Array()) {
 }
 
 function fixture() {
-  const sockets = [], calls = [], timers = new Map(), retired = [];
+  const sockets = [], calls = [], timers = new Map(), retired = [], audio = [];
   let timerID = 0;
   class Socket {
     static CONNECTING = 0; static OPEN = 1; static CLOSED = 3;
@@ -44,7 +44,7 @@ function fixture() {
   const coordinator = new TerminalWriteCoordinator({ schedule, cancelSchedule: cancel, now: () => 0 });
   const output = new TerminalWriteScheduler(data => term.write(data), { coordinator });
   const state = {
-    term, output, socket: null, outputPaused: false, reconnectTimer: null, reconnectAttempts: 0,
+    term, output, socket: null, audioKey: "audio-key", outputPaused: false, reconnectTimer: null, reconnectAttempts: 0,
     backlogRecoveryAttempts: 0, lastBacklogRecoveryAt: 0,
   };
   state.replica = new TerminalReplica(term, output, "core", text => calls.push(["clipboard", text]), error => { throw error; });
@@ -60,6 +60,7 @@ function fixture() {
     ghosttyModulePromise: null, terminalOutputCoalescing: false, serverConnectionModal: { hidden: true },
     window: { location: { protocol: "http:", host: "localhost:7331" }, setTimeout: schedule, clearTimeout: cancel },
     attachTerminalMouseBridge: () => ({ dispose() {} }), setPaneCwd() {}, sendTerminalGridSize() {},
+    terminalAudioPlayer: { receive: (key, event) => audio.push([key, event]), disconnect: key => audio.push([key, "disconnect"]) },
     clearTerminalStatus: target => { target.terminalStatus = null; },
     setTerminalStatus: (target, status) => { target.terminalStatus = status; },
     completeTerminalWakeRecovery: target => retired.push(target),
@@ -68,7 +69,7 @@ function fixture() {
   });
   for (const name of ["setActivePane", "clearActivePane", "clearActivePaneClass", "setTerminalCursorBlink",
     "updateTerminalRenderState", "setTerminalOutputPaused", "updateTerminalDocumentVisibility", "connectTerminalSocket",
-    "applyTerminalTextMessage", "handleTerminalSocketClose", "retryTerminalNow", "resumeTerminalConnections", "terminalWebSocketURL"]) {
+    "applyTerminalTextMessage", "handleTerminalAudioMessage", "handleTerminalSocketClose", "retryTerminalNow", "resumeTerminalConnections", "terminalWebSocketURL"]) {
     const start = source.indexOf(`function ${name}(`), end = source.indexOf("\n}\n", start) + 2;
     assert.ok(start >= 0 && end > start, name);
     vm.runInContext(source.slice(start, end), context);
@@ -86,7 +87,7 @@ function fixture() {
     }
   }
   function start() { context.connectTerminalSocket(rect); sockets.at(-1).open(); attach(sockets.at(-1)); drain(); calls.length = 0; }
-  return { context, rect, state, sockets, calls, timers, retired, document, drain, attach, start };
+  return { context, rect, state, sockets, calls, audio, timers, retired, document, drain, attach, start };
 }
 
 test("pane selection transfers parsing priority and selecting a worksheet clears it", () => {
@@ -105,6 +106,23 @@ test("pane selection transfers parsing priority and selecting a worksheet clears
   assert.equal(coordinator.activeScheduler, f.state.output);
   f.context.clearActivePane();
   assert.equal(coordinator.activeScheduler, null);
+});
+
+test("live audio bypasses hidden text pauses, while stale socket audio is ignored", () => {
+  const f = fixture(); f.start();
+  f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);
+  const event = { type: "terminal-audio", epoch: "shell", action: "play", id: "clip", format: "wav", data: "bytes" };
+  f.sockets[0].text(event);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.audio)), [["audio-key", event]]);
+  assert.equal(f.state.replica.cursor.sequence, 3, "audio does not advance the text cursor");
+  f.rect.minimized = false; f.context.updateTerminalRenderState(f.rect);
+  f.audio.length = 0;
+  f.sockets[0].text(event);
+  assert.deepEqual(f.audio, []);
+  f.sockets[1].open(); f.sockets[1].text(event);
+  assert.equal(f.audio.length, 1);
+  f.sockets[1].end(1006);
+  assert.deepEqual(f.audio.at(-1), ["audio-key", "disconnect"]);
 });
 
 test("active priority follows minimized, covered, and background-tab visibility", () => {
@@ -329,11 +347,12 @@ test("a terminal created while hidden starts its shell and startup command once 
   assert.equal(new URL(f.sockets[0].url).searchParams.get("outputPaused"), "1");
   f.sockets[0].open(); f.sockets[0].text({ type: "output-paused" }); f.drain();
   assert.deepEqual(f.calls, []);
-  assert.deepEqual(JSON.parse(f.sockets[0].sent[0]), { type: "pause-output" });
-  assert.equal(new TextDecoder().decode(f.sockets[0].sent[1]), "build\r");
+  assert.deepEqual(JSON.parse(f.sockets[0].sent[0]), { type: "audio-events", enabled: true });
+  assert.deepEqual(JSON.parse(f.sockets[0].sent[1]), { type: "pause-output" });
+  assert.equal(new TextDecoder().decode(f.sockets[0].sent[2]), "build\r");
   f.rect.minimized = false; f.context.updateTerminalRenderState(f.rect);
   f.sockets[1].open(); f.attach(f.sockets[1]); f.drain();
-  assert.equal(f.sockets[1].sent.length, 0, "restore must not rerun the startup command");
+  assert.equal(f.sockets[1].sent.length, 1, "restore subscribes to audio without rerunning the startup command");
   assert.equal(f.state.replica.cursor.epoch, "shell");
 });
 
@@ -343,10 +362,10 @@ test("hiding an opening connection pauses delivery when it opens and duplicate v
   f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);
   assert.equal(f.sockets[0].sent.length, 0);
   f.sockets[0].open();
-  assert.deepEqual(JSON.parse(f.sockets[0].sent[0]), { type: "pause-output" });
+  assert.deepEqual(JSON.parse(f.sockets[0].sent[1]), { type: "pause-output" });
   f.context.updateTerminalRenderState(f.rect);
   f.sockets[0].text({ type: "output-paused" });
-  assert.equal(f.sockets[0].sent.length, 1);
+  assert.equal(f.sockets[0].sent.length, 2);
   assert.equal(f.state.replica.needsSnapshot, false);
   assert.deepEqual(f.calls, []);
 });

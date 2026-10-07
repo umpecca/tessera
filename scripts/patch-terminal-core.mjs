@@ -3,7 +3,7 @@ import path from "node:path";
 
 // Applied only to the pinned source checkout, after ghostty-web's WASM patch.
 const root = path.resolve(process.argv[2] || ".cache/sixel/ghostty-web/ghostty");
-const awaitExtension = await fs.readFile("internal/terminalcore/source/sixel_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/snapshot_api.zig", "utf8");
+const awaitExtension = await fs.readFile("internal/terminalcore/source/sixel_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/snapshot_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/audio_api.zig", "utf8");
 async function edit(file, transform) {
   const target = path.join(root, file);
   const source = await fs.readFile(target, "utf8");
@@ -13,7 +13,7 @@ function replace(source, before, after) {
   if (!source.includes(before)) throw new Error(`Pinned Ghostty source changed: ${before.slice(0, 100)}`);
   return source.replace(before, after);
 }
-for (const name of ["sixel.zig", "sixel_store.zig", "snapshot.zig"]) {
+for (const name of ["sixel.zig", "sixel_store.zig", "snapshot.zig", "audio.zig"]) {
   await fs.copyFile(`internal/terminalcore/source/${name}`, path.join(root, "src/terminal/c", name));
 }
 await edit("src/terminal/page.zig", (source) => {
@@ -198,15 +198,52 @@ await edit("src/lib_vt.zig", (source) => {
   const marker = '@export(&c.terminal_write, .{ .name = "ghostty_terminal_write" });';
   source = source.replace(/^\s*@export\(&c\.terminal\.sixel_[^\n]+\n/gm, "");
   const exports = ["version", "configure", "geometry", "image_count", "image_info", "image_pixels", "image_settings", "image_settings_read", "clear_images", "tiles", "viewport_row", "snapshot_export", "snapshot_release", "snapshot_data", "snapshot_import", "clipboard_read"];
-  return replace(source, marker, marker + "\n" + exports.map((name) => `        @export(&c.terminal.sixel_${name}, .{ .name = "tessera_sixel_${name}" });`).join("\n"));
+  source = source.replace(/^\s*@export\(&c\.terminal\.audio_read[^\n]+\n/gm, "");
+  return replace(source, marker, marker + "\n" + exports.map((name) => `        @export(&c.terminal.sixel_${name}, .{ .name = "tessera_sixel_${name}" });`).join("\n") + '\n        @export(&c.terminal.audio_read, .{ .name = "tessera_audio_read" });');
 });
 for (const file of ["props_uucode.zig", "symbols_uucode.zig"]) {
   await edit(`src/unicode/${file}`, (source) => source.replace("try stdout.end();", "try stdout.interface.flush();"));
 }
 
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("audio: @import")) return source;
+  source = replace(source, "    clipboard: std.ArrayList(u8) = .{},", '    clipboard: std.ArrayList(u8) = .{},\n    audio: @import("audio.zig").Effects = .{},');
+  source = replace(source, "        self.clipboard.deinit(self.alloc);", "        self.clipboard.deinit(self.alloc);\n        self.audio.deinit(self.alloc);");
+  const start = source.indexOf("    pub fn observeControl(self: *ResponseHandler,");
+  const end = source.indexOf("    pub fn graphicsQuery", start);
+  if (start < 0 || end < 0) throw new Error("Pinned OSC observer changed");
+  source = source.slice(0, start) + `    pub fn observeControl(self: *ResponseHandler, state: anytype, ch: u8) !void {
+        const prefix = @import("audio.zig").prefix;
+        if (state == .escape) {
+            // An OSC audio request is complete only after the full ST. CAN,
+            // SUB, and unrelated escape sequences must not trigger playback.
+            if (ch == '\\\\' and std.mem.startsWith(u8, self.osc_raw.items, prefix)) {
+                try self.audio.request(self.alloc, self.osc_raw.items[prefix.len..]);
+            }
+            self.osc_raw.clearRetainingCapacity();
+            if (ch == ']') try self.osc_raw.appendSlice(self.alloc, "\\x1b]");
+        } else if (state == .osc_string) {
+            if (ch == 7) {
+                if (std.mem.startsWith(u8, self.osc_raw.items, prefix)) {
+                    try self.audio.request(self.alloc, self.osc_raw.items[prefix.len..]);
+                }
+                self.osc_raw.clearRetainingCapacity();
+            } else if (ch == 0x18 or ch == 0x1a) {
+                self.osc_raw.clearRetainingCapacity();
+            } else if (ch == 0x1b) {
+                if (!std.mem.startsWith(u8, self.osc_raw.items, prefix)) self.osc_raw.clearRetainingCapacity();
+            } else if (self.osc_raw.items.len < 1024 * 1024 + 32) {
+                try self.osc_raw.append(self.alloc, ch);
+            }
+        }
+    }
+` + source.slice(end);
+  return source;
+});
+
 await edit("src/terminal/c/terminal.zig", (source) => source.replace(
   /\.full_reset => \{[^\n]*self\.terminal\.fullReset\(\); \},/,
-  ".full_reset => { const cw = self.sixel.cell_width; const ch = self.sixel.cell_height; const limit = self.sixel.memory_limit; const placeholders = self.sixel.show_placeholders; self.sixel.deinit(self.alloc); self.sixel.cell_width = cw; self.sixel.cell_height = ch; self.sixel.memory_limit = limit; self.sixel.show_placeholders = placeholders; self.terminal.fullReset(); },"
+  '.full_reset => { const cw = self.sixel.cell_width; const ch = self.sixel.cell_height; const limit = self.sixel.memory_limit; const placeholders = self.sixel.show_placeholders; self.sixel.deinit(self.alloc); self.sixel.cell_width = cw; self.sixel.cell_height = ch; self.sixel.memory_limit = limit; self.sixel.show_placeholders = placeholders; self.osc_raw.clearRetainingCapacity(); self.audio.deinit(self.alloc); try self.audio.push(self.alloc, "reset"); self.terminal.fullReset(); },'
 ));
 
 await edit("src/terminal/c/terminal.zig", (source) => {

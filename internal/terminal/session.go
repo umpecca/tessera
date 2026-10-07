@@ -21,7 +21,6 @@ type Session struct {
 
 type platformPty interface {
 	io.ReadWriteCloser
-	PID() int
 	Resize(cols, rows int) error
 	Wait() error
 }
@@ -68,13 +67,6 @@ func (s *Session) Resize(cols, rows int) error {
 		return nil
 	}
 	return s.pty.Resize(cols, rows)
-}
-
-func (s *Session) PID() int {
-	if s == nil || s.pty == nil {
-		return 0
-	}
-	return s.pty.PID()
 }
 
 func (s *Session) Done() <-chan error {

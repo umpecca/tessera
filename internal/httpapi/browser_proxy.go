@@ -320,6 +320,16 @@ addEventListener("message",event=>{if(event.source!==parent)return;if(event.data
 addEventListener("popstate",report);addEventListener("hashchange",report);addEventListener("load",report);
 const relayKeys=new Set(["[","]","BracketLeft","BracketRight","k","K","l","L",";","Semicolon","F7","F9","F10"]);
 addEventListener("keydown",event=>{const primary=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey;const alt=event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const reorder=(event.ctrlKey||event.metaKey)&&event.shiftKey&&!event.altKey&&(event.key==="ArrowUp"||event.key==="ArrowDown");if(!primary&&!alt&&!reorder)return;if(!reorder&&!relayKeys.has(event.key)&&!relayKeys.has(event.code))return;event.preventDefault();parent.postMessage({type:"tessera-browser-key",key:event.key,code:event.code,ctrlKey:event.ctrlKey,metaKey:event.metaKey,altKey:event.altKey,shiftKey:event.shiftKey},"*");},true);
+let drawPointer=null;
+const relayDraw=(event,phase)=>parent.postMessage({type:"tessera-browser-draw",phase,pointerId:event.pointerId,clientX:event.clientX,clientY:event.clientY,shiftKey:event.shiftKey},"*");
+const cancelDraw=()=>{if(drawPointer===null)return;const pointerId=drawPointer;drawPointer=null;relayDraw({pointerId,clientX:0,clientY:0},"cancel");if(document.documentElement.hasPointerCapture(pointerId))document.documentElement.releasePointerCapture(pointerId);};
+addEventListener("pointerdown",event=>{if(event.button!==1)return;event.preventDefault();event.stopImmediatePropagation();if(drawPointer!==null)return;drawPointer=event.pointerId;document.documentElement.setPointerCapture(event.pointerId);relayDraw(event,"start");},true);
+addEventListener("pointermove",event=>{if(event.pointerId!==drawPointer)return;event.preventDefault();event.stopImmediatePropagation();relayDraw(event,"move");},true);
+addEventListener("pointerup",event=>{if(event.pointerId!==drawPointer)return;event.preventDefault();event.stopImmediatePropagation();drawPointer=null;relayDraw(event,"end");},true);
+for(const type of ["pointercancel","lostpointercapture"])addEventListener(type,event=>{if(event.pointerId===drawPointer)cancelDraw();},true);
+addEventListener("blur",cancelDraw);
+addEventListener("keydown",event=>{if(event.key==="Escape"&&drawPointer!==null){event.preventDefault();event.stopImmediatePropagation();cancelDraw();}},true);
+addEventListener("auxclick",event=>{if(event.button===1){event.preventDefault();event.stopImmediatePropagation();}},true);
 document.addEventListener("click",event=>{const link=event.target.closest&&event.target.closest("a[href]");if(!link||link.target&&link.target!=="_self")return;const next=proxyURL(link.href);if(next!==link.href){event.preventDefault();location.href=next;}},true);
 document.addEventListener("submit",event=>{const form=event.target;if(form&&form.action)form.action=proxyURL(form.action);},true);
 })();</script>`)

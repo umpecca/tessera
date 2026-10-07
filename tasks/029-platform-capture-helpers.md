@@ -1,6 +1,6 @@
 # Task 029 — Platform capture helpers
 
-Status: external dependency
+Status: superseded by task 169; process capture has been retired
 
 Tessera defines, supervises, and tests the capture-helper protocol, resolution
 order, lifecycle, PID/process-tree boundary, normalized PCM format, and failure

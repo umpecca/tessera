@@ -110,7 +110,7 @@ test("disposing a Browser pane releases both active and subsequently created pro
   rect.browser.sessionID = "active-id";
   const pending = ctx.navigateBrowserPane(rect, "http://first/");
   const dispose = loadFunctions(["disposeBrowserPane"], {
-    releaseBrowserProxySession: ctx.releaseBrowserProxySession,
+    interaction: null, releaseBrowserProxySession: ctx.releaseBrowserProxySession,
   }).disposeBrowserPane;
   dispose(rect);
   replies[0].resolve({ ok: true, json: async () => ({ id: "late-id", path: "/late" }) });

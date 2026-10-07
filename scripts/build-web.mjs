@@ -8,6 +8,11 @@ import { alignGhosttyWebCanvasSizing } from "./ghostty-web-canvas-sizing.mjs";
 const core = await fs.readFile("internal/terminalcore/ghostty-vt.wasm");
 const coreID = createHash("sha256").update(core).digest("hex");
 
+await build({
+  entryPoints: ["web/terminal-opus-entry.js"], bundle: true, format: "esm",
+  minify: true, outfile: "web/vendor/terminal-opus.js", legalComments: "eof",
+});
+
 const ghosttyWebUnicodeGuard = {
   name: "ghostty-web-unicode-guard",
   setup(buildContext) {

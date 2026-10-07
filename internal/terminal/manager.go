@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tessera/internal/terminalaudio"
 	"tessera/internal/terminalcore"
 )
 
@@ -44,6 +45,9 @@ type Attachment struct {
 	Events                            <-chan []byte
 	Unsubscribe                       func()
 	PauseOutput                       func()
+	AudioWake                         <-chan struct{}
+	ReadAudio                         func() (terminalaudio.Event, bool)
+	EnableAudio                       func(bool)
 	Protocol                          int
 	Sequence                          uint64
 	Core                              string
@@ -69,7 +73,6 @@ type Manager struct {
 	mu              sync.Mutex
 	sessions        map[string]*ManagedSession
 	scrollbackLimit int
-	closeHandler    func(workspaceID, paneID string)
 }
 
 // subscriber holds bytes on their way to one attached client. The PTY read
@@ -82,17 +85,21 @@ type Manager struct {
 // Hidden clients explicitly pause their delivery and restore changed state
 // from a snapshot when revealed; their lifecycle channel remains connected.
 type subscriber struct {
-	protocol int
-	events   chan []byte
-	wake     chan struct{}
-	quit     chan struct{}
-	pause    chan struct{}
-	pending  [][]byte
-	bytes    int
-	limit    int
-	overrun  bool
-	done     bool
-	paused   bool
+	protocol     int
+	events       chan []byte
+	wake         chan struct{}
+	quit         chan struct{}
+	pause        chan struct{}
+	pending      [][]byte
+	bytes        int
+	limit        int
+	overrun      bool
+	done         bool
+	paused       bool
+	audioEnabled bool
+	audioWake    chan struct{}
+	audioPending []terminalaudio.Event
+	audioBytes   int
 }
 
 type ManagedSession struct {
@@ -126,6 +133,9 @@ type ManagedSession struct {
 	stateBytes                        int
 	started                           time.Time
 	outputTimings                     [outputTimingSlots]OutputTiming
+	streamFilter                      terminalaudio.StreamFilter
+	audioStreams                      map[string]liveAudioStream
+	audioStreamOrder                  uint64
 }
 
 const outputTimingSlots = 512
@@ -230,41 +240,6 @@ func (m *Manager) Terminate(workspaceID, paneID string) {
 	}
 }
 
-// ProcessID returns the root shell process for a live terminal pane. Capture
-// helpers use this PID as the root of the audio-producing process tree.
-func (m *Manager) ProcessID(workspaceID, paneID string) (int, bool) {
-	if m == nil || paneID == "" {
-		return 0, false
-	}
-	if workspaceID == "" {
-		workspaceID = "default"
-	}
-	m.mu.Lock()
-	session := m.sessions[sessionKey(workspaceID, paneID)]
-	m.mu.Unlock()
-	if session == nil || session.isClosed() {
-		return 0, false
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	if session.session == nil {
-		return 0, false
-	}
-	pid := session.session.PID()
-	return pid, pid > 0
-}
-
-// SetCloseHandler installs the host lifecycle callback used by the global
-// audio station. Tessera owns one station, so one handler is sufficient.
-func (m *Manager) SetCloseHandler(handler func(workspaceID, paneID string)) {
-	if m == nil {
-		return
-	}
-	m.mu.Lock()
-	m.closeHandler = handler
-	m.mu.Unlock()
-}
-
 func (m *Manager) TerminateWorkspace(workspaceID string) {
 	if m == nil {
 		return
@@ -303,16 +278,10 @@ func (m *Manager) Close() {
 func (m *Manager) remove(workspaceID, paneID string, session *ManagedSession) {
 	m.mu.Lock()
 	key := sessionKey(workspaceID, paneID)
-	removed := false
 	if m.sessions[key] == session {
 		delete(m.sessions, key)
-		removed = true
 	}
-	handler := m.closeHandler
 	m.mu.Unlock()
-	if removed && handler != nil {
-		handler(workspaceID, paneID)
-	}
 }
 
 func (s *ManagedSession) Write(p []byte) (int, error) {
@@ -459,13 +428,14 @@ func (s *ManagedSession) readLoop() {
 
 func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 	sub := &subscriber{
-		protocol: cursor.Protocol,
-		events:   make(chan []byte),
-		wake:     make(chan struct{}, 1),
-		quit:     make(chan struct{}),
-		pause:    make(chan struct{}),
-		limit:    s.scrollback.limit,
-		paused:   cursor.OutputPaused,
+		protocol:  cursor.Protocol,
+		events:    make(chan []byte),
+		wake:      make(chan struct{}, 1),
+		quit:      make(chan struct{}),
+		pause:     make(chan struct{}),
+		limit:     s.scrollback.limit,
+		paused:    cursor.OutputPaused,
+		audioWake: make(chan struct{}, 1),
 	}
 	if sub.paused {
 		close(sub.pause)
@@ -478,6 +448,36 @@ func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 		Events:      sub.events,
 		Unsubscribe: func() {},
 		PauseOutput: func() {},
+		AudioWake:   sub.audioWake,
+		ReadAudio: func() (terminalaudio.Event, bool) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if len(sub.audioPending) == 0 {
+				return terminalaudio.Event{}, false
+			}
+			event := sub.audioPending[0]
+			sub.audioPending[0] = terminalaudio.Event{}
+			sub.audioPending = sub.audioPending[1:]
+			sub.audioBytes -= audioEventBytes(event)
+			if len(sub.audioPending) > 0 {
+				select {
+				case sub.audioWake <- struct{}{}:
+				default:
+				}
+			}
+			return event, true
+		},
+		EnableAudio: func(enabled bool) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			sub.audioEnabled = enabled
+			clear(sub.audioPending)
+			sub.audioPending = nil
+			sub.audioBytes = 0
+			if enabled {
+				s.joinAudioStreamsLocked(sub)
+			}
+		},
 	}
 	if cursor.Protocol == StateProtocol {
 		s.stateAttachLocked(cursor, attachment)
@@ -588,49 +588,81 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 	s.mu.Lock()
 	var replies []byte
 	var clipboard [][]byte
-	if s.core != nil {
-		if err := s.core.Write(chunk); err != nil {
+	var audioEvents []terminalaudio.Event
+	var clean []byte
+	for _, part := range s.streamFilter.Feed(chunk) {
+		if part.Audio != nil {
+			audioEvents = append(audioEvents, *part.Audio)
+			continue
+		}
+		clean = append(clean, part.Text...)
+		if s.core == nil {
+			continue
+		}
+		if err := s.core.Write(part.Text); err != nil {
 			s.mu.Unlock()
 			s.markExited(err)
 			s.Close()
 			return
 		}
 		var err error
-		replies, err = s.core.Replies()
+		var coreReplies []byte
+		coreReplies, err = s.core.Replies()
+		replies = append(replies, coreReplies...)
 		if err != nil {
 			s.mu.Unlock()
 			s.markExited(err)
 			s.Close()
 			return
 		}
-		clipboard, err = s.core.Clipboard()
+		var coreClipboard [][]byte
+		coreClipboard, err = s.core.Clipboard()
+		clipboard = append(clipboard, coreClipboard...)
 		if err != nil {
 			s.mu.Unlock()
 			s.markExited(err)
 			s.Close()
 			return
 		}
+		var audioReplies []byte
+		var coreAudio []terminalaudio.Event
+		coreAudio, audioReplies, err = s.core.Audio()
+		audioEvents = append(audioEvents, coreAudio...)
+		if err != nil {
+			s.mu.Unlock()
+			s.markExited(err)
+			s.Close()
+			return
+		}
+		replies = append(replies, audioReplies...)
 	}
-	s.mouseModes.consume(chunk)
-	s.scrollback.append(chunk)
-	// published counts the stream, not what is still retained: trimming the
-	// front of the scrollback must not move a client's position.
-	s.published += int64(len(chunk))
-	if s.core != nil {
-		s.publishStateLocked(StateOutput, chunk)
-		s.outputTimings[s.sequence%outputTimingSlots] = OutputTiming{
-			Sequence: s.sequence,
-			ReadUs:   readAt.Sub(s.started).Microseconds(),
-			QueuedUs: time.Since(s.started).Microseconds(),
+	chunk = clean
+	if len(chunk) > 0 {
+		s.mouseModes.consume(chunk)
+		s.scrollback.append(chunk)
+		// published counts the stream, not what is still retained: trimming the
+		// front of the scrollback must not move a client's position.
+		s.published += int64(len(chunk))
+		if s.core != nil {
+			s.publishStateLocked(StateOutput, chunk)
+			s.outputTimings[s.sequence%outputTimingSlots] = OutputTiming{
+				Sequence: s.sequence,
+				ReadUs:   readAt.Sub(s.started).Microseconds(),
+				QueuedUs: time.Since(s.started).Microseconds(),
+			}
+			for _, text := range clipboard {
+				s.publishStateLocked(StateClipboard, text)
+			}
 		}
-		for _, text := range clipboard {
-			s.publishStateLocked(StateClipboard, text)
+		for sub := range s.subscribers {
+			if sub.protocol != StateProtocol {
+				s.enqueueLocked(sub, chunk)
+			}
 		}
 	}
-	for sub := range s.subscribers {
-		if sub.protocol != StateProtocol {
-			s.enqueueLocked(sub, chunk)
-		}
+	for _, event := range audioEvents {
+		event.Epoch = s.epoch
+		s.publishAudioLocked(event)
 	}
 	s.mu.Unlock()
 	if len(replies) > 0 {
@@ -665,6 +697,10 @@ func (s *ManagedSession) releaseLocked(sub *subscriber) {
 		return
 	}
 	delete(s.subscribers, sub)
+	clear(sub.audioPending)
+	sub.audioPending = nil
+	sub.audioBytes = 0
+	sub.audioEnabled = false
 	if sub.overrun {
 		// Nothing queued is worth delivering to a client that is going to
 		// reattach and be resynchronised anyway.

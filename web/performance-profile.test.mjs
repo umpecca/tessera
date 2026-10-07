@@ -8,7 +8,7 @@ const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replac
 
 function loadBrowserPerformanceSettings(localStorage) {
   const start = source.indexOf("const olderMacModeStorageKey =");
-  const end = source.indexOf("\nlet audioStationState =", start);
+  const end = source.indexOf("\nconst terminalAudioPlayer =", start);
   assert.ok(start >= 0 && end > start);
   return { ...vm.runInNewContext(`${source.slice(start, end)}
     ({ olderMacMode, experimentalTerminalRenderer, terminalPaintCoalescing, terminalOutputCoalescing })`, {

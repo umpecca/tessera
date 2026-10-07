@@ -29,8 +29,6 @@ func main() {
 	webDir := flag.String("web", "", "serve the SPA from this directory instead of embedded assets")
 	usersFlag := flag.String("users", "", "comma-separated user roster; enables the user selection screen and a separate workspace per user")
 	tray := flag.Bool("tray", desktop.TraySupported(), "show Start, Stop, Configure, and Exit controls in the system tray")
-	audioCaptureHelper := flag.String("audio-capture-helper", "", "process-audio capture helper path (defaults to the executable directory or PATH)")
-	audioEncoder := flag.String("audio-encoder", "", "LAME-compatible encoder path (defaults to the bundled sidecar or PATH)")
 	var trustedProxies stringListFlag
 	flag.Var(&trustedProxies, "trusted-proxy", "trusted immediate proxy IP or CIDR; repeat or use a comma-separated list")
 	rateLimit := flag.Int("rate-limit", 600, "maximum API requests per client per minute; negative disables")
@@ -75,8 +73,6 @@ func main() {
 		WebDir:             *webDir,
 		Users:              users,
 		Updater:            updater,
-		AudioCaptureHelper: *audioCaptureHelper,
-		AudioEncoder:       *audioEncoder,
 		TrustedProxies:     trustedProxies,
 		RateLimitPerMinute: *rateLimit,
 		RateLimitBurst:     *rateBurst,

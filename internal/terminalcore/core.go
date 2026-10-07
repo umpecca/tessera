@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"sync"
 
+	"tessera/internal/terminalaudio"
+
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 )
@@ -213,6 +215,35 @@ func (c *Core) Snapshot() ([]byte, error) {
 
 func (c *Core) Replies() ([]byte, error) {
 	return c.drain("ghostty_terminal_read_response")
+}
+
+// Audio drains transient native effects separately from terminal replay/state.
+func (c *Core) Audio() ([]terminalaudio.Event, []byte, error) {
+	data, err := c.drain("tessera_audio_read")
+	if err != nil {
+		return nil, nil, err
+	}
+	var events []terminalaudio.Event
+	var replies []byte
+	for len(data) >= 4 {
+		n := int(binary.LittleEndian.Uint32(data))
+		data = data[4:]
+		if n > len(data) {
+			return nil, nil, errors.New("invalid terminal audio effect")
+		}
+		if event, reply, ok := terminalaudio.Parse(string(data[:n])); ok {
+			if reply != "" {
+				replies = append(replies, reply...)
+			} else {
+				events = append(events, event)
+			}
+		}
+		data = data[n:]
+	}
+	if len(data) != 0 {
+		return nil, nil, errors.New("invalid terminal audio effect framing")
+	}
+	return events, replies, nil
 }
 
 func (c *Core) Clipboard() ([][]byte, error) {

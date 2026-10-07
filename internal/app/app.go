@@ -4,7 +4,6 @@ import (
 	"io/fs"
 	"net/http"
 
-	"tessera/internal/audio"
 	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
 	"tessera/internal/runs"
@@ -20,7 +19,6 @@ type App struct {
 	Runner    *shell.Runner
 	Runs      *runs.Manager
 	Terminals *terminal.Manager
-	Audio     *audio.Manager
 	WebFS     fs.FS
 	// Users is the optional multi-user roster, passed through to the API.
 	Users []string
@@ -44,10 +42,6 @@ func (a *App) Handler() http.Handler {
 	if terminalManager == nil {
 		terminalManager = terminal.NewManager()
 	}
-	audioManager := a.Audio
-	if audioManager == nil {
-		audioManager = audio.NewManager(a.Store, terminalManager, audio.Options{})
-	}
 	webFS := a.WebFS
 	if webFS == nil {
 		webFS = web.Files
@@ -57,7 +51,6 @@ func (a *App) Handler() http.Handler {
 		Runner:              a.Runner,
 		Runs:                runManager,
 		Terminals:           terminalManager,
-		Audio:               audioManager,
 		WebFS:               webFS,
 		Users:               a.Users,
 		Updater:             a.Updater,

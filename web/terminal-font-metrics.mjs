@@ -1,3 +1,5 @@
+import { normalizeTerminalRowSpacing, terminalRowSpacings } from "./terminal-settings.mjs";
+
 const patch = Symbol.for("tessera.terminalFontMetrics");
 
 export function installTerminalFontMetrics(Renderer) {
@@ -18,10 +20,12 @@ export function installTerminalFontMetrics(Renderer) {
       bold.fontBoundingBoxAscent || 0, bold.actualBoundingBoxAscent || 0) || this.fontSize * 0.8;
     const descent = Math.max(text.fontBoundingBoxDescent || 0, text.actualBoundingBoxDescent || 0,
       bold.fontBoundingBoxDescent || 0, bold.actualBoundingBoxDescent || 0) || this.fontSize * 0.2;
+    const padding = terminalRowSpacings[normalizeTerminalRowSpacing(this.tesseraRowSpacing)].padding;
     return {
       width,
-      height: Math.ceil(ascent + descent) + 2,
-      baseline: Math.ceil(ascent) + 1,
+      // Round each bound separately so Tight still fits fractional descenders.
+      height: Math.ceil(ascent) + Math.ceil(descent) + padding,
+      baseline: Math.ceil(ascent) + padding / 2,
     };
   };
   prototype[patch] = true;

@@ -241,6 +241,35 @@ func (s *Store) SaveWorkspace(ctx context.Context, ws *Workspace) error {
 	ws.DefaultPaneFontSize = normalizeDefaultPaneFontSize(ws.DefaultPaneFontSize)
 	ws.DefaultTheme = normalizeThemeID(ws.DefaultTheme)
 	ws.ThemeID = normalizeThemeID(ws.ThemeID)
+	// Old clients and imported documents can still contain the retired pane kind.
+	// Discard it rather than turning an Audio pane into an empty worksheet.
+	panes := make([]Pane, 0, len(ws.Panes))
+	removedAudio := make(map[string]bool)
+	for _, pane := range ws.Panes {
+		if pane.Kind == "audio" {
+			removedAudio[pane.ID] = true
+			if ws.ActivePaneID == pane.ID {
+				ws.ActivePaneID = ""
+			}
+			continue
+		}
+		panes = append(panes, pane)
+	}
+	ws.Panes = panes
+	if len(removedAudio) > 0 {
+		var layout map[string]json.RawMessage
+		var paneIDs []string
+		if json.Unmarshal(ws.Layout, &layout) == nil && json.Unmarshal(layout["panes"], &paneIDs) == nil {
+			keptIDs := make([]string, 0, len(paneIDs))
+			for _, id := range paneIDs {
+				if !removedAudio[id] {
+					keptIDs = append(keptIDs, id)
+				}
+			}
+			layout["panes"], _ = json.Marshal(keptIDs)
+			ws.Layout, _ = json.Marshal(layout)
+		}
+	}
 	if ws.ActivePaneID == "" {
 		for _, pane := range ws.Panes {
 			if !pane.Minimized {

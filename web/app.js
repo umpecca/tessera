@@ -5,6 +5,7 @@ import {
 } from "./clipboard-bridge.mjs";
 import { compatibilityDiagnostics, detectCompatibility } from "./compatibility.mjs";
 import { CommandWheel } from "./command-wheel.mjs";
+import { TerminalAudioPlayer, terminalAudioMuteKey } from "./terminal-audio.mjs";
 import { WindowWobble } from "./window-wobble.mjs";
 import {
   basicSetup,
@@ -58,7 +59,10 @@ import {
   terminalMouseMessage,
   terminalPasteText,
 } from "./terminal-input.mjs";
-import { defaultTerminalTERM, normalizeTerminalTERM } from "./terminal-settings.mjs";
+import {
+  defaultTerminalTERM, normalizeTerminalTERM,
+  defaultTerminalRowSpacing, normalizeTerminalRowSpacing, terminalRowSpacings,
+} from "./terminal-settings.mjs";
 import {
   defaultTerminalFont,
   loadTerminalFont,
@@ -204,6 +208,7 @@ let editorWheelSensitivity = defaultWheelSensitivity;
 let oledWindowBorderSize = defaultOLEDBorderSize;
 let terminalTerm = defaultTerminalTERM;
 let terminalFont = defaultTerminalFont;
+let terminalRowSpacing = defaultTerminalRowSpacing;
 let terminalColorMode = defaultTerminalColorMode;
 const olderMacModeStorageKey = "tessera.older-mac-mode.v1";
 let olderMacMode = false;
@@ -227,10 +232,11 @@ try {
 } catch {
   // Storage can be unavailable in hardened or private browser contexts.
 }
-let audioStationState = null;
-let audioStationEvents = null;
-let audioStationReconnectTimer = null;
-const audioVolumeStorageKey = "tessera-audio-volume";
+const terminalAudioPlayer = new TerminalAudioPlayer();
+window.addEventListener("pagehide", (event) => {
+  if (event.persisted) terminalAudioPlayer.disable();
+  else terminalAudioPlayer.dispose();
+});
 const serverHealthPollInterval = 5000;
 // The browser caps the body of a request asked to outlive its page at 64KB,
 // counted across every such request in flight. Saves stay under it by leaving
@@ -383,6 +389,17 @@ async function setTerminalFont(value, { save = true } = {}) {
   for (const rect of terminalPanes) {
     rect.terminal.term.setFontFamilies(family, symbolFamily);
     requestTerminalFit(rect);
+  }
+}
+
+function setTerminalRowSpacing(value, { save = true } = {}) {
+  terminalRowSpacing = normalizeTerminalRowSpacing(value);
+  if (save) scheduleUserSettingsSave();
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal" && rect.terminal?.term) {
+      rect.terminal.term.setRowSpacing(terminalRowSpacing);
+      requestTerminalFit(rect);
+    }
   }
 }
 
@@ -666,6 +683,7 @@ function applyUserSettings(settings) {
   editorWheelSensitivity = normalizeWheelSensitivity(settings.editorWheelSensitivity);
   terminalTerm = normalizeTerminalTERM(settings.terminalTerm);
   terminalFont = normalizeTerminalFont(settings.terminalFont);
+  terminalRowSpacing = normalizeTerminalRowSpacing(settings.terminalRowSpacing);
   terminalColorMode = normalizeTerminalColorMode(settings.terminalColorMode);
   // Performance capabilities belong to this browser and device. Ignore the
   // legacy account setting so an Older Mac cap cannot follow the user to a
@@ -952,7 +970,6 @@ const defaultWorksheetEditorMode = "free";
 const normalWorksheetEditorMode = "normal";
 const fileBrowserPaneKind = "file-browser";
 const textEditorPaneKind = "text-editor";
-const audioPaneKind = "audio";
 const vncPaneKind = "vnc";
 // Which modifier the platform pastes with, since that decides whether the
 // browser will deliver a paste event on its own. userAgentData is the modern
@@ -1266,6 +1283,9 @@ const commandPaletteInput = document.createElement("input");
 commandPaletteInput.className = "command-palette-input";
 commandPaletteInput.type = "text";
 commandPaletteInput.placeholder = "Command, shortcut, or window name · Enter to run";
+commandPaletteInput.autocomplete = "off";
+commandPaletteInput.setAttribute("autocorrect", "off");
+commandPaletteInput.setAttribute("writingsuggestions", "false");
 commandPaletteInput.spellcheck = false;
 commandPaletteInput.setAttribute("aria-label", "Command palette");
 const commandPaletteList = document.createElement("div");
@@ -1389,9 +1409,31 @@ wakeRecoveryStatus.setAttribute("aria-live", "polite");
 document.body.appendChild(wakeRecoveryStatus);
 
 board.addEventListener("pointerdown", startDrawing);
+board.addEventListener("pointerdown", (event) => {
+  if (event.button === 1) startDrawing(event);
+}, { capture: true });
+board.addEventListener("auxclick", (event) => {
+  if (event.button === 1) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}, { capture: true });
+board.addEventListener("lostpointercapture", (event) => {
+  if (interaction?.type === "draw" && interaction.id === event.pointerId) {
+    finishInteraction({ pointerId: event.pointerId, type: "pointercancel" });
+  }
+});
 board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
 document.addEventListener("keydown", hideMenusOnEscape);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && interaction?.type === "draw" && interaction.button === 1) {
+    event.preventDefault();
+    event.stopPropagation();
+    finishInteraction({ pointerId: interaction.id, type: "pointercancel" });
+    hideAllMenus();
+  }
+}, { capture: true });
 document.addEventListener("keydown", handleSettingsKeyboard, { capture: true });
 document.addEventListener("focusin", containSettingsFocus);
 document.addEventListener("focusin", containWindowListFocus);
@@ -1417,6 +1459,11 @@ window.addEventListener("pointermove", continueInteraction);
 window.addEventListener("pointerup", finishInteraction);
 window.addEventListener("pointercancel", finishInteraction);
 window.addEventListener("blur", hideWindowSwitcher);
+window.addEventListener("blur", () => {
+  if (interaction?.type === "draw" && interaction.button === 1) {
+    finishInteraction({ pointerId: interaction.id, type: "pointercancel" });
+  }
+});
 window.addEventListener("resize", hideAllMenus);
 window.addEventListener("popstate", () => void handleSessionHistoryNavigation());
 window.addEventListener("message", handleBrowserPaneMessage);
@@ -1428,36 +1475,38 @@ void startApp()
   .catch((error) => console.warn(error))
   .finally(startServerConnectionMonitor);
 
-function startDrawing(event) {
-  if (event.button !== 0 || event.target !== board) {
+function startDrawing(event, { capture = true } = {}) {
+  if (interaction || (event.button !== 1 && (event.button !== 0 || event.target !== board))) {
     return;
   }
   event.preventDefault();
+  event.stopPropagation();
   hideAllMenus();
 
   const point = boardPoint(event);
   const cwd = activeRect?.cwd || "";
-  if (activeRect || activePaneID) {
-    clearActivePane();
-  }
-  const rect = createRectangle(point.x, point.y, 1, 1, {
-    kind: "pending",
-    cwd,
-    zIndex: nextZIndex,
-  });
-  nextZIndex += 1;
-
   interaction = {
     type: "draw",
     id: event.pointerId,
-    rect,
+    button: event.button,
+    rect: null,
+    cwd,
     startX: point.x,
     startY: point.y,
   };
-  board.setPointerCapture(event.pointerId);
+  if (event.button === 0) createDrawnRectangle(interaction);
+  if (capture) board.setPointerCapture(event.pointerId);
 }
 
-function startMoving(event, rect) {
+function createDrawnRectangle(draw) {
+  if (activeRect || activePaneID) clearActivePane();
+  draw.rect = createRectangle(draw.startX, draw.startY, 1, 1, {
+    kind: "pending", cwd: draw.cwd, zIndex: nextZIndex,
+  });
+  nextZIndex += 1;
+}
+
+function startMoving(event, rect, captureElement = rect.element) {
   if (event.button !== 0) {
     return;
   }
@@ -1475,7 +1524,9 @@ function startMoving(event, rect) {
     startY: point.y,
     original: { ...rect },
   };
-  rect.element.setPointerCapture(event.pointerId);
+  // Capture title-bar drags on the tab itself so click/double-click events
+  // retain that target instead of being redirected to the window body.
+  captureElement.setPointerCapture(event.pointerId);
   windowWobble.start(rect.element, rect.x, rect.y, point.x - rect.x, point.y - rect.y);
 }
 
@@ -1530,6 +1581,10 @@ function continueInteraction(event) {
 
   const point = boardPoint(event);
   if (interaction.type === "draw") {
+    if (!interaction.rect) {
+      if (Math.hypot(point.x - interaction.startX, point.y - interaction.startY) < 6) return;
+      createDrawnRectangle(interaction);
+    }
     const box = boxFromDrag(interaction.startX, interaction.startY, point.x, point.y, event.shiftKey);
     clampIntoBoard(box);
     setRectangle(interaction.rect, box);
@@ -1569,7 +1624,8 @@ function finishInteraction(event) {
   interaction = null;
 
   if (finishedInteraction.type === "draw") {
-    if (finishedInteraction.rect.width < 6 || finishedInteraction.rect.height < 6) {
+    if (!finishedInteraction.rect) return;
+    if (event.type === "pointercancel" || finishedInteraction.rect.width < 6 || finishedInteraction.rect.height < 6) {
       destroyRectangle(finishedInteraction.rect, { selectNext: false });
       return;
     }
@@ -1644,7 +1700,6 @@ function createRectangle(x, y, width, height, options = {}) {
     vncViewOnly: Boolean(options.vncViewOnly),
     vncScaleMode: normalizeVNCScaleMode(options.vncScaleMode),
     vnc: null,
-    audio: null,
     isFull: Boolean(options.isFull),
     minimized: Boolean(options.minimized),
     restoreBox: options.restoreBox || null,
@@ -1677,7 +1732,7 @@ function createRectangle(x, y, width, height, options = {}) {
     event.preventDefault();
     event.stopPropagation();
     hideFloatingMenus();
-    toggleMinimize(rect);
+    toggleFullRestore(rect);
   }
 
   const tab = document.createElement("div");
@@ -1691,10 +1746,10 @@ function createRectangle(x, y, width, height, options = {}) {
     }
     event.preventDefault();
     event.stopPropagation();
-    startMoving(event, rect);
+    startMoving(event, rect, tab);
   });
   tab.addEventListener("dblclick", (event) => {
-    if (controls.contains(event.target)) {
+    if (event.button !== 0 || controls.contains(event.target)) {
       return;
     }
     if (event.target === title && !title.readOnly) {
@@ -1839,8 +1894,6 @@ function createRectangle(x, y, width, height, options = {}) {
         ? "url"
       : rect.kind === vncPaneKind
         ? "target"
-      : rect.kind === audioPaneKind
-        ? "station"
       : "cwd";
 
   const cwdInput = document.createElement("input");
@@ -1852,8 +1905,6 @@ function createRectangle(x, y, width, height, options = {}) {
       ? rect.browserUrl
     : rect.kind === vncPaneKind
       ? rect.vncTarget
-    : rect.kind === audioPaneKind
-      ? "Shared across clients"
       : rect.cwd;
   cwdInput.placeholder = rect.kind === fileBrowserPaneKind
     ? "loading..."
@@ -1863,8 +1914,6 @@ function createRectangle(x, y, width, height, options = {}) {
         ? "localhost:5000"
       : rect.kind === vncPaneKind
         ? "host:5900"
-      : rect.kind === audioPaneKind
-        ? "Shared across clients"
       : "host default";
   cwdInput.readOnly = true;
   cwdInput.spellcheck = false;
@@ -1876,11 +1925,9 @@ function createRectangle(x, y, width, height, options = {}) {
         ? "Browser address"
       : rect.kind === vncPaneKind
         ? "VNC target"
-      : rect.kind === audioPaneKind
-        ? "Shared audio station"
       : "Pane working directory");
   cwdInput.addEventListener("pointerdown", (event) => {
-    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === vncPaneKind || rect.kind === audioPaneKind) {
+    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === vncPaneKind) {
       return;
     }
     event.preventDefault();
@@ -1894,7 +1941,7 @@ function createRectangle(x, y, width, height, options = {}) {
     }
   });
   cwdInput.addEventListener("keydown", (event) => {
-    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === vncPaneKind || rect.kind === audioPaneKind) {
+    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === vncPaneKind) {
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -1925,8 +1972,6 @@ function createRectangle(x, y, width, height, options = {}) {
         ? "Browser"
       : rect.kind === vncPaneKind
         ? "VNC remote desktop"
-      : rect.kind === audioPaneKind
-        ? "Audio station"
       : rect.kind === "pending"
         ? "New window"
         : "Workspace text");
@@ -1976,7 +2021,7 @@ function createRectangle(x, y, width, height, options = {}) {
     rect.browserStatusInput = cwdInput;
   } else if (rect.kind === vncPaneKind) {
     rect.vncStatusInput = cwdInput;
-  } else if (rect.kind !== browserPaneKind && rect.kind !== audioPaneKind) {
+  } else if (rect.kind !== browserPaneKind) {
     rect.cwdInput = cwdInput;
   }
   setPaneCwd(rect, rect.cwd, { silent: true });
@@ -2004,8 +2049,6 @@ function createRectangle(x, y, width, height, options = {}) {
     mountBrowserPane(rect);
   } else if (rect.kind === vncPaneKind) {
     mountVNCPane(rect);
-  } else if (rect.kind === audioPaneKind) {
-    mountAudioPane(rect);
   } else {
     body.classList.add("is-pending");
   }
@@ -2038,10 +2081,6 @@ function createRectangle(x, y, width, height, options = {}) {
 
   rectangles.push(rect);
   board.appendChild(element);
-  if (rect.kind === audioPaneKind) {
-    void refreshAudioStationState();
-    connectAudioStationEvents();
-  }
   setRectangle(rect, rect);
   if (rect.isFull) {
     // A pane loaded already-maximized fills whatever board it's on now,
@@ -2208,6 +2247,10 @@ async function navigateBrowserPane(rect, value) {
 }
 
 function handleBrowserPaneMessage(event) {
+  if (event.data?.type === "tessera-browser-draw") {
+    handleBrowserPaneDraw(event);
+    return;
+  }
   if (event.data?.type === "tessera-browser-key") {
     handleBrowserPaneShortcut(event);
     return;
@@ -2229,6 +2272,33 @@ function handleBrowserPaneMessage(event) {
     rect.browserStatusInput.value = normalized;
   }
   scheduleWorkspaceSave();
+}
+
+function handleBrowserPaneDraw(event) {
+  const data = event.data;
+  const rect = rectangles.find(candidate => candidate.kind === browserPaneKind && candidate.browser?.frame.contentWindow === event.source);
+  if (!rect || rect.minimized || rect.browser.frame.hidden || !serverConnectionModal.hidden) return;
+  if (!Number.isInteger(data.pointerId) || data.pointerId < 0 || !Number.isFinite(data.clientX) || !Number.isFinite(data.clientY)) return;
+  const frame = rect.browser.frame, bounds = frame.getBoundingClientRect();
+  const width = frame.clientWidth, height = frame.clientHeight;
+  if (!width || !height) return;
+  const pointer = {
+    pointerId: data.pointerId, button: 1, target: board, shiftKey: data.shiftKey === true,
+    clientX: bounds.left + data.clientX * bounds.width / width,
+    clientY: bounds.top + data.clientY * bounds.height / height,
+    preventDefault() {}, stopPropagation() {},
+  };
+  if (data.phase === "start") {
+    if (interaction || data.clientX < 0 || data.clientX > width || data.clientY < 0 || data.clientY > height) return;
+    // The iframe owns native pointer capture and relays the whole drag.
+    startDrawing(pointer, { capture: false });
+    interaction.browserFrame = frame;
+  } else if (interaction?.type === "draw" && interaction.browserFrame === frame && interaction.id === data.pointerId) {
+    if (data.phase === "move") continueInteraction(pointer);
+    else if (data.phase === "end" || data.phase === "cancel") {
+      finishInteraction({ ...pointer, type: data.phase === "cancel" ? "pointercancel" : "pointerup" });
+    }
+  }
 }
 
 // Keystrokes typed while a browser pane's iframe holds focus never reach this
@@ -2263,6 +2333,9 @@ function disposeBrowserPane(rect) {
   const browser = rect?.browser;
   if (!browser) {
     return;
+  }
+  if (interaction?.type === "draw" && interaction.browserFrame === browser.frame) {
+    finishInteraction({ pointerId: interaction.id, type: "pointercancel" });
   }
   const sessionID = browser.sessionID;
   rect.browserRequestID += 1;
@@ -2621,382 +2694,6 @@ function disposeVNCPane(rect) {
   view.remoteClipboard = "";
   view.rfb = null;
   rect.vnc = null;
-}
-
-function readAudioVolume() {
-  const stored = window.localStorage.getItem(audioVolumeStorageKey);
-  if (stored === null) {
-    return 0.8;
-  }
-  const value = Number(stored);
-  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0.8;
-}
-
-function broadcastAudioStationState(state) {
-  audioStationState = state;
-  for (const rect of rectangles) {
-    if (rect.kind === audioPaneKind && rect.audio) {
-      renderAudioPane(rect, state);
-    }
-  }
-}
-
-async function refreshAudioStationState() {
-  try {
-    const response = await fetch("/api/audio/state", { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`audio state failed: ${response.status}`);
-    }
-    broadcastAudioStationState(await response.json());
-  } catch (error) {
-    for (const rect of rectangles) {
-      if (rect.kind === audioPaneKind && rect.audio) {
-        rect.audio.message.textContent = error.message || "Audio station unavailable";
-        rect.audio.message.classList.add("is-error");
-      }
-    }
-  }
-}
-
-function connectAudioStationEvents() {
-  window.clearTimeout(audioStationReconnectTimer);
-  audioStationReconnectTimer = null;
-  if (audioStationEvents || !rectangles.some((rect) => rect.kind === audioPaneKind)) {
-    return;
-  }
-  audioStationEvents = new EventSource("/api/audio/events");
-  audioStationEvents.addEventListener("state", (event) => {
-    try {
-      broadcastAudioStationState(JSON.parse(event.data));
-    } catch (error) {
-      console.warn(error);
-    }
-  });
-  audioStationEvents.onerror = () => {
-    audioStationEvents?.close();
-    audioStationEvents = null;
-    for (const rect of rectangles) {
-      if (rect.kind === audioPaneKind && rect.audio && audioStationState?.status === "playing") {
-        rect.audio.message.textContent = "Stream disconnected";
-        rect.audio.message.classList.add("is-error");
-      }
-    }
-    audioStationReconnectTimer = window.setTimeout(() => {
-      void refreshAudioStationState();
-      connectAudioStationEvents();
-    }, 2000);
-  };
-}
-
-async function requestAudioStation(path, method, body) {
-  const response = await fetch(path, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || `audio request failed: ${response.status}`);
-  }
-  broadcastAudioStationState(data);
-  return data;
-}
-
-function audioPosition(state) {
-  let position = Number(state?.positionSeconds) || 0;
-  if (state?.status === "playing" && state.seekable && state.startedAt) {
-    position += Math.max(0, (Date.now() - Date.parse(state.startedAt)) / 1000);
-  }
-  return position;
-}
-
-function renderAudioPane(rect, state) {
-  const view = rect.audio;
-  if (!view) {
-    return;
-  }
-  const source = state?.source || null;
-  view.source.textContent = source?.label || "No source selected";
-  view.play.textContent = state?.status === "playing" ? "Pause" : "Play";
-  view.play.disabled = !source;
-  view.stop.disabled = !source;
-  view.seekRow.hidden = !state?.seekable;
-  const position = audioPosition(state);
-  if (!view.seeking) {
-    view.seek.value = String(position);
-  }
-  view.elapsed.textContent = formatAudioTime(position);
-
-  const sourceVersion = Number(state?.sourceVersion) || 0;
-  if (source && view.sourceVersion !== sourceVersion) {
-    view.element.pause();
-    view.sourceVersion = sourceVersion;
-    view.element.src = `/api/audio/stream?sourceVersion=${encodeURIComponent(sourceVersion)}`;
-    view.element.load();
-  } else if (!source && view.sourceVersion !== 0) {
-    view.element.pause();
-    view.element.removeAttribute("src");
-    view.element.load();
-    view.sourceVersion = 0;
-  }
-
-  view.message.classList.toggle("is-error", Boolean(state?.error));
-  view.message.textContent = state?.error || state?.warning || (source?.kind === "terminal" && state?.captureError) || statusAudioMessage(state);
-  view.join.hidden = true;
-
-  if (state?.status === "playing" && source) {
-    if (state.seekable && Math.abs((view.element.currentTime || 0) - position) > 2) {
-      try {
-        view.element.currentTime = position;
-      } catch (_) {
-        // Metadata may not be available yet; loadedmetadata retries below.
-      }
-    }
-    const playResult = view.element.play();
-    if (playResult?.catch) {
-      playResult.catch((error) => {
-        if (error?.name === "NotAllowedError") {
-          view.join.hidden = false;
-          view.message.textContent = "Tap to listen";
-          view.message.classList.remove("is-error");
-        } else if (audioStationState?.status === "playing") {
-          view.message.textContent = "Stream disconnected";
-          view.message.classList.add("is-error");
-        }
-      });
-    }
-  } else {
-    view.element.pause();
-    if (state?.status === "stopped" && state?.seekable) {
-      try {
-        view.element.currentTime = 0;
-      } catch (_) {}
-    }
-  }
-}
-
-function statusAudioMessage(state) {
-  if (!state?.source) {
-    return "Choose a host file, stream URL, or Terminal pane.";
-  }
-  if (state.status === "playing") {
-    return "Playing for all connected listeners";
-  }
-  if (state.status === "paused") {
-    return "Paused";
-  }
-  return "Stopped";
-}
-
-function formatAudioTime(seconds) {
-  const value = Math.max(0, Math.floor(Number(seconds) || 0));
-  const minutes = Math.floor(value / 60);
-  return `${minutes}:${String(value % 60).padStart(2, "0")}`;
-}
-
-async function chooseAudioFile(rect) {
-  if (rect) {
-    await openAudioFileBrowser(rect);
-  }
-}
-
-async function chooseAudioURL(value) {
-  if (!value?.trim()) {
-    throw new Error("Enter a direct HTTP(S) audio URL");
-  }
-  await requestAudioStation("/api/audio/source", "PUT", { kind: "url", value: value.trim() });
-}
-
-async function chooseAudioTerminal(paneID) {
-  const terminals = rectangles.filter((rect) => rect.kind === "terminal" && rect.terminal?.socket?.readyState === WebSocket.OPEN);
-  if (terminals.length === 0) {
-    throw new Error("Terminal is not running");
-  }
-  const selected = terminals.find((rect) => rect.id === paneID);
-  if (!selected) {
-    throw new Error("Select a listed Terminal pane");
-  }
-  await requestAudioStation("/api/audio/source", "PUT", {
-    kind: "terminal",
-    workspaceId: workspaceID,
-    paneId: selected.id,
-    label: selected.title || "Terminal",
-  });
-}
-
-function mountAudioPane(rect) {
-  rect.body.classList.add("is-audio");
-  const root = document.createElement("div");
-  root.className = "audio-pane";
-  const source = document.createElement("div");
-  source.className = "audio-source";
-  source.textContent = "Loading audio station...";
-  const sourceActions = document.createElement("div");
-  sourceActions.className = "audio-source-actions";
-  const chooseFile = audioButton("Choose File…");
-  const chooseURL = audioButton("Set Stream URL…");
-  const chooseTerminal = audioButton("Link Terminal…");
-  sourceActions.append(chooseFile, chooseURL, chooseTerminal);
-
-  const urlEditor = document.createElement("div");
-  urlEditor.className = "audio-source-editor";
-  urlEditor.hidden = true;
-  const urlInput = document.createElement("input");
-  urlInput.type = "url";
-  urlInput.placeholder = "https://example.com/live.mp3";
-  urlInput.setAttribute("aria-label", "Direct audio stream URL");
-  const applyURL = audioButton("Use URL");
-  const cancelURL = audioButton("Cancel");
-  urlEditor.append(urlInput, applyURL, cancelURL);
-
-  const terminalEditor = document.createElement("div");
-  terminalEditor.className = "audio-source-editor";
-  terminalEditor.hidden = true;
-  const terminalSelect = document.createElement("select");
-  terminalSelect.setAttribute("aria-label", "Running Terminal pane");
-  const applyTerminal = audioButton("Link");
-  const cancelTerminal = audioButton("Cancel");
-  terminalEditor.append(terminalSelect, applyTerminal, cancelTerminal);
-
-  const transport = document.createElement("div");
-  transport.className = "audio-transport";
-  const play = audioButton("Play");
-  const stop = audioButton("Stop");
-  const join = audioButton("Tap to listen");
-  join.classList.add("audio-join");
-  join.hidden = true;
-  transport.append(play, stop, join);
-
-  const seekRow = document.createElement("div");
-  seekRow.className = "audio-seek-row";
-  const seek = document.createElement("input");
-  seek.type = "range";
-  seek.min = "0";
-  seek.max = "86400";
-  seek.step = "0.1";
-  seek.value = "0";
-  seek.setAttribute("aria-label", "Audio position");
-  const elapsed = document.createElement("output");
-  elapsed.textContent = "0:00";
-  seekRow.append(seek, elapsed);
-
-  const listener = document.createElement("div");
-  listener.className = "audio-listener-controls";
-  const muteLabel = document.createElement("label");
-  const mute = document.createElement("input");
-  mute.type = "checkbox";
-  muteLabel.append(mute, document.createTextNode(" Mute this browser"));
-  const volume = document.createElement("input");
-  volume.type = "range";
-  volume.min = "0";
-  volume.max = "1";
-  volume.step = "0.01";
-  volume.value = String(readAudioVolume());
-  volume.setAttribute("aria-label", "Browser volume");
-  listener.append(muteLabel, volume);
-
-  const message = document.createElement("div");
-  message.className = "audio-message";
-  const element = document.createElement("audio");
-  element.preload = "metadata";
-  element.volume = Number(volume.value);
-  root.append(source, sourceActions, urlEditor, terminalEditor, transport, seekRow, listener, message, element);
-  rect.body.appendChild(root);
-  rect.audio = { root, source, play, stop, join, seekRow, seek, elapsed, mute, volume, message, element, sourceVersion: -1, seeking: false };
-
-  const showError = (error) => {
-    message.textContent = error.message || "Audio station unavailable";
-    message.classList.add("is-error");
-  };
-  chooseFile.addEventListener("click", () => void chooseAudioFile(rect).catch(showError));
-  chooseURL.addEventListener("click", () => {
-    terminalEditor.hidden = true;
-    urlInput.value = audioStationState?.source?.kind === "url" ? audioStationState.source.value : "https://";
-    urlEditor.hidden = false;
-    urlInput.focus();
-    urlInput.select();
-  });
-  cancelURL.addEventListener("click", () => { urlEditor.hidden = true; });
-  applyURL.addEventListener("click", () => void chooseAudioURL(urlInput.value).then(() => { urlEditor.hidden = true; }).catch(showError));
-  urlInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      applyURL.click();
-    } else if (event.key === "Escape") {
-      urlEditor.hidden = true;
-    }
-  });
-  chooseTerminal.addEventListener("click", () => {
-    urlEditor.hidden = true;
-    terminalSelect.replaceChildren();
-    const terminals = rectangles.filter((pane) => pane.kind === "terminal" && pane.terminal?.socket?.readyState === WebSocket.OPEN);
-    if (terminals.length === 0) {
-      showError(new Error("Terminal is not running"));
-      return;
-    }
-    for (const terminal of terminals) {
-      const option = document.createElement("option");
-      option.value = terminal.id;
-      option.textContent = terminal.title || "Terminal";
-      terminalSelect.appendChild(option);
-    }
-    terminalEditor.hidden = false;
-    terminalSelect.focus();
-  });
-  cancelTerminal.addEventListener("click", () => { terminalEditor.hidden = true; });
-  applyTerminal.addEventListener("click", () => void chooseAudioTerminal(terminalSelect.value).then(() => { terminalEditor.hidden = true; }).catch(showError));
-  play.addEventListener("click", () => {
-    const action = audioStationState?.status === "playing" ? "pause" : "play";
-    void requestAudioStation("/api/audio/control", "POST", { action }).catch(showError);
-  });
-  stop.addEventListener("click", () => void requestAudioStation("/api/audio/control", "POST", { action: "stop" }).catch(showError));
-  join.addEventListener("click", () => {
-    element.play().then(() => { join.hidden = true; }).catch(showError);
-  });
-  seek.addEventListener("pointerdown", () => { rect.audio.seeking = true; });
-  seek.addEventListener("input", () => {
-    elapsed.textContent = formatAudioTime(seek.value);
-  });
-  seek.addEventListener("change", () => {
-    rect.audio.seeking = false;
-    void requestAudioStation("/api/audio/control", "POST", { action: "seek", positionSeconds: Number(seek.value) }).catch(showError);
-  });
-  volume.addEventListener("input", () => {
-    element.volume = Number(volume.value);
-    window.localStorage.setItem(audioVolumeStorageKey, volume.value);
-  });
-  mute.addEventListener("change", () => { element.muted = mute.checked; });
-  element.addEventListener("loadedmetadata", () => {
-    if (Number.isFinite(element.duration)) {
-      seek.max = String(element.duration);
-    }
-    if (audioStationState?.seekable) {
-      try { element.currentTime = audioPosition(audioStationState); } catch (_) {}
-    }
-  });
-  element.addEventListener("timeupdate", () => {
-    if (!rect.audio?.seeking && audioStationState?.seekable) {
-      seek.value = String(element.currentTime || 0);
-      elapsed.textContent = formatAudioTime(element.currentTime);
-    }
-  });
-  element.addEventListener("error", () => {
-    if (audioStationState?.status === "playing") {
-      message.textContent = "Stream disconnected";
-      message.classList.add("is-error");
-    }
-  });
-
-  if (audioStationState) {
-    renderAudioPane(rect, audioStationState);
-  }
-}
-
-function audioButton(label) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = label;
-  return button;
 }
 
 function mountPaneFileBrowser(rect) {
@@ -4481,33 +4178,6 @@ async function openEditorFileBrowser(rect, mode) {
   }
 }
 
-async function openAudioFileBrowser(rect) {
-  fileBrowserRect = rect;
-  fileBrowserMode = "audio";
-  fileBrowserFilePath = "";
-  hideDockMenu();
-  hideEditorMenu();
-  hideWorkspaceMenu();
-  directoryBrowser.hidden = false;
-  const current = audioStationState?.source?.kind === "file" ? audioStationState.source.value : "";
-  const startPath = current ? parentPathFromFilePath(current) : (rect.cwd || "");
-  renderFileBrowserLoading(startPath);
-  try {
-    await loadFileBrowser(startPath);
-  } catch (error) {
-    renderFileBrowserError(error.message || "Could not load audio files");
-  }
-}
-
-async function chooseAudioHostFile(path) {
-  try {
-    await requestAudioStation("/api/audio/source", "PUT", { kind: "file", value: path });
-    hideDirectoryBrowser();
-  } catch (error) {
-    renderFileBrowserError(error.message || "Could not select audio file");
-  }
-}
-
 function fileBrowserStartPath(rect) {
   if (rect.lastExportPath) {
     return parentPathFromFilePath(rect.lastExportPath);
@@ -4587,8 +4257,6 @@ function renderFileBrowser(data) {
     const button = directoryBrowserButton(`${isDirectory ? "[dir] " : ""}${entry.name}`, () => {
       if (isDirectory) {
         void loadFileBrowser(entry.path);
-      } else if (fileBrowserMode === "audio") {
-        void chooseAudioHostFile(entry.path);
       } else if (fileBrowserMode === "import") {
         void chooseImportFile(entry.path);
       } else {
@@ -4642,9 +4310,6 @@ function renderFileBrowserActions(folderPath) {
 }
 
 function fileBrowserTitle() {
-  if (fileBrowserMode === "audio") {
-    return "Choose Audio File";
-  }
   if (fileBrowserRect?.kind === textEditorPaneKind) {
     return fileBrowserMode === "export" ? "Save Text File" : "Open Text File";
   }
@@ -4768,6 +4433,8 @@ function loadWorkspace(workspace) {
 
     let highestZIndex = 0;
     for (const pane of workspace.panes || []) {
+      // Retired Audio panes in imported documents have no terminal to play on.
+      if (pane.kind === "audio") continue;
       const rect = createRectangle(pane.x ?? 80, pane.y ?? tabHeight + 56, pane.width || 360, pane.height || 240, {
         id: pane.id,
         kind: pane.kind || "worksheet",
@@ -4816,18 +4483,9 @@ function clearRectanglesForLoad() {
     disposeTerminal(rect);
     disposeBrowserPane(rect);
     disposeVNCPane(rect);
-    if (rect.audio) {
-      rect.audio.element.pause();
-      rect.audio.element.removeAttribute("src");
-      rect.audio = null;
-    }
     rect.editor?.destroy();
     rect.element.remove();
   }
-  audioStationEvents?.close();
-  audioStationEvents = null;
-  window.clearTimeout(audioStationReconnectTimer);
-  audioStationReconnectTimer = null;
   activeRect = null;
   activePaneID = "";
   delete board.dataset.activePaneId;
@@ -4876,6 +4534,7 @@ function userSettingsPayload() {
       oledWindowBorderSize,
       terminalTerm,
       terminalFont,
+      terminalRowSpacing,
       terminalColorMode,
       // Clear the legacy account-wide value when settings are next saved.
       olderMacMode: false,
@@ -5483,6 +5142,7 @@ async function startTerminal(rect) {
       fontSize: rect.fontSize,
       fontFamily: terminalPrimaryFontFamily(terminalFont),
       symbolFontFamily: terminalFontFamily(terminalFont),
+      rowSpacing: terminalRowSpacing,
       cursorBlink: activeRect === rect,
       cursorBlinkEnabled: !olderMacMode,
       renderPixelRatioCap: olderMacMode ? 1 : 0,
@@ -5559,6 +5219,7 @@ async function startTerminal(rect) {
       backlogLimit: terminalBacklogLimit,
       onBacklogExceeded: () => recoverTerminalBacklog(rect),
     });
+    attachTerminalAudio(rect);
     updateTerminalRenderState(rect);
     connectTerminalSocket(rect);
     requestTerminalFit(rect);
@@ -5607,6 +5268,7 @@ function connectTerminalSocket(rect) {
       return;
     }
     terminalState.reconnectAttempts = 0;
+    socket.send(JSON.stringify({ type: "audio-events", enabled: true }));
     clearTerminalStatus(rect);
     setPaneCwd(rect, rect.cwd, { silent: true });
     // It may have become hidden while the connection was opening.
@@ -5628,6 +5290,7 @@ function connectTerminalSocket(rect) {
     if (rect.terminal?.socket !== socket) {
       return;
     }
+    if (typeof event.data === "string" && handleTerminalAudioMessage(rect, event.data)) return;
     if (terminalState.outputPaused) {
       // Discarded output never advances the applied cursor. The next host
       // attachment decides whether its missing suffix is small enough to replay.
@@ -5680,7 +5343,53 @@ function applyTerminalTextMessage(rect, terminalState, data) {
   completeTerminalWakeRecovery(terminalState);
 }
 
+function attachTerminalAudio(rect) {
+  const key = terminalAudioMuteKey(workspaceID, rect.id);
+  rect.terminal.audioKey = key;
+  let muted = false;
+  try { muted = window.localStorage.getItem(key) === "true"; } catch {}
+  terminalAudioPlayer.attach(key, { muted, onStatus: status => {
+    if (rect.terminal?.audioKey === key) renderTerminalAudioStatus(rect, status);
+  } });
+}
+
+function handleTerminalAudioMessage(rect, data) {
+  let message;
+  try { message = JSON.parse(data); } catch { return false; }
+  if (message?.type === "audio-events") return true;
+  if (message?.type !== "terminal-audio") return false;
+  terminalAudioPlayer.receive(rect.terminal?.audioKey, message);
+  return true;
+}
+
+function renderTerminalAudioStatus(rect, status) {
+  if (!rect.body || !rect.terminal) return;
+  let badge = rect.terminalAudioBadge;
+  if (!status) { if (badge) badge.hidden = true; return; }
+  if (!badge || badge.parentElement !== rect.body) {
+    badge = document.createElement("button");
+    badge.type = "button";
+    badge.className = "terminal-audio-badge";
+    badge.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (badge.dataset.kind === "enable") void terminalAudioPlayer.enable().catch(() => {
+        badge.textContent = "Tap to enable terminal audio";
+        badge.title = "Playback could not start. Tap to try again.";
+      });
+      else badge.hidden = true;
+    });
+    rect.body.appendChild(badge);
+    rect.terminalAudioBadge = badge;
+  }
+  badge.hidden = false;
+  badge.dataset.kind = status.kind;
+  badge.textContent = status.text;
+  badge.title = status.kind === "enable" ? "Enable future terminal sounds in this browser page" : status.text;
+  badge.setAttribute("aria-label", badge.title);
+}
+
 function handleTerminalSocketClose(rect, terminalState, closeEvent) {
+  terminalAudioPlayer.disconnect(terminalState.audioKey);
   terminalState.replica?.disconnect();
   if (terminalState.reconnectTimer !== null) {
     return;
@@ -6312,6 +6021,9 @@ function disposeTerminal(rect, options = {}) {
   }
   const terminalState = rect.terminal;
   completeTerminalWakeRecovery(terminalState);
+  terminalAudioPlayer.detach(terminalState.audioKey);
+  rect.terminalAudioBadge?.remove();
+  rect.terminalAudioBadge = null;
   rect.terminal = null;
   if (terminalState.reconnectTimer !== null) {
     window.clearTimeout(terminalState.reconnectTimer);
@@ -6364,8 +6076,6 @@ function defaultPaneTitle(kind) {
         ? "Browser"
       : kind === vncPaneKind
         ? "VNC"
-      : kind === audioPaneKind
-        ? "Audio"
       : kind === "worksheet"
         ? "Worksheet"
         : "Window";
@@ -6627,17 +6337,6 @@ function renderWorkspaceMenu() {
     createVNCPane(point.x, point.y);
   });
   workspaceMenu.appendChild(vncButton);
-
-  const audioButton = document.createElement("button");
-  audioButton.type = "button";
-  audioButton.textContent = "New Audio";
-  audioButton.className = "is-command";
-  audioButton.addEventListener("click", () => {
-    const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
-    hideWorkspaceMenu();
-    createAudioPane(point.x, point.y);
-  });
-  workspaceMenu.appendChild(audioButton);
 
   const panes = rectangles.filter((rect) => rect.kind !== "pending");
   if (panes.length === 0) {
@@ -7653,6 +7352,7 @@ function renderSettingsModal() {
   ]));
   content.appendChild(renderSettingsSection("Terminal", [
     renderSettingsTerminalFontRow(),
+    renderSettingsTerminalRowSpacingRow(),
     renderSettingsTerminalColorModeRow(),
   ]));
   content.appendChild(renderSettingsSection("Scroll wheel", [
@@ -8134,6 +7834,7 @@ function renderHelpModal() {
   const content = document.createElement("div");
   content.className = "settings-content help-content";
   content.appendChild(renderHelpSection("Window controls", [
+    ["Draw a new window", "Left-drag empty desktop space, or middle-drag over any pane. Release to choose the window type; Escape cancels a middle drag."],
     ["Move an OLED window", "Right-click a pane border to arm Move mode, then left-drag the pane."],
     ["Move a standard window", "Drag its title tab."],
     ["Change the active title", "Run Set Window Title... from the command palette."],
@@ -8495,6 +8196,32 @@ function renderSettingsTerminalFontRow() {
     select.appendChild(option);
   }
   select.addEventListener("change", () => void setTerminalFont(select.value));
+  row.append(label, select);
+  return row;
+}
+
+function renderSettingsTerminalRowSpacingRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Row spacing";
+  const detail = document.createElement("span");
+  detail.textContent = "Tight is the default. Comfortable adds space above and below text. Changes apply to open terminals immediately.";
+  label.append(name, detail);
+
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", "Terminal row spacing");
+  for (const [id, spacing] of Object.entries(terminalRowSpacings)) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = spacing.label;
+    option.selected = id === terminalRowSpacing;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => setTerminalRowSpacing(select.value));
   row.append(label, select);
   return row;
 }
@@ -9500,10 +9227,6 @@ function buildPaletteCommands() {
     const point = paneSpawnPoint();
     createVNCPane(point.x, point.y);
   } });
-  commands.push({ id: "new-audio", label: "New Audio", hint: "create", run: () => {
-    const point = paneSpawnPoint();
-    createAudioPane(point.x, point.y);
-  } });
   commands.push({ id: "next-window", label: "Next Window", hint: "Ctrl+]", run: () => focusAdjacentPane(1) });
   commands.push({ id: "previous-window", label: "Previous Window", hint: "Ctrl+[", run: () => focusAdjacentPane(-1) });
   const visiblePaneCount = rectangles.filter((rect) => rect.kind !== "pending" && !rect.minimized).length;
@@ -9592,7 +9315,6 @@ const paletteShortcutCodes = {
   "new-file-browser": "NF",
   "new-text-editor": "NE",
   "new-browser": "NB",
-  "new-audio": "NA",
   "next-window": "NX",
   "previous-window": "PW",
   "arrange-out": "OO",
@@ -9772,7 +9494,6 @@ function renderWindowTypeMenu() {
     [textEditorPaneKind, "Text Editor"],
     [browserPaneKind, "Browser"],
     [vncPaneKind, "VNC"],
-    [audioPaneKind, "Audio"],
   ];
   for (const [kind, label] of actions) {
     const button = document.createElement("button");
@@ -9791,7 +9512,7 @@ function finalizePendingRectangle(rect, kind) {
   if (!rect || rect.kind !== "pending" || !rectangles.includes(rect)) {
     return;
   }
-  const paneKind = kind === "terminal" || kind === fileBrowserPaneKind || kind === textEditorPaneKind || kind === browserPaneKind || kind === vncPaneKind || kind === audioPaneKind
+  const paneKind = kind === "terminal" || kind === fileBrowserPaneKind || kind === textEditorPaneKind || kind === browserPaneKind || kind === vncPaneKind
     ? kind
     : "worksheet";
   const box = rectangleBox(rect);
@@ -9822,8 +9543,6 @@ function workspaceMenuLabel(rect) {
         ? " [browser]"
       : rect.kind === vncPaneKind
         ? " [vnc]"
-      : rect.kind === audioPaneKind
-        ? " [audio]"
       : "";
   const runningSuffix = rect.running ? " !" : "";
   return `${name}${kindSuffix}${runningSuffix}`;
@@ -9873,16 +9592,6 @@ function createTextEditorPane(x, y) {
   clampIntoBoard(rect);
   setRectangle(rect, rect);
   setActivePane(rect, { raise: true, focusEditor: true });
-  scheduleWorkspaceSave();
-}
-
-function createAudioPane(x, y) {
-  const rect = createRectangle(x, Math.max(y, tabHeight), 520, 300, {
-    kind: audioPaneKind,
-  });
-  clampIntoBoard(rect);
-  setRectangle(rect, rect);
-  setActivePane(rect, { raise: true });
   scheduleWorkspaceSave();
 }
 
@@ -10003,6 +9712,32 @@ function renderTerminalMenu(rect) {
   const separator = document.createElement("div");
   separator.className = "dock-menu-separator";
   terminalMenu.appendChild(separator);
+  const audioToggle = document.createElement("button");
+  audioToggle.type = "button";
+  audioToggle.textContent = terminalAudioPlayer.enabled ? "Disable terminal audio" : "Enable terminal audio";
+  audioToggle.addEventListener("click", () => {
+    hideTerminalMenu();
+    if (terminalAudioPlayer.enabled) terminalAudioPlayer.disable();
+    else void terminalAudioPlayer.enable().catch(() => renderTerminalAudioStatus(rect, { kind: "enable", text: "Audio could not start. Enable again." }));
+  });
+  terminalMenu.appendChild(audioToggle);
+  const muteLabel = document.createElement("label");
+  muteLabel.className = "terminal-image-setting";
+  const mute = document.createElement("input");
+  mute.type = "checkbox";
+  const audioKey = rect?.terminal?.audioKey;
+  mute.checked = Boolean(terminalAudioPlayer.terminals.get(audioKey)?.muted);
+  mute.disabled = !audioKey;
+  mute.addEventListener("change", () => {
+    terminalAudioPlayer.setMuted(audioKey, mute.checked);
+    try { window.localStorage.setItem(audioKey, String(mute.checked)); } catch {}
+    hideTerminalMenu();
+  });
+  muteLabel.append(mute, document.createTextNode("Mute terminal audio"));
+  terminalMenu.appendChild(muteLabel);
+  const audioSeparator = document.createElement("div");
+  audioSeparator.className = "dock-menu-separator";
+  terminalMenu.appendChild(audioSeparator);
   const imageSettings = term?.imageSettings?.() || { memoryMiB: 64, showPlaceholders: true };
   const connected = rect?.terminal?.socket?.readyState === WebSocket.OPEN && Boolean(rect.terminal.replica?.cursor.epoch);
   const budgetLabel = document.createElement("label");
@@ -11123,17 +10858,6 @@ function destroyRectangle(rect, options = {}) {
   disposeTerminal(rect, { closeServer: options.closeServerTerminal });
   disposeBrowserPane(rect);
   disposeVNCPane(rect);
-  if (rect.audio) {
-    rect.audio.element.pause();
-    rect.audio.element.removeAttribute("src");
-    rect.audio = null;
-    if (!rectangles.some((pane) => pane.kind === audioPaneKind)) {
-      audioStationEvents?.close();
-      audioStationEvents = null;
-      window.clearTimeout(audioStationReconnectTimer);
-      audioStationReconnectTimer = null;
-    }
-  }
   cancelWorksheetLineSelection(rect.editor);
   rect.editor?.destroy();
   rect.editor = null;

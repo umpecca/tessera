@@ -182,35 +182,6 @@ func TestDesktopProxyFlushesBeforeHandlerCompletes(t *testing.T) {
 	}
 }
 
-func TestDesktopShutdownClosesAudioEventsWithoutWaitingForDeadline(t *testing.T) {
-	srv, err := Start(context.Background(), Options{
-		Addr: "127.0.0.1:0", DBPath: filepath.Join(t.TempDir(), "desktop.sqlite3"), DesktopToken: testDesktopToken,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, _ := http.NewRequest("GET", srv.URL+"/api/audio/events", nil)
-	req.AddCookie(&http.Cookie{Name: DesktopCookie, Value: testDesktopToken})
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		srv.Shutdown(context.Background())
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("SSE status: %d", resp.StatusCode)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown with active SSE: %v", err)
-	}
-	if _, err := io.ReadAll(resp.Body); err != nil {
-		t.Fatalf("SSE did not close cleanly: %v", err)
-	}
-}
-
 func TestDesktopSandboxProxyUsesScopedCapabilityWithoutAppCookie(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Cookie") != "" {

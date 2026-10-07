@@ -29,6 +29,8 @@ Constraints and assumptions:
 tessera/
   cmd/tessera/
     main.go                    # flags, process lifecycle, tray and update restart
+  cmd/tessera-audio/
+    main.go                    # clip/query helper and FFmpeg Opus stream producer
   internal/app/
     app.go                     # dependency wiring and HTTP handler construction
   internal/server/
@@ -48,7 +50,6 @@ tessera/
     file_operations.go         # copy, move, and delete
     background.go              # workspace background image API
     update.go                  # self-update API
-    audio.go                   # shared audio state, SSE, ranges and URL proxy
     security.go                # origins, proxy trust, headers, limits and audit
     static.go                  # embedded SPA and history fallback
   internal/store/
@@ -64,9 +65,11 @@ tessera/
     proc_*.go                  # platform process behavior
   internal/terminal/
     manager.go                 # session ownership, replay, and teardown
+    audio.go                   # bounded per-listener live audio delivery
     session*.go                # ConPTY and Unix PTY implementations
-  internal/audio/
-    manager.go                 # shared station and capture/encode fan-out
+  internal/terminalaudio/
+    protocol.go, stream.go      # private clip and Opus streaming OSC protocol
+    filter.go                  # stream ingress filtering before retained output
   internal/update/
     update.go                  # GitHub release check, binary swap, restart request
   internal/version/
@@ -78,12 +81,14 @@ tessera/
     embed.go                   # go:embed filesystem
     codemirror-entry.js        # editor bundle entry point
     terminal-entry.js          # terminal bundle entry point
+    terminal-audio*.mjs         # Web Audio playback and bounded Opus decoding
+    terminal-opus-entry.js      # bundled decoder worker entry point
     text-editor-language.mjs   # file-extension language selection
     vendor/                    # committed esbuild output
     assets/                    # fonts, application icons, and pane icons
   migrations/
     embed.go                   # embeds the ordered SQL sequence
-    001_*.sql ... 026_*.sql    # append-only application schema migrations
+    001_*.sql ... 044_*.sql     # append-only application schema migrations
   tasks/                       # small implementation task records
   .github/workflows/
     release.yml                # tested multi-platform tagged releases
@@ -104,12 +109,11 @@ flowchart LR
   API <--> FS["Host filesystem"]
   API <--> RUNS["Shell command manager"]
   API <--> PTY["PTY terminal manager"]
-  API <--> AUDIO["Shared audio station"]
-  AUDIO --> CAPTURE["Optional process capture helper"]
-  CAPTURE --> LAME["LAME MP3 sidecar"]
-  LAME --> BROWSER
   RUNS <--> OS["Operating-system processes"]
   PTY <--> OS
+  PTY --> EFFECTS["Bounded live terminal audio queues"]
+  EFFECTS --> PLAYBACK["Browser Web Audio and Opus worker"]
+  PLAYBACK --> BROWSER
   API -. update check .-> GH["GitHub Releases"]
   TRAY["Windows/macOS tray"] <--> API
 ```
@@ -128,13 +132,15 @@ Primary data flows:
 4. Worksheet commands are sent to the run manager. Output is streamed as NDJSON,
    persisted into the pane transcript, and available for subscriber reattachment.
 5. Terminal panes attach through WebSocket to session-scoped PTY processes.
+   Native OSC audio requests use a separate bounded live queue on that socket,
+   independent of paused text/replay. A host ingress filter removes streaming
+   OSC before native parsing, snapshots, and retained output. Only live decoder
+   setup is retained for joining listeners. Browser Web Audio mixes embedded
+   clips and incrementally decoded Opus streams with local activation and
+   per-terminal mute. See [terminal audio](docs/terminal-audio.md).
 6. File Browser and Text Editor panes call filesystem APIs using host paths.
 7. Destroying a named session stops that session's commands and terminals before
    deleting its persisted workspace.
-8. Every Audio pane subscribes to one host-wide station over SSE. File streams
-   use HTTP ranges, URL streams are proxied per listener, and one Terminal
-   helper/encoder pipeline fans MP3 out through bounded listener queues.
-
 ## Technology Used
 
 - **Go 1.26:** executable entry point, HTTP server, lifecycle management,
@@ -192,10 +198,6 @@ Current pane types:
   Go host bridges to the requested TCP target. Targets and view preferences are
   durable; credentials and server-verification decisions exist only in the
   browser page.
-- **Audio:** controls and listens to one host-wide source. Global transport state
-  is synchronized by SSE while volume, mute, and autoplay recovery are local to
-  each browser.
-
 The SPA also implements overlapping window geometry, active-pane and z-order
 state, minimize/maximize/dock/restore behavior, the Deskbar, command palette,
 settings, themes, background images, user selection, named-session management,
@@ -255,11 +257,6 @@ GET/PUT /api/workspace/{session}
 GET/PUT/DELETE /api/workspace/{session}/background
 GET /api/files/download?path=...
 POST /api/files/upload?directory=...&name=...&overwrite=0|1
-GET /api/audio/state
-PUT /api/audio/source
-POST /api/audio/control
-GET /api/audio/events
-GET/HEAD /api/audio/stream?sourceVersion=N
 ```
 
 #### Command Run Manager
@@ -291,26 +288,6 @@ Technologies: pinned ConPTY redistributable, Unix PTYs, Gorilla WebSocket,
 Ghostty Web 0.4.0 with Tessera patches, Zig 0.15.2, wazero.
 
 Deployment: In-process inside the Tessera Host.
-
-#### Shared Audio Manager
-
-Name: Host-wide Audio Station
-
-Description: Persists one selected file, URL, or Terminal source; resolves
-latest-command-wins transport state; emits complete SSE snapshots; invalidates
-stale source versions; and supervises one process-capture-to-MP3 pipeline.
-
-Terminal capture starts an external `tessera-audio-capture` helper against the
-selected PTY shell PID and its descendants. The helper normalizes output to 48
-kHz stereo s16le PCM. Tessera waits ten seconds for its NDJSON `ready` event,
-pipes PCM into the pinned 192 kbps LAME sidecar, and disconnects slow listeners
-whose bounded queues fill. Cancellation requests graceful termination and
-force-kills remaining processes after two seconds. Helper/encoder failure pauses
-the station, closes listeners, and remains isolated from file/URL playback.
-
-Deployment: The manager is in-process. LAME is a release companion installed by
-the updater. Platform capture helpers are optional, separately installed
-executables because they carry OS-specific APIs and permissions.
 
 #### Filesystem API
 
@@ -346,17 +323,17 @@ for attachment metadata and byte-range support.
 
 Name: GitHub Release Updater
 
-Description: Checks the latest release, selects exact Tessera and LAME
-OS/architecture assets, stops live capture, installs both transactionally with
-rollback, and requests a graceful shutdown. After shutdown, it starts the
+Description: Checks the latest release, selects the Tessera executable for the
+current OS/architecture, installs it with rollback, and requests a graceful
+shutdown. After shutdown, it starts the
 replacement independently from the old process and passes a one-use readiness
 marker. The old process exits only after the replacement has bound its server
 and acknowledged startup; Unix successors run in a new session so terminal or
 macOS application cleanup cannot terminate them. Startup errors are returned
 through the same handoff and logged by the parent. The restart coordinator runs
 outside the native tray event loop so macOS tray teardown cannot block server
-shutdown or replacement launch. The updater can bootstrap a missing
-exact-version LAME companion after an upgrade from a legacy updater.
+shutdown or replacement launch. Terminal audio helpers and producer FFmpeg
+installations are managed separately.
 
 Technologies: GitHub Releases REST API and Go HTTP/file APIs.
 
@@ -386,8 +363,6 @@ Key Schemas/Collections:
 - `user_settings`: default theme, editor and terminal fonts, terminal color
   mode, terminal `TERM`, and interaction settings shared across a user's
   sessions.
-- `audio_station`: host-wide selected source, paused file position, and monotonic
-  source/state versions. Playing state is deliberately not restored.
 - `audit_events`: optional, bounded-retention request metadata for
   state-changing API requests and Terminal connection attempts. Persistence is
   disabled by default. Records exclude query strings, bodies, command text,
@@ -396,7 +371,9 @@ Key Schemas/Collections:
 Numbered files under `migrations/` are the single source of truth for the
 application schema and are embedded into the executable. `internal/store/store.go`
 validates a contiguous sequence, applies each pending migration transactionally,
-and records progress with SQLite `PRAGMA user_version`. Historical one-column
+and records progress with SQLite `PRAGMA user_version`. Migration 044 retires
+the old `audio_station` table and Audio panes, rotating revisions only in affected
+workspaces to prevent stale clients from restoring retired state. Historical one-column
 `ALTER TABLE` migrations allow pre-versioned Tessera databases to adopt columns
 they already contain without duplicating schema definitions in Go.
 
@@ -423,10 +400,6 @@ into an application-owned storage hierarchy.
   controls its lifecycle on desktop platforms.
 - **GitHub Releases API:** supplies version metadata and release binaries for
   self-update. No GitHub token is currently configured.
-- **Audio capture helper:** optional per-platform executable using Windows
-  process loopback, PipeWire process routing, or ScreenCaptureKit. It receives a
-  PTY root PID and returns normalized PCM under a small stdout/stderr protocol.
-
 ## Deployment & Infrastructure
 
 Cloud Provider: N/A. Tessera is a local executable and does not require hosted
@@ -436,10 +409,10 @@ Key Services Used: A local TCP listener, a local SQLite file, host processes,
 and optional GitHub Releases access.
 
 CI/CD Pipeline: `.github/workflows/release.yml` runs on `v*` tags. It builds and
-tests the Tessera platform matrix, builds pinned LAME 3.100 companions for
-Windows amd64, Linux amd64, and both macOS architectures, and publishes the LAME
-license plus corresponding source archive. Optional native capture helpers are
-installed and versioned independently from automatic updates.
+tests the Tessera platform matrix and publishes Tessera plus separate
+`tessera-audio` helpers for Windows amd64, Linux amd64/arm64, and macOS arm64.
+The helper streams through independently installed FFmpeg/libopus. The pinned
+browser Opus decoder and its license notices ship in the web assets.
 
 Monitoring & Logging: Go standard logging writes lifecycle and failure messages
 to stderr or the platform process output. When explicitly enabled, SQLite
@@ -481,9 +454,6 @@ Key Security Tools/Practices:
   persistence is disabled by default.
 - Treat API reachability as permission to execute commands and access host files
   with the Tessera process's privileges.
-- Treat audio URL proxying, host-path selection, Terminal PID selection, and
-  shared transport control as equally trusted capabilities. URL proxying can
-  reach network resources visible to the host.
 - Restrict Browser pane proxy sessions to dial-validated loopback addresses;
   never turn the path proxy into a general host-network proxy.
 - Treat VNC access as an explicitly broad exception: its bridge accepts any
@@ -578,7 +548,8 @@ runs the Go test suite on every target runner.
 - **CWD:** Current working directory used by a pane's command or terminal.
 - **NDJSON:** Newline-delimited JSON used to stream command events.
 - **Pane:** A movable workspace window containing a worksheet, terminal, text
-  editor, file browser, or shared audio controls.
+  editor, file browser, browser, or VNC view. Terminal panes also receive live
+  audio effects with local activation and mute controls.
 - **PTY:** Pseudo-terminal backing an interactive terminal pane.
 - **Session:** A named, persisted desktop owned by one configured user entry.
 - **SPA:** Single-page application served by the Tessera host.

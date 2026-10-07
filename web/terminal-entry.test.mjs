@@ -7,6 +7,7 @@ import { installTerminalSelection } from "./terminal-selection.mjs";
 import { plainRendererStatistics, setPlainRendererEnabled } from "./terminal-plain-renderer.mjs";
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
 import { TerminalInputBuffer } from "./terminal-input-buffer.mjs";
+import { defaultTerminalRowSpacing, normalizeTerminalRowSpacing } from "./terminal-settings.mjs";
 
 function loadTerminalClass(overrides = {}) {
   const source = readFileSync(new URL("./terminal-entry.js", import.meta.url), "utf8");
@@ -17,6 +18,8 @@ function loadTerminalClass(overrides = {}) {
     plainRendererStatistics,
     setPlainRendererEnabled,
     TerminalInputBuffer,
+    defaultTerminalRowSpacing,
+    normalizeTerminalRowSpacing,
     __TESSERA_CORE_ID__: "test",
     SixelRenderer: class { prune() {} clear() {} },
     ...overrides,
@@ -88,6 +91,31 @@ test("ordinary text and fallback symbols use separate font stacks", () => {
   assert.equal(term.renderer.tesseraSymbolFontFamily, '"Fira Code", "Noto Sans Symbols 2", monospace');
   assert.equal(term.fullRedrawPending, true);
   assert.equal(frames, 1);
+});
+
+test("row spacing can be selected before opening and refits metrics without clearing terminal content", () => {
+  const calls = [];
+  class GhosttyTerminal {
+    constructor(options) { this.options = options; this.cols = 80; this.rows = 24; }
+    onScroll() {}
+  }
+  const Terminal = loadTerminalClass({ GhosttyTerminal, renderScheduler: { request() { calls.push("redraw"); } } });
+  const term = new Terminal();
+  assert.equal(term.rowSpacing, "tight");
+  assert.equal(term.options.rowSpacing, undefined, "Tessera owns this option");
+  term.setRowSpacing("comfortable");
+  assert.deepEqual(calls, []);
+  term.wasmTerm = { transcript: "retained text" };
+  term.renderer = {
+    remeasureFont() { calls.push(this.tesseraRowSpacing); },
+    resize(cols, rows) { calls.push([cols, rows]); },
+  };
+  term.setRowSpacing("comfortable");
+  assert.deepEqual(calls, ["comfortable", [80, 24], "redraw"]);
+  assert.equal(term.fullRedrawPending, true);
+  term.setRowSpacing("invalid");
+  assert.equal(term.renderer.tesseraRowSpacing, "tight");
+  assert.equal(term.wasmTerm.transcript, "retained text");
 });
 
 test("canvas context loss retains output and redraws text and images on restoration", () => {
@@ -387,7 +415,7 @@ test("real WASM clipboard draining reuses scratch space through reset, memory gr
     term.write(clipboard);
     assert.equal(term.clipboardReadBuffer, scratch);
     assert.equal(counts.at(-1), 0, "clipboard data is fully drained after handle replacement");
-    assert.deepEqual(allocations.filter(([, size]) => size === 4096), [[scratch.ptr, 4096]]);
+    assert.deepEqual(allocations.filter(([ptr]) => ptr === scratch.ptr), [[scratch.ptr, 4096]]);
     assert.equal(frees.some(([ptr]) => ptr === scratch.ptr), false);
     term.dispose(); term.dispose();
     assert.deepEqual(frees.filter(([ptr]) => ptr === scratch.ptr), [[scratch.ptr, 4096]]);

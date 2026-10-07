@@ -14,7 +14,7 @@ test("Operator defaults use unsuffixed titles and other themes retain their nami
   const context = {
     themeID: "operator", rectangles: [{ title: "Terminal 2" }],
     fileBrowserPaneKind: "file-browser", textEditorPaneKind: "text-editor",
-    browserPaneKind: "browser", vncPaneKind: "vnc", audioPaneKind: "audio",
+    browserPaneKind: "browser", vncPaneKind: "vnc",
   };
   const title = appFunction("defaultPaneTitle", context);
   assert.equal(title("terminal"), "Terminal");

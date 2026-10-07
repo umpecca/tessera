@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-
-	"tessera/internal/version"
 )
 
 func TestNormalizeVersion(t *testing.T) {
@@ -35,16 +33,6 @@ func TestAssetName(t *testing.T) {
 	}
 	if got := assetName(); got != want {
 		t.Errorf("assetName() = %q, want %q", got, want)
-	}
-}
-
-func TestCompanionAssetName(t *testing.T) {
-	want := fmt.Sprintf("tessera-lame-%s-%s", runtime.GOOS, runtime.GOARCH)
-	if runtime.GOOS == "windows" {
-		want += ".exe"
-	}
-	if got := companionAssetName(); got != want {
-		t.Errorf("companionAssetName() = %q, want %q", got, want)
 	}
 }
 
@@ -125,89 +113,69 @@ func TestSwap(t *testing.T) {
 	}
 }
 
-func TestInstallPairRollsBackCompanionOnExecutableFailure(t *testing.T) {
-	if !needsCompanion() {
-		t.Skip("this platform does not install an encoder companion")
-	}
-	dir := t.TempDir()
-	exePath := filepath.Join(dir, assetName())
-	companionPath := filepath.Join(dir, companionAssetName())
-	companionNew := companionPath + ".new"
-	if err := os.WriteFile(exePath, []byte("old executable"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(companionPath, []byte("old companion"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(companionNew, []byte("new companion"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	u := &Updater{exePath: exePath}
-	if err := u.installPair(exePath+".missing", companionNew); err == nil {
-		t.Fatal("installPair succeeded with a missing executable download")
-	}
-	for path, want := range map[string]string{exePath: "old executable", companionPath: "old companion"} {
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != want {
-			t.Fatalf("%s = %q, want %q", path, got, want)
-		}
-	}
-}
-
-func TestCheckRequiresCompanionAsset(t *testing.T) {
-	if !needsCompanion() {
-		t.Skip("this platform does not install an encoder companion")
-	}
+func TestCheckAcceptsExecutableOnlyRelease(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"tag_name":"v999.0.0","assets":[{"name":%q,"browser_download_url":"%s/binary","size":4}]}`, assetName(), serverURL(r))
 	}))
 	defer server.Close()
 	u := &Updater{Repo: "owner/repo", APIBase: server.URL, exePath: filepath.Join(t.TempDir(), assetName())}
-	if _, err := u.Check(context.Background()); err == nil {
-		t.Fatal("Check accepted a release without the LAME companion")
-	}
-}
-
-func TestEnsureCompanionBootstrapsExactRelease(t *testing.T) {
-	if !needsCompanion() {
-		t.Skip("this platform does not install an encoder companion")
-	}
-	previousVersion := version.Version
-	version.Version = "v1.2.3"
-	defer func() { version.Version = previousVersion }()
-	payload := []byte("pinned lame companion")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/asset" {
-			_, _ = w.Write(payload)
-			return
-		}
-		if r.URL.Path != "/repos/owner/repo/releases/tags/v1.2.3" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":"%s/asset","size":%d}]}`,
-			companionAssetName(), serverURL(r), len(payload))
-	}))
-	defer server.Close()
-	dir := t.TempDir()
-	u := &Updater{Repo: "owner/repo", APIBase: server.URL, exePath: filepath.Join(dir, assetName())}
-	if err := u.EnsureCompanion(context.Background()); err != nil {
-		t.Fatalf("EnsureCompanion: %v", err)
-	}
-	got, err := os.ReadFile(u.companionPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(payload) {
-		t.Fatalf("companion = %q, want %q", got, payload)
+	if result, err := u.Check(context.Background()); err != nil || !result.UpdateAvailable || result.assetName != assetName() {
+		t.Fatalf("executable-only release: result=%+v err=%v", result, err)
 	}
 }
 
 func serverURL(r *http.Request) string {
 	return "http://" + r.Host
+}
+
+func TestApplyInstallsOnlyExecutableAndLeavesExistingEncoderAlone(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, assetName())
+	legacyEncoder := filepath.Join(dir, "tessera-lame")
+	for path, contents := range map[string]string{exe: "old", legacyEncoder: "user-managed encoder"} {
+		if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requests := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path)
+		switch r.URL.Path {
+		case "/repos/owner/repo/releases/latest":
+			_, _ = fmt.Fprintf(w, `{"tag_name":"v999.0.0","assets":[{"name":%q,"browser_download_url":"%s/binary","size":3}]}`, assetName(), serverURL(r))
+		case "/binary":
+			_, _ = w.Write([]byte("new"))
+		default:
+			t.Errorf("unexpected asset request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	u := &Updater{Repo: "owner/repo", APIBase: server.URL, exePath: exe}
+	if _, err := u.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{exe: "new", legacyEncoder: "user-managed encoder"} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != want {
+			t.Fatalf("%s: %q %v", path, got, err)
+		}
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %v", requests)
+	}
+}
+
+func TestFailedExecutableSwapRestoresPreviousBinary(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), assetName())
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	u := &Updater{exePath: exe}
+	if err := u.swap(exe + ".missing"); err == nil {
+		t.Fatal("missing download succeeded")
+	}
+	if got, err := os.ReadFile(exe); err != nil || string(got) != "old" {
+		t.Fatalf("rollback = %q %v", got, err)
+	}
 }

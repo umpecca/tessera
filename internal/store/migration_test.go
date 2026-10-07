@@ -39,10 +39,9 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 		"x", "y", "width", "height", "z_index", "position", "created_at",
 		"updated_at",
 	})
-	assertTableColumns(t, st.db, "audio_station", []string{
-		"id", "source_kind", "source_value", "workspace_id", "pane_id",
-		"position_seconds", "source_version", "state_version", "updated_at",
-	})
+	if exists, err := st.tableExists(ctx, "audio_station"); err != nil || exists {
+		t.Fatalf("retired audio_station table: exists=%v err=%v", exists, err)
+	}
 	assertTableColumns(t, st.db, "audit_events", []string{
 		"id", "occurred_at", "request_id", "client_ip", "method", "path",
 		"status", "outcome", "duration_ms",
@@ -60,7 +59,7 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 		"user_id", "default_pane_font_size", "default_theme", "theme_id",
 		"deskbar_button_enabled", "terminal_wheel_sensitivity",
 		"editor_wheel_sensitivity", "oled_window_border_size", "terminal_term",
-		"terminal_font", "terminal_color_mode", "older_mac_mode", "created_at", "updated_at", "revision",
+		"terminal_font", "terminal_color_mode", "older_mac_mode", "created_at", "updated_at", "revision", "terminal_row_spacing",
 	})
 	if err := st.Close(); err != nil {
 		t.Fatalf("close fresh store: %v", err)
@@ -77,6 +76,42 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 	}
 	if reopenedVersion != version {
 		t.Fatalf("reopened migration version = %d, want %d", reopenedVersion, version)
+	}
+}
+
+func TestTerminalRowSpacingMigrationDefaultsExistingUsersToTight(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "before-spacing.sqlite3")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &Store{db: db}
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations {
+		if migration.version >= 43 {
+			break
+		}
+		if err := st.applyMigration(ctx, migration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO user_settings (user_id, terminal_font, created_at, updated_at) VALUES ('alice', 'fira-code', 'before', 'before')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := st.LoadUserSettings(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.TerminalRowSpacing != "tight" || settings.TerminalFont != "fira-code" {
+		t.Fatalf("migrated settings = %+v", settings)
 	}
 }
 

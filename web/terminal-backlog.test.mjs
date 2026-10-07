@@ -106,6 +106,7 @@ test("successful socket opens do not reset overload backoff, and a quiet interva
     terminalBacklogCloseCode, terminalCloseOutcome, Date: { now: () => now }, serverConnectionModal: { hidden: true },
     window: { setTimeout(callback, delay) { delays.push(delay); return 1; } },
     setTerminalStatus() {}, connectTerminalSocket() {},
+    terminalAudioPlayer: { disconnect() {} },
   });
   for (let attempt = 0; attempt < 7; attempt++) {
     context.recoverTerminalBacklog(rect);

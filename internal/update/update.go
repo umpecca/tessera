@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -40,10 +39,9 @@ type Updater struct {
 	// than replacing a root-owned executable from the service process.
 	serviceName string
 
-	restart       chan struct{}
-	restartOnce   sync.Once
-	mu            sync.Mutex
-	beforeInstall func() error
+	restart     chan struct{}
+	restartOnce sync.Once
+	mu          sync.Mutex
 }
 
 func New(repo string) (*Updater, error) {
@@ -84,10 +82,6 @@ type CheckResult struct {
 	assetURL  string
 	assetName string
 	assetSize int64
-
-	companionURL  string
-	companionName string
-	companionSize int64
 }
 
 func (u *Updater) ServiceManaged() bool {
@@ -153,24 +147,15 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 	}
 
 	wanted := assetName()
-	companionWanted := companionAssetName()
 	for _, asset := range rel.Assets {
 		if asset.Name == wanted {
 			result.assetURL = asset.BrowserDownloadURL
 			result.assetName = asset.Name
 			result.assetSize = asset.Size
 		}
-		if needsCompanion() && asset.Name == companionWanted {
-			result.companionURL = asset.BrowserDownloadURL
-			result.companionName = asset.Name
-			result.companionSize = asset.Size
-		}
 	}
 	if result.assetURL == "" {
 		return nil, fmt.Errorf("release %s has no asset named %q", rel.TagName, wanted)
-	}
-	if needsCompanion() && result.companionURL == "" {
-		return nil, fmt.Errorf("release %s has no companion asset named %q", rel.TagName, companionWanted)
 	}
 	return u.addUpdateMode(result), nil
 }
@@ -200,25 +185,8 @@ func (u *Updater) Apply(ctx context.Context) (*CheckResult, error) {
 		_ = os.Remove(newPath)
 		return nil, err
 	}
-	companionNewPath := ""
-	if needsCompanion() {
-		companionNewPath = u.companionPath() + ".new"
-		if err := u.downloadAsset(ctx, result.companionURL, result.companionName, result.companionSize, companionNewPath); err != nil {
-			_ = os.Remove(newPath)
-			_ = os.Remove(companionNewPath)
-			return nil, err
-		}
-	}
-	if u.beforeInstall != nil {
-		if err := u.beforeInstall(); err != nil {
-			_ = os.Remove(newPath)
-			_ = os.Remove(companionNewPath)
-			return nil, fmt.Errorf("prepare update: %w", err)
-		}
-	}
-	if err := u.installPair(newPath, companionNewPath); err != nil {
+	if err := u.swap(newPath); err != nil {
 		_ = os.Remove(newPath)
-		_ = os.Remove(companionNewPath)
 		return nil, err
 	}
 	return result, nil
@@ -317,94 +285,6 @@ func (installed *installedFile) commit() {
 	if installed != nil && installed.hadPrevious {
 		_ = os.Remove(installed.backup)
 	}
-}
-
-func (u *Updater) installPair(executableNew, companionNew string) error {
-	var companion *installedFile
-	var err error
-	if companionNew != "" {
-		companion, err = installFile(companionNew, u.companionPath())
-		if err != nil {
-			return fmt.Errorf("install encoder companion: %w", err)
-		}
-	}
-	executable, err := installFile(executableNew, u.exePath)
-	if err != nil {
-		companion.rollback()
-		return fmt.Errorf("install new executable: %w", err)
-	}
-	companion.commit()
-	if runtime.GOOS != "windows" {
-		executable.commit()
-	}
-	return nil
-}
-
-// SetBeforeInstall registers a short hook used by the server to stop a live
-// encoder before the updater replaces its executable.
-func (u *Updater) SetBeforeInstall(hook func() error) {
-	u.beforeInstall = hook
-}
-
-// EnsureCompanion repairs a legacy binary-only upgrade by fetching the LAME
-// asset from the exact release matching the running Tessera version.
-func (u *Updater) EnsureCompanion(ctx context.Context) error {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if !needsCompanion() || normalizeVersion(version.Version) == "dev" {
-		return nil
-	}
-	if info, err := os.Stat(u.companionPath()); err == nil && !info.IsDir() {
-		return nil
-	}
-	endpoint := fmt.Sprintf("%s/repos/%s/releases/tags/%s", u.APIBase, u.Repo, url.PathEscape(version.Version))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "tessera-updater")
-	client := &http.Client{Timeout: 15 * time.Second}
-	response, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetch exact release: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch exact release: %s", response.Status)
-	}
-	var rel release
-	if err := json.NewDecoder(response.Body).Decode(&rel); err != nil {
-		return fmt.Errorf("decode exact release: %w", err)
-	}
-	wanted := companionAssetName()
-	for _, asset := range rel.Assets {
-		if asset.Name != wanted {
-			continue
-		}
-		newPath := u.companionPath() + ".new"
-		if err := u.downloadAsset(ctx, asset.BrowserDownloadURL, asset.Name, asset.Size, newPath); err != nil {
-			_ = os.Remove(newPath)
-			return err
-		}
-		if u.beforeInstall != nil {
-			if err := u.beforeInstall(); err != nil {
-				_ = os.Remove(newPath)
-				return err
-			}
-		}
-		installed, err := installFile(newPath, u.companionPath())
-		if err != nil {
-			_ = os.Remove(newPath)
-			return err
-		}
-		installed.commit()
-		return nil
-	}
-	return fmt.Errorf("release %s has no companion asset named %q", version.Version, wanted)
-}
-
-func (u *Updater) companionPath() string {
-	return filepath.Join(filepath.Dir(u.exePath), companionAssetName())
 }
 
 // RestartRequested is closed once an update has been applied and the process
@@ -518,16 +398,4 @@ func assetName() string {
 		ext = ".exe"
 	}
 	return fmt.Sprintf("tessera-%s-%s%s", runtime.GOOS, runtime.GOARCH, ext)
-}
-
-func companionAssetName() string {
-	ext := ""
-	if runtime.GOOS == "windows" {
-		ext = ".exe"
-	}
-	return fmt.Sprintf("tessera-lame-%s-%s%s", runtime.GOOS, runtime.GOARCH, ext)
-}
-
-func needsCompanion() bool {
-	return runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "darwin"
 }

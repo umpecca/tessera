@@ -151,6 +151,9 @@ fn loadState(input: *snapshot.Reader) !*anyopaque {
     if (w.stream.parser.state == .osc_string and osc_raw.len > 0) {
         w.stream.parser.state = .ground;
         try w.stream.nextSlice(osc_raw);
+    } else if (w.stream.parser.state == .escape and std.mem.startsWith(u8, osc_raw, @import("audio.zig").prefix)) {
+        // Preserve a split ST terminator; audio effect queues remain transient.
+        try w.stream.handler.osc_raw.appendSlice(w.alloc, osc_raw);
     }
     try input.fields(&w.sixel, store_fields);
     if (w.sixel.memory_limit != 16 * 1024 * 1024 and w.sixel.memory_limit != 32 * 1024 * 1024 and w.sixel.memory_limit != 64 * 1024 * 1024) return error.InvalidSnapshot;

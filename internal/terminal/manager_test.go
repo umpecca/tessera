@@ -479,33 +479,6 @@ func TestTerminateWorkspaceOnlyClosesMatchingSessions(t *testing.T) {
 	}
 }
 
-func TestProcessIDAndCloseHandlerFollowLivePane(t *testing.T) {
-	manager := NewManager()
-	managed := &ManagedSession{
-		manager: manager, workspaceID: "workspace", paneID: "pane",
-		session:     &Session{pty: &pidTestPTY{pid: 4242}},
-		subscribers: map[*subscriber]struct{}{},
-	}
-	manager.sessions[sessionKey("workspace", "pane")] = managed
-	closed := make(chan string, 1)
-	manager.SetCloseHandler(func(workspaceID, paneID string) { closed <- workspaceID + "/" + paneID })
-	if pid, ok := manager.ProcessID("workspace", "pane"); !ok || pid != 4242 {
-		t.Fatalf("ProcessID = (%d, %v), want (4242, true)", pid, ok)
-	}
-	managed.finish()
-	if _, ok := manager.ProcessID("workspace", "pane"); ok {
-		t.Fatal("closed pane still exposes a PID")
-	}
-	select {
-	case got := <-closed:
-		if got != "workspace/pane" {
-			t.Fatalf("close callback = %q", got)
-		}
-	default:
-		t.Fatal("close callback was not invoked")
-	}
-}
-
 func TestManagedSessionGatesTaggedMouseInputFromPTYModes(t *testing.T) {
 	pty := &writeTestPTY{}
 	managed := &ManagedSession{

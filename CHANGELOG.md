@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- Disable browser autofill and writing suggestions in the command palette input.
+
+- Retire the standalone Audio pane, shared station API/state, process capture,
+  and bundled LAME encoder. Migration 044 removes legacy Audio panes while
+  preserving other workspace content and invalidating affected stale saves.
+  Releases, self-updates, and the Ubuntu installer no longer manage LAME.
+  Terminal clips, Opus streaming, local controls, and the FFmpeg helper remain.
+
+- Stream terminal audio incrementally from files/stdin through FFmpeg's Opus
+  encoder. Add configurable bitrate and 100–2000 ms buffering, live joining
+  after enable/unmute/reconnect, bounded browser decoding, and stream payload
+  exclusion from terminal history and snapshots. Existing clips remain v1.
+
+- Hold the middle mouse button and drag to draw a new window over existing
+  panes, including sandboxed Browser content. Preserve normal left clicks,
+  ignore simple middle clicks, and discard canceled outlines.
+
+- Double-left-click window title bars to maximize or restore them. Keep title
+  renaming and title-bar control buttons separate from this gesture.
+
+- Add Terminal row spacing settings with Tight as the default and Comfortable
+  for extra room above and below text. Save the choice per user and refit open
+  terminals immediately while preserving accents, descenders, and box borders.
+
+- Draw solid terminal box borders to the cell edges so vertical lines and
+  corners stay connected across text rows, including with IBM Plex Mono.
+  Preserve ordinary text spacing and faint border opacity.
+
+- Remove window decorations from maximized Operator panes, matching OLED
+  Terminal. Reclaim the title-bar space and retain shortcut and command-palette
+  restore actions.
+
+- Add a private terminal audio protocol and `tessera-audio` helper for embedded
+  WAV/MP3 clips, capability discovery, and stop commands. Enabled browser clients
+  mix live sounds independently with per-terminal mute, including hidden panes;
+  reconnect and terminal history never replay sounds. Bound decoding, memory,
+  overlap, and listener queues without interrupting terminal text or shells.
+
 - Synchronize the subscriber-disconnect persistence test with actual command
   startup and gated output. Verify the full transcript from a reopened database
   and distinguish startup timeouts from command-completion failures.

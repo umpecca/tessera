@@ -108,7 +108,7 @@ func TestServerSentEventsAreNeverCompressed(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for i := 0; i < 3; i++ {
-			_, _ = io.WriteString(w, "data: audio update\n\n")
+			_, _ = io.WriteString(w, "data: update\n\n")
 			flusher, ok := w.(http.Flusher)
 			if !ok {
 				t.Fatal("event stream handler lost its Flusher")
@@ -117,12 +117,12 @@ func TestServerSentEventsAreNeverCompressed(t *testing.T) {
 			flushes++
 		}
 	})
-	response := compressed(t, handler, "/api/audio/events", nil)
+	response := compressed(t, handler, "/events", nil)
 
 	if got := response.Header().Get("Content-Encoding"); got != "" {
 		t.Fatalf("event stream was compressed (Content-Encoding %q)", got)
 	}
-	if flushes != 3 || !strings.Contains(response.Body.String(), "data: audio update") {
+	if flushes != 3 || !strings.Contains(response.Body.String(), "data: update") {
 		t.Fatalf("event stream did not pass through: %d flushes, body %q", flushes, response.Body.String())
 	}
 }

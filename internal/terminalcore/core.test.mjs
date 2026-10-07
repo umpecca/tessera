@@ -3,6 +3,19 @@ import fs from "node:fs/promises";
 import test from "node:test";
 
 const bytes = await fs.readFile(new URL("./ghostty-vt.wasm", import.meta.url));
+
+function audioEffects(t) {
+  const e = t.e, ptr = e.ghostty_wasm_alloc_u8_array(4096), chunks = [];
+  try {
+    for (let count; (count = e.tessera_audio_read(t.handle, ptr, 4096));) chunks.push(Buffer.from(new Uint8Array(e.memory.buffer, ptr, count)));
+  } finally { e.ghostty_wasm_free_u8_array(ptr, 4096); }
+  const data = Buffer.concat(chunks), records = [];
+  for (let offset = 0; offset < data.length;) {
+    const length = data.readUInt32LE(offset); offset += 4;
+    records.push(data.subarray(offset, offset+length).toString()); offset += length;
+  }
+  return records;
+}
 async function terminal(cols = 20, rows = 6, sharedExports) {
   const e = sharedExports || (await WebAssembly.instantiate(bytes, { env: { log() {} } })).instance.exports;
   let handle = e.ghostty_terminal_new(cols, rows);
@@ -62,6 +75,20 @@ async function terminal(cols = 20, rows = 6, sharedExports) {
   function resize(c, r) { cols = c; rows = r; e.ghostty_terminal_resize(handle, c, r); e.tessera_sixel_geometry(handle, 2, 6); }
   return { e, get handle() { return handle; }, write, cursor, tiles, snapshot, restore, cells, grapheme, resize, dispose() { e.ghostty_terminal_free(handle); } };
 }
+
+test("audio effects are transient across snapshots, including partial OSC and split ST", async () => {
+  const sequence = "\x1b]777;tessera-audio;1;stop;clip\x1b\\";
+  for (let split = 0; split <= sequence.length; split++) {
+    const t = await terminal();
+    try {
+      t.write(sequence.slice(0, split));
+      t.restore(t.snapshot());
+      assert.deepEqual(audioEffects(t), [], "a snapshot never carries queued effects");
+      t.write(sequence.slice(split));
+      assert.deepEqual(audioEffects(t), split === sequence.length ? [] : ["stop;clip"], `split ${split}`);
+    } finally { t.dispose(); }
+  }
+});
 const sixel = '\x1bPq"1;1;4;12#1;2;100;0;0!4~-!4~\x1b\\';
 
 test("closed terminals leave clean initial cells when WASM page memory is reused", async () => {

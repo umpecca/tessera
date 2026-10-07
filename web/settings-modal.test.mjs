@@ -118,6 +118,7 @@ function fixture() {
     renderSettingsThemeRow: label => row(`${label} theme`),
     renderSettingsOLEDWindowBorderRow: () => row("OLED border", "button"),
     renderSettingsTerminalFontRow: () => row("Terminal font"),
+    renderSettingsTerminalRowSpacingRow: () => row("Terminal row spacing"),
     renderSettingsTerminalColorModeRow: () => row("Terminal colors"),
     renderSettingsWheelRow: label => row(`${label} wheel speed`),
     renderSettingsBackgroundRow: () => row("Set background", "button"),
@@ -168,6 +169,7 @@ test("Settings leads with everyday preferences and hides technical controls by d
   assert.equal(advanced.open, false);
   const labels = f.context.settingsFocusControls().map(control => control.getAttribute("aria-label"));
   assert.ok(labels.includes("Terminal font"));
+  assert.ok(labels.includes("Terminal row spacing"));
   for (const label of ["Terminal renderer", "Paint coalescing", "Server output coalescing", "Terminal output backlog", "Terminal TERM value"]) {
     assert.ok(!labels.includes(label), label);
     assert.ok(advanced.querySelectorAll("select, input").some(control => control.getAttribute("aria-label") === label));

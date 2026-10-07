@@ -79,8 +79,9 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 		"deskbarButtonEnabled": false, "terminalWheelSensitivity": 0.5,
 		"editorWheelSensitivity": 2.0, "oledWindowBorderSize": 16,
 		"terminalTerm": "xterm-ghostty", "terminalFont": "fira-code",
-		"terminalColorMode": "light",
-		"olderMacMode":      true,
+		"terminalColorMode":  "light",
+		"terminalRowSpacing": "comfortable",
+		"olderMacMode":       true,
 	}
 	response = request(http.MethodPut, "/api/users/alice/settings", settings)
 	if response.Code != http.StatusOK {
@@ -108,6 +109,9 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	}
 	if loadedSettings.TerminalFont != "fira-code" {
 		t.Fatalf("terminal font setting was not persisted: %+v", loadedSettings)
+	}
+	if loadedSettings.TerminalRowSpacing != "comfortable" {
+		t.Fatalf("terminal row spacing setting was not persisted: %+v", loadedSettings)
 	}
 	if loadedSettings.TerminalColorMode != "light" {
 		t.Fatalf("terminal color mode setting was not persisted: %+v", loadedSettings)

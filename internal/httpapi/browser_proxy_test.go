@@ -70,7 +70,7 @@ func TestBrowserProxyRewritesDevelopmentPageAndRedirect(t *testing.T) {
 	}
 	prefix := browserProxyPrefix + session.id
 	body := response.Body.String()
-	for _, fragment := range []string{`<base href="` + prefix + `/">`, `href="` + prefix + `/style.css"`, `src="` + prefix + `/app.js"`, "tessera-browser-location"} {
+	for _, fragment := range []string{`<base href="` + prefix + `/">`, `href="` + prefix + `/style.css"`, `src="` + prefix + `/app.js"`, "tessera-browser-location", "tessera-browser-draw"} {
 		if !strings.Contains(body, fragment) {
 			t.Errorf("rewritten HTML does not contain %q: %s", fragment, body)
 		}

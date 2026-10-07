@@ -11,18 +11,17 @@ fail() {
   exit 1
 }
 
-parse_arguments --with-lame
-[[ ${install_lame} == "true" && ${show_help} == "false" ]] || fail "--with-lame was not parsed"
-
-parse_arguments --without-lame
-[[ ${install_lame} == "false" ]] || fail "--without-lame was not parsed"
-
 parse_arguments --help
 [[ ${show_help} == "true" ]] || fail "--help was not parsed"
 
-if parse_arguments --with-lame --without-lame >/dev/null 2>&1; then
-  fail "conflicting LAME options were accepted"
-fi
+parse_arguments
+[[ ${show_help} == "false" ]] || fail "default installation retained the help flag"
+
+for retired_option in --with-lame --without-lame; do
+  if parse_arguments "${retired_option}" >/dev/null 2>&1; then
+    fail "a retired option was accepted: ${retired_option}"
+  fi
+done
 if parse_arguments --unknown >/dev/null 2>&1; then
   fail "an unknown option was accepted"
 fi
@@ -35,20 +34,8 @@ if release_architecture sparc >/dev/null 2>&1; then
   fail "an unsupported architecture was accepted"
 fi
 
-install_lame=""
-choose_lame_installation false >/dev/null
-[[ ${install_lame} == "false" ]] || fail "non-interactive installation did not default to no"
-
-install_lame=""
-choose_lame_installation true >/dev/null <<<""
-[[ ${install_lame} == "false" ]] || fail "interactive empty response did not default to no"
-
-install_lame=""
-choose_lame_installation true >/dev/null <<<"y"
-[[ ${install_lame} == "true" ]] || fail "interactive yes response was not accepted"
-
 test_directory="$(mktemp -d)"
-test_download="${test_directory}/tessera-lame-linux-arm64"
+test_download="${test_directory}/tessera-linux-arm64"
 requested_url=""
 curl() {
   local output_path=""
@@ -61,12 +48,12 @@ curl() {
     requested_url="$1"
     shift
   done
-  printf 'mock LAME binary' >"${output_path}"
+  printf 'mock Tessera binary' >"${output_path}"
 }
 
-download_release_asset "tessera-lame-linux-arm64" "${test_download}" >/dev/null
+download_release_asset "tessera-linux-arm64" "${test_download}" >/dev/null
 [[ -s ${test_download} ]] || fail "mock asset was not downloaded"
-[[ ${requested_url} == "https://github.com/umpecca/tessera/releases/latest/download/tessera-lame-linux-arm64" ]] \
+[[ ${requested_url} == "https://github.com/umpecca/tessera/releases/latest/download/tessera-linux-arm64" ]] \
   || fail "release asset URL mismatch: ${requested_url}"
 
 rm -f "${test_download}"

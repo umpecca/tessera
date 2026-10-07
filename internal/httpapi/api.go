@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"sync"
 
-	"tessera/internal/audio"
 	"tessera/internal/localhttps"
 	"tessera/internal/runs"
 	"tessera/internal/shell"
@@ -24,7 +23,6 @@ type API struct {
 	Runner    *shell.Runner
 	Runs      *runs.Manager
 	Terminals *terminal.Manager
-	Audio     *audio.Manager
 	WebFS     fs.FS
 	// Users is the roster for multi-user mode. When empty, Tessera runs in
 	// single-user mode with just the default workspace.
@@ -57,11 +55,6 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/runs", a.listRuns)
 	mux.HandleFunc("/api/runs/", a.runEvents)
 	mux.HandleFunc("/api/terminal", a.terminalSession)
-	mux.HandleFunc("/api/audio/state", a.audioState)
-	mux.HandleFunc("/api/audio/source", a.audioSource)
-	mux.HandleFunc("/api/audio/control", a.audioControl)
-	mux.HandleFunc("/api/audio/events", a.audioEvents)
-	mux.HandleFunc("/api/audio/stream", a.audioStream)
 	mux.HandleFunc("/api/directories", a.listDirectories)
 	mux.HandleFunc("/api/file", a.fileContents)
 	mux.HandleFunc("/api/files/download", a.downloadFile)

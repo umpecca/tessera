@@ -26,6 +26,10 @@ function fixture(t, textMetrics, options = {}) {
   const renderer = new CanvasRenderer(canvas, {
     fontSize: 14, fontFamily: '"JetBrains Mono", monospace', devicePixelRatio: 1, ...options,
   });
+  if (options.rowSpacing) {
+    renderer.tesseraRowSpacing = options.rowSpacing;
+    renderer.remeasureFont();
+  }
   return { renderer, calls, canvas };
 }
 
@@ -34,9 +38,9 @@ test("full font bounds put text and accents inside the terminal cell", (t) => {
     fontBoundingBoxAscent: 14, fontBoundingBoxDescent: 4,
     actualBoundingBoxAscent: 13, actualBoundingBoxDescent: 3,
   });
-  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 20, baseline: 15 });
+  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 18, baseline: 14 });
   assert.equal(renderer.charWidth, 9);
-  assert.equal(renderer.charHeight, 20);
+  assert.equal(renderer.charHeight, 18);
   assert.deepEqual(calls.slice(0, 2), [
     ["measure", "M", '14px "JetBrains Mono", monospace'],
     ["measure", "MgÅÉ|", '14px "JetBrains Mono", monospace'],
@@ -45,7 +49,7 @@ test("full font bounds put text and accents inside the terminal cell", (t) => {
 
 test("older browsers measure accented letters and descenders together", (t) => {
   const { renderer } = fixture(t, { actualBoundingBoxAscent: 14, actualBoundingBoxDescent: 3 });
-  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 19, baseline: 15 });
+  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 17, baseline: 14 });
 });
 
 test("glyphs extending beyond the reported font bounds still fit in their cells", (t) => {
@@ -53,21 +57,28 @@ test("glyphs extending beyond the reported font bounds still fit in their cells"
     fontBoundingBoxAscent: 19, fontBoundingBoxDescent: 6,
     actualBoundingBoxAscent: 22, actualBoundingBoxDescent: 7,
   });
-  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 31, baseline: 23 });
+  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 29, baseline: 22 });
 });
 
 test("missing or zero vertical measurements keep usable fallback metrics", (t) => {
   const { renderer } = fixture(t, { actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 });
-  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 17, baseline: 13 });
+  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 15, baseline: 12 });
 });
 
-test("fractional measurements retain room above and below the glyph", (t) => {
+test("tight fractional measurements fit ascenders and descenders without extra padding", (t) => {
   const ascent = 13.6, descent = 3.2;
   const { renderer } = fixture(t, { fontBoundingBoxAscent: ascent, fontBoundingBoxDescent: descent });
   const metrics = renderer.getMetrics();
-  assert.deepEqual(metrics, { width: 9, height: 19, baseline: 15 });
-  assert.ok(metrics.baseline - ascent >= 1);
-  assert.ok(metrics.height - metrics.baseline - descent > 0);
+  assert.deepEqual(metrics, { width: 9, height: 18, baseline: 14 });
+  assert.ok(metrics.baseline >= ascent);
+  assert.ok(metrics.height - metrics.baseline >= descent);
+});
+
+test("comfortable spacing adds one pixel above and below full font bounds", (t) => {
+  const { renderer } = fixture(t, { fontBoundingBoxAscent: 13.6, fontBoundingBoxDescent: 3.2 }, { rowSpacing: "comfortable" });
+  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 20, baseline: 15 });
+  renderer.setFontSize(24);
+  assert.equal(renderer.getMetrics().height, 20, "font changes retain spacing preference");
 });
 
 test("bold accents share a cell tall enough for both font weights", (t) => {
@@ -76,7 +87,7 @@ test("bold accents share a cell tall enough for both font weights", (t) => {
     actualBoundingBoxAscent: font.startsWith("bold") ? 16 : 13,
     actualBoundingBoxDescent: 3,
   }));
-  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 22, baseline: 17 });
+  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 20, baseline: 16 });
 });
 
 test("font changes, font loading, and canvas resizing use the same metrics", (t) => {
@@ -86,17 +97,17 @@ test("font changes, font loading, and canvas resizing use the same metrics", (t)
     if (font.includes("Fira Code")) return { fontBoundingBoxAscent: 13, fontBoundingBoxDescent: 4 };
     return { fontBoundingBoxAscent: loaded ? 14 : 12, fontBoundingBoxDescent: 4 };
   }, { devicePixelRatio: 2 });
-  assert.equal(renderer.getMetrics().baseline, 13);
+  assert.equal(renderer.getMetrics().baseline, 12);
   loaded = true;
   renderer.remeasureFont();
-  assert.equal(renderer.getMetrics().baseline, 15);
+  assert.equal(renderer.getMetrics().baseline, 14);
   renderer.setFontFamily('"Fira Code", monospace');
-  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 19, baseline: 14 });
+  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 17, baseline: 13 });
   renderer.setFontSize(24);
-  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 33, baseline: 25 });
+  assert.deepEqual(renderer.getMetrics(), { width: 9, height: 31, baseline: 24 });
   renderer.resize(80, 24);
-  assert.equal(canvas.style.height, "792px");
-  assert.equal(canvas.height, 1584);
+  assert.equal(canvas.style.height, "744px");
+  assert.equal(canvas.height, 1488);
 });
 
 test("normal, bold, selected, and experimental text share the corrected baseline", (t) => {
@@ -111,13 +122,13 @@ test("normal, bold, selected, and experimental text share the corrected baseline
   setPlainRendererEnabled(renderer, true);
   renderer.renderLine([cell, { ...cell, flags: CellFlags.BOLD }, { ...cell, codepoint: 103 }], 3, 3);
   assert.deepEqual(calls.filter(call => call[0] === "text"), [
-    ["text", "d", 0, 35], ["text", "d", 9, 35],
-    ["text", "d", 0, 55],
-    ["text", "d", 0, 75], ["text", "d", 9, 75], ["text", "g", 18, 75],
+    ["text", "d", 0, 32], ["text", "d", 9, 32],
+    ["text", "d", 0, 50],
+    ["text", "d", 0, 68], ["text", "d", 9, 68], ["text", "g", 18, 68],
   ]);
   calls.length = 0;
   renderer.renderCursor(2, 1);
-  assert.deepEqual(calls, [["rect", 18, 20, 9, 20]]);
+  assert.deepEqual(calls, [["rect", 18, 18, 9, 18]]);
 });
 
 test("installing the metrics adapter twice leaves measurement unchanged", () => {

@@ -176,7 +176,7 @@ static void Alert(NSString *message) {
     [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"tesseraLifecycle"];
     [self.window orderOut:nil];
     [NSApp stop:nil];
-    // Wake run so Go can close PTYs/audio/storage before the process exits.
+    // Wake run so Go can close PTYs and storage before the process exits.
     [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
         location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil
         subtype:0 data1:0 data2:0] atStart:NO];

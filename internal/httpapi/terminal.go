@@ -231,7 +231,20 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		attachment.Replay = nil
 		for open := true; open; {
 			var chunk []byte
-			chunk, open = <-attachment.Events
+			select {
+			case <-attachment.AudioWake:
+				writeMu.Lock()
+				if event, ok := attachment.ReadAudio(); ok {
+					writeErr := conn.WriteJSON(event)
+					if writeErr != nil {
+						writeMu.Unlock()
+						return
+					}
+				}
+				writeMu.Unlock()
+				continue
+			case chunk, open = <-attachment.Events:
+			}
 			if outputPaused.Load() {
 				continue
 			}
@@ -284,6 +297,17 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 				_, _ = session.WriteMouse([]byte(message.Data))
 			} else if message.Type == "timing" {
 				timingEnabled.Store(message.Enabled)
+			} else if message.Type == "audio-events" {
+				writeMu.Lock()
+				attachment.EnableAudio(message.Enabled)
+				audioErr := conn.WriteJSON(struct {
+					Type    string `json:"type"`
+					Enabled bool   `json:"enabled"`
+				}{"audio-events", message.Enabled})
+				writeMu.Unlock()
+				if audioErr != nil {
+					return
+				}
 			} else if message.Type == "output-coalescing" {
 				coalescingEnabled.Store(message.Enabled)
 			} else if message.Type == "pause-output" {

@@ -60,6 +60,7 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		TerminalWheelSensitivity: 0.5, EditorWheelSensitivity: 2,
 		OLEDWindowBorderSize: 16, TerminalTERM: "xterm-ghostty", TerminalFont: "fira-code",
 		TerminalColorMode: "light", OlderMacMode: true,
+		TerminalRowSpacing: "comfortable",
 	}
 	if err := st.SaveUserSettings(ctx, settings); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -69,8 +70,54 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		t.Fatalf("load settings: %v", err)
 	}
 	if loaded.DefaultPaneFontSize != 18 || loaded.DefaultTheme != "studio" || loaded.ThemeID != "hacker" || loaded.DeskbarButtonEnabled ||
-		loaded.TerminalWheelSensitivity != 0.5 || loaded.EditorWheelSensitivity != 2 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalColorMode != "light" || !loaded.OlderMacMode {
+		loaded.TerminalWheelSensitivity != 0.5 || loaded.EditorWheelSensitivity != 2 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalRowSpacing != "comfortable" || loaded.TerminalColorMode != "light" || !loaded.OlderMacMode {
 		t.Fatalf("loaded settings = %+v", loaded)
+	}
+}
+
+func TestTerminalRowSpacingPersistenceAndDefault(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "spacing.sqlite3")
+	st, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := st.LoadUserSettings(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.TerminalRowSpacing != "tight" {
+		t.Fatalf("default spacing = %q", settings.TerminalRowSpacing)
+	}
+	settings.TerminalRowSpacing = "comfortable"
+	if err := st.SaveUserSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	settings, err = st.LoadUserSettings(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.TerminalRowSpacing != "comfortable" {
+		t.Fatalf("reopened spacing = %q", settings.TerminalRowSpacing)
+	}
+	settings.TerminalRowSpacing = "invalid"
+	if err := st.SaveUserSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = st.LoadUserSettings(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.TerminalRowSpacing != "tight" {
+		t.Fatalf("invalid spacing fallback = %q", settings.TerminalRowSpacing)
 	}
 }
 

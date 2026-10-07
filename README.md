@@ -20,6 +20,11 @@ image-memory budget, toggle discarded-image markers, or clear images while
 keeping text. See [terminal core documentation](docs/terminal-core.md)
 for the pinned source build, protocol, resource limits, and restoration guarantees.
 
+Terminal apps can also send short WAV/MP3 clips directly to enabled browsers,
+or stream files/stdin incrementally as Opus using FFmpeg, with selectable
+bitrate and buffering. Both mix with local per-terminal mute. See [terminal audio](docs/terminal-audio.md)
+for the `tessera-audio` helper and private escape-sequence protocol.
+
 ## Security and trusted-environment status
 
 Tessera is currently intended for use by one operator or a small group in a
@@ -31,8 +36,7 @@ This is an important operational boundary:
 - The `-users` roster and named sessions separate workspace state; they do not
   verify identity or prevent one connected user from selecting another user.
 - The HTTP API can execute shell commands and read, write, copy, move, or
-  delete files available to the Tessera process. Audio clients can also select
-  host paths, proxy HTTP(S) audio URLs, and link live Terminal processes.
+  delete files available to the Tessera process.
 - The default listener is `127.0.0.1`, which limits access to the host machine.
 - Binding to `0.0.0.0` exposes Tessera to the network. Do this only on a
   trusted, appropriately isolated network whose users are allowed to control
@@ -82,8 +86,6 @@ Useful flags:
 -tray bool      enable native tray controls when supported
 -users string   comma-separated local workspace roster
 -web string     serve SPA assets from a directory instead of the embedded copy
--audio-capture-helper string  external terminal audio capture helper
--audio-encoder string         LAME-compatible encoder override
 -trusted-proxy value          trusted immediate proxy IP/CIDR (repeatable)
 -rate-limit int               API requests per client per minute (default 600)
 -rate-burst int               per-client API burst (default 120)
@@ -128,22 +130,10 @@ prompts for a listen address: press Enter to use the safe `127.0.0.1` default,
 or enter `0.0.0.0` to listen on every network interface. A non-interactive run
 uses `127.0.0.1`.
 
-Interactive installs also offer the matching optional LAME MP3 encoder and
-default to skipping it. The choice can be made explicitly, including for a
-non-interactive install:
-
-```bash
-sudo bash install-ubuntu.sh --with-lame
-sudo bash install-ubuntu.sh --without-lame
-```
-
-`--with-lame` installs `tessera-lame-linux-amd64` or
-`tessera-lame-linux-arm64` beside Tessera under `/usr/local/bin`. Skipping the
-option does not remove an existing encoder. LAME encodes captured audio to MP3;
-Terminal capture itself still requires the separately installed
-`tessera-audio-capture` helper. Running the installer again downloads the
-current latest release, asks for the interactive choices again unless flags
-are supplied, and restarts the service.
+Running the installer again downloads the latest Tessera executable, prompts
+for the listen address when interactive, and restarts the service. Install the
+optional terminal audio helper separately as described in
+[terminal audio](docs/terminal-audio.md).
 
 With the default selection, Tessera listens only on `127.0.0.1:7331`. From the
 Ubuntu host, open <http://127.0.0.1:7331>. If Ubuntu is running in a VM and you
@@ -221,6 +211,11 @@ required before exposing Tessera to untrusted networks.
 Tessera presents a full-window desktop where panes can overlap and retain
 their geometry, z-order, title, working directory, font size, and content.
 
+Draw a new window by left-dragging empty desktop space, or hold the middle
+mouse button and drag over any pane, including Browser content. Release to
+choose the window type. A simple middle click creates nothing; Escape cancels
+the outline. Left clicks inside existing panes keep their normal behavior.
+
 Current pane types:
 
 - **Worksheet:** a CodeMirror-backed editable command worksheet. Run the
@@ -249,11 +244,6 @@ Current pane types:
   port, then choose **Connect**. The target and display preferences persist,
   but credentials remain only in the current browser page and connections are
   never restored automatically.
-- **Audio:** a view of the host-wide shared audio station. It can play a host
-  file, proxy a direct HTTP(S) audio response, or capture audio rendered by a
-  linked Terminal process tree. Transport controls are shared; browser volume
-  and mute are local to each listener.
-
 ### VNC connections
 
 VNC panes connect from the Tessera host directly to any requested TCP address;
@@ -373,8 +363,11 @@ Choose **Operator** under **Settings → Theme → Current** for charcoal surfac
 mint accents, a softly lit active pane, and dotted title-bar grips. Windows stay
 movable and resizable, with 32px desktop title bars (48px for touch), ordinary
 titles for new panes, and minimize, maximize/restore, and close controls. The
-title bar stays available when maximized; closing a live terminal confirms
-ending its shell. Existing titles and terminal color preferences are preserved.
+title bar, border, and shadow disappear when maximized, matching OLED Terminal;
+use **Alt+F10** or **Maximize / restore** in the command palette to restore it.
+Double-left-click a window title bar to toggle maximize/restore.
+Closing a live terminal confirms ending its shell. Existing titles and terminal
+color preferences are preserved.
 **Wobbly windows** in the same section adds gentle whole-window tilt and stretch
 while dragging. It is saved per browser, does not change window or terminal
 dimensions, and is disabled by reduced motion or **Older Mac** mode.
@@ -393,6 +386,11 @@ the regular and bold faces before creating a terminal so the canvas starts
 with stable character-cell measurements. A bundled Noto Sans Symbols 2 face is
 used only when the selected monospace font lacks a symbol, avoiding platform
 fallback metrics that can overlap terminal cells in legacy Firefox/macOS.
+
+Choose **Tight** (the default) or **Comfortable** under **Settings → Terminal →
+Row spacing**. Tight fits the font's full height without extra padding;
+Comfortable adds a pixel above and below each row. The choice saves per user
+and immediately refits open terminals.
 
 Choose **Dark** or **Light** under **Settings → Terminal → Colors**. Both modes
 use the conventional xterm RGB values for indexed colors 0–15 and leave
@@ -450,75 +448,20 @@ reports "Clipboard blocked". OSC 52 clipboard *reads* are ignored and never
 answered: replying would let any program running in a Terminal pane read the
 operator's clipboard.
 
-## Shared audio station
+## Terminal audio
 
-The Audio pane is available from the window-type menu, workspace menu, and
-command palette (`NA`). Any connected client can replace the source or control
-Play, Pause, Stop, and file seeking; the latest valid command wins. The source
-and file position survive a restart, but Tessera always restarts paused.
+Terminal applications can send short WAV/MP3 clips or live Opus streams through
+the private OSC protocol. Enable playback from a terminal's context menu and
+mute individual terminals locally. The `tessera-audio` helper sends files or
+stdin; streaming uses FFmpeg/libopus installed on the producer machine. See
+[terminal audio](docs/terminal-audio.md) for installation, controls, and protocol
+examples.
 
-File sources must be absolute host paths. URL sources must be direct HTTP(S)
-audio responses; playlists, HLS/DASH, metadata extraction, and artwork are not
-handled. Terminal sources work only when the selected Terminal pane or one of
-its descendant processes actually renders audio. A controller-only CLI that
-talks to a player outside that process tree will be silent. Protected/DRM audio
-may also be unavailable, and Tessera does not try to bypass that boundary.
-
-Terminal capture requires both the bundled LAME companion and a separately
-installed platform capture helper. Tessera resolves the helper from
-`-audio-capture-helper`, beside the Tessera executable, then from `PATH`. The
-helper executable is named `tessera-audio-capture` (with the usual `.exe` on
-Windows) and must implement:
-
-```text
-tessera-audio-capture capture --pid <pid> --include-tree \
-  --format s16le --sample-rate 48000 --channels 2
-```
-
-Its stdout is raw interleaved 48 kHz stereo signed 16-bit little-endian PCM.
-Its stderr is NDJSON containing `ready`, `warning`, and `error` events. Windows
-helpers require process-loopback support (Windows 10 build 20348 or later),
-Linux helpers require PipeWire, and macOS helpers require ScreenCaptureKit audio
-permission. FreeBSD/OpenBSD retain file and URL playback but report Terminal
-capture as unsupported. The optional helper is not installed by self-update.
-
-### LAME encoder companion
-
-For a manual installation, place the encoder for the host platform beside the
-Tessera executable. Keep the release asset name unchanged so Tessera can find
-it automatically:
-
-| Platform | Tessera executable | Encoder companion |
-| --- | --- | --- |
-| Linux x64 | `tessera-linux-amd64` | `tessera-lame-linux-amd64` |
-| Linux ARM64 | `tessera-linux-arm64` | `tessera-lame-linux-arm64` |
-| Windows x64 | `tessera-windows-amd64.exe` | `tessera-lame-windows-amd64.exe` |
-| macOS Intel | `tessera-darwin-amd64` | `tessera-lame-darwin-amd64` |
-| macOS Apple silicon | `tessera-darwin-arm64` | `tessera-lame-darwin-arm64` |
-
-On macOS, mark both downloaded files executable:
-
-```bash
-chmod +x tessera-darwin-* tessera-lame-darwin-*
-```
-
-The encoder may instead be stored elsewhere and selected explicitly:
-
-```powershell
-# Windows
-.\tessera-windows-amd64.exe -audio-encoder C:\path\to\lame.exe
-```
-
-```bash
-# macOS
-./tessera-darwin-arm64 -audio-encoder /path/to/lame
-```
-
-Without an override, Tessera checks for the exact platform asset name beside
-its executable, then `tessera-lame` and `lame` beside it and on `PATH`. The
-in-app updater installs the matching platform companion automatically. The
-encoder converts captured PCM to MP3; it does not replace the separately
-installed capture helper described above.
+The standalone Audio pane, shared file/URL transport, process capture, and
+bundled LAME encoder have been retired. On upgrade, migration 044 removes saved
+Audio panes and station state, preserving all other panes and workspace settings.
+Old capture/encoder flags are no longer accepted. Previously installed encoder
+files are left alone.
 
 Workspace behavior includes:
 
@@ -741,82 +684,24 @@ immutable; append a new migration instead of editing an existing one.
 
 ## Releases and self-update
 
-### Building all encoder artifacts in GitHub Actions
-
-The release workflow builds Windows x64, Linux x64/ARM64, and macOS Apple
-silicon encoders on GitHub-hosted runners. The workflow runs when a `v*` tag
-is pushed and attaches its artifacts to a GitHub Release. Ensure Actions are
-enabled, commit the intended source and generated assets, and tag that commit.
-
-For example, after choosing the next version:
-
-```powershell
-git push origin main
-$releaseTag = "vX.Y.Z" # Replace with the chosen version.
-git tag $releaseTag
-git push origin $releaseTag
-```
-
-The Windows job provisions an MSYS2 MINGW64 environment, builds the pinned
-LAME 3.100 source with the repository's MinGW compatibility patch, and verifies
-the resulting `.exe`. The macOS job compiles natively on an Apple silicon
-runner. Their outputs are named exactly as listed below.
-
-### Building an encoder locally
-
-GitHub Actions is the simplest way to obtain every architecture. To reproduce
-one build locally, use a machine with that target architecture.
-
-On Windows x64, install [MSYS2](https://www.msys2.org/), open its **MINGW64**
-shell, and install the packages used by CI:
-
-```bash
-pacman -Syu
-pacman -S --needed autoconf automake libtool make patch tar mingw-w64-x86_64-gcc
-```
-
-If the update asks you to close the shell, reopen **MINGW64** and run the second
-command again. Then follow the `encoder-windows` commands in the
-[release workflow](.github/workflows/release.yml). They download the pinned
-source, apply the
-[MinGW compatibility patch](.github/patches/lame-3.100-mingw-langinfo.patch),
-build it, and copy the result to `tessera-lame-windows-amd64.exe`. Use the
-MINGW64 shell—not a plain MSYS shell—so the result is a native Windows
-executable.
-
-On macOS, install Apple's command-line developer tools and run the commands
-from the matching encoder job in the same workflow:
-
-```bash
-xcode-select --install
-```
-
-Build on an Intel Mac for `tessera-lame-darwin-amd64`, or on an Apple silicon
-Mac for `tessera-lame-darwin-arm64`. The current release workflow enables only
-the Apple silicon macOS target.
-
 Pushing a `v*` tag runs the GitHub Actions release workflow and publishes:
 
 - `tessera-linux-amd64`
 - `tessera-linux-arm64`
 - `tessera-windows-amd64.exe`
 - `tessera-darwin-arm64`
-- `tessera-lame-linux-amd64`
-- `tessera-lame-linux-arm64`
-- `tessera-lame-windows-amd64.exe`
-- `tessera-lame-darwin-arm64`
-- `lame-3.100.tar.gz` and `LICENSE.LAME.txt`
+- Matching `tessera-audio-<os>-<arch>` helpers (`.exe` on Windows)
 
 Linux and Windows builds use `CGO_ENABLED=0`. Linux builds run server-only
 without tray support. The macOS ARM build runs on a native macOS runner with
 `CGO_ENABLED=1` for tray support. Intel macOS and BSD targets are currently
 disabled in the workflow.
 
-The in-app updater checks the latest GitHub Release, downloads the Tessera and
-LAME assets matching the current operating system and architecture, installs
-them as one rollback-capable transaction, and restarts Tessera without requiring
+The in-app updater checks the latest GitHub Release, downloads the Tessera
+executable matching the current operating system and architecture, installs it
+with rollback on failure, and restarts Tessera without requiring
 manual file replacement. After the old server releases its listener,
-sessions, audio processes, and database, every desktop platform starts the
+sessions and database, every desktop platform starts the
 replacement as an independent process. The old process remains alive until the
 replacement confirms that its server started; startup failures are returned to
 the old process and logged instead of treating process creation as a successful
@@ -835,9 +720,10 @@ answers its health check. If the privileged update fails, inspect
 `journalctl -u 'run-*.service'` and `journalctl -u tessera.service`; rerunning
 `install-ubuntu.sh` from an external shell remains the recovery path.
 
-A new Tessera binary installed by a legacy updater can fetch its
-exact-version LAME companion on the first Terminal capture attempt. LAME 3.100
-is distributed under the LGPL; the release includes its license and
-corresponding pinned source archive. Anonymous GitHub Releases API access is
-used, so release assets must be reachable without private repository
-credentials.
+Updaters from versions that require a LAME release asset cannot install an
+executable-only release. Upgrade those versions once by replacing the Tessera
+executable manually, or rerun the Ubuntu installer. The new updater manages
+only Tessera; install/update `tessera-audio` and FFmpeg separately.
+
+Anonymous GitHub Releases API access is used, so release assets must be
+reachable without private repository credentials.

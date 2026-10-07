@@ -4,6 +4,67 @@ function rectangle(x, y, right, bottom) {
   return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
 }
 
+// Solid box-drawing arms, in left/right/up/down order: 0 absent, 1 light,
+// 2 heavy. Dashed, double, rounded and diagonal glyphs retain their font shape.
+const straightBoxArms = ["1100", "2200", "0011", "0022"];
+const joinedBoxArms = [ // U+250C through U+254B
+  "0101", "0201", "0102", "0202", "1001", "2001", "1002", "2002",
+  "0110", "0210", "0120", "0220", "1010", "2010", "1020", "2020",
+  "0111", "0211", "0121", "0112", "0122", "0221", "0212", "0222",
+  "1011", "2011", "1021", "1012", "1022", "2021", "2012", "2022",
+  "1101", "2101", "1201", "2201", "1102", "2102", "1202", "2202",
+  "1110", "2110", "1210", "2210", "1120", "2120", "1220", "2220",
+  "1111", "2111", "1211", "2211", "1121", "1112", "1122", "2121",
+  "1221", "2112", "1212", "2221", "2212", "2122", "1222", "2222",
+];
+const halfBoxArms = [ // U+2574 through U+257F
+  "1000", "0010", "0100", "0001", "2000", "0020", "0200", "0002",
+  "1200", "0012", "2100", "0021",
+];
+
+export function terminalBoxDrawingRects(codepoint, width, height) {
+  const arms = straightBoxArms[codepoint - 0x2500]
+    || joinedBoxArms[codepoint - 0x250c] || halfBoxArms[codepoint - 0x2574];
+  if (!arms) return null;
+  const w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height));
+  const light = Math.max(1, Math.round(w / 8));
+  const [left, right, up, down] = [...arms].map(Number);
+  const v = Math.min(w, Math.max(up, down) * light);
+  const horizontal = Math.min(h, Math.max(left, right) * light);
+  const x = Math.floor((w - v) / 2), y = Math.floor((h - horizontal) / 2);
+  const rects = [];
+  for (const [weight, direction] of [[left, "left"], [right, "right"], [up, "up"], [down, "down"]]) {
+    if (!weight) continue;
+    const thickness = Math.min(direction === "left" || direction === "right" ? h : w, weight * light);
+    const lineX = Math.floor((w - thickness) / 2), lineY = Math.floor((h - thickness) / 2);
+    // Arms overlap at the junction and reach the exact cell edges. This keeps
+    // adjoining rows continuous even when text needs extra ascender space.
+    if (direction === "left") rects.push(rectangle(0, lineY, x + v, lineY + thickness));
+    else if (direction === "right") rects.push(rectangle(x, lineY, w, lineY + thickness));
+    else if (direction === "up") rects.push(rectangle(lineX, 0, lineX + thickness, y + horizontal));
+    else rects.push(rectangle(lineX, y, lineX + thickness, h));
+  }
+  // Avoid painting junction pixels twice: faint lines must have the same
+  // opacity at corners as along their edges. Use disjoint fills rather than
+  // a canvas path, which can rasterize differently under dirty-row clipping.
+  const fills = [];
+  for (const rect of rects.filter(Boolean)) {
+    let parts = [rect];
+    for (const filled of fills) {
+      parts = parts.flatMap(part => {
+        const right = part.x + part.width, bottom = part.y + part.height;
+        const x = Math.max(part.x, filled.x), y = Math.max(part.y, filled.y);
+        const endX = Math.min(right, filled.x + filled.width), endY = Math.min(bottom, filled.y + filled.height);
+        if (endX <= x || endY <= y) return [part];
+        return [rectangle(part.x, part.y, right, y), rectangle(part.x, endY, right, bottom),
+          rectangle(part.x, y, x, endY), rectangle(endX, y, right, endY)].filter(Boolean);
+      });
+    }
+    fills.push(...parts);
+  }
+  return fills;
+}
+
 export function terminalBlockRects(codepoint, width, height) {
   const cellWidth = Math.max(1, Math.round(width));
   const cellHeight = Math.max(1, Math.round(height));
@@ -79,7 +140,8 @@ export function installTerminalBlockRenderer(CanvasRenderer, CellFlags) {
       return originalRenderCellText.call(this, cell, column, row);
     }
     const width = this.metrics.width * (cell.width || 1);
-    const rects = terminalBlockRects(cell.codepoint, width, this.metrics.height);
+    const rects = terminalBlockRects(cell.codepoint, width, this.metrics.height)
+      || terminalBoxDrawingRects(cell.codepoint, width, this.metrics.height);
     if (!rects && !(cell.flags & CellFlags.INVISIBLE)) {
       // Symbol fonts are not necessarily monospaced. Canvas fillText otherwise
       // lets a wide fallback glyph overwrite neighboring cells. Its maxWidth
