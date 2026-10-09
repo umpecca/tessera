@@ -30,6 +30,8 @@ func TestDesktopRequestPolicy(t *testing.T) {
 		{"remote peer", "/api/health", "127.0.0.1:4321", "192.0.2.1:12", "", testDesktopToken, 403},
 		{"other local port", "/api/health", "127.0.0.1:4321", "127.0.0.1:12", "http://127.0.0.1:9999", testDesktopToken, 403},
 		{"opaque API", "/api/file", "127.0.0.1:4321", "127.0.0.1:12", "null", testDesktopToken, 403},
+		{"file frame", "/api/terminal-files/frame", "127.0.0.1:4321", "127.0.0.1:12", "", testDesktopToken, 200},
+		{"opaque download", "/api/terminal-files/download", "127.0.0.1:4321", "127.0.0.1:12", "null", testDesktopToken, 403},
 		{"opaque proxy", "/browser-proxy/example/", "127.0.0.1:4321", "127.0.0.1:12", "null", testDesktopToken, 200},
 		{"HTTPS", "/api/host/https", "127.0.0.1:4321", "127.0.0.1:12", "", testDesktopToken, 403},
 		{"certificate", "/api/host/https/ca", "127.0.0.1:4321", "127.0.0.1:12", "", testDesktopToken, 403},

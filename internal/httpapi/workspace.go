@@ -56,13 +56,6 @@ func (a *API) workspaceDocument(w http.ResponseWriter, r *http.Request, id strin
 		// The path is authoritative for the id so a client cannot save into a
 		// different workspace than the one it addressed.
 		ws.ID = id
-		if a.Runs != nil {
-			activePaneIDs := a.Runs.ActivePaneIDs(ws.ID)
-			if err := a.Store.PreservePaneBuffers(r.Context(), &ws, activePaneIDs); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-		}
 		if err := a.Store.SaveWorkspace(r.Context(), &ws); errors.Is(err, store.ErrWorkspaceConflict) {
 			writeError(w, http.StatusConflict, err.Error())
 			return

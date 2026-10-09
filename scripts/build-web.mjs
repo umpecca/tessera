@@ -32,14 +32,6 @@ const ghosttyWebUnicodeGuard = {
 };
 
 await build({
-  entryPoints: ["web/codemirror-entry.js"],
-  bundle: true,
-  format: "esm",
-  minify: true,
-  outfile: "web/vendor/codemirror.js",
-});
-
-await build({
   entryPoints: ["web/terminal-entry.js"],
   bundle: true,
   format: "esm",

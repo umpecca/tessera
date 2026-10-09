@@ -108,6 +108,23 @@ test("pane selection transfers parsing priority and selecting a worksheet clears
   assert.equal(coordinator.activeScheduler, null);
 });
 
+test("file messages reach initially hidden panes and visibility handoff preserves their bridge", () => {
+  const f = fixture(), events = [], subscriptions = [];
+  f.state.files = { subscribe: socket => subscriptions.push(socket), receive: message => {
+    if (message?.type !== "terminal-file") return false;
+    events.push(message); return true;
+  }, disconnect: () => events.push("disconnect") };
+  f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);
+  f.context.connectTerminalSocket(f.rect); const old = f.sockets[0]; old.open();
+  old.text({ type: "terminal-file", epoch: "shell", action: "request", id: "id" });
+  assert.equal(events.length, 1); assert.equal(f.state.output.chunks.length, 0);
+  f.rect.minimized = false; f.context.updateTerminalRenderState(f.rect);
+  assert.ok(old.sent.some(value => typeof value === "string" && JSON.parse(value).type === "file-handoff"));
+  f.sockets[1].open(); assert.equal(subscriptions.length, 2);
+  assert.equal(events.includes("disconnect"), false);
+  f.sockets[1].end(1006); assert.equal(events.at(-1), "disconnect");
+});
+
 test("live audio bypasses hidden text pauses, while stale socket audio is ignored", () => {
   const f = fixture(); f.start();
   f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);

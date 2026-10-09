@@ -12,6 +12,7 @@ import (
 
 	"tessera/internal/terminalaudio"
 	"tessera/internal/terminalcore"
+	"tessera/internal/terminalfile"
 )
 
 const defaultScrollbackLimit = 4 * 1024 * 1024
@@ -38,6 +39,12 @@ type Cursor struct {
 // the client already has on screen belongs to a stream it can no longer be
 // lined up with.
 type Attachment struct {
+	DeclineFile                       func(string, string)
+	FileWake                          <-chan struct{}
+	ReadFile                          func() (terminalfile.Event, bool)
+	EnableFiles                       func(string)
+	HandoffFiles                      func()
+	CancelFiles                       func()
 	Epoch                             string
 	Offset                            int64
 	Reset                             bool
@@ -70,6 +77,7 @@ func newEpoch() string {
 }
 
 type Manager struct {
+	Files           *terminalfile.Broker
 	mu              sync.Mutex
 	sessions        map[string]*ManagedSession
 	scrollbackLimit int
@@ -85,30 +93,38 @@ type Manager struct {
 // Hidden clients explicitly pause their delivery and restore changed state
 // from a snapshot when revealed; their lifecycle channel remains connected.
 type subscriber struct {
-	protocol     int
-	events       chan []byte
-	wake         chan struct{}
-	quit         chan struct{}
-	pause        chan struct{}
-	pending      [][]byte
-	bytes        int
-	limit        int
-	overrun      bool
-	done         bool
-	paused       bool
-	audioEnabled bool
-	audioWake    chan struct{}
-	audioPending []terminalaudio.Event
-	audioBytes   int
+	fileWake       chan struct{}
+	filePending    []terminalfile.Event
+	fileBytes      int
+	fileClient     string
+	fileGeneration string
+	fileHandoff    bool
+	protocol       int
+	events         chan []byte
+	wake           chan struct{}
+	quit           chan struct{}
+	pause          chan struct{}
+	pending        [][]byte
+	bytes          int
+	limit          int
+	overrun        bool
+	done           bool
+	paused         bool
+	audioEnabled   bool
+	audioWake      chan struct{}
+	audioPending   []terminalaudio.Event
+	audioBytes     int
 }
 
 type ManagedSession struct {
-	manager     *Manager
-	workspaceID string
-	paneID      string
-	session     *Session
-	subscribers map[*subscriber]struct{}
-	scrollback  scrollbackBuffer
+	fileReplies   chan string
+	fileReplyOnce sync.Once
+	manager       *Manager
+	workspaceID   string
+	paneID        string
+	session       *Session
+	subscribers   map[*subscriber]struct{}
+	scrollback    scrollbackBuffer
 	// epoch names this session's byte stream and published counts how much
 	// of it has been produced. Together they let a returning client be told
 	// exactly what it missed, instead of the whole scrollback every time.
@@ -151,6 +167,7 @@ type OutputTiming struct {
 func NewManager() *Manager {
 	return &Manager{
 		sessions:        map[string]*ManagedSession{},
+		Files:           terminalfile.NewBroker(),
 		scrollbackLimit: defaultScrollbackLimit,
 	}
 }
@@ -258,6 +275,9 @@ func (m *Manager) TerminateWorkspace(workspaceID string) {
 	for _, session := range sessions {
 		session.Close()
 	}
+	if m.Files != nil {
+		m.Files.Close()
+	}
 }
 
 func (m *Manager) Close() {
@@ -272,6 +292,9 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	for _, session := range sessions {
 		session.Close()
+	}
+	if m.Files != nil {
+		m.Files.Close()
 	}
 }
 
@@ -428,14 +451,16 @@ func (s *ManagedSession) readLoop() {
 
 func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 	sub := &subscriber{
-		protocol:  cursor.Protocol,
-		events:    make(chan []byte),
-		wake:      make(chan struct{}, 1),
-		quit:      make(chan struct{}),
-		pause:     make(chan struct{}),
-		limit:     s.scrollback.limit,
-		paused:    cursor.OutputPaused,
-		audioWake: make(chan struct{}, 1),
+		protocol:       cursor.Protocol,
+		events:         make(chan []byte),
+		wake:           make(chan struct{}, 1),
+		quit:           make(chan struct{}),
+		pause:          make(chan struct{}),
+		limit:          s.scrollback.limit,
+		paused:         cursor.OutputPaused,
+		audioWake:      make(chan struct{}, 1),
+		fileWake:       make(chan struct{}, 1),
+		fileGeneration: newEpoch(),
 	}
 	if sub.paused {
 		close(sub.pause)
@@ -444,11 +469,24 @@ func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 	// The replay and the live subscription are decided under one lock, so
 	// nothing the shell prints can fall between them.
 	attachment := &Attachment{
-		Epoch:       s.epoch,
-		Events:      sub.events,
-		Unsubscribe: func() {},
-		PauseOutput: func() {},
-		AudioWake:   sub.audioWake,
+		DeclineFile: func(id, epoch string) {
+			s.mu.Lock()
+			client := sub.fileClient
+			s.mu.Unlock()
+			if epoch == s.epoch && client != "" && s.manager != nil && s.manager.Files != nil {
+				s.manager.Files.Decline(s.workspaceID, s.paneID, s.epoch, id, client)
+			}
+		},
+		Epoch:        s.epoch,
+		Events:       sub.events,
+		Unsubscribe:  func() {},
+		PauseOutput:  func() {},
+		AudioWake:    sub.audioWake,
+		FileWake:     sub.fileWake,
+		ReadFile:     func() (terminalfile.Event, bool) { return s.readFile(sub) },
+		EnableFiles:  func(client string) { s.enableFiles(sub, client) },
+		HandoffFiles: func() { s.mu.Lock(); sub.fileHandoff = true; s.mu.Unlock() },
+		CancelFiles:  func() { s.detachFiles(sub, false) },
 		ReadAudio: func() (terminalaudio.Event, bool) {
 			s.mu.Lock()
 			defer s.mu.Unlock()
@@ -589,6 +627,7 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 	var replies []byte
 	var clipboard [][]byte
 	var audioEvents []terminalaudio.Event
+	var fileCommands []terminalfile.Command
 	var clean []byte
 	for _, part := range s.streamFilter.Feed(chunk) {
 		if part.Audio != nil {
@@ -635,6 +674,14 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 			return
 		}
 		replies = append(replies, audioReplies...)
+		commands, fileErr := s.core.Files()
+		if fileErr != nil {
+			s.mu.Unlock()
+			s.markExited(fileErr)
+			s.Close()
+			return
+		}
+		fileCommands = append(fileCommands, commands...)
 	}
 	chunk = clean
 	if len(chunk) > 0 {
@@ -665,6 +712,11 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 		s.publishAudioLocked(event)
 	}
 	s.mu.Unlock()
+	for _, command := range fileCommands {
+		if s.manager != nil && s.manager.Files != nil {
+			s.manager.Files.Handle(s.workspaceID, s.paneID, s.epoch, command, s.queueFileReply)
+		}
+	}
 	if len(replies) > 0 {
 		_, _ = s.Write(replies)
 	}
@@ -697,6 +749,17 @@ func (s *ManagedSession) releaseLocked(sub *subscriber) {
 		return
 	}
 	delete(s.subscribers, sub)
+	clear(sub.filePending)
+	sub.filePending = nil
+	sub.fileBytes = 0
+	if sub.fileClient != "" {
+		client, generation, handoff := sub.fileClient, sub.fileGeneration, sub.fileHandoff
+		go func() {
+			if s.manager != nil && s.manager.Files != nil {
+				s.manager.Files.Detach(s.workspaceID, s.paneID, s.epoch, client, generation, handoff)
+			}
+		}()
+	}
 	clear(sub.audioPending)
 	sub.audioPending = nil
 	sub.audioBytes = 0
@@ -716,6 +779,9 @@ func (s *ManagedSession) releaseLocked(sub *subscriber) {
 }
 
 func (s *ManagedSession) finish() {
+	if s.manager != nil && s.manager.Files != nil {
+		s.manager.Files.CancelSession(s.workspaceID, s.paneID, s.epoch)
+	}
 	if s.closed.Swap(true) {
 		return
 	}

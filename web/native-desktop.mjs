@@ -8,7 +8,7 @@ export function installNativeClose(win, flush) {
   win.addEventListener("tessera:native-close", async () => {
     if (closing) return;
     closing = true;
-    if (!win.confirm("Quit Tessera Desktop? Running terminals, commands, and audio will stop. Workspace and editor buffers will be retained; unsaved file edits are not written to their files.")) {
+    if (!win.confirm("Quit Tessera Desktop? Running terminals and audio will stop. Workspace data and archived documents will be retained.")) {
       closing = false;
       bridge.postMessage("cancel");
       return;

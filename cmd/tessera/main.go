@@ -35,7 +35,7 @@ func main() {
 	rateBurst := flag.Int("rate-burst", 120, "maximum per-client API request burst; negative disables")
 	auditLog := flag.Bool("audit-log", false, "persist redacted security audit events")
 	auditRetention := flag.Int("audit-retention-days", 30, "audit-event retention in days when -audit-log is enabled; negative disables")
-	maxUploadSize := flag.Int64("max-upload-size", server.DefaultMaxUploadBytes, "maximum bytes per File Browser upload")
+	maxUploadSize := flag.Int64("max-upload-size", server.DefaultMaxUploadBytes, "maximum bytes per terminal file upload")
 	systemdUpdate := flag.Bool("systemd-update", false, "apply an update and restart tessera.service (root transient-unit helper)")
 	flag.Parse()
 

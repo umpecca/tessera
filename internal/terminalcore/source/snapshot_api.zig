@@ -151,7 +151,7 @@ fn loadState(input: *snapshot.Reader) !*anyopaque {
     if (w.stream.parser.state == .osc_string and osc_raw.len > 0) {
         w.stream.parser.state = .ground;
         try w.stream.nextSlice(osc_raw);
-    } else if (w.stream.parser.state == .escape and std.mem.startsWith(u8, osc_raw, @import("audio.zig").prefix)) {
+    } else if (w.stream.parser.state == .escape and (std.mem.startsWith(u8, osc_raw, @import("audio.zig").prefix) or std.mem.startsWith(u8, osc_raw, @import("file.zig").prefix))) {
         // Preserve a split ST terminator; audio effect queues remain transient.
         try w.stream.handler.osc_raw.appendSlice(w.alloc, osc_raw);
     }

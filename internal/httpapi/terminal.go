@@ -14,6 +14,7 @@ import (
 
 	"tessera/internal/terminal"
 	"tessera/internal/terminalcore"
+	"tessera/internal/terminalfile"
 )
 
 // Application close codes for a terminal websocket. The browser renders
@@ -37,7 +38,10 @@ const (
 const maxTerminalCloseReason = 123
 
 type terminalClientMessage struct {
+	ID               string `json:"id"`
+	Epoch            string `json:"epoch"`
 	Type             string `json:"type"`
+	ClientID         string `json:"clientId"`
 	Cols             int    `json:"cols"`
 	Rows             int    `json:"rows"`
 	Data             string `json:"data"`
@@ -232,6 +236,16 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		for open := true; open; {
 			var chunk []byte
 			select {
+			case <-attachment.FileWake:
+				writeMu.Lock()
+				if event, ok := attachment.ReadFile(); ok {
+					if err := conn.WriteJSON(event); err != nil {
+						writeMu.Unlock()
+						return
+					}
+				}
+				writeMu.Unlock()
+				continue
 			case <-attachment.AudioWake:
 				writeMu.Lock()
 				if event, ok := attachment.ReadAudio(); ok {
@@ -297,6 +311,26 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 				_, _ = session.WriteMouse([]byte(message.Data))
 			} else if message.Type == "timing" {
 				timingEnabled.Store(message.Enabled)
+			} else if message.Type == "file-events" {
+				if message.Enabled && terminalfile.ValidID(message.ClientID) {
+					a.Terminals.Files.SetMaxUpload(a.MaxUploadBytes)
+					attachment.EnableFiles(message.ClientID)
+					writeMu.Lock()
+					fileErr := conn.WriteJSON(struct {
+						Type  string `json:"type"`
+						Epoch string `json:"epoch"`
+					}{"file-events", attachment.Epoch})
+					writeMu.Unlock()
+					if fileErr != nil {
+						return
+					}
+				} else {
+					attachment.CancelFiles()
+				}
+			} else if message.Type == "file-decline" {
+				attachment.DeclineFile(message.ID, message.Epoch)
+			} else if message.Type == "file-handoff" {
+				attachment.HandoffFiles()
 			} else if message.Type == "audio-events" {
 				writeMu.Lock()
 				attachment.EnableAudio(message.Enabled)

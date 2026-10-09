@@ -36,7 +36,6 @@ type UserSettings struct {
 	ThemeID                  string  `json:"themeId"`
 	DeskbarButtonEnabled     bool    `json:"deskbarButtonEnabled"`
 	TerminalWheelSensitivity float64 `json:"terminalWheelSensitivity"`
-	EditorWheelSensitivity   float64 `json:"editorWheelSensitivity"`
 	OLEDWindowBorderSize     int     `json:"oledWindowBorderSize"`
 	TerminalTERM             string  `json:"terminalTerm"`
 	TerminalFont             string  `json:"terminalFont"`
@@ -325,13 +324,13 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 	var settings UserSettings
 	err := s.db.QueryRowContext(ctx, `
 SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled,
-       terminal_wheel_sensitivity, editor_wheel_sensitivity, oled_window_border_size,
+       terminal_wheel_sensitivity, oled_window_border_size,
        terminal_term, terminal_font, terminal_row_spacing, terminal_color_mode, older_mac_mode, revision
 FROM user_settings
 WHERE user_id = ?`, userID).Scan(
 		&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme,
 		&settings.ThemeID, &settings.DeskbarButtonEnabled,
-		&settings.TerminalWheelSensitivity, &settings.EditorWheelSensitivity,
+		&settings.TerminalWheelSensitivity,
 		&settings.OLEDWindowBorderSize, &settings.TerminalTERM, &settings.TerminalFont,
 		&settings.TerminalRowSpacing,
 		&settings.TerminalColorMode, &settings.OlderMacMode, &settings.Revision)
@@ -341,10 +340,10 @@ WHERE user_id = ?`, userID).Scan(
 INSERT OR IGNORE INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
-  editor_wheel_sensitivity, oled_window_border_size, terminal_term, terminal_font,
+  oled_window_border_size, terminal_term, terminal_font,
   terminal_row_spacing, terminal_color_mode, older_mac_mode, created_at, updated_at, revision
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalRowSpacing, DefaultTerminalColorMode, false, now, now, newID()); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalRowSpacing, DefaultTerminalColorMode, false, now, now, newID()); err != nil {
 			return nil, fmt.Errorf("create user settings: %w", err)
 		}
 		return s.LoadUserSettings(ctx, userID)
@@ -356,7 +355,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFon
 	settings.DefaultTheme = normalizeThemeID(settings.DefaultTheme)
 	settings.ThemeID = normalizeThemeID(settings.ThemeID)
 	settings.TerminalWheelSensitivity = normalizeWheelSensitivity(settings.TerminalWheelSensitivity)
-	settings.EditorWheelSensitivity = normalizeWheelSensitivity(settings.EditorWheelSensitivity)
 	settings.OLEDWindowBorderSize = normalizeOLEDWindowBorderSize(settings.OLEDWindowBorderSize)
 	settings.TerminalTERM = NormalizeTerminalTERM(settings.TerminalTERM)
 	settings.TerminalFont = NormalizeTerminalFont(settings.TerminalFont)
@@ -387,7 +385,6 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 	settings.DefaultTheme = normalizeThemeID(settings.DefaultTheme)
 	settings.ThemeID = normalizeThemeID(settings.ThemeID)
 	settings.TerminalWheelSensitivity = normalizeWheelSensitivity(settings.TerminalWheelSensitivity)
-	settings.EditorWheelSensitivity = normalizeWheelSensitivity(settings.EditorWheelSensitivity)
 	settings.OLEDWindowBorderSize = normalizeOLEDWindowBorderSize(settings.OLEDWindowBorderSize)
 	settings.TerminalTERM = NormalizeTerminalTERM(settings.TerminalTERM)
 	settings.TerminalFont = NormalizeTerminalFont(settings.TerminalFont)
@@ -398,17 +395,16 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 INSERT INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
-  editor_wheel_sensitivity, oled_window_border_size, terminal_term, terminal_font,
+  oled_window_border_size, terminal_term, terminal_font,
   terminal_row_spacing, terminal_color_mode, older_mac_mode, created_at, updated_at, revision
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
   default_theme = excluded.default_theme,
   theme_id = excluded.theme_id,
   deskbar_button_enabled = excluded.deskbar_button_enabled,
   terminal_wheel_sensitivity = excluded.terminal_wheel_sensitivity,
-  editor_wheel_sensitivity = excluded.editor_wheel_sensitivity,
   oled_window_border_size = excluded.oled_window_border_size,
   terminal_term = excluded.terminal_term,
   terminal_font = excluded.terminal_font,
@@ -419,7 +415,7 @@ ON CONFLICT(user_id) DO UPDATE SET
   revision = excluded.revision
 WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? <> '')`, settings.UserID, settings.DefaultPaneFontSize,
 		settings.DefaultTheme, settings.ThemeID, settings.DeskbarButtonEnabled,
-		settings.TerminalWheelSensitivity, settings.EditorWheelSensitivity,
+		settings.TerminalWheelSensitivity,
 		settings.OLEDWindowBorderSize, settings.TerminalTERM, settings.TerminalFont,
 		settings.TerminalRowSpacing,
 		settings.TerminalColorMode, settings.OlderMacMode, now, now, nextRevision,

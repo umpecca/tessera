@@ -238,7 +238,8 @@ static void Alert(NSString *message) {
     if (main) {
         if ([self isWorkspace:url]) {
             decisionHandler(WKNavigationActionPolicyAllow);
-        } else if (([self isLocal:url] && [url.path isEqualToString:@"/api/files/download"]) ||
+        } else if (([self isLocal:url] && [url.path isEqualToString:@"/api/terminal-files/download"] &&
+            [action.request.HTTPMethod isEqualToString:@"POST"]) ||
             (action.shouldPerformDownload && [self isWorkspace:action.sourceFrame.request.URL] &&
              [url.absoluteString hasPrefix:[@"blob:" stringByAppendingString:self.origin.absoluteString]])) {
             decisionHandler(WKNavigationActionPolicyDownload);
@@ -251,8 +252,16 @@ static void Alert(NSString *message) {
         }
         return;
     }
+    BOOL fileFrame = [self isLocal:url] && [url.path isEqualToString:@"/api/terminal-files/frame"] &&
+        action.sourceFrame.mainFrame && [self isWorkspace:action.sourceFrame.request.URL];
+    NSURL *source = action.sourceFrame.request.URL;
+    BOOL fileDownload = [self isLocal:url] && [url.path isEqualToString:@"/api/terminal-files/download"] &&
+        [action.request.HTTPMethod isEqualToString:@"POST"] && [self isLocal:source] &&
+        [source.path isEqualToString:@"/api/terminal-files/frame"];
     BOOL proxy = [self isLocal:url] && [url.path hasPrefix:@"/browser-proxy/"];
-    decisionHandler(proxy || [url.absoluteString isEqualToString:@"about:blank"]
+    // The inert same-origin target can submit its ticket form, but never gains
+    // the main-frame lifecycle bridge or Browser pane privileges.
+    decisionHandler(proxy || fileFrame || fileDownload || [url.absoluteString isEqualToString:@"about:blank"]
         ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
 }
 

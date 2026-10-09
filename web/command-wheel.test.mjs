@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { CommandWheel, commandWheelGroups, commandWheelSector } from "./command-wheel.mjs";
 
 const commands = [
-  { id: "new-worksheet", label: "New Worksheet", code: "NW" },
+  { id: "new-browser", label: "New Browser", code: "NB" },
   { id: "new-terminal", label: "New Terminal", code: "NN" },
   { id: "dock-top", label: "Dock Top", code: "DT" },
   { id: "destroy-window", label: "Destroy Window", code: "DD" },
@@ -29,7 +29,7 @@ function key(value, modifiers = {}) {
 }
 
 test("groups contain only available fixed codes, preserving command identity and deterministic group order", () => {
-  const groups = commandWheelGroups([...commands, { label: "duplicate", code: "NW" }, { code: "bad" }]);
+  const groups = commandWheelGroups([...commands, { label: "duplicate", code: "NB" }, { code: "bad" }]);
   assert.deepEqual(groups.map(group => group.key), ["N", "D", "S"]);
   assert.deepEqual(groups[0].commands, commands.slice(0, 2));
   assert.equal(groups[1].commands[1], commands[3]);
@@ -49,15 +49,15 @@ test("annular wedge geometry stays inside the wheel and excludes the center hub"
   }
 });
 
-test("typing N then W dispatches the original command exactly once and isolates keys", () => {
+test("typing N then B dispatches the original command exactly once and isolates keys", () => {
   const wheel = fixture();
-  const first = key("n"), second = key("W", { shiftKey: true });
+  const first = key("n"), second = key("B", { shiftKey: true });
   wheel.handleKeyboard(first);
   assert.equal(wheel.prefix, "N");
   assert.equal(wheel.invoked.length, 0);
   wheel.handleKeyboard(second);
   wheel.handleKeyboard(second);
-  wheel.chooseKey("W");
+  wheel.chooseKey("B");
   assert.deepEqual(wheel.invoked, [commands[0]]);
   assert.ok(first.prevented && first.stopped && second.prevented && second.stopped);
 });
@@ -149,6 +149,7 @@ const codesStart = source.indexOf("const paletteShortcutCodes = {");
 const codesEnd = source.indexOf("\n};", codesStart) + 3;
 const paletteShortcutCodes = vm.runInNewContext(source.slice(codesStart, codesEnd) + "\npaletteShortcutCodes");
 function appFunction(name, globals) {
+  globals.shortcutsUI ||= { element: { hidden: true } };
   const start = source.indexOf("function " + name + "(");
   const end = source.indexOf("\n}\n", start) + 2;
   return vm.runInNewContext("(" + source.slice(start, end) + ")", globals);
@@ -207,7 +208,7 @@ test("palette codes map Settings to S and continue matching two-letter commands"
   assign(available);
   const match = appFunction("findPaletteCodeMatch", {});
   assert.equal(match(" s ", available), available[4]);
-  assert.equal(match("nw", available), available[0]);
+  assert.equal(match("nb", available), available[0]);
   for (const query of ["", "ST", "settings", "N", "SS", "123"]) {
     assert.equal(match(query, available), null);
   }
@@ -221,6 +222,7 @@ function sessionPaletteCommands(activePane, onSessions = () => {}) {
     rectangles: activePane ? [activePane] : [], getActivePane: () => activePane,
     arrangeOutSnapshot: null, workspaceMenuLabel: pane => pane.title,
     window: {}, multiUser: false, openSessionsModal: onSessions,
+    openShortcuts() {}, shortcutsUI: { items: [] },
   };
   const available = appFunction("buildPaletteCommands", globals)();
   appFunction("assignPaletteShortcutCodes", { paletteShortcutCodes })(available);
@@ -248,7 +250,7 @@ function paletteFixture(available) {
 }
 
 test("searching se highlights Settings first; Tessera Sessions remains searchable", () => {
-  for (const pane of [null, { kind: "worksheet", title: "Main worksheet" }]) {
+  for (const pane of [null, { kind: "terminal", title: "Main terminal" }]) {
     const available = sessionPaletteCommands(pane);
     const { globals, search } = paletteFixture(available);
     search("se");
@@ -307,8 +309,8 @@ test("Tessera Sessions uses TS in the palette and wheel, with keyboard and point
 });
 
 test("pausing on palette shortcuts never runs a command; Enter runs the highlighted result", async () => {
-  const { globals, invoked, search } = paletteFixture(sessionPaletteCommands({ kind: "worksheet", title: "Main" }));
-  for (const query of ["s", "nw", "oo", "ts", "dd"]) {
+  const { globals, invoked, search } = paletteFixture(sessionPaletteCommands({ kind: "terminal", title: "Main" }));
+  for (const query of ["s", "nb", "oo", "ts", "dd"]) {
     search(query);
     assert.equal(invoked.length, 0);
   }
@@ -322,8 +324,8 @@ test("pausing on palette shortcuts never runs a command; Enter runs the highligh
 });
 
 test("exact codes rank first and Enter runs the visibly selected command", () => {
-  const { globals, invoked, search } = paletteFixture(sessionPaletteCommands({ kind: "worksheet", title: "Main" }));
-  for (const [query, id] of [["nw", "new-worksheet"], [" OO ", "arrange-out"], ["S", "settings"], ["ts", "sessions"], ["dd", "destroy-window"]]) {
+  const { globals, invoked, search } = paletteFixture(sessionPaletteCommands({ kind: "terminal", title: "Main" }));
+  for (const [query, id] of [["nb", "new-browser"], [" OO ", "arrange-out"], ["S", "settings"], ["ts", "sessions"], ["dd", "destroy-window"]]) {
     search(query);
     assert.equal(globals.paletteEntries[0].id, id);
     const first = globals.commandPaletteList.children[0];
@@ -338,10 +340,10 @@ test("exact codes rank first and Enter runs the visibly selected command", () =>
 
 test("keyboard and pointer selection override a typed shortcut when Enter runs", () => {
   for (const navigation of ["keyboard", "pointer"]) {
-    const { globals, invoked, search } = paletteFixture(sessionPaletteCommands({ kind: "worksheet", title: "Main" }));
-    search("nw");
+    const { globals, invoked, search } = paletteFixture(sessionPaletteCommands({ kind: "terminal", title: "Main" }));
+    search("s");
     const alternative = globals.paletteEntries[1];
-    assert.notEqual(alternative.id, "new-worksheet");
+    assert.notEqual(alternative.id, "settings");
     if (navigation === "keyboard") globals.handlePaletteKeyboard(key("ArrowDown"));
     else globals.commandPaletteList.children[1].listeners.pointermove();
     assert.equal(globals.paletteSelection, 1);
@@ -354,7 +356,7 @@ test("keyboard and pointer selection override a typed shortcut when Enter runs",
 });
 
 test("search aliases find commands by familiar names without changing visible labels", () => {
-  const { globals, invoked, search } = paletteFixture(sessionPaletteCommands({ kind: "worksheet", title: "Main" }));
+  const { globals, invoked, search } = paletteFixture(sessionPaletteCommands({ kind: "terminal", title: "Main" }));
   for (const [query, id, label] of [
     ["preferences", "settings", "Settings..."],
     ["Preferences", "settings", "Settings..."],

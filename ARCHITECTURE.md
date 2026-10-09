@@ -43,30 +43,26 @@ tessera/
     api.go                     # route registration and shared JSON responses
     workspace.go               # workspace document API
     sessions.go                # roster, named sessions, and user settings
-    command.go                 # command start and NDJSON streaming
+    shortcuts.go               # per-user launcher API and host command expansion
     terminal.go                # terminal WebSocket transport
     directories.go             # directory browser data
-    files.go                   # file read/write
-    file_operations.go         # copy, move, and delete
     background.go              # workspace background image API
     update.go                  # self-update API
     security.go                # origins, proxy trust, headers, limits and audit
     static.go                  # embedded SPA and history fallback
   internal/store/
     store.go                   # SQLite open and embedded migration runner
-    workspace.go               # workspaces, panes, and command-run persistence
+    workspace.go               # workspaces, panes, and archived document persistence
     session.go                 # session CRUD and per-user settings
+    shortcuts.go               # independent per-user shortcut revisions
     workspace_background.go    # image BLOB persistence
     audit.go                   # redacted HTTP security-event persistence
-  internal/runs/
-    manager.go                 # command lifecycle, transcript updates, subscribers
-  internal/shell/
-    runner.go                  # platform shell execution and cwd tracking
-    proc_*.go                  # platform process behavior
   internal/terminal/
     manager.go                 # session ownership, replay, and teardown
     audio.go                   # bounded per-listener live audio delivery
     session*.go                # ConPTY and Unix PTY implementations
+  internal/shortcuts/
+    shortcuts.go               # definition validation and literal shell arguments
   internal/terminalaudio/
     protocol.go, stream.go      # private clip and Opus streaming OSC protocol
     filter.go                  # stream ingress filtering before retained output
@@ -76,22 +72,21 @@ tessera/
     version.go                 # build-time version value
   web/
     app.js                     # SPA state, pane UI, interactions, and API calls
+    shortcuts.mjs              # shortcut manager and invocation modal
     styles.css                 # workspace, pane, modal, Deskbar, and theme styling
     index.html                 # application shell and bundled module loading
     embed.go                   # go:embed filesystem
-    codemirror-entry.js        # editor bundle entry point
     terminal-entry.js          # terminal bundle entry point
     terminal-audio*.mjs         # Web Audio playback and bounded Opus decoding
     terminal-opus-entry.js      # bundled decoder worker entry point
-    text-editor-language.mjs   # file-extension language selection
     vendor/                    # committed esbuild output
     assets/                    # fonts, application icons, and pane icons
   migrations/
     embed.go                   # embeds the ordered SQL sequence
-    001_*.sql ... 044_*.sql     # append-only application schema migrations
+    001_*.sql ... 047_*.sql     # append-only application schema migrations
   tasks/                       # small implementation task records
   .github/workflows/
-    release.yml                # tested multi-platform tagged releases
+    release.yml                # platform CI and tagged server/helper releases
 ```
 
 The Go backend is separated by concrete responsibility. The frontend currently
@@ -127,19 +122,18 @@ Primary data flows:
    saves. Each document carries an opaque revision, and SQLite conditionally
    replaces it only when the submitted revision is current. A reconnecting
    browser revalidates before resuming autosave; conflicts pause saving until
-   the latest document is reloaded. The server also preserves buffers owned by
-   active command runs to protect streamed transcript output.
-4. Worksheet commands are sent to the run manager. Output is streamed as NDJSON,
-   persisted into the pane transcript, and available for subscriber reattachment.
-5. Terminal panes attach through WebSocket to session-scoped PTY processes.
+   the latest document is reloaded. Retired pane documents remain opaque archive
+   fields and survive ordinary layout saves.
+4. Terminal panes attach through WebSocket to session-scoped PTY processes.
    Native OSC audio requests use a separate bounded live queue on that socket,
    independent of paused text/replay. A host ingress filter removes streaming
    OSC before native parsing, snapshots, and retained output. Only live decoder
    setup is retained for joining listeners. Browser Web Audio mixes embedded
    clips and incrementally decoded Opus streams with local activation and
    per-terminal mute. See [terminal audio](docs/terminal-audio.md).
-6. File Browser and Text Editor panes call filesystem APIs using host paths.
-7. Destroying a named session stops that session's commands and terminals before
+5. Terminal file requests use scoped tickets to stream host-local file contents
+   over HTTP after an explicit browser claim.
+6. Destroying a named session stops that session's terminals before
    deleting its persisted workspace.
 ## Technology Used
 
@@ -152,9 +146,8 @@ Primary data flows:
 - **ConPTY and `creack/pty`:** Windows and Unix-like terminal processes.
 - **Vanilla HTML, CSS, and JavaScript:** SPA implementation without a component
   framework.
-- **CodeMirror 6:** worksheet and text-editor surfaces.
 - **ghostty-web:** browser terminal renderer.
-- **esbuild:** produces committed CodeMirror and terminal bundles.
+- **esbuild:** produces committed terminal, audio-decoder and VNC bundles.
 - **getlantern/systray:** Windows and macOS notification-area controls. Linux
   releases exclude the tray implementation and remain CGO-free.
 - **GitHub Actions and GitHub Releases:** tagged builds, release assets, and the
@@ -170,7 +163,7 @@ Description: The browser UI owns workspace interaction, client-side pane state,
 session routing, modal and command-palette behavior, debounced persistence, and
 rendering for all pane types.
 
-Technologies: Browser JavaScript, HTML, CSS, CodeMirror 6, ghostty-web, WebSocket,
+Technologies: Browser JavaScript, HTML, CSS, ghostty-web, WebSocket,
 Fetch API, and browser history/storage APIs.
 
 Deployment: Embedded in the Go binary from `web/`; `-web <directory>` serves
@@ -179,14 +172,8 @@ installation on compatible browsers.
 
 Current pane types:
 
-- **Worksheet:** editable command-and-output transcript with selection/current
-  line execution and free/normal cursor modes.
 - **Terminal:** live PTY terminal with resize, font controls, scrollback replay,
   and session-scoped lifecycle.
-- **Text Editor:** tabbed host-file editor with save/save-as and syntax
-  highlighting selected by file extension.
-- **File Browser:** directory navigation and file copy, move, delete, paste, and
-  supported-text-file open behavior.
 - **Browser:** sandboxed loopback development-server view using an ephemeral,
   capability-addressed path proxy on Tessera's existing listener. The proxy
   rewrites common root-relative HTTP and WebSocket traffic and strips Tessera
@@ -205,8 +192,8 @@ route/history synchronization, and client/server connection recovery. A
 low-frequency health monitor opens one recovery dialog after consecutive
 failures; restored connections reload only after user confirmation, except an
 explicit Reconnect action which verifies health and then reloads.
-Per-user settings also carry independent wheel sensitivity multipliers for
-Terminal panes and CodeMirror-based Worksheet/Text Editor panes, the selected
+Per-user settings also carry a wheel sensitivity multiplier for
+Terminal panes, the selected
 terminal font and color mode, and the validated `TERM` capability name used
 when new Unix terminal PTYs are created. JetBrains Mono is bundled and selected
 by default, with Fira Code retained as an alternative. Noto Sans Symbols 2 is
@@ -253,24 +240,13 @@ GET  /api/health
 GET  /api/users
 GET/POST/PATCH/DELETE /api/users/{user}/sessions/...
 GET/PUT /api/users/{user}/settings
+GET/PUT /api/users/{user}/shortcuts
+POST /api/users/{user}/shortcuts/{id}/launch
+POST /api/users/{user}/shortcuts/test
 GET/PUT /api/workspace/{session}
 GET/PUT/DELETE /api/workspace/{session}/background
-GET /api/files/download?path=...
-POST /api/files/upload?directory=...&name=...&overwrite=0|1
+POST /api/terminal-files/{claim,upload,download,result,finish,cancel}
 ```
-
-#### Command Run Manager
-
-Name: Command Run Manager
-
-Description: Runs worksheet commands, streams stdout/stderr, tracks working
-directory changes, persists run metadata, inserts transcript output, supports
-subscriber reattachment, and stops commands by session.
-
-Technologies: Go goroutines, `os/exec`, PowerShell on Windows, `/bin/sh` on
-Unix-like systems, NDJSON streaming.
-
-Deployment: In-process inside the Tessera Host.
 
 #### Terminal Manager
 
@@ -314,10 +290,14 @@ Technologies: Go platform files and getlantern/systray on supported platforms.
 
 Deployment: Compiled into the main executable.
 
-File Browser transfers use streamed request/response bodies. Uploads are
-bounded by `-max-upload-size`, staged beside the destination, and moved into
-place only after the complete body is accepted. Downloads use `ServeContent`
-for attachment metadata and byte-range support.
+Terminal file transfers use bounded transient OSC effects, a live WebSocket
+invitation queue, and one browser claim per request. Opaque HTTP tickets bind
+transfers to workspace/pane/shell epoch, operation and fixed host paths. Uploads
+are staged beside the destination and bounded by `-max-upload-size`; native
+browser attachment downloads stream the original file or an uncompressed ZIP.
+The controlling-terminal helper keeps results on stdout, and requests/replies
+out of redirected output. Migration 045 converts retired File Browser panes to
+terminals without changing pane identity/layout. See `docs/terminal-files.md`.
 
 #### Self-Updater
 
@@ -349,20 +329,26 @@ Name: Tessera SQLite Database
 Type: SQLite file
 
 Purpose: Durable storage for users' sessions, pane state, settings, backgrounds,
-and command-run metadata.
+and historical command-run metadata.
 
 Key Schemas/Collections:
 
 - `workspaces`: named sessions, owner, active pane, layout, theme/background
   metadata, and last-opened timestamps.
-- `panes`: pane kind, buffer, editor state, paths, geometry, z-order, fullscreen,
+- `panes`: pane kind, archived legacy documents and paths, geometry, z-order, fullscreen,
   minimized state, and font settings.
-- `command_runs`: command text, before/after working directories, status, exit
+- `command_runs`: retained historical command text, directories, status, exit
   code, and timestamps.
 - `workspace_backgrounds`: background image MIME type and BLOB data.
-- `user_settings`: default theme, editor and terminal fonts, terminal color
+- `user_settings`: default theme and terminal font, terminal color
   mode, terminal `TERM`, and interaction settings shared across a user's
   sessions.
+- `user_shortcuts`: per-user launcher definitions and an independent revision,
+  added by migration 047. Whole-list updates compare revisions to prevent silent
+  overwrites. Saved and draft launches validate session ownership, expand ordered
+  values with the actual host shell's quoting, and return a command and directory
+  to the current browser. Only a still-current invocation creates a new terminal.
+  Its startup command is transient and never serialized into workspace documents.
 - `audit_events`: optional, bounded-retention request metadata for
   state-changing API requests and Terminal connection attempts. Persistence is
   disabled by default. Records exclude query strings, bodies, command text,
@@ -373,7 +359,13 @@ application schema and are embedded into the executable. `internal/store/store.g
 validates a contiguous sequence, applies each pending migration transactionally,
 and records progress with SQLite `PRAGMA user_version`. Migration 044 retires
 the old `audio_station` table and Audio panes, rotating revisions only in affected
-workspaces to prevent stale clients from restoring retired state. Historical one-column
+workspaces to prevent stale clients from restoring retired state. Migration 045
+converts File Browser panes to terminals. Migration 046 converts Worksheet,
+Text Editor and unspecified legacy panes to terminals, preserving document
+columns, IDs, directories and layout while rotating affected revisions. Legacy
+imports receive the same normalization. No saved text becomes terminal input.
+The editor-scroll database column is retained but absent from active settings.
+Historical one-column
 `ALTER TABLE` migrations allow pre-versioned Tessera databases to adopt columns
 they already contain without duplicating schema definitions in Go.
 
@@ -383,7 +375,7 @@ Name: Host Filesystem
 
 Type: Operating-system files and directories
 
-Purpose: User content opened by Text Editor and File Browser panes, executable
+Purpose: Host-local terminal file transfers, executable
 replacement files used by the updater, and the SQLite database itself.
 
 Key Schemas/Collections: N/A. Paths are ordinary host paths and are not imported
@@ -391,8 +383,6 @@ into an application-owned storage hierarchy.
 
 ## External Integrations / APIs
 
-- **Local operating-system shell:** executes worksheet commands through
-  PowerShell or `/bin/sh`.
 - **Local PTY facilities:** provides interactive terminal processes through
   ConPTY or Unix PTYs.
 - **Host filesystem:** supplies file navigation and mutation capabilities.
@@ -408,11 +398,18 @@ application infrastructure.
 Key Services Used: A local TCP listener, a local SQLite file, host processes,
 and optional GitHub Releases access.
 
-CI/CD Pipeline: `.github/workflows/release.yml` runs on `v*` tags. It builds and
-tests the Tessera platform matrix and publishes Tessera plus separate
-`tessera-audio` helpers for Windows amd64, Linux amd64/arm64, and macOS arm64.
+CI/CD Pipeline: `.github/workflows/release.yml` runs on main-branch pushes, pull
+requests targeting main, manual dispatch, and `v*` tag pushes. It builds and
+tests every Tessera platform, vets both helpers, and uploads separate artifacts
+for Windows amd64, Linux amd64/arm64, and macOS arm64. Version-tag pushes publish
+Tessera plus `tessera-audio` and `tessera-file` binaries after installer tests and
+verification of all 12 required release binaries. Missing or empty assets block
+publication. Non-tag CI runs retain build artifacts without publishing releases.
 The helper streams through independently installed FFmpeg/libopus. The pinned
 browser Opus decoder and its license notices ship in the web assets.
+Release packaging also retains the original v1.9.0 LAME companions and their
+source/license, verified against pinned sizes and SHA-256 hashes, solely for
+pre-v1.9.1 updater compatibility. Current Tessera does not build or use LAME.
 
 Monitoring & Logging: Go standard logging writes lifecycle and failure messages
 to stderr or the platform process output. When explicitly enabled, SQLite
@@ -421,7 +418,7 @@ with configurable retention.
 The HTTP security middleware writes one stdout connection line per distinct
 resolved-IP/User-Agent identity. It exposes the IP and a short process-salted
 fingerprint, not the User-Agent or request data.
-Command output belongs to worksheet transcripts or terminal streams. There is
+Command output belongs to terminal streams. There is
 no centralized telemetry service.
 
 ## Security Considerations
@@ -510,7 +507,6 @@ gofmt -w <changed-go-files>
 go test ./...
 go vet ./...
 node --check web/app.js
-node --test web/text-editor-language.test.mjs
 node --test web/server-connection.test.mjs
 ```
 
@@ -531,7 +527,7 @@ runs the Go test suite on every target runner.
 - Split `web/app.js` into direct feature modules for API/persistence, workspace
   interaction, pane kinds, and overlays as frontend behavior continues to grow.
 - Add focused browser automation for session routing, persistence, pane
-  geometry, fullscreen, Deskbar, terminal attachment, and file-editor flows.
+  geometry, fullscreen, Deskbar, terminal attachment, and terminal file-transfer flows.
 - Keep applied migration files immutable and append a new numbered SQL file for
   every future schema change; extend migration tests with each persisted field.
 - Package and sign macOS releases as `.app` bundles; consider platform-native
@@ -546,14 +542,11 @@ runs the Go test suite on every target runner.
 - **API:** Application Programming Interface exposed by the local Go host.
 - **CGO:** Go interoperability with C; required by the current macOS tray build.
 - **CWD:** Current working directory used by a pane's command or terminal.
-- **NDJSON:** Newline-delimited JSON used to stream command events.
-- **Pane:** A movable workspace window containing a worksheet, terminal, text
-  editor, file browser, browser, or VNC view. Terminal panes also receive live
+- **Pane:** A movable workspace window containing a terminal, browser, or VNC view. Terminal panes also receive live
   audio effects with local activation and mute controls.
 - **PTY:** Pseudo-terminal backing an interactive terminal pane.
 - **Session:** A named, persisted desktop owned by one configured user entry.
 - **SPA:** Single-page application served by the Tessera host.
-- **Transcript:** Editable worksheet text containing commands and inserted output.
 - **Trusted environment:** A host and network where every client able to reach
   Tessera is allowed to exercise Tessera's command and filesystem capabilities.
 

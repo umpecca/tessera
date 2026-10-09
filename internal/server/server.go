@@ -18,8 +18,6 @@ import (
 	"tessera/internal/app"
 	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
-	"tessera/internal/runs"
-	"tessera/internal/shell"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
 	"tessera/internal/update"
@@ -53,7 +51,7 @@ type Options struct {
 	// zero selects the server default.
 	AuditEnabled       bool
 	AuditRetentionDays int
-	// MaxUploadBytes limits one File Browser upload; zero selects the 1 GiB
+	// MaxUploadBytes limits one terminal file upload; zero selects the 1 GiB
 	// default.
 	MaxUploadBytes int64
 	// PKIDir overrides the directory beside DBPath used for Local HTTPS keys.
@@ -77,7 +75,6 @@ type Server struct {
 	defaultAddress string
 	pkiDir         string
 	store          *store.Store
-	runs           *runs.Manager
 	terminals      *terminal.Manager
 	serveErr       chan error
 	desktopToken   string
@@ -132,9 +129,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	if pkiDir == "" {
 		pkiDir = filepath.Join(filepath.Dir(opts.DBPath), "pki")
 	}
-	runner := &shell.Runner{}
-	runManager := runs.NewManager(st, runner)
 	terminalManager := terminal.NewManager()
+	terminalManager.Files.SetMaxUpload(maxUploadBytes)
 	var webFS fs.FS = web.Files
 	if opts.WebDir != "" {
 		webFS = os.DirFS(opts.WebDir)
@@ -142,8 +138,6 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 
 	application := &app.App{
 		Store:          st,
-		Runner:         runner,
-		Runs:           runManager,
 		Terminals:      terminalManager,
 		WebFS:          webFS,
 		Users:          opts.Users,
@@ -166,14 +160,12 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		defaultAddress: opts.Addr,
 		pkiDir:         pkiDir,
 		store:          st,
-		runs:           runManager,
 		terminals:      terminalManager,
 		serveErr:       make(chan error, 1),
 		desktopToken:   opts.DesktopToken,
 	}
 	if err := srv.startListeners(httpsConfig); err != nil {
 		terminalManager.Close()
-		runManager.Close()
 		_ = st.Close()
 		return nil, err
 	}
@@ -334,13 +326,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.shutdownListenersLocked(ctx)
 	s.listenerMu.Unlock()
 	s.terminals.Close()
-	if s.desktopToken != "" {
-		if runErr := s.runs.Shutdown(ctx); runErr != nil && err == nil {
-			err = runErr
-		}
-	} else {
-		s.runs.Close()
-	}
 	if closeErr := s.store.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}

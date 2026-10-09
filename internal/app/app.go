@@ -6,8 +6,6 @@ import (
 
 	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
-	"tessera/internal/runs"
-	"tessera/internal/shell"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
 	"tessera/internal/update"
@@ -16,8 +14,6 @@ import (
 
 type App struct {
 	Store     *store.Store
-	Runner    *shell.Runner
-	Runs      *runs.Manager
 	Terminals *terminal.Manager
 	WebFS     fs.FS
 	// Users is the optional multi-user roster, passed through to the API.
@@ -34,10 +30,6 @@ type App struct {
 }
 
 func (a *App) Handler() http.Handler {
-	runManager := a.Runs
-	if runManager == nil {
-		runManager = runs.NewManager(a.Store, a.Runner)
-	}
 	terminalManager := a.Terminals
 	if terminalManager == nil {
 		terminalManager = terminal.NewManager()
@@ -48,8 +40,6 @@ func (a *App) Handler() http.Handler {
 	}
 	api := &httpapi.API{
 		Store:               a.Store,
-		Runner:              a.Runner,
-		Runs:                runManager,
 		Terminals:           terminalManager,
 		WebFS:               webFS,
 		Users:               a.Users,

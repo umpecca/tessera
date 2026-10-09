@@ -6,30 +6,9 @@ import {
 import { compatibilityDiagnostics, detectCompatibility } from "./compatibility.mjs";
 import { CommandWheel } from "./command-wheel.mjs";
 import { TerminalAudioPlayer, terminalAudioMuteKey } from "./terminal-audio.mjs";
+import { TerminalFiles } from "./terminal-files.mjs";
+import { ShortcutsModal } from "./shortcuts.mjs";
 import { WindowWobble } from "./window-wobble.mjs";
-import {
-  basicSetup,
-  EditorSelection,
-  EditorState,
-  EditorView,
-  Prec,
-  Transaction,
-  keymap,
-  css,
-  cpp,
-  go,
-  html,
-  java,
-  javascript,
-  markdown,
-  php,
-  python,
-  rust,
-  sql,
-  xml,
-  yaml,
-} from "./vendor/codemirror.js?v=syntax-highlighting-1";
-import { textEditorLanguageID } from "./text-editor-language.mjs";
 import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
 import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL, validateLocalHTTPSDraft } from "./local-https-settings.mjs";
@@ -91,7 +70,6 @@ import {
   vncCredentialFields,
   vncWebSocketURL,
 } from "./vnc-pane.mjs";
-import { formatFileSize } from "./file-size.mjs";
 import { newWorkspaceRevision, workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
 import { activePaneOnLoad, focusPane, openTerminalWithoutFocus, paneNeedsRaise } from "./pane-activation.mjs";
 import { paneContentFields } from "./pane-content-sync.mjs";
@@ -129,18 +107,12 @@ let arrangeOutSnapshot = null;
 let isArrangingWindows = false;
 let nextZIndex = 1;
 let contextMenuRect = null;
-let editorMenuRect = null;
 let terminalMenuRect = null;
 let workspaceMenuPoint = null;
 let windowTypeRect = null;
 let directoryBrowserRect = null;
 let directoryBrowserPath = "";
-let fileBrowserRect = null;
-let fileBrowserMode = "";
-let fileBrowserPath = "";
-let fileBrowserFilePath = "";
-let paneFileClipboard = null;
-let editorClipboardText = "";
+let clipboardText = "";
 let workspaceID = "default";
 let workspaceRevision = "";
 let workspaceSaveSuspended = false;
@@ -184,27 +156,19 @@ let userSettingsSavePromise = null;
 let userSettingsDirty = false;
 let userSettingsRevision = "";
 let userSettingsInFlightRevision = "";
-let worksheetLineDrag = null;
-const runStreamControllers = new Map();
 let ghosttyModulePromise = null;
 let vncModulePromise = null;
 const terminalTextEncoder = new TextEncoder();
-// The editor and terminal must render in a monospace face for column
+// The terminal must render in a monospace face for column
 // alignment; keep this in sync with --tessera-font in styles.css. xterm
 // measures glyphs on a canvas and cannot resolve a CSS var(), so this has
 // to be a concrete font-family string rather than "var(--tessera-font)".
-const tesseraMonoFontFamily = '"Fira Code", monospace';
 const fallbackPaneFontSize = 14;
 const minimumPaneFontSize = 10;
 const maximumPaneFontSize = 24;
-const defaultFileBrowserSidebarWidth = 200;
-const minimumFileBrowserSidebarWidth = 110;
-const maximumFileBrowserSidebarWidth = 480;
-let fileBrowserSidebarResizeDrag = null;
 let defaultPaneFontSize = fallbackPaneFontSize;
 let deskbarButtonEnabled = true;
 let terminalWheelSensitivity = defaultWheelSensitivity;
-let editorWheelSensitivity = defaultWheelSensitivity;
 let oledWindowBorderSize = defaultOLEDBorderSize;
 let terminalTerm = defaultTerminalTERM;
 let terminalFont = defaultTerminalFont;
@@ -292,57 +256,6 @@ function setWindowWobbleEnabled(enabled) {
   if (!windowWobbleEnabled) windowWobble.stop();
 }
 
-const tesseraEditorTheme = EditorView.theme({
-  "&": {
-    height: "100%",
-    background: "var(--editor-bg, transparent)",
-    color: "var(--editor-text)",
-  },
-  ".cm-scroller": {
-    fontFamily: tesseraMonoFontFamily,
-    fontSize: "var(--pane-editor-font-size, 14px)",
-    lineHeight: "1.42",
-  },
-  ".cm-content": {
-    minHeight: "100%",
-    padding: "10px 12px",
-    caretColor: "var(--editor-caret)",
-  },
-  ".cm-cursor, .cm-dropCursor": {
-    borderLeftColor: "var(--editor-caret)",
-  },
-  ".cm-gutters": {
-    width: "40px",
-    minWidth: "40px",
-    backgroundColor: "var(--editor-gutter-bg)",
-    color: "var(--editor-gutter-text)",
-    borderRight: "1px solid var(--editor-gutter-border)",
-  },
-  ".cm-lineNumbers": {
-    width: "39px",
-    minWidth: "39px",
-  },
-  ".cm-lineNumbers .cm-gutterElement": {
-    boxSizing: "border-box",
-    width: "39px",
-    minWidth: "39px",
-    padding: "0 6px 0 0",
-    textAlign: "right",
-  },
-  ".cm-activeLine": {
-    backgroundColor: "var(--editor-active-line)",
-  },
-  ".cm-activeLineGutter": {
-    backgroundColor: "var(--editor-active-line-gutter)",
-  },
-  "&.cm-focused": {
-    outline: "none",
-  },
-  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "var(--editor-selection-bg, var(--selection-bg))",
-  },
-});
-
 function setDefaultTheme(id) {
   defaultTheme = themes[id] ? id : defaultThemeID;
   scheduleUserSettingsSave();
@@ -353,13 +266,9 @@ function setDefaultPaneFontSize(fontSize) {
   scheduleUserSettingsSave();
 }
 
-function setWheelSensitivity(kind, value) {
+function setTerminalWheelSensitivity(value) {
   const normalized = normalizeWheelSensitivity(value);
-  if (kind === "terminal") {
-    terminalWheelSensitivity = normalized;
-  } else {
-    editorWheelSensitivity = normalized;
-  }
+  terminalWheelSensitivity = normalized;
   scheduleUserSettingsSave();
 }
 
@@ -501,7 +410,6 @@ function applyTheme(id, { save = true } = {}) {
   // Operator puts its title bar inside the window; other themes use an
   // external tab. Re-measure contents after the chrome changes, never on move.
   for (const rect of rectangles) {
-    rect.editor?.requestMeasure();
     requestTerminalFit(rect);
   }
   scheduleTerminalVisibilityUpdate();
@@ -596,7 +504,7 @@ async function selectUser(name, options = {}) {
   }
   const requestID = ++userSelectionRequestID;
   try {
-    const [nextSessions, settings] = await Promise.all([fetchSessions(name), fetchUserSettings(name)]);
+    const [nextSessions, settings, nextShortcuts] = await Promise.all([fetchSessions(name), fetchUserSettings(name), fetchUserShortcuts(name)]);
     const requested = nextSessions.find((session) => session.id === options.sessionID);
     const target = requested || nextSessions[0];
     if (!target) throw new Error("No sessions");
@@ -608,6 +516,7 @@ async function selectUser(name, options = {}) {
     currentUser = name;
     sessions = nextSessions;
     applyUserSettings(settings);
+    shortcutsUI.setDocument(name, nextShortcuts);
     currentSessionID = target.id;
     currentSessionName = target.name;
     loadWorkspace(workspace);
@@ -616,7 +525,6 @@ async function selectUser(name, options = {}) {
     const route = sessionRoute(name, target.id);
     if (options.historyMode === "push") window.history.pushState({}, "", route);
     else if (options.historyMode !== "none") window.history.replaceState({}, "", route);
-    await syncRunningCommands();
     return true;
   } catch (error) {
     if (requestID === userSelectionRequestID) {
@@ -665,6 +573,22 @@ async function fetchSessions(user) {
   return Array.isArray(payload.sessions) ? payload.sessions : [];
 }
 
+async function fetchUserShortcuts(user) {
+  const response = await fetch(userAPIPath("shortcuts", user));
+  if (!response.ok) throw new Error(`Load shortcuts failed (${response.status}).`);
+  return response.json();
+}
+
+function openShortcuts() {
+  hideAllMenus();
+  shortcutsUI.open();
+}
+
+function invokeShortcut(shortcut) {
+  hideAllMenus();
+  shortcutsUI.invoke(shortcut);
+}
+
 async function fetchUserSettings(user) {
   const response = await fetch(userAPIPath("settings", user));
   if (!response.ok) {
@@ -680,7 +604,6 @@ function applyUserSettings(settings) {
   defaultTheme = themes[settings.defaultTheme] ? settings.defaultTheme : defaultThemeID;
   deskbarButtonEnabled = settings.deskbarButtonEnabled !== false;
   terminalWheelSensitivity = normalizeWheelSensitivity(settings.terminalWheelSensitivity);
-  editorWheelSensitivity = normalizeWheelSensitivity(settings.editorWheelSensitivity);
   terminalTerm = normalizeTerminalTERM(settings.terminalTerm);
   terminalFont = normalizeTerminalFont(settings.terminalFont);
   terminalRowSpacing = normalizeTerminalRowSpacing(settings.terminalRowSpacing);
@@ -730,7 +653,7 @@ async function switchSession(session, options = {}) {
       window.history.pushState({}, "", route);
     }
     hideSessionsModal();
-    await Promise.all([refreshSessions(), syncRunningCommands()]).catch((error) => {
+    await refreshSessions().catch((error) => {
       console.warn(error);
       setWorkspaceStatus("error", "Session opened; refresh failed", error.message);
     });
@@ -959,17 +882,6 @@ async function clearBackground() {
   }
 }
 
-const commandSpinnerFrames = ["\u25f0", "\u25f3", "\u25f2", "\u25f1"];
-const commandSpinnerIntervalMs = 120;
-
-const worksheetFilenameWordChars = EditorState.languageData.of(() => [{
-  wordChars: ".-_",
-}]);
-
-const defaultWorksheetEditorMode = "free";
-const normalWorksheetEditorMode = "normal";
-const fileBrowserPaneKind = "file-browser";
-const textEditorPaneKind = "text-editor";
 const vncPaneKind = "vnc";
 // Which modifier the platform pastes with, since that decides whether the
 // browser will deliver a paste event on its own. userAgentData is the modern
@@ -982,122 +894,10 @@ const appleKeyboardLayout = /mac|iphone|ipad/i.test(
 const browserPaneKind = "browser";
 // Window-management keystrokes a browser pane's iframe may relay to the app.
 const browserPaneRelayedKeys = new Set(["[", "]", "BracketLeft", "BracketRight", "k", "K", "l", "L", ";", "Semicolon", "F7", "F9", "F10", "ArrowUp", "ArrowDown"]);
-const textEditorFileExtensions = new Set([
-  ".txt", ".md", ".markdown", ".log", ".csv", ".tsv",
-  ".json", ".jsonc", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
-  ".html", ".htm", ".css", ".scss", ".sass", ".less",
-  ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
-  ".go", ".py", ".rb", ".php", ".java", ".kt", ".kts",
-  ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".cs", ".rs",
-  ".sql", ".graphql", ".gql", ".vue", ".svelte", ".astro",
-  ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".psd1", ".bat", ".cmd",
-]);
-
-function textEditorLanguageExtension(path) {
-  switch (textEditorLanguageID(path)) {
-    case "markdown": return markdown();
-    case "json": return javascript({ json: true });
-    case "xml": return xml();
-    case "yaml": return yaml();
-    case "html": return html();
-    case "css": return css();
-    case "javascript": return javascript();
-    case "jsx": return javascript({ jsx: true });
-    case "typescript": return javascript({ typescript: true });
-    case "tsx": return javascript({ typescript: true, jsx: true });
-    case "go": return go();
-    case "python": return python();
-    case "php": return php();
-    case "java": return java();
-    case "cpp": return cpp();
-    case "rust": return rust();
-    case "sql": return sql();
-    default: return null;
-  }
-}
-
-function newTextEditorTab(path = "", text = "") {
-  return { id: newPaneID(), path, text, selection: 0 };
-}
-
-function parseTextEditorTabs(rawTabs, fallbackPath, fallbackText) {
-  try {
-    const saved = typeof rawTabs === "string" ? JSON.parse(rawTabs) : rawTabs;
-    const tabs = Array.isArray(saved?.tabs) ? saved.tabs
-      .filter((tab) => tab && typeof tab === "object")
-      .map((tab) => ({
-        id: typeof tab.id === "string" && tab.id ? tab.id : newPaneID(),
-        path: typeof tab.path === "string" ? tab.path : "",
-        text: typeof tab.text === "string" ? tab.text : "",
-        selection: Number.isInteger(tab.selection) ? Math.max(0, tab.selection) : 0,
-      })) : [];
-    if (tabs.length > 0) {
-      return { tabs, active: Math.max(0, Math.min(Number(saved.active) || 0, tabs.length - 1)) };
-    }
-  } catch {
-    // Older panes have no tab document; fall back to their single saved file.
-  }
-  return { tabs: [newTextEditorTab(fallbackPath, fallbackText)], active: 0 };
-}
-
-function activeTextEditorTab(rect) {
-  return rect.textEditorTabs?.[rect.activeTextEditorTab] || null;
-}
-
-function syncActiveTextEditorTab(rect) {
-  const tab = activeTextEditorTab(rect);
-  if (!tab) {
-    return;
-  }
-  rect.text = tab.text;
-  rect.lastExportPath = tab.path;
-}
-
-function rememberActiveTextEditorTab(rect) {
-  const tab = activeTextEditorTab(rect);
-  if (!tab || !rect.editor) {
-    return;
-  }
-  tab.text = rect.editor.state.doc.toString();
-  tab.selection = rect.editor.state.selection.main.head;
-  rect.text = tab.text;
-}
-
-function serializedTextEditorTabs(rect) {
-  rememberActiveTextEditorTab(rect);
-  return JSON.stringify({
-    active: rect.activeTextEditorTab,
-    tabs: rect.textEditorTabs.map((tab) => ({
-      id: tab.id,
-      path: tab.path,
-      text: tab.text,
-      selection: tab.selection,
-    })),
-  });
-}
-
-const freeCursorExtension = Prec.highest([
-  keymap.of([
-    { key: "ArrowUp", run: (view) => moveFreeCursorVertically(view, -1), preventDefault: true },
-    { key: "ArrowDown", run: (view) => moveFreeCursorVertically(view, 1), preventDefault: true },
-    { key: "ArrowRight", run: moveFreeCursorRight, preventDefault: true },
-  ]),
-  EditorView.domEventHandlers({
-    mousedown(event, view) {
-      return moveFreeCursorFromMouse(view, event);
-    },
-  }),
-]);
-
 const dockMenu = document.createElement("div");
 dockMenu.className = "dock-menu";
 dockMenu.hidden = true;
 document.body.appendChild(dockMenu);
-
-const editorMenu = document.createElement("div");
-editorMenu.className = "dock-menu editor-menu";
-editorMenu.hidden = true;
-document.body.appendChild(editorMenu);
 
 const terminalMenu = document.createElement("div");
 terminalMenu.className = "dock-menu terminal-menu";
@@ -1166,6 +966,16 @@ settingsModal.addEventListener("pointerdown", (event) => {
   }
 });
 document.body.appendChild(settingsModal);
+
+const shortcutsUI = new ShortcutsModal({
+  getContext: () => ({ user: currentUser || "default", workspaceId: workspaceID, cwd: getActivePane()?.cwd || "" }),
+  onLaunch: result => {
+    const point = paneSpawnPoint();
+    createTerminalPane(point.x, point.y, { title: result.title, cwd: result.cwd, terminalStartupCommand: result.command });
+  },
+  onSaved: () => { if (!commandPalette.hidden) renderPaletteResults(); },
+  onClose: overlay => restorePaneFocusAfterOverlayDismiss(overlay),
+});
 
 const localHTTPSModal = document.createElement("div");
 localHTTPSModal.className = "settings-modal local-https-modal";
@@ -1451,8 +1261,10 @@ window.addEventListener("pageshow", (event) => {
 window.addEventListener("pagehide", saveWorkspaceOnExit);
 window.addEventListener("pagehide", saveUserSettingsOnExit);
 window.addEventListener("pagehide", () => {
+  shortcutsUI.close();
   for (const rect of rectangles) {
     disposeVNCPane(rect);
+    rect.terminal?.files?.dispose();
   }
 });
 window.addEventListener("pointermove", continueInteraction);
@@ -1513,7 +1325,7 @@ function startMoving(event, rect, captureElement = rect.element) {
   event.preventDefault();
   event.stopPropagation();
   hideFloatingMenus();
-  setActivePane(rect, { raise: true, focusEditor: true });
+  setActivePane(rect, { raise: true, focus: true });
 
   const point = boardPoint(event);
   interaction = {
@@ -1543,7 +1355,7 @@ function startResizing(event, rect, handle) {
   event.stopPropagation();
   hideFloatingMenus();
   clearFullState(rect);
-  setActivePane(rect, { raise: true, focusEditor: true });
+  setActivePane(rect, { raise: true, focus: true });
 
   const point = boardPoint(event);
   interaction = {
@@ -1642,6 +1454,7 @@ function finishInteraction(event) {
 }
 
 function createRectangle(x, y, width, height, options = {}) {
+  if (["file-browser", "worksheet", "text-editor"].includes(options.kind)) options = { ...options, kind: "terminal" };
   const element = document.createElement("div");
   element.className = "rectangle";
   element.dataset.paneId = options.id || "";
@@ -1654,27 +1467,24 @@ function createRectangle(x, y, width, height, options = {}) {
 
   const rect = {
     id: options.id || newPaneID(),
-    kind: options.kind || "worksheet",
+    kind: options.kind || "terminal",
     x,
     y,
     width,
     height,
     element,
     zIndex: options.zIndex || 0,
-    title: options.title || defaultPaneTitle(options.kind || "worksheet"),
-    text: options.kind === "terminal" ? "" : (options.text || ""),
-    editorMode: normalizeWorksheetEditorMode(options.editorMode),
+    title: options.title || defaultPaneTitle(options.kind || "terminal"),
+    // Archived documents from retired panes stay opaque and survive layout saves.
+    archivedContent: {
+      bufferText: options.text || "",
+      editorTabs: options.editorTabs || "",
+      editorMode: options.editorMode || "",
+      lastExportPath: options.lastExportPath || "",
+    },
     fontSize: normalizePaneFontSize(options.fontSize),
     cwd: options.cwd || "",
-    lastExportPath: options.lastExportPath || "",
-    textEditorTabs: [],
-    activeTextEditorTab: 0,
-    textEditorTabBar: null,
     oledMoveMode: false,
-    fileBrowserSidebarWidth: normalizeFileBrowserSidebarWidth(options.fileBrowserSidebarWidth),
-    running: false,
-    runID: "",
-    commandSpinner: null,
     terminal: null,
     terminalContainer: null,
     terminalStatusBadge: null,
@@ -1683,16 +1493,12 @@ function createRectangle(x, y, width, height, options = {}) {
     terminalStartupCommand: options.terminalStartupCommand || "",
     body: null,
     titleInput: null,
-    editorModeButton: null,
     fontSizeValue: null,
     fontSizeDecreaseButton: null,
     fontSizeIncreaseButton: null,
     fontSizeIndicator: null,
     fontSizeIndicatorTimer: null,
-    filePathInput: null,
     browserStatusInput: null,
-    fileBrowserView: null,
-    fileBrowserRequestID: 0,
     browserUrl: options.browserUrl || "",
     browser: null,
     browserRequestID: 0,
@@ -1706,12 +1512,6 @@ function createRectangle(x, y, width, height, options = {}) {
     minButton: null,
     maxButton: null,
   };
-  if (rect.kind === textEditorPaneKind) {
-    const tabState = parseTextEditorTabs(options.editorTabs, rect.lastExportPath, rect.text);
-    rect.textEditorTabs = tabState.tabs;
-    rect.activeTextEditorTab = tabState.active;
-    syncActiveTextEditorTab(rect);
-  }
   element.dataset.paneId = rect.id;
   element.addEventListener("lostpointercapture", (event) => {
     if (interaction?.rect === rect && interaction.id === event.pointerId) {
@@ -1720,8 +1520,6 @@ function createRectangle(x, y, width, height, options = {}) {
   });
   element.dataset.paneKind = rect.kind;
   element.dataset.oledMoveMode = "false";
-  element.style.setProperty("--pane-editor-font-size", `${rect.fontSize}px`);
-  element.style.setProperty("--file-browser-sidebar-width", `${rect.fileBrowserSidebarWidth}px`);
   element.classList.toggle("is-full", rect.isFull);
   element.classList.toggle("is-minimized", rect.minimized);
   if (rect.minimized) {
@@ -1845,15 +1643,6 @@ function createRectangle(x, y, width, height, options = {}) {
   const status = document.createElement("div");
   status.className = "window-status";
 
-  const modeButton = document.createElement("button");
-  modeButton.className = "window-editor-mode";
-  modeButton.type = "button";
-  modeButton.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    toggleWorksheetEditorMode(rect);
-  });
-
   const fontSizeControl = document.createElement("div");
   fontSizeControl.className = "window-font-size";
   fontSizeControl.setAttribute("aria-label", "Font size");
@@ -1886,11 +1675,7 @@ function createRectangle(x, y, width, height, options = {}) {
 
   const cwdLabel = document.createElement("span");
   cwdLabel.className = "window-status-label";
-  cwdLabel.textContent = rect.kind === fileBrowserPaneKind
-    ? "path"
-    : rect.kind === textEditorPaneKind
-      ? "file"
-      : rect.kind === browserPaneKind
+  cwdLabel.textContent =  rect.kind === browserPaneKind
         ? "url"
       : rect.kind === vncPaneKind
         ? "target"
@@ -1899,60 +1684,42 @@ function createRectangle(x, y, width, height, options = {}) {
   const cwdInput = document.createElement("input");
   cwdInput.className = "window-cwd";
   cwdInput.type = "text";
-  cwdInput.value = rect.kind === textEditorPaneKind
-    ? rect.lastExportPath
-    : rect.kind === browserPaneKind
+  cwdInput.value =  rect.kind === browserPaneKind
       ? rect.browserUrl
     : rect.kind === vncPaneKind
       ? rect.vncTarget
       : rect.cwd;
-  cwdInput.placeholder = rect.kind === fileBrowserPaneKind
-    ? "loading..."
-    : rect.kind === textEditorPaneKind
-      ? "untitled"
-      : rect.kind === browserPaneKind
+  cwdInput.placeholder =  rect.kind === browserPaneKind
         ? "localhost:5000"
       : rect.kind === vncPaneKind
         ? "host:5900"
       : "host default";
   cwdInput.readOnly = true;
   cwdInput.spellcheck = false;
-  cwdInput.setAttribute("aria-label", rect.kind === fileBrowserPaneKind
-    ? "Current folder"
-    : rect.kind === textEditorPaneKind
-      ? "Editor file"
-      : rect.kind === browserPaneKind
+  cwdInput.setAttribute("aria-label",  rect.kind === browserPaneKind
         ? "Browser address"
       : rect.kind === vncPaneKind
         ? "VNC target"
       : "Pane working directory");
   cwdInput.addEventListener("pointerdown", (event) => {
-    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === vncPaneKind) {
+    if (rect.kind === browserPaneKind || rect.kind === vncPaneKind) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
     hideFloatingMenus();
     setActivePane(rect, { raise: true });
-    if (rect.kind === textEditorPaneKind) {
-      void openEditorFileBrowser(rect, "import");
-    } else {
-      openDirectoryBrowser(rect, rect.cwd);
-    }
+    openDirectoryBrowser(rect, rect.cwd);
   });
   cwdInput.addEventListener("keydown", (event) => {
-    if (rect.kind === fileBrowserPaneKind || rect.kind === browserPaneKind || rect.kind === vncPaneKind) {
+    if (rect.kind === browserPaneKind || rect.kind === vncPaneKind) {
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       event.stopPropagation();
       setActivePane(rect, { raise: true });
-      if (rect.kind === textEditorPaneKind) {
-        void openEditorFileBrowser(rect, "import");
-      } else {
-        openDirectoryBrowser(rect, rect.cwd);
-      }
+      openDirectoryBrowser(rect, rect.cwd);
     }
   });
   cwdInput.addEventListener("input", () => {
@@ -1964,22 +1731,18 @@ function createRectangle(x, y, width, height, options = {}) {
   rect.body = body;
   body.setAttribute("aria-label", rect.kind === "terminal"
     ? "Terminal"
-    : rect.kind === fileBrowserPaneKind
-      ? "File browser"
-      : rect.kind === textEditorPaneKind
-        ? "Text editor"
-      : rect.kind === browserPaneKind
+    : rect.kind === browserPaneKind
         ? "Browser"
       : rect.kind === vncPaneKind
         ? "VNC remote desktop"
       : rect.kind === "pending"
         ? "New window"
-        : "Workspace text");
+        : "Terminal");
   body.addEventListener("pointerdown", () => {
     hideFloatingMenus();
   }, { capture: true });
   // A right-click on an OLED border arms this explicit move mode. Keep it
-  // ahead of terminal mouse reporting and editor selection handling.
+  // ahead of terminal mouse reporting.
   body.addEventListener("pointerdown", (event) => {
     if (themeID === "oled-terminal" && rect.oledMoveMode && event.button === 0) {
       startMoving(event, rect);
@@ -1993,20 +1756,12 @@ function createRectangle(x, y, width, height, options = {}) {
     }
   });
   body.addEventListener("focusin", () => setActivePane(rect, { raise: true }));
-  if (rect.kind === "worksheet" || rect.kind === textEditorPaneKind) {
-    body.addEventListener("contextmenu", (event) => openEditorMenu(event, rect));
-  }
 
   tab.appendChild(grip);
   tab.appendChild(title);
   tab.appendChild(controls);
   updateWindowControls(rect);
-  if (rect.kind === "worksheet") {
-    rect.editorModeButton = modeButton;
-    status.appendChild(modeButton);
-    updateWorksheetEditorModeUI(rect);
-  }
-  if (rect.kind === "terminal" || rect.kind === "worksheet" || rect.kind === textEditorPaneKind) {
+  if (rect.kind === "terminal") {
     status.appendChild(fontSizeControl);
     updatePaneFontSizeUI(rect);
   }
@@ -2015,9 +1770,7 @@ function createRectangle(x, y, width, height, options = {}) {
   element.appendChild(tab);
   element.appendChild(body);
   element.appendChild(status);
-  if (rect.kind === textEditorPaneKind) {
-    rect.filePathInput = cwdInput;
-  } else if (rect.kind === browserPaneKind) {
+  if (rect.kind === browserPaneKind) {
     rect.browserStatusInput = cwdInput;
   } else if (rect.kind === vncPaneKind) {
     rect.vncStatusInput = cwdInput;
@@ -2039,12 +1792,6 @@ function createRectangle(x, y, width, height, options = {}) {
     body.appendChild(terminalContainer);
     rect.terminalContainer = terminalContainer;
     void startTerminal(rect);
-  } else if (rect.kind === "worksheet") {
-    mountWorksheetEditor(rect);
-  } else if (rect.kind === fileBrowserPaneKind) {
-    mountPaneFileBrowser(rect);
-  } else if (rect.kind === textEditorPaneKind) {
-    mountTextEditor(rect);
   } else if (rect.kind === browserPaneKind) {
     mountBrowserPane(rect);
   } else if (rect.kind === vncPaneKind) {
@@ -2696,614 +2443,23 @@ function disposeVNCPane(rect) {
   rect.vnc = null;
 }
 
-function mountPaneFileBrowser(rect) {
-  const body = rect.body;
-  body.classList.add("is-file-browser");
 
-  const shell = document.createElement("div");
-  shell.className = "pane-file-browser";
 
-  const toolbar = document.createElement("div");
-  toolbar.className = "pane-file-browser-toolbar";
 
-  const upButton = document.createElement("button");
-  upButton.type = "button";
-  upButton.className = "pane-file-browser-tool";
-  upButton.textContent = "Up";
-  upButton.title = "Open parent folder";
-  upButton.setAttribute("aria-label", "Open parent folder");
-  upButton.addEventListener("click", () => {
-    const parent = rect.fileBrowserView?.data?.parent;
-    if (parent) {
-      void navigatePaneFileBrowser(rect, parent);
-    }
-  });
 
-  const refreshButton = document.createElement("button");
-  refreshButton.type = "button";
-  refreshButton.className = "pane-file-browser-tool";
-  refreshButton.textContent = "Refresh";
-  refreshButton.title = "Refresh folder";
-  refreshButton.addEventListener("click", () => {
-    void navigatePaneFileBrowser(rect, rect.fileBrowserView?.data?.path || rect.cwd || "");
-  });
 
-  const uploadInput = document.createElement("input");
-  uploadInput.type = "file";
-  uploadInput.multiple = true;
-  uploadInput.hidden = true;
-  uploadInput.addEventListener("change", () => {
-    const files = [...uploadInput.files];
-    uploadInput.value = "";
-    if (files.length > 0) {
-      void uploadPaneFiles(rect, files);
-    }
-  });
-  const uploadButton = paneFileBrowserTool("Upload", "Upload files into this folder", () => uploadInput.click());
-  const downloadButton = paneFileBrowserTool("Download", "Download selected file", () => downloadPaneFileSelection(rect));
 
-  const copyButton = paneFileBrowserTool("Copy", "Copy selected item", () => {
-    queuePaneFileOperation(rect, "copy");
-  });
-  const pasteButton = paneFileBrowserTool("Paste", "Paste queued item into this folder", () => {
-    void pastePaneFileOperation(rect);
-  });
-  const moveButton = paneFileBrowserTool("Move", "Move selected item, then paste it into another folder", () => {
-    queuePaneFileOperation(rect, "move");
-  });
-  const deleteButton = paneFileBrowserTool("Delete", "Delete selected item", () => {
-    void deletePaneFileSelection(rect);
-  });
 
-  const path = document.createElement("div");
-  path.className = "pane-file-browser-path";
 
-  toolbar.appendChild(upButton);
-  toolbar.appendChild(refreshButton);
-  toolbar.appendChild(uploadButton);
-  toolbar.appendChild(downloadButton);
-  toolbar.appendChild(copyButton);
-  toolbar.appendChild(pasteButton);
-  toolbar.appendChild(moveButton);
-  toolbar.appendChild(deleteButton);
-  toolbar.appendChild(path);
 
-  const main = document.createElement("div");
-  main.className = "pane-file-browser-main";
-  const sidebar = document.createElement("nav");
-  sidebar.className = "pane-file-browser-sidebar";
-  sidebar.setAttribute("aria-label", "File locations");
-  const sidebarResizeHandle = document.createElement("div");
-  sidebarResizeHandle.className = "pane-file-browser-resize-handle";
-  sidebarResizeHandle.setAttribute("role", "separator");
-  sidebarResizeHandle.setAttribute("aria-orientation", "vertical");
-  sidebarResizeHandle.setAttribute("aria-label", "Resize file locations panel");
-  sidebarResizeHandle.addEventListener("pointerdown", (event) => {
-    startFileBrowserSidebarResize(event, rect, sidebarResizeHandle);
-  });
-  const content = document.createElement("section");
-  content.className = "pane-file-browser-content";
-  content.setAttribute("aria-label", "Folder contents");
-  content.addEventListener("dragover", (event) => {
-    if ([...(event.dataTransfer?.types || [])].includes("Files")) {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
-      content.classList.add("is-drop-target");
-    }
-  });
-  content.addEventListener("dragleave", (event) => {
-    if (!content.contains(event.relatedTarget)) {
-      content.classList.remove("is-drop-target");
-    }
-  });
-  content.addEventListener("drop", (event) => {
-    event.preventDefault();
-    content.classList.remove("is-drop-target");
-    const files = [...(event.dataTransfer?.files || [])];
-    if (files.length > 0) {
-      void uploadPaneFiles(rect, files);
-    }
-  });
-  main.appendChild(sidebar);
-  main.appendChild(sidebarResizeHandle);
-  main.appendChild(content);
 
-  shell.appendChild(toolbar);
-  shell.appendChild(main);
-  const transferStatus = document.createElement("div");
-  transferStatus.className = "pane-file-browser-transfer";
-  transferStatus.hidden = true;
-  const transferText = document.createElement("span");
-  const transferProgress = document.createElement("progress");
-  transferProgress.max = 100;
-  transferProgress.value = 0;
-  transferStatus.append(transferText, transferProgress);
-  shell.appendChild(transferStatus);
-  shell.appendChild(uploadInput);
-  body.appendChild(shell);
 
-  rect.fileBrowserView = {
-    data: null,
-    selected: null,
-    upButton,
-    uploadButton,
-    downloadButton,
-    copyButton,
-    pasteButton,
-    moveButton,
-    deleteButton,
-    path,
-    sidebar,
-    sidebarResizeHandle,
-    content,
-    transferStatus,
-    transferText,
-    transferProgress,
-    uploading: false,
-    transferBatchID: 0,
-    transferHideTimer: null,
-  };
-  updatePaneFileBrowserActions(rect);
-  renderPaneFileBrowserMessage(rect, "Loading...");
-  void navigatePaneFileBrowser(rect, rect.cwd || "");
-}
 
-function paneFileBrowserTool(label, title, action) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "pane-file-browser-tool";
-  button.textContent = label;
-  button.title = title;
-  button.addEventListener("click", action);
-  return button;
-}
 
-async function navigatePaneFileBrowser(rect, path) {
-  if (!rect?.fileBrowserView) {
-    return;
-  }
-  const requestID = ++rect.fileBrowserRequestID;
-  renderPaneFileBrowserMessage(rect, "Loading...");
 
-  const url = path
-    ? `/api/directories?files=1&path=${encodeURIComponent(path)}`
-    : "/api/directories?files=1";
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || `folder load failed: ${response.status}`);
-    }
-    if (requestID !== rect.fileBrowserRequestID || !rect.fileBrowserView) {
-      return;
-    }
-    rect.fileBrowserView.data = data;
-    setPaneCwd(rect, data.path || "");
-    renderPaneFileBrowser(rect, data);
-  } catch (error) {
-    if (requestID === rect.fileBrowserRequestID) {
-      renderPaneFileBrowserMessage(rect, error.message || "Could not load folder", true);
-    }
-  }
-}
 
-function renderPaneFileBrowser(rect, data) {
-  const view = rect.fileBrowserView;
-  if (!view) {
-    return;
-  }
-  view.path.textContent = data.path || "Computer";
-  view.path.title = data.path || "Computer";
-  view.upButton.disabled = !data.parent;
-  view.selected = null;
-  view.sidebar.replaceChildren();
 
-  appendPaneFileBrowserLocations(rect, view.sidebar, "Locations", data.locations || [], data.path);
-  appendPaneFileBrowserLocations(rect, view.sidebar, "Drives", data.roots || [], data.path);
 
-  view.content.replaceChildren();
-  const header = document.createElement("div");
-  header.className = "pane-file-browser-columns";
-  const nameHeader = document.createElement("span");
-  nameHeader.textContent = "Name";
-  const typeHeader = document.createElement("span");
-  typeHeader.textContent = "Type";
-  const sizeHeader = document.createElement("span");
-  sizeHeader.className = "pane-file-browser-size";
-  sizeHeader.textContent = "Size";
-  header.append(nameHeader, typeHeader, sizeHeader);
-  view.content.appendChild(header);
-
-  const list = document.createElement("div");
-  list.className = "pane-file-browser-list";
-  if ((data.entries || []).length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "pane-file-browser-message";
-    empty.textContent = "This folder is empty";
-    list.appendChild(empty);
-  }
-
-  for (const entry of data.entries || []) {
-    const canOpenInEditor = entry.kind === "file" && isTextEditorFilePath(entry.path);
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "pane-file-browser-entry";
-    row.dataset.kind = entry.kind;
-    row.dataset.openable = canOpenInEditor ? "true" : "false";
-    row.title = canOpenInEditor ? `${entry.path}\nDouble-click to open in Text Editor` : entry.path;
-
-    const name = document.createElement("span");
-    name.className = "pane-file-browser-name";
-    name.textContent = entry.name;
-    const type = document.createElement("span");
-    type.className = "pane-file-browser-type";
-    type.textContent = entry.kind === "directory" ? "Folder" : canOpenInEditor ? "Text" : "File";
-    const size = document.createElement("span");
-    size.className = "pane-file-browser-size";
-    size.textContent = formatFileSize(entry.size, entry.kind);
-    if (entry.kind === "file") {
-      size.title = typeof entry.size === "number"
-        ? `${entry.size.toLocaleString()} bytes`
-        : "Size unavailable";
-    }
-    row.append(name, type, size);
-
-    row.addEventListener("click", () => {
-      for (const selected of list.querySelectorAll(".is-selected")) {
-        selected.classList.remove("is-selected");
-      }
-      row.classList.add("is-selected");
-      view.selected = entry;
-      updatePaneFileBrowserActions(rect);
-    });
-    row.addEventListener("dblclick", () => {
-      if (entry.kind === "directory") {
-        void navigatePaneFileBrowser(rect, entry.path);
-      } else if (canOpenInEditor) {
-        void openFileFromPaneFileBrowser(entry.path, rect);
-      }
-    });
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (entry.kind === "directory" || canOpenInEditor)) {
-        event.preventDefault();
-        if (entry.kind === "directory") {
-          void navigatePaneFileBrowser(rect, entry.path);
-        } else {
-          void openFileFromPaneFileBrowser(entry.path, rect);
-        }
-      }
-    });
-    list.appendChild(row);
-  }
-  view.content.appendChild(list);
-  updatePaneFileBrowserActions(rect);
-}
-
-function isTextEditorFilePath(path) {
-  const name = fileNameFromPath(path).toLowerCase();
-  const dot = name.lastIndexOf(".");
-  return dot >= 0 && textEditorFileExtensions.has(name.slice(dot));
-}
-
-function fileNameFromPath(path) {
-  const trimmed = (path || "").replace(/[\\/]+$/, "");
-  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
-}
-
-function editorPathKey(path) {
-  const normalized = (path || "").replaceAll("\\", "/");
-  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
-}
-
-async function openFileFromPaneFileBrowser(path, sourceRect) {
-  if (!isTextEditorFilePath(path)) {
-    return;
-  }
-  const pathKey = editorPathKey(path);
-  const existing = rectangles.find((rect) => (
-    rect.kind === textEditorPaneKind && editorPathKey(rect.lastExportPath) === pathKey
-  ));
-  if (existing) {
-    setMinimized(existing, false);
-    setActivePane(existing, { raise: true, focusEditor: true });
-    return;
-  }
-
-  const targetWorkspaceID = workspaceID;
-  try {
-    const data = await readHostFile(path);
-    if (workspaceID !== targetWorkspaceID || !rectangles.includes(sourceRect)) return;
-    const bounds = board.getBoundingClientRect();
-    const width = Math.min(Math.max(480, sourceRect?.width || 640), Math.max(320, bounds.width - 24));
-    const height = Math.min(Math.max(320, sourceRect?.height || 420), Math.max(220, bounds.height - tabHeight - 24));
-    const rect = createRectangle(
-      (sourceRect?.x || 48) + 32,
-      (sourceRect?.y || tabHeight + 32) + 32,
-      width,
-      height,
-      {
-        kind: textEditorPaneKind,
-        title: fileNameFromPath(data.path || path) || "Text Editor",
-        text: data.text || "",
-        cwd: parentPathFromFilePath(data.path || path),
-        lastExportPath: data.path || path,
-        zIndex: nextZIndex,
-      },
-    );
-    clampIntoBoard(rect);
-    setRectangle(rect, rect);
-    setActivePane(rect, { raise: true, focusEditor: true });
-    scheduleWorkspaceSave();
-    setWorkspaceStatus("saved", "Opened", data.path || path);
-  } catch (error) {
-    if (workspaceID !== targetWorkspaceID || !rectangles.includes(sourceRect)) return;
-    console.warn(error);
-    setWorkspaceStatus("error", "Open failed", error.message || "Could not open file");
-  }
-}
-
-function appendPaneFileBrowserLocations(rect, sidebar, label, entries, currentPath) {
-  if (entries.length === 0) {
-    return;
-  }
-  const heading = document.createElement("div");
-  heading.className = "pane-file-browser-sidebar-heading";
-  heading.textContent = label;
-  sidebar.appendChild(heading);
-
-  for (const entry of entries) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "pane-file-browser-location";
-    button.textContent = entry.name;
-    button.title = entry.path;
-    button.classList.toggle("is-current", entry.path === currentPath);
-    button.addEventListener("click", () => void navigatePaneFileBrowser(rect, entry.path));
-    sidebar.appendChild(button);
-  }
-}
-
-function renderPaneFileBrowserMessage(rect, messageText, isError = false) {
-  const view = rect.fileBrowserView;
-  if (!view) {
-    return;
-  }
-  view.content.replaceChildren();
-  const message = document.createElement("div");
-  message.className = `pane-file-browser-message${isError ? " is-error" : ""}`;
-  message.textContent = messageText;
-  view.content.appendChild(message);
-}
-
-function updatePaneFileBrowserActions(rect) {
-  const view = rect?.fileBrowserView;
-  if (!view) {
-    return;
-  }
-  const hasSelection = Boolean(view.selected?.path);
-  const hasSelectedFile = hasSelection && view.selected.kind === "file";
-  view.uploadButton.disabled = view.uploading || !view.data?.path;
-  view.downloadButton.disabled = !hasSelectedFile;
-  view.copyButton.disabled = !hasSelection;
-  view.moveButton.disabled = !hasSelection;
-  view.deleteButton.disabled = !hasSelection;
-  view.pasteButton.disabled = !paneFileClipboard || !view.data?.path;
-  view.pasteButton.title = paneFileClipboard
-    ? `${paneFileClipboard.action === "move" ? "Move" : "Copy"} ${paneFileClipboard.name} into this folder`
-    : "Paste queued item into this folder";
-}
-
-function downloadPaneFileSelection(rect) {
-  const selected = rect?.fileBrowserView?.selected;
-  if (!selected?.path || selected.kind !== "file") {
-    return;
-  }
-  const query = new URLSearchParams({ path: selected.path });
-  const link = document.createElement("a");
-  link.href = `/api/files/download?${query}`;
-  link.download = selected.name || "download";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-}
-
-async function uploadPaneFiles(rect, files) {
-  const view = rect?.fileBrowserView;
-  const destination = view?.data?.path;
-  if (!view || !destination || view.uploading || files.length === 0) {
-    return;
-  }
-  window.clearTimeout(view.transferHideTimer);
-  view.transferHideTimer = null;
-  const batchID = ++view.transferBatchID;
-  view.uploading = true;
-  view.transferStatus.hidden = false;
-  view.transferStatus.classList.remove("is-error");
-  updatePaneFileBrowserActions(rect);
-  let uploaded = 0;
-  let skipped = 0;
-  const failures = [];
-
-  for (let index = 0; index < files.length; index++) {
-    const file = files[index];
-    const updateProgress = (loaded) => {
-      const percent = file.size > 0 ? Math.min(100, Math.round((loaded / file.size) * 100)) : 100;
-      view.transferText.textContent = `Uploading ${file.name} (${index + 1}/${files.length})`;
-      view.transferProgress.value = percent;
-    };
-    updateProgress(0);
-    try {
-      await uploadPaneFile(destination, file, false, updateProgress);
-      uploaded++;
-    } catch (error) {
-      if (error.status === 409) {
-        if (!window.confirm(`${file.name} already exists. Replace it?`)) {
-          skipped++;
-          continue;
-        }
-        try {
-          await uploadPaneFile(destination, file, true, updateProgress);
-          uploaded++;
-          continue;
-        } catch (retryError) {
-          failures.push(`${file.name}: ${retryError.message}`);
-          continue;
-        }
-      }
-      failures.push(`${file.name}: ${error.message}`);
-    }
-  }
-
-  view.uploading = false;
-  view.transferProgress.value = 100;
-  if (failures.length > 0) {
-    view.transferText.textContent = `Uploaded ${uploaded}; ${failures.length} failed`;
-    view.transferStatus.classList.add("is-error");
-    setWorkspaceStatus("error", "Upload failed", failures.join("; "));
-  } else {
-    const skippedText = skipped > 0 ? `; ${skipped} skipped` : "";
-    view.transferText.textContent = `Uploaded ${uploaded} ${uploaded === 1 ? "file" : "files"}${skippedText}`;
-    setWorkspaceStatus("saved", "Upload finished", `${uploaded} uploaded${skippedText}`);
-    view.transferHideTimer = window.setTimeout(() => {
-      if (!view.uploading && view.transferBatchID === batchID) {
-        view.transferStatus.hidden = true;
-        view.transferHideTimer = null;
-      }
-    }, 2000);
-  }
-  updatePaneFileBrowserActions(rect);
-  if (uploaded > 0) {
-    await refreshPaneFileBrowsers();
-  }
-}
-
-function uploadPaneFile(destination, file, overwrite, onProgress) {
-  return new Promise((resolve, reject) => {
-    const query = new URLSearchParams({
-      directory: destination,
-      name: file.name,
-      overwrite: overwrite ? "1" : "0",
-    });
-    const request = new XMLHttpRequest();
-    request.open("POST", `/api/files/upload?${query}`);
-    request.setRequestHeader("Content-Type", "application/octet-stream");
-    request.upload.addEventListener("progress", (event) => onProgress(event.loaded));
-    request.addEventListener("load", () => {
-      let data = {};
-      try {
-        data = JSON.parse(request.responseText || "{}");
-      } catch {
-        // Non-JSON proxy errors still receive a useful status fallback below.
-      }
-      if (request.status >= 200 && request.status < 300) {
-        onProgress(file.size);
-        resolve(data);
-        return;
-      }
-      const error = new Error(data.error || `upload failed: ${request.status}`);
-      error.status = request.status;
-      reject(error);
-    });
-    request.addEventListener("error", () => reject(new Error("server connection lost during upload")));
-    request.addEventListener("abort", () => reject(new Error("upload cancelled")));
-    request.send(file);
-  });
-}
-
-function updateAllPaneFileBrowserActions() {
-  for (const rect of rectangles) {
-    if (rect.kind === fileBrowserPaneKind) {
-      updatePaneFileBrowserActions(rect);
-    }
-  }
-}
-
-function queuePaneFileOperation(rect, action) {
-  const selected = rect?.fileBrowserView?.selected;
-  if (!selected?.path) {
-    return;
-  }
-  paneFileClipboard = {
-    action,
-    source: selected.path,
-    name: selected.name,
-  };
-  setWorkspaceStatus("saved", action === "move" ? "Move ready" : "Copied", selected.path);
-  updateAllPaneFileBrowserActions();
-}
-
-async function pastePaneFileOperation(rect) {
-  const destination = rect?.fileBrowserView?.data?.path;
-  const operation = paneFileClipboard;
-  if (!destination || !operation) {
-    return;
-  }
-  try {
-    await requestPaneFileOperation({
-      action: operation.action,
-      source: operation.source,
-      destination,
-    });
-    if (operation.action === "move") {
-      paneFileClipboard = null;
-    }
-    setWorkspaceStatus("saved", operation.action === "move" ? "Moved" : "Copied", operation.name);
-    await refreshPaneFileBrowsers();
-  } catch (error) {
-    setWorkspaceStatus("error", "File operation failed", error.message || "Could not paste item");
-  } finally {
-    updateAllPaneFileBrowserActions();
-  }
-}
-
-async function deletePaneFileSelection(rect) {
-  const selected = rect?.fileBrowserView?.selected;
-  if (!selected?.path) {
-    return;
-  }
-  if (!window.confirm(`Delete ${selected.name}? This cannot be undone.`)) {
-    return;
-  }
-  try {
-    await requestPaneFileOperation({
-      action: "delete",
-      source: selected.path,
-    });
-    if (paneFileClipboard?.source === selected.path) {
-      paneFileClipboard = null;
-    }
-    setWorkspaceStatus("saved", "Deleted", selected.path);
-    await refreshPaneFileBrowsers();
-  } catch (error) {
-    setWorkspaceStatus("error", "Delete failed", error.message || "Could not delete item");
-  } finally {
-    updateAllPaneFileBrowserActions();
-  }
-}
-
-async function requestPaneFileOperation(operation) {
-  const response = await fetch("/api/files", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(operation),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || `file operation failed: ${response.status}`);
-  }
-  return data;
-}
-
-async function refreshPaneFileBrowsers() {
-  const refreshes = [];
-  for (const rect of rectangles) {
-    if (rect.kind === fileBrowserPaneKind && rect.fileBrowserView) {
-      refreshes.push(navigatePaneFileBrowser(rect, rect.fileBrowserView.data?.path || rect.cwd || ""));
-    }
-  }
-  await Promise.all(refreshes);
-}
 
 function startTitleRename(rect, title) {
   hideFloatingMenus();
@@ -3319,10 +2475,6 @@ function startTitleRename(rect, title) {
   });
 }
 
-function normalizeWorksheetEditorMode(mode) {
-  return mode === normalWorksheetEditorMode ? normalWorksheetEditorMode : defaultWorksheetEditorMode;
-}
-
 function normalizePaneFontSize(fontSize) {
   const parsed = Number(fontSize);
   if (!Number.isFinite(parsed)) {
@@ -3331,24 +2483,10 @@ function normalizePaneFontSize(fontSize) {
   return Math.max(minimumPaneFontSize, Math.min(maximumPaneFontSize, Math.round(parsed)));
 }
 
-function normalizeFileBrowserSidebarWidth(width) {
-  const parsed = Number(width);
-  if (!Number.isFinite(parsed)) {
-    return defaultFileBrowserSidebarWidth;
-  }
-  return Math.max(minimumFileBrowserSidebarWidth, Math.min(maximumFileBrowserSidebarWidth, Math.round(parsed)));
-}
 
-function setFileBrowserSidebarWidth(rect, width) {
-  if (!rect || rect.kind !== fileBrowserPaneKind) {
-    return;
-  }
-  rect.fileBrowserSidebarWidth = normalizeFileBrowserSidebarWidth(width);
-  rect.element.style.setProperty("--file-browser-sidebar-width", `${rect.fileBrowserSidebarWidth}px`);
-}
 
 function setPaneFontSize(rect, fontSize) {
-  if (!rect || (rect.kind !== "terminal" && rect.kind !== "worksheet" && rect.kind !== textEditorPaneKind)) {
+  if (!rect || (rect.kind !== "terminal")) {
     return;
   }
   rect.fontSize = normalizePaneFontSize(fontSize);
@@ -3357,7 +2495,6 @@ function setPaneFontSize(rect, fontSize) {
     rect.terminal.term.options.fontSize = rect.fontSize;
     requestTerminalFit(rect);
   } else {
-    rect.editor?.requestMeasure();
   }
   scheduleWorkspaceSave();
 }
@@ -3379,7 +2516,7 @@ function resetActivePaneFontSize() {
 }
 
 function showPaneFontSizeIndicator(rect) {
-  if (!rect.body || (rect.kind !== "terminal" && rect.kind !== "worksheet" && rect.kind !== textEditorPaneKind)) {
+  if (!rect.body || (rect.kind !== "terminal")) {
     return;
   }
   if (rect.fontSizeIndicator?.parentElement !== rect.body) {
@@ -3408,7 +2545,6 @@ function updatePaneFontSizeUI(rect) {
     return;
   }
   rect.fontSize = normalizePaneFontSize(rect.fontSize);
-  rect.element.style.setProperty("--pane-editor-font-size", `${rect.fontSize}px`);
   if (rect.fontSizeValue) {
     rect.fontSizeValue.value = String(rect.fontSize);
     rect.fontSizeValue.textContent = `${rect.fontSize}px`;
@@ -3421,272 +2557,6 @@ function updatePaneFontSizeUI(rect) {
   }
 }
 
-function mountWorksheetEditor(rect) {
-  if (!rect?.body) {
-    return;
-  }
-
-  const previousSelection = rect.editor?.state.selection || EditorSelection.cursor(0);
-  if (rect.editor) {
-    cancelWorksheetLineSelection(rect.editor);
-    rect.text = rect.commandSpinner
-      ? rect.commandSpinner.textWithoutSpinner(rect.editor.state.doc.toString())
-      : rect.editor.state.doc.toString();
-    rect.editor.destroy();
-    rect.editor = null;
-  }
-
-  const editorExtensions = [
-    basicSetup,
-    tesseraEditorTheme,
-    worksheetFilenameWordChars,
-  ];
-  if (rect.editorMode !== normalWorksheetEditorMode) {
-    editorExtensions.push(freeCursorExtension);
-  }
-  editorExtensions.push(
-    Prec.highest(keymap.of([
-      { key: "Mod-Enter", run: () => runPaneCommand(rect), preventDefault: true },
-      { key: "Ctrl-Enter", run: () => runPaneCommand(rect), preventDefault: true },
-    ])),
-    EditorView.updateListener.of((update) => {
-      if (update.docChanged) {
-        const isSpinnerChange = update.transactions.every((transaction) => (
-          transaction.annotation(Transaction.userEvent) === "input.tesseraSpinner"
-        ));
-        if (!isSpinnerChange) {
-          rect.commandSpinner?.map(update.changes);
-        }
-        rect.text = rect.commandSpinner
-          ? rect.commandSpinner.textWithoutSpinner(update.state.doc.toString())
-          : update.state.doc.toString();
-        if (!rect.running) {
-          scheduleWorkspaceSave();
-        }
-      }
-    }),
-  );
-
-  rect.editor = new EditorView({
-    doc: rect.text,
-    selection: clampEditorSelection(previousSelection, rect.text.length),
-    extensions: editorExtensions,
-    parent: rect.body,
-  });
-  attachEditorWheelSensitivity(rect.editor);
-  rect.editor.dom.addEventListener("pointerdown", (event) => startWorksheetLineSelection(event, rect));
-  updateWorksheetEditorModeUI(rect);
-}
-
-function mountTextEditor(rect, options = {}) {
-  if (!rect?.body) {
-    return;
-  }
-  const currentTab = activeTextEditorTab(rect);
-  const previousSelection = options.selection ?? (rect.editor?.state.selection || EditorSelection.cursor(currentTab?.selection || 0));
-  if (rect.editor) {
-    if (!options.skipRemember) {
-      rememberActiveTextEditorTab(rect);
-    }
-    rect.editor.destroy();
-    rect.editor = null;
-  }
-  const languageExtension = textEditorLanguageExtension(rect.lastExportPath);
-  rect.body.classList.add("is-text-editor");
-  const tabBar = document.createElement("div");
-  tabBar.className = "text-editor-tabs";
-  const editorHost = document.createElement("div");
-  editorHost.className = "text-editor-host";
-  rect.body.replaceChildren(tabBar, editorHost);
-  rect.textEditorTabBar = tabBar;
-  rect.editor = new EditorView({
-    doc: rect.text,
-    selection: clampEditorSelection(previousSelection, rect.text.length),
-    extensions: [
-      basicSetup,
-      tesseraEditorTheme,
-      worksheetFilenameWordChars,
-      ...(languageExtension ? [languageExtension] : []),
-      Prec.highest(keymap.of([
-        {
-          key: "Mod-o",
-          run: () => {
-            void openEditorFileBrowser(rect, "import");
-            return true;
-          },
-          preventDefault: true,
-        },
-        {
-          key: "Mod-s",
-          run: () => {
-            void saveTextEditor(rect);
-            return true;
-          },
-          preventDefault: true,
-        },
-      ])),
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          rect.text = update.state.doc.toString();
-          scheduleWorkspaceSave();
-        }
-      }),
-    ],
-    parent: editorHost,
-  });
-  attachEditorWheelSensitivity(rect.editor);
-  renderTextEditorTabs(rect);
-  updateTextEditorFileUI(rect);
-}
-
-function attachEditorWheelSensitivity(editor) {
-  const scroller = editor?.scrollDOM;
-  if (!scroller) {
-    return;
-  }
-  scroller.addEventListener("wheel", (event) => {
-    if (editorWheelSensitivity === 1 || event.deltaY === 0) {
-      return;
-    }
-    const lineHeight = editor.defaultLineHeight || 20;
-    const pageLines = Math.max(1, scroller.clientHeight / lineHeight);
-    const lines = wheelDeltaUnits(event.deltaY, event.deltaMode, lineHeight, pageLines);
-    event.preventDefault();
-    scroller.scrollTop += lines * lineHeight * editorWheelSensitivity;
-  }, { passive: false });
-}
-
-function renderTextEditorTabs(rect) {
-  const tabBar = rect?.textEditorTabBar;
-  if (!tabBar) {
-    return;
-  }
-  tabBar.replaceChildren();
-  rect.textEditorTabs.forEach((tab, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "text-editor-tab";
-    button.classList.toggle("is-active", index === rect.activeTextEditorTab);
-    button.textContent = fileNameFromPath(tab.path) || "Untitled";
-    button.title = tab.path || "Untitled text file";
-    button.addEventListener("pointerdown", (event) => event.stopPropagation());
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      activateTextEditorTab(rect, index);
-    });
-    const close = document.createElement("span");
-    close.className = "text-editor-tab-close";
-    close.textContent = "×";
-    close.title = "Close tab";
-    close.addEventListener("pointerdown", (event) => event.stopPropagation());
-    close.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      closeTextEditorTab(rect, index);
-    });
-    button.appendChild(close);
-    tabBar.appendChild(button);
-  });
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "text-editor-tab-add";
-  add.textContent = "+";
-  add.title = "Open file in a new tab";
-  add.setAttribute("aria-label", add.title);
-  add.addEventListener("pointerdown", (event) => event.stopPropagation());
-  add.addEventListener("click", (event) => {
-    event.preventDefault();
-    void openEditorFileBrowser(rect, "import");
-  });
-  tabBar.appendChild(add);
-}
-
-function activateTextEditorTab(rect, index) {
-  if (index < 0 || index >= rect.textEditorTabs.length || index === rect.activeTextEditorTab) {
-    return;
-  }
-  rememberActiveTextEditorTab(rect);
-  rect.activeTextEditorTab = index;
-  syncActiveTextEditorTab(rect);
-  const tab = activeTextEditorTab(rect);
-  mountTextEditor(rect, { selection: EditorSelection.cursor(tab.selection), skipRemember: true });
-  rect.editor?.focus();
-  scheduleWorkspaceSave();
-}
-
-function closeTextEditorTab(rect, index) {
-  if (index < 0 || index >= rect.textEditorTabs.length) {
-    return;
-  }
-  rememberActiveTextEditorTab(rect);
-  rect.textEditorTabs.splice(index, 1);
-  if (rect.textEditorTabs.length === 0) {
-    rect.textEditorTabs.push(newTextEditorTab());
-  }
-  rect.activeTextEditorTab = Math.max(0, Math.min(rect.activeTextEditorTab - (index < rect.activeTextEditorTab ? 1 : 0), rect.textEditorTabs.length - 1));
-  syncActiveTextEditorTab(rect);
-  const tab = activeTextEditorTab(rect);
-  mountTextEditor(rect, { selection: EditorSelection.cursor(tab.selection), skipRemember: true });
-  rect.editor?.focus();
-  scheduleWorkspaceSave();
-}
-
-async function saveTextEditor(rect) {
-  if (!rect?.editor || rect.kind !== textEditorPaneKind) {
-    return;
-  }
-  if (rect.lastExportPath) {
-    await saveEditorToFile(rect, { path: rect.lastExportPath });
-  } else {
-    await openEditorFileBrowser(rect, "export");
-  }
-}
-
-function updateTextEditorFileUI(rect) {
-  if (!rect || rect.kind !== textEditorPaneKind || !rect.filePathInput) {
-    return;
-  }
-  rect.filePathInput.value = rect.lastExportPath || "";
-  rect.filePathInput.title = rect.lastExportPath || "Untitled text file";
-  renderTextEditorTabs(rect);
-}
-
-function clampEditorSelection(selection, docLength) {
-  const head = selection?.main?.head ?? 0;
-  return EditorSelection.cursor(Math.max(0, Math.min(head, docLength)));
-}
-
-function toggleWorksheetEditorMode(rect) {
-  if (!rect?.editor) {
-    return;
-  }
-  rect.editorMode = rect.editorMode === normalWorksheetEditorMode
-    ? defaultWorksheetEditorMode
-    : normalWorksheetEditorMode;
-  mountWorksheetEditor(rect);
-  rect.editor?.focus();
-  scheduleWorkspaceSave();
-}
-
-function updateWorksheetEditorModeUI(rect) {
-  if (!rect || rect.kind !== "worksheet") {
-    return;
-  }
-  const mode = normalizeWorksheetEditorMode(rect.editorMode);
-  rect.editorMode = mode;
-  rect.element.dataset.editorMode = mode;
-  if (rect.body) {
-    rect.body.dataset.editorMode = mode;
-  }
-  if (rect.editorModeButton) {
-    const isNormal = mode === normalWorksheetEditorMode;
-    rect.editorModeButton.textContent = isNormal ? "Normal" : "Free";
-    rect.editorModeButton.title = isNormal ? "Switch to free worksheet editing" : "Switch to normal text editing";
-    rect.editorModeButton.setAttribute("aria-label", rect.editorModeButton.title);
-    rect.editorModeButton.setAttribute("aria-pressed", isNormal ? "true" : "false");
-  }
-}
-
 function setActivePane(rect, options = {}) {
   if (!rect || !rectangles.includes(rect)) {
     clearActivePane();
@@ -3695,7 +2565,7 @@ function setActivePane(rect, options = {}) {
   const wasActive = activePaneID === rect.id;
   const needsRaise = Boolean(options.raise) && paneNeedsRaise(rectangles, rect);
   if (wasActive && !needsRaise) {
-    if (options.focusEditor) {
+    if (options.focus) {
       focusPane(rect);
     } else if (options.focusElement) {
       rect.element.focus({ preventScroll: true });
@@ -3715,7 +2585,7 @@ function setActivePane(rect, options = {}) {
     rect.element.style.zIndex = String(rect.zIndex);
     scheduleTerminalVisibilityUpdate();
   }
-  if (options.focusEditor) {
+  if (options.focus) {
     focusPane(rect);
   } else if (options.focusElement) {
     rect.element.focus({ preventScroll: true });
@@ -3779,7 +2649,7 @@ function openRenameWindowModal(rect) {
     updateDeskbar();
     scheduleWorkspaceSave();
     hideRenameWindowModal();
-    setActivePane(rect, { raise: true, focusEditor: true });
+    setActivePane(rect, { raise: true, focus: true });
   };
   cancelButton.addEventListener("click", hideRenameWindowModal);
   renameButton.addEventListener("click", save);
@@ -3886,6 +2756,7 @@ function setTerminalOutputPaused(rect, paused) {
   terminalState.reconnectAttempts = 0;
   connectTerminalSocket(rect);
   if (oldSocket?.readyState === WebSocket.OPEN || oldSocket?.readyState === WebSocket.CONNECTING) {
+    oldSocket.send(JSON.stringify({ type: "file-handoff" }));
     oldSocket.close(1000, "Restoring visible terminal");
   }
 }
@@ -4036,7 +2907,6 @@ async function openDirectoryBrowser(rect, path) {
   }
   directoryBrowserRect = rect;
   hideDockMenu();
-  hideEditorMenu();
   directoryBrowser.hidden = false;
   renderDirectoryBrowserLoading(path || "");
 
@@ -4157,228 +3027,6 @@ function chooseDirectory(path) {
   hideDirectoryBrowser();
 }
 
-async function openEditorFileBrowser(rect, mode) {
-  if (!rect?.editor) {
-    return;
-  }
-  fileBrowserRect = rect;
-  fileBrowserMode = mode;
-  fileBrowserFilePath = mode === "export" ? (rect.lastExportPath || "") : "";
-  hideDockMenu();
-  hideEditorMenu();
-  hideWorkspaceMenu();
-  directoryBrowser.hidden = false;
-
-  const startPath = fileBrowserStartPath(rect);
-  renderFileBrowserLoading(startPath);
-  try {
-    await loadFileBrowser(startPath);
-  } catch (error) {
-    renderFileBrowserError(error.message || "Could not load files");
-  }
-}
-
-function fileBrowserStartPath(rect) {
-  if (rect.lastExportPath) {
-    return parentPathFromFilePath(rect.lastExportPath);
-  }
-  return rect.cwd || "";
-}
-
-async function loadFileBrowser(path) {
-  const url = path
-    ? `/api/directories?files=1&path=${encodeURIComponent(path)}`
-    : "/api/directories?files=1";
-  const response = await fetch(url);
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error || `file browser load failed: ${response.status}`);
-  }
-  fileBrowserPath = data.path || "";
-  renderFileBrowser(data);
-}
-
-function renderFileBrowserLoading(path) {
-  directoryBrowser.replaceChildren();
-  const panel = directoryBrowserPanel(fileBrowserTitle());
-  const pathLine = document.createElement("div");
-  pathLine.className = "directory-browser-path";
-  pathLine.textContent = path || "host default";
-  const message = document.createElement("div");
-  message.className = "directory-browser-message";
-  message.textContent = "Loading...";
-  panel.appendChild(pathLine);
-  panel.appendChild(message);
-  directoryBrowser.appendChild(panel);
-}
-
-function renderFileBrowserError(messageText) {
-  directoryBrowser.replaceChildren();
-  const panel = directoryBrowserPanel(fileBrowserTitle());
-  const message = document.createElement("div");
-  message.className = "directory-browser-message is-error";
-  message.textContent = messageText;
-  const actions = document.createElement("div");
-  actions.className = "directory-browser-actions";
-  actions.appendChild(directoryBrowserButton("Close", hideDirectoryBrowser));
-  panel.appendChild(message);
-  panel.appendChild(actions);
-  directoryBrowser.appendChild(panel);
-}
-
-function renderFileBrowser(data) {
-  directoryBrowser.replaceChildren();
-  const panel = directoryBrowserPanel(fileBrowserTitle());
-
-  const pathLine = document.createElement("div");
-  pathLine.className = "directory-browser-path";
-  pathLine.textContent = data.path || "host default";
-  pathLine.title = data.path || "host default";
-
-  const nav = document.createElement("div");
-  nav.className = "directory-browser-nav";
-  if (data.parent) {
-    nav.appendChild(directoryBrowserButton("Up", () => loadFileBrowser(data.parent)));
-  }
-  for (const root of data.roots || []) {
-    nav.appendChild(directoryBrowserButton(root.name, () => loadFileBrowser(root.path)));
-  }
-
-  const list = document.createElement("div");
-  list.className = "directory-browser-list";
-  if ((data.entries || []).length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "directory-browser-message";
-    empty.textContent = "No files";
-    list.appendChild(empty);
-  }
-  for (const entry of data.entries || []) {
-    const isDirectory = entry.kind === "directory";
-    const button = directoryBrowserButton(`${isDirectory ? "[dir] " : ""}${entry.name}`, () => {
-      if (isDirectory) {
-        void loadFileBrowser(entry.path);
-      } else if (fileBrowserMode === "import") {
-        void chooseImportFile(entry.path);
-      } else {
-        setFileBrowserExportPath(entry.path);
-      }
-    });
-    button.className = `directory-browser-entry${isDirectory ? " is-directory" : " is-file"}`;
-    button.title = entry.path;
-    list.appendChild(button);
-  }
-
-  panel.appendChild(pathLine);
-  panel.appendChild(nav);
-  if (fileBrowserMode === "export") {
-    panel.appendChild(renderExportFileField(data.path || ""));
-  }
-  panel.appendChild(list);
-  panel.appendChild(renderFileBrowserActions(data.path || ""));
-  directoryBrowser.appendChild(panel);
-}
-
-function renderExportFileField(folderPath) {
-  const row = document.createElement("label");
-  row.className = "directory-browser-file-row";
-  const label = document.createElement("span");
-  label.textContent = "File";
-  const input = document.createElement("input");
-  input.className = "directory-browser-file-input";
-  input.type = "text";
-  input.value = fileBrowserFilePath || defaultExportPath(folderPath);
-  input.placeholder = "Path to export";
-  input.addEventListener("input", () => {
-    fileBrowserFilePath = input.value;
-  });
-  row.appendChild(label);
-  row.appendChild(input);
-  return row;
-}
-
-function renderFileBrowserActions(folderPath) {
-  const actions = document.createElement("div");
-  actions.className = "directory-browser-actions";
-  if (fileBrowserMode === "export") {
-    const label = fileBrowserRect?.kind === textEditorPaneKind ? "Save" : "Export";
-    actions.appendChild(directoryBrowserButton(label, () => {
-      void chooseExportFile(fileBrowserFilePath || defaultExportPath(folderPath));
-    }));
-  }
-  actions.appendChild(directoryBrowserButton("Cancel", hideDirectoryBrowser));
-  return actions;
-}
-
-function fileBrowserTitle() {
-  if (fileBrowserRect?.kind === textEditorPaneKind) {
-    return fileBrowserMode === "export" ? "Save Text File" : "Open Text File";
-  }
-  return fileBrowserMode === "export" ? "Export Worksheet" : "Import Worksheet";
-}
-
-function setFileBrowserExportPath(path) {
-  fileBrowserFilePath = path;
-  void renderFileBrowserForCurrentPath();
-}
-
-async function renderFileBrowserForCurrentPath() {
-  try {
-    await loadFileBrowser(fileBrowserPath || "");
-  } catch (error) {
-    renderFileBrowserError(error.message || "Could not load files");
-  }
-}
-
-async function chooseImportFile(path) {
-  const rect = fileBrowserRect;
-  hideDirectoryBrowser();
-  if (!rect) {
-    return;
-  }
-  await openFileIntoEditor(rect, path);
-}
-
-async function chooseExportFile(path) {
-  const rect = fileBrowserRect;
-  hideDirectoryBrowser();
-  if (!rect) {
-    return;
-  }
-  await saveEditorToFile(rect, { path });
-}
-
-function defaultExportPath(folderPath) {
-  if (fileBrowserFilePath) {
-    return fileBrowserFilePath;
-  }
-  if (fileBrowserRect?.lastExportPath) {
-    return fileBrowserRect.lastExportPath;
-  }
-  const title = (fileBrowserRect?.title || "worksheet").trim() || "worksheet";
-  return joinPath(folderPath || fileBrowserRect?.cwd || "", `${sanitizeFileName(title)}.txt`);
-}
-
-function sanitizeFileName(name) {
-  return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim() || "worksheet";
-}
-
-function joinPath(folderPath, fileName) {
-  if (!folderPath) {
-    return fileName;
-  }
-  const separator = folderPath.includes("\\") ? "\\" : "/";
-  return folderPath.endsWith("\\") || folderPath.endsWith("/") ? `${folderPath}${fileName}` : `${folderPath}${separator}${fileName}`;
-}
-
-function parentPathFromFilePath(path) {
-  const trimmed = (path || "").trim();
-  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  if (slash === 2 && trimmed[1] === ":") {
-    return trimmed.slice(0, 3);
-  }
-  return slash > 0 ? trimmed.slice(0, slash) : "";
-}
-
 function setRectangle(rect, next) {
   const x = Math.round(next.x);
   const y = Math.round(next.y);
@@ -4398,7 +3046,6 @@ function setRectangle(rect, next) {
   if (sizeChanged) {
     rect.element.style.width = `${rect.width}px`;
     rect.element.style.height = `${rect.height}px`;
-    rect.editor?.requestMeasure();
     requestTerminalFit(rect);
   }
   if (!isArrangingWindows) {
@@ -4437,7 +3084,7 @@ function loadWorkspace(workspace) {
       if (pane.kind === "audio") continue;
       const rect = createRectangle(pane.x ?? 80, pane.y ?? tabHeight + 56, pane.width || 360, pane.height || 240, {
         id: pane.id,
-        kind: pane.kind || "worksheet",
+        kind: pane.kind || "terminal",
         title: pane.title,
         text: pane.bufferText,
         editorMode: pane.editorMode,
@@ -4445,7 +3092,6 @@ function loadWorkspace(workspace) {
         cwd: pane.cwd,
         lastExportPath: pane.lastExportPath,
         editorTabs: pane.editorTabs,
-        fileBrowserSidebarWidth: pane.fileBrowserSidebarWidth,
         browserUrl: pane.browserUrl,
         vncTarget: pane.vncTarget,
         vncViewOnly: Boolean(pane.vncViewOnly),
@@ -4463,7 +3109,7 @@ function loadWorkspace(workspace) {
     nextZIndex = Math.max(nextZIndex, highestZIndex + 1);
     const activeLoadedRect = activePaneOnLoad(rectangles, workspace.activePaneId);
     if (activeLoadedRect) {
-      setActivePane(activeLoadedRect, { raise: false, focusEditor: true });
+      setActivePane(activeLoadedRect, { raise: false, focus: true });
     }
     updateDeskbar();
     setWorkspaceStatus("saved", "Saved", "Workspace loaded");
@@ -4474,7 +3120,6 @@ function loadWorkspace(workspace) {
 
 function clearRectanglesForLoad() {
   backgroundRequestID += 1;
-  stopRunStreams();
   // Whatever is loaded next is the server's copy, not the content this browser
   // last pushed, so the next save carries its documents again.
   savedPaneContent = new Map();
@@ -4483,7 +3128,6 @@ function clearRectanglesForLoad() {
     disposeTerminal(rect);
     disposeBrowserPane(rect);
     disposeVNCPane(rect);
-    rect.editor?.destroy();
     rect.element.remove();
   }
   activeRect = null;
@@ -4491,7 +3135,6 @@ function clearRectanglesForLoad() {
   delete board.dataset.activePaneId;
   interaction = null;
   contextMenuRect = null;
-  editorMenuRect = null;
   hideAllMenus();
   nextZIndex = 1;
   updateDeskbar();
@@ -4530,7 +3173,6 @@ function userSettingsPayload() {
       themeId: themeID,
       deskbarButtonEnabled,
       terminalWheelSensitivity,
-      editorWheelSensitivity,
       oledWindowBorderSize,
       terminalTerm,
       terminalFont,
@@ -4694,8 +3336,8 @@ let savedPaneContent = new Map();
 
 function paneContent(rect) {
   return {
-    bufferText: rect.kind === "terminal" ? "" : rect.text,
-    editorTabs: rect.kind === textEditorPaneKind ? serializedTextEditorTabs(rect) : "",
+    bufferText: rect.archivedContent?.bufferText || "",
+    editorTabs: rect.archivedContent?.editorTabs || "",
   };
 }
 
@@ -4711,11 +3353,10 @@ function workspaceSavePayload() {
     title: rect.title,
     kind: rect.kind,
     ...paneContentFields(contentByPaneID.get(rect.id), savedPaneContent.get(rect.id)),
-    editorMode: rect.kind === "worksheet" ? rect.editorMode : "",
-    fontSize: rect.kind === "terminal" || rect.kind === "worksheet" || rect.kind === textEditorPaneKind ? rect.fontSize : defaultPaneFontSize,
+    editorMode: rect.archivedContent?.editorMode || "",
+    fontSize: rect.kind === "terminal" ? rect.fontSize : defaultPaneFontSize,
     cwd: rect.cwd || "",
-    lastExportPath: rect.kind === "terminal" ? "" : (rect.lastExportPath || ""),
-    fileBrowserSidebarWidth: rect.kind === fileBrowserPaneKind ? rect.fileBrowserSidebarWidth : defaultFileBrowserSidebarWidth,
+    lastExportPath: rect.archivedContent?.lastExportPath || "",
     browserUrl: rect.kind === browserPaneKind ? rect.browserUrl : "",
     vncTarget: rect.kind === vncPaneKind ? rect.vncTarget : "",
     vncViewOnly: rect.kind === vncPaneKind && rect.vncViewOnly,
@@ -4912,197 +3553,8 @@ function setWorkspaceStatus(state, text, title = "", options = {}) {
   }
 }
 
-async function syncRunningCommands() {
-  try {
-    const response = await fetch(`/api/runs?workspaceId=${encodeURIComponent(workspaceID)}`);
-    if (!response.ok) {
-      throw new Error(`load runs failed: ${response.status}`);
-    }
-    const data = await response.json();
-    for (const run of data.runs || []) {
-      const rect = rectangles.find((candidate) => candidate.id === run.paneId);
-      if (!rect || runStreamControllers.has(run.runId)) {
-        continue;
-      }
-      markPaneRunning(rect, run.runId);
-      subscribeToRun(rect, run.runId);
-    }
-  } catch (error) {
-    console.warn(error);
-  }
-}
 
-function subscribeToRun(rect, runID) {
-  const controller = new AbortController();
-  runStreamControllers.set(runID, controller);
-  void (async () => {
-    try {
-      const response = await fetch(`/api/runs/${encodeURIComponent(runID)}/events`, {
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`subscribe run failed: ${response.status}`);
-      }
-      await readRunEventStream(response, (event) => applyRunEvent(rect, event));
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        console.warn(error);
-      }
-    } finally {
-      runStreamControllers.delete(runID);
-      if (!controller.signal.aborted && rect.runID === runID) {
-        clearPaneRunning(rect);
-      }
-    }
-  })();
-}
 
-function stopRunStreams() {
-  for (const controller of runStreamControllers.values()) {
-    controller.abort();
-  }
-  runStreamControllers.clear();
-}
-
-function startWorksheetLineSelection(event, rect) {
-  if (event.button !== 0 || !rect?.editor || !isLineNumberGutterTarget(event.target)) {
-    return;
-  }
-
-  const lineNumber = lineNumberAtEditorY(rect.editor, event.clientY);
-  if (!lineNumber) {
-    return;
-  }
-
-  event.preventDefault();
-  event.stopPropagation();
-  hideFloatingMenus();
-  setActivePane(rect, { raise: true });
-  worksheetLineDrag = {
-    editor: rect.editor,
-    pointerId: event.pointerId,
-    startLineNumber: lineNumber,
-  };
-  selectWorksheetLineRange(rect.editor, lineNumber, lineNumber);
-
-  const doc = rect.editor.dom.ownerDocument;
-  doc.addEventListener("pointermove", continueWorksheetLineSelection);
-  doc.addEventListener("pointerup", finishWorksheetLineSelection);
-  doc.addEventListener("pointercancel", finishWorksheetLineSelection);
-}
-
-function continueWorksheetLineSelection(event) {
-  if (!worksheetLineDrag || event.pointerId !== worksheetLineDrag.pointerId) {
-    return;
-  }
-  if (event.buttons === 0) {
-    finishWorksheetLineSelection(event);
-    return;
-  }
-
-  const lineNumber = lineNumberAtEditorY(worksheetLineDrag.editor, event.clientY);
-  if (!lineNumber) {
-    return;
-  }
-  event.preventDefault();
-  selectWorksheetLineRange(worksheetLineDrag.editor, worksheetLineDrag.startLineNumber, lineNumber);
-}
-
-function finishWorksheetLineSelection(event) {
-  if (!worksheetLineDrag || event.pointerId !== worksheetLineDrag.pointerId) {
-    return;
-  }
-  cancelWorksheetLineSelection();
-}
-
-function cancelWorksheetLineSelection(editor = null) {
-  if (!worksheetLineDrag || (editor && worksheetLineDrag.editor !== editor)) {
-    return;
-  }
-  const doc = worksheetLineDrag.editor.dom.ownerDocument;
-  doc.removeEventListener("pointermove", continueWorksheetLineSelection);
-  doc.removeEventListener("pointerup", finishWorksheetLineSelection);
-  doc.removeEventListener("pointercancel", finishWorksheetLineSelection);
-  worksheetLineDrag = null;
-}
-
-function startFileBrowserSidebarResize(event, rect, handle) {
-  if (event.button !== 0) {
-    return;
-  }
-  event.preventDefault();
-  event.stopPropagation();
-  setActivePane(rect, { raise: true });
-  fileBrowserSidebarResizeDrag = {
-    rect,
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startWidth: rect.fileBrowserSidebarWidth,
-  };
-  handle.classList.add("is-dragging");
-  document.addEventListener("pointermove", continueFileBrowserSidebarResize);
-  document.addEventListener("pointerup", finishFileBrowserSidebarResize);
-  document.addEventListener("pointercancel", finishFileBrowserSidebarResize);
-}
-
-function continueFileBrowserSidebarResize(event) {
-  const drag = fileBrowserSidebarResizeDrag;
-  if (!drag || event.pointerId !== drag.pointerId) {
-    return;
-  }
-  event.preventDefault();
-  setFileBrowserSidebarWidth(drag.rect, drag.startWidth + (event.clientX - drag.startX));
-  scheduleWorkspaceSave();
-}
-
-function finishFileBrowserSidebarResize(event) {
-  const drag = fileBrowserSidebarResizeDrag;
-  if (!drag || event.pointerId !== drag.pointerId) {
-    return;
-  }
-  drag.rect.fileBrowserView?.sidebarResizeHandle?.classList.remove("is-dragging");
-  document.removeEventListener("pointermove", continueFileBrowserSidebarResize);
-  document.removeEventListener("pointerup", finishFileBrowserSidebarResize);
-  document.removeEventListener("pointercancel", finishFileBrowserSidebarResize);
-  fileBrowserSidebarResizeDrag = null;
-}
-
-function isLineNumberGutterTarget(target) {
-  const element = target instanceof Element ? target : null;
-  if (!element) {
-    return false;
-  }
-  return Boolean(element.closest(".cm-lineNumbers") && element.closest(".cm-gutterElement"));
-}
-
-function lineNumberAtEditorY(editor, clientY) {
-  const contentBox = editor.contentDOM.getBoundingClientRect();
-  if (contentBox.height <= 0 || contentBox.width <= 0) {
-    return null;
-  }
-
-  const x = contentBox.left + Math.min(12, Math.max(1, contentBox.width / 2));
-  const y = Math.min(Math.max(clientY, contentBox.top + 1), contentBox.bottom - 1);
-  const pos = editor.posAtCoords({ x, y }, false);
-  if (pos == null) {
-    return clientY < contentBox.top ? 1 : editor.state.doc.lines;
-  }
-  return editor.state.doc.lineAt(pos).number;
-}
-
-function selectWorksheetLineRange(editor, startLineNumber, endLineNumber) {
-  const doc = editor.state.doc;
-  const fromLineNumber = Math.max(1, Math.min(startLineNumber, endLineNumber));
-  const toLineNumber = Math.min(doc.lines, Math.max(startLineNumber, endLineNumber));
-  const fromLine = doc.line(fromLineNumber);
-  const toLine = doc.line(toLineNumber);
-  editor.dispatch({
-    selection: EditorSelection.single(fromLine.from, toLine.to),
-    scrollIntoView: true,
-    userEvent: "select.lineNumber",
-  });
-  editor.focus();
-}
 
 function loadGhosttyModule() {
   if (!ghosttyModulePromise) {
@@ -5220,6 +3672,10 @@ async function startTerminal(rect) {
       onBacklogExceeded: () => recoverTerminalBacklog(rect),
     });
     attachTerminalAudio(rect);
+    rect.terminal.files = new TerminalFiles({ workspaceId: workspaceID, paneId: rect.id, container: rect.body,
+      send: message => { const socket = rect.terminal?.socket; if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message)); },
+      onPending: count => { rect.filePendingCount = count; updateDeskbar(); requestTerminalFit(rect); },
+    });
     updateTerminalRenderState(rect);
     connectTerminalSocket(rect);
     requestTerminalFit(rect);
@@ -5269,6 +3725,7 @@ function connectTerminalSocket(rect) {
     }
     terminalState.reconnectAttempts = 0;
     socket.send(JSON.stringify({ type: "audio-events", enabled: true }));
+    terminalState.files?.subscribe(socket);
     clearTerminalStatus(rect);
     setPaneCwd(rect, rect.cwd, { silent: true });
     // It may have become hidden while the connection was opening.
@@ -5290,7 +3747,11 @@ function connectTerminalSocket(rect) {
     if (rect.terminal?.socket !== socket) {
       return;
     }
-    if (typeof event.data === "string" && handleTerminalAudioMessage(rect, event.data)) return;
+    if (typeof event.data === "string") {
+      let message; try { message = JSON.parse(event.data); } catch {}
+      if (terminalState.files?.receive(message)) return;
+      if (handleTerminalAudioMessage(rect, event.data)) return;
+    }
     if (terminalState.outputPaused) {
       // Discarded output never advances the applied cursor. The next host
       // attachment decides whether its missing suffix is small enough to replay.
@@ -5390,6 +3851,7 @@ function renderTerminalAudioStatus(rect, status) {
 
 function handleTerminalSocketClose(rect, terminalState, closeEvent) {
   terminalAudioPlayer.disconnect(terminalState.audioKey);
+  terminalState.files?.disconnect();
   terminalState.replica?.disconnect();
   if (terminalState.reconnectTimer !== null) {
     return;
@@ -6022,6 +4484,7 @@ function disposeTerminal(rect, options = {}) {
   const terminalState = rect.terminal;
   completeTerminalWakeRecovery(terminalState);
   terminalAudioPlayer.detach(terminalState.audioKey);
+  terminalState.files?.dispose();
   rect.terminalAudioBadge?.remove();
   rect.terminalAudioBadge = null;
   rect.terminal = null;
@@ -6068,17 +4531,11 @@ function newPaneID() {
 function defaultPaneTitle(kind) {
   const base = kind === "terminal"
     ? "Terminal"
-    : kind === fileBrowserPaneKind
-      ? "File Browser"
-    : kind === textEditorPaneKind
-      ? "Text Editor"
-      : kind === browserPaneKind
+    : kind === browserPaneKind
         ? "Browser"
       : kind === vncPaneKind
         ? "VNC"
-      : kind === "worksheet"
-        ? "Worksheet"
-        : "Window";
+      : "Window";
   if (themeID === "operator") return base;
   let highest = 0;
   for (const rect of rectangles) {
@@ -6090,128 +4547,15 @@ function defaultPaneTitle(kind) {
   return `${base} ${highest + 1}`;
 }
 
-function moveFreeCursorFromMouse(view, event) {
-  if (event.button !== 0 || event.detail !== 1 || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) {
-    return false;
-  }
-
-  const target = freeCursorMouseTarget(view, event);
-  if (!target) {
-    return false;
-  }
-
-  event.preventDefault();
-  return moveCursorToMaterializedColumn(view, target.lineNumber, target.column, "select.freeCursor");
-}
-
-function moveFreeCursorVertically(view, direction) {
-  const selection = view.state.selection;
-  const range = selection.main;
-  if (!range.empty || selection.ranges.length > 1) {
-    return false;
-  }
-
-  const line = view.state.doc.lineAt(range.head);
-  const targetLineNumber = line.number + direction;
-  if (targetLineNumber < 1) {
-    return false;
-  }
-
-  return moveCursorToMaterializedColumn(view, targetLineNumber, range.head - line.from, "select.freeCursor");
-}
-
-function moveFreeCursorRight(view) {
-  const selection = view.state.selection;
-  const range = selection.main;
-  if (!range.empty || selection.ranges.length > 1) {
-    return false;
-  }
-
-  const line = view.state.doc.lineAt(range.head);
-  if (range.head !== line.to) {
-    return false;
-  }
-
-  return moveCursorToMaterializedColumn(view, line.number, line.length + 1, "input.freeCursor");
-}
-
-function freeCursorMouseTarget(view, event) {
-  const lineHeight = Math.max(1, view.defaultLineHeight || 16);
-  const doc = view.state.doc;
-  const lineNumber = Math.max(1, Math.floor((event.clientY - view.documentTop) / lineHeight) + 1);
-
-  if (lineNumber > doc.lines) {
-    const column = mouseColumnAtLineStart(view, event.clientX, doc.line(doc.lines));
-    return { lineNumber, column };
-  }
-
-  const line = doc.line(lineNumber);
-  const column = mouseColumnAtLineStart(view, event.clientX, line);
-  if (column <= line.length) {
-    return null;
-  }
-
-  return { lineNumber, column };
-}
-
-function mouseColumnAtLineStart(view, clientX, line) {
-  const charWidth = Math.max(1, view.defaultCharacterWidth || 8);
-  const lineStart = view.coordsAtPos(line.from, 1) || view.coordsAtPos(line.to, -1);
-  const contentBox = view.contentDOM.getBoundingClientRect();
-  const textLeft = lineStart?.left ?? contentBox.left;
-  return Math.max(0, Math.round((clientX - textLeft) / charWidth));
-}
-
-function moveCursorToMaterializedColumn(view, lineNumber, column, userEvent) {
-  const state = view.state;
-  const targetLineNumber = Math.max(1, lineNumber);
-  const targetColumn = Math.max(0, column);
-
-  if (targetLineNumber > state.doc.lines) {
-    const missingLines = targetLineNumber - state.doc.lines;
-    const insert = "\n".repeat(missingLines) + " ".repeat(targetColumn);
-    const anchor = state.doc.length + missingLines + targetColumn;
-    view.dispatch({
-      changes: { from: state.doc.length, insert },
-      selection: EditorSelection.cursor(anchor),
-      scrollIntoView: true,
-      userEvent,
-    });
-    view.focus();
-    return true;
-  }
-
-  const line = state.doc.line(targetLineNumber);
-  const padding = Math.max(0, targetColumn - line.length);
-  const anchor = line.from + targetColumn;
-  const transaction = {
-    selection: EditorSelection.cursor(anchor),
-    scrollIntoView: true,
-    userEvent,
-  };
-
-  if (padding > 0) {
-    transaction.changes = {
-      from: line.to,
-      insert: " ".repeat(padding),
-    };
-  }
-
-  view.dispatch(transaction);
-  view.focus();
-  return true;
-}
-
 function openDockMenu(event, rect, offsetY = 0) {
   event.preventDefault();
   event.stopPropagation();
   if (rect.kind === "pending") {
     hideWindowTypeMenu({ finalizeDefault: false });
-    finalizePendingRectangle(rect, "worksheet");
+    finalizePendingRectangle(rect, "terminal");
     return;
   }
   setActivePane(rect, { raise: true });
-  hideEditorMenu();
   hideTerminalMenu();
   hideWorkspaceMenu();
   hideWindowTypeMenu();
@@ -6220,25 +4564,11 @@ function openDockMenu(event, rect, offsetY = 0) {
   showMenuAt(dockMenu, event.clientX, event.clientY + offsetY);
 }
 
-function openEditorMenu(event, rect) {
-  event.preventDefault();
-  event.stopPropagation();
-  setActivePane(rect, { raise: true });
-  hideDockMenu();
-  hideTerminalMenu();
-  hideWorkspaceMenu();
-  hideWindowTypeMenu();
-  editorMenuRect = rect;
-  renderEditorMenu(rect);
-  showMenuAt(editorMenu, event.clientX, event.clientY);
-}
-
 function openTerminalMenu(event, rect) {
   event.preventDefault();
   event.stopPropagation();
   setActivePane(rect, { raise: true });
   hideDockMenu();
-  hideEditorMenu();
   hideWorkspaceMenu();
   hideWindowTypeMenu();
   terminalMenuRect = rect;
@@ -6257,7 +4587,6 @@ function openWorkspaceMenu(event) {
 function openWorkspaceMenuAt(clientX, clientY) {
   workspaceMenuPoint = boardClientPoint(clientX, clientY);
   hideDockMenu();
-  hideEditorMenu();
   hideTerminalMenu();
   hideWindowTypeMenu();
   renderWorkspaceMenu();
@@ -6305,17 +4634,6 @@ function renderWorkspaceMenu() {
   });
   workspaceMenu.appendChild(terminalButton);
 
-  const worksheetButton = document.createElement("button");
-  worksheetButton.type = "button";
-  worksheetButton.textContent = "New Worksheet";
-  worksheetButton.className = "is-command";
-  worksheetButton.addEventListener("click", () => {
-    const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
-    hideWorkspaceMenu();
-    createWorksheetPane(point.x, point.y);
-  });
-  workspaceMenu.appendChild(worksheetButton);
-
   const browserButton = document.createElement("button");
   browserButton.type = "button";
   browserButton.textContent = "New Browser";
@@ -6337,6 +4655,9 @@ function renderWorkspaceMenu() {
     createVNCPane(point.x, point.y);
   });
   workspaceMenu.appendChild(vncButton);
+
+  const shortcutsButton = directoryBrowserButton("Shortcuts...", openShortcuts);
+  workspaceMenu.appendChild(shortcutsButton);
 
   const panes = rectangles.filter((rect) => rect.kind !== "pending");
   if (panes.length === 0) {
@@ -6362,7 +4683,7 @@ function renderWorkspaceMenu() {
     button.addEventListener("click", () => {
       hideWorkspaceMenu();
       setMinimized(rect, false);
-      setActivePane(rect, { raise: true, focusEditor: true });
+      setActivePane(rect, { raise: true, focus: true });
     });
 
     const destroyButton = document.createElement("button");
@@ -6547,6 +4868,9 @@ function updateDeskbar() {
   }
   const minimizedCount = rectangles.filter((rect) => rect.kind !== "pending" && rect.minimized).length;
   deskbarButton.dataset.minimizedCount = String(minimizedCount);
+  const fileCount = rectangles.reduce((count, rect) => count + (rect.filePendingCount || 0), 0);
+  deskbarButton.dataset.fileCount = String(fileCount);
+  deskbarButton.title = fileCount ? `${fileCount} pending file transfer${fileCount === 1 ? "" : "s"}` : "Window list";
   deskbarButton.setAttribute("aria-label", minimizedCount === 1
     ? "Window list, 1 minimized window"
     : minimizedCount > 1
@@ -6593,9 +4917,6 @@ function renderDeskbar() {
     if (rect.minimized) {
       row.classList.add("is-minimized");
     }
-    if (rect.running) {
-      row.classList.add("is-running");
-    }
 
     const button = document.createElement("button");
     button.type = "button";
@@ -6605,7 +4926,7 @@ function renderDeskbar() {
     button.addEventListener("click", () => {
       hideDeskbar();
       setMinimized(rect, false);
-      setActivePane(rect, { raise: true, focusEditor: true });
+      setActivePane(rect, { raise: true, focus: true });
     });
 
     const destroyButton = document.createElement("button");
@@ -7338,7 +5659,7 @@ function renderSettingsModal() {
   const content = document.createElement("div");
   content.className = "settings-content";
   content.appendChild(renderSettingsSection("Font size", [
-    renderSettingsFontRow("Default", "Used for new terminal, worksheet, and text-editor panes in all sessions.", defaultPaneFontSize, (next) => {
+    renderSettingsFontRow("Default", "Used for new terminal panes in all sessions.", defaultPaneFontSize, (next) => {
       setDefaultPaneFontSize(next);
       renderSettingsModal();
     }),
@@ -7360,15 +5681,10 @@ function renderSettingsModal() {
       "Terminal",
       "Controls terminal scrollback and wheel input in full-screen terminal apps.",
       terminalWheelSensitivity,
-      (next) => setWheelSensitivity("terminal", next),
-    ),
-    renderSettingsWheelRow(
-      "Editor",
-      "Controls Worksheet and Text Editor scrolling.",
-      editorWheelSensitivity,
-      (next) => setWheelSensitivity("editor", next),
+      (next) => setTerminalWheelSensitivity(next),
     ),
   ]));
+  content.appendChild(renderSettingsSection("Shortcuts", [directoryBrowserButton("Manage shortcuts...", openShortcuts)]));
   content.appendChild(renderSettingsSection("Background", [
     renderSettingsBackgroundRow(),
     renderSettingsBackgroundModeRow(),
@@ -7843,7 +6159,6 @@ function renderHelpModal() {
     ["Command palette", "Ctrl/Cmd+K — search or type a code, ↑/↓ to select, Enter to run"],
     ["Command wheel", "Ctrl/Cmd+; — S opens Settings; other commands use two keys, Backspace to go back"],
     ["Window list", "Ctrl/Cmd+L"],
-    ["Run worksheet command", "Ctrl/Cmd+Enter"],
     ["Destroy active window", "Ctrl/Cmd+Backspace"],
     ["Next / previous window", "Ctrl/Cmd+] / Ctrl/Cmd+["],
     ["Move window earlier / later", "Ctrl/Cmd+Shift+↑ / Ctrl/Cmd+Shift+↓"],
@@ -8049,8 +6364,8 @@ function renderSettingsFontRow(labelText, description, value, onChange, disabled
 
 function renderCurrentPaneFontRow() {
   const active = getActivePane();
-  if (!active || (active.kind !== "terminal" && active.kind !== "worksheet" && active.kind !== textEditorPaneKind)) {
-    return renderSettingsFontRow("Current", "Select a terminal, worksheet, or text-editor pane to adjust its font.", defaultPaneFontSize, () => {}, true);
+  if (!active || (active.kind !== "terminal")) {
+    return renderSettingsFontRow("Current", "Select a terminal pane to adjust its font.", defaultPaneFontSize, () => {}, true);
   }
   return renderSettingsFontRow("Current", `${active.title} only. This value saves with the pane.`, active.fontSize, (next) => {
     setPaneFontSize(active, next);
@@ -8411,7 +6726,7 @@ function restorePaneFocusAfterOverlayDismiss(overlay) {
     // List from the command palette). The overlay that is still open owns
     // keyboard focus, so returning it to the pane would swallow its arrow keys.
     if ([commandPalette, commandWheel, windowList, settingsModal, localHTTPSModal,
-      renameWindowModal, sessionsModal, sessionActionModal, helpModal].some(modal => !modal.hidden)) {
+      renameWindowModal, sessionsModal, sessionActionModal, helpModal, shortcutsUI.element].some(modal => !modal.hidden)) {
       return;
     }
     const focused = document.activeElement;
@@ -8683,7 +6998,7 @@ function selectWindowListEntry(index = windowListSelection) {
   }
   hideWindowList();
   setMinimized(rect, false);
-  setActivePane(rect, { raise: true, focusEditor: true });
+  setActivePane(rect, { raise: true, focus: true });
 }
 
 function handleWindowListKeyboard(event) {
@@ -9203,21 +7518,13 @@ function buildPaletteCommands() {
       commands.push({ label: `Switch Session: ${session.name}`, hint: "session", run: () => void switchSession(session) });
     }
   }
+  commands.push({ id: "manage-shortcuts", label: "Shortcuts...", hint: "manage terminal launchers", run: openShortcuts });
+  for (const shortcut of shortcutsUI.items) {
+    commands.push({ id: `shortcut:${shortcut.id}`, label: `Create ${shortcut.name}`, aliases: [shortcut.name], code: shortcut.code, shortcut: true, hint: "terminal shortcut", run: () => invokeShortcut(shortcut) });
+  }
   commands.push({ id: "new-terminal", label: "New Terminal", hint: "create", run: () => {
     const point = paneSpawnPoint();
     createTerminalPane(point.x, point.y);
-  } });
-  commands.push({ id: "new-worksheet", label: "New Worksheet", hint: "create", run: () => {
-    const point = paneSpawnPoint();
-    createWorksheetPane(point.x, point.y);
-  } });
-  commands.push({ id: "new-file-browser", label: "New File Browser", hint: "create", run: () => {
-    const point = paneSpawnPoint();
-    createFileBrowserPane(point.x, point.y);
-  } });
-  commands.push({ id: "new-text-editor", label: "New Text Editor", hint: "create", run: () => {
-    const point = paneSpawnPoint();
-    createTextEditorPane(point.x, point.y);
   } });
   commands.push({ id: "new-browser", label: "New Browser", hint: "localhost development server", run: () => {
     const point = paneSpawnPoint();
@@ -9295,7 +7602,7 @@ function buildPaletteCommands() {
       hint: rect.minimized ? "window, minimized" : "window",
       run: () => {
         setMinimized(rect, false);
-        setActivePane(rect, { raise: true, focusEditor: true });
+        setActivePane(rect, { raise: true, focus: true });
       },
     });
   }
@@ -9311,10 +7618,9 @@ const paletteShortcutCodes = {
   "browse-local-port-help": "BL",
   "new-terminal": "NN",
   "repair-terminal-view": "RV",
-  "new-worksheet": "NW",
-  "new-file-browser": "NF",
-  "new-text-editor": "NE",
   "new-browser": "NB",
+  "new-vnc": "NV",
+  "manage-shortcuts": "CS",
   "next-window": "NX",
   "previous-window": "PW",
   "arrange-out": "OO",
@@ -9336,7 +7642,7 @@ const paletteShortcutCodes = {
 // Stamps each command with its fixed code (or none, for dynamic entries).
 function assignPaletteShortcutCodes(commands) {
   for (const command of commands) {
-    command.code = command.id ? paletteShortcutCodes[command.id] || null : null;
+    command.code = command.shortcut ? command.code : command.id ? paletteShortcutCodes[command.id] || null : null;
   }
 }
 
@@ -9476,7 +7782,6 @@ function showWindowTypeMenu(rect, clientX, clientY) {
     return;
   }
   hideDockMenu();
-  hideEditorMenu();
   hideTerminalMenu();
   hideWorkspaceMenu();
   hideDirectoryBrowser();
@@ -9488,10 +7793,7 @@ function showWindowTypeMenu(rect, clientX, clientY) {
 function renderWindowTypeMenu() {
   windowTypeMenu.replaceChildren();
   const actions = [
-    ["worksheet", "Worksheet"],
     ["terminal", "Terminal"],
-    [fileBrowserPaneKind, "File Browser"],
-    [textEditorPaneKind, "Text Editor"],
     [browserPaneKind, "Browser"],
     [vncPaneKind, "VNC"],
   ];
@@ -9512,9 +7814,9 @@ function finalizePendingRectangle(rect, kind) {
   if (!rect || rect.kind !== "pending" || !rectangles.includes(rect)) {
     return;
   }
-  const paneKind = kind === "terminal" || kind === fileBrowserPaneKind || kind === textEditorPaneKind || kind === browserPaneKind || kind === vncPaneKind
+  const paneKind = kind === "terminal" || kind === browserPaneKind || kind === vncPaneKind
     ? kind
-    : "worksheet";
+    : "terminal";
   const box = rectangleBox(rect);
   const paneID = rect.id;
   const zIndex = rect.zIndex;
@@ -9526,7 +7828,7 @@ function finalizePendingRectangle(rect, kind) {
     cwd,
     zIndex,
   });
-  setActivePane(nextRect, { raise: true, focusEditor: true });
+  setActivePane(nextRect, { raise: true, focus: true });
   scheduleWorkspaceSave();
 }
 
@@ -9535,65 +7837,28 @@ function workspaceMenuLabel(rect) {
   const name = rect.title.trim() || `Window ${index + 1}`;
   const kindSuffix = rect.kind === "terminal"
     ? " [terminal]"
-    : rect.kind === fileBrowserPaneKind
-      ? " [files]"
-      : rect.kind === textEditorPaneKind
-        ? " [editor]"
-      : rect.kind === browserPaneKind
+    : rect.kind === browserPaneKind
         ? " [browser]"
       : rect.kind === vncPaneKind
         ? " [vnc]"
       : "";
-  const runningSuffix = rect.running ? " !" : "";
-  return `${name}${kindSuffix}${runningSuffix}`;
+  return `${name}${kindSuffix}${rect.filePendingCount ? ` [${rect.filePendingCount} file transfer${rect.filePendingCount === 1 ? "" : "s"}]` : ""}`;
 }
 
 function createTerminalPane(x, y, options = {}) {
   const rect = createRectangle(x, Math.max(y, tabHeight), 640, 360, {
     kind: "terminal",
-    cwd: activeRect?.cwd || "",
+    cwd: options.cwd ?? activeRect?.cwd ?? "",
     title: options.title,
     terminalStartupCommand: options.terminalStartupCommand,
   });
   clampIntoBoard(rect);
   setRectangle(rect, rect);
-  setActivePane(rect, { raise: true, focusEditor: true });
+  setActivePane(rect, { raise: true, focus: true });
   scheduleWorkspaceSave();
   return rect;
 }
 
-function createWorksheetPane(x, y) {
-  const rect = createRectangle(x, Math.max(y, tabHeight), 480, 320, {
-    kind: "worksheet",
-    cwd: activeRect?.cwd || "",
-  });
-  clampIntoBoard(rect);
-  setRectangle(rect, rect);
-  setActivePane(rect, { raise: true, focusEditor: true });
-  scheduleWorkspaceSave();
-}
-
-function createFileBrowserPane(x, y) {
-  const rect = createRectangle(x, Math.max(y, tabHeight), 560, 400, {
-    kind: fileBrowserPaneKind,
-    cwd: activeRect?.cwd || "",
-  });
-  clampIntoBoard(rect);
-  setRectangle(rect, rect);
-  setActivePane(rect, { raise: true, focusEditor: true });
-  scheduleWorkspaceSave();
-}
-
-function createTextEditorPane(x, y) {
-  const rect = createRectangle(x, Math.max(y, tabHeight), 480, 320, {
-    kind: textEditorPaneKind,
-    cwd: activeRect?.cwd || "",
-  });
-  clampIntoBoard(rect);
-  setRectangle(rect, rect);
-  setActivePane(rect, { raise: true, focusEditor: true });
-  scheduleWorkspaceSave();
-}
 
 function createBrowserPane(x, y) {
   const rect = createRectangle(x, Math.max(y, tabHeight), 720, 480, {
@@ -9601,7 +7866,7 @@ function createBrowserPane(x, y) {
   });
   clampIntoBoard(rect);
   setRectangle(rect, rect);
-  setActivePane(rect, { raise: true, focusEditor: true });
+  setActivePane(rect, { raise: true, focus: true });
   rect.browser?.address.focus();
   scheduleWorkspaceSave();
   return rect;
@@ -9613,7 +7878,7 @@ function createVNCPane(x, y) {
   });
   clampIntoBoard(rect);
   setRectangle(rect, rect);
-  setActivePane(rect, { raise: true, focusEditor: true });
+  setActivePane(rect, { raise: true, focus: true });
   rect.vnc?.address.focus();
   scheduleWorkspaceSave();
   return rect;
@@ -9627,59 +7892,6 @@ function paneSpawnPoint() {
   return { x: 48 + step * 32, y: tabHeight + 40 + step * 28 };
 }
 
-function renderEditorMenu(rect) {
-  editorMenu.replaceChildren();
-  const isTextEditor = rect.kind === textEditorPaneKind;
-  const modeActionLabel = rect.editorMode === normalWorksheetEditorMode
-    ? "Switch to Free Editing"
-    : "Switch to Normal Editing";
-  const actions = isTextEditor
-    ? [
-      ["import", "Open..."],
-      ["exportLast", "Save"],
-      ["export", "Save As..."],
-      ["copy", "Copy"],
-      ["cut", "Cut"],
-      ["paste", "Paste"],
-    ]
-    : [
-      ["toggleMode", modeActionLabel],
-      ["run", "Run"],
-      ["copy", "Copy"],
-      ["cut", "Cut"],
-      ["paste", "Paste"],
-      ["import", "Import"],
-      ["export", "Export"],
-      ["exportLast", "Export As Last"],
-    ];
-  const hasSelection = hasEditorSelection(rect.editor);
-  const canRun = Boolean(commandTargetForEditor(rect.editor)) && !rect.running;
-  const canReadClipboard = Boolean(clipboardBridge.status || navigator.clipboard?.readText || document.queryCommandSupported?.("paste"));
-  const canPaste = canReadClipboard || editorClipboardText.length > 0;
-
-  for (const [action, label] of actions) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    button.dataset.action = action;
-    if (action === "run") {
-      button.disabled = !canRun;
-    } else if (action === "copy" || action === "cut") {
-      button.disabled = !hasSelection;
-    } else if (action === "paste") {
-      button.disabled = !canPaste;
-    } else if (action === "exportLast") {
-      button.disabled = !rect.lastExportPath;
-    }
-    button.addEventListener("click", () => {
-      const actionRect = editorMenuRect;
-      hideEditorMenu();
-      void applyEditorMenuAction(action, actionRect);
-    });
-    editorMenu.appendChild(button);
-  }
-}
-
 function renderTerminalMenu(rect) {
   terminalMenu.replaceChildren();
   const actions = [
@@ -9689,7 +7901,7 @@ function renderTerminalMenu(rect) {
   const term = rect?.terminal?.term;
   const hasSelection = Boolean(term?.hasSelection?.() || term?.getSelection?.());
   const canReadClipboard = Boolean(clipboardBridge.status || navigator.clipboard?.readText || document.queryCommandSupported?.("paste"));
-  const canPaste = canReadClipboard || editorClipboardText.length > 0;
+  const canPaste = canReadClipboard || clipboardText.length > 0;
 
   for (const [action, label] of actions) {
     const button = document.createElement("button");
@@ -9808,11 +8020,11 @@ function applyDockAction(action, rect) {
 
   if (action === "unminimize") {
     setMinimized(rect, false);
-    setActivePane(rect, { raise: true, focusEditor: true });
+    setActivePane(rect, { raise: true, focus: true });
     return;
   }
 
-  setActivePane(rect, { raise: true, focusEditor: true });
+  setActivePane(rect, { raise: true, focus: true });
 
   if (action === "restore") {
     if (rect.restoreBox) {
@@ -10019,7 +8231,7 @@ function closeWindowFromTitleBar(rect) {
   destroyRectangle(rect, { closeServerTerminal: true });
 }
 
-// Minimize hides the pane but keeps its live editor or terminal intact. The
+// Minimize hides the pane but keeps its live terminal intact. The
 // Deskbar is the persistent visual handle that restores it.
 function setMinimized(rect, on) {
   windowWobble.stop(rect?.element);
@@ -10039,7 +8251,6 @@ function setMinimized(rect, on) {
   } else {
     rect.element.removeAttribute("aria-hidden");
     window.requestAnimationFrame(() => {
-      rect.editor?.requestMeasure();
       requestTerminalFit(rect);
     });
   }
@@ -10079,69 +8290,6 @@ function updateWindowControls(rect) {
   rect.maxButton.title = rect.isFull ? "Restore" : "Maximize";
   rect.maxButton.setAttribute("aria-label", rect.isFull ? "Restore window" : "Maximize window");
   updateDeskbar();
-}
-
-async function applyEditorMenuAction(action, rect) {
-  if (!rect?.editor) {
-    return;
-  }
-
-  rect.editor.focus();
-
-  if (action === "run") {
-    await runPaneCommand(rect);
-    return;
-  }
-
-  if (action === "toggleMode") {
-    toggleWorksheetEditorMode(rect);
-    return;
-  }
-
-  if (action === "copy") {
-    const text = selectedEditorText(rect.editor);
-    if (text) {
-      await writeClipboardText(text);
-    }
-    rect.editor.focus();
-    return;
-  }
-
-  if (action === "cut") {
-    const text = selectedEditorText(rect.editor);
-    if (text) {
-      // Cut even when the system clipboard refuses the write: Tessera's own
-      // buffer holds the text, so nothing is lost.
-      await writeClipboardText(text);
-      rect.editor.dispatch(rect.editor.state.replaceSelection(""));
-    }
-    rect.editor.focus();
-    return;
-  }
-
-  if (action === "paste") {
-    const text = await readClipboardText();
-    if (text) {
-      rect.editor.dispatch(rect.editor.state.replaceSelection(text));
-    }
-    reportClipboardFallback(appleKeyboardLayout ? "Cmd+V" : "Ctrl+V");
-    rect.editor.focus();
-    return;
-  }
-
-  if (action === "import") {
-    await openEditorFileBrowser(rect, "import");
-    return;
-  }
-
-  if (action === "export") {
-    await openEditorFileBrowser(rect, "export");
-    return;
-  }
-
-  if (action === "exportLast") {
-    await saveEditorToFile(rect, { path: rect.lastExportPath });
-  }
 }
 
 async function applyTerminalMenuAction(action, rect) {
@@ -10208,490 +8356,6 @@ function reportClipboardFallback(acceleratorName) {
   );
 }
 
-async function openFileIntoEditor(rect, path) {
-  if (!path) {
-    rect.editor?.focus();
-    return;
-  }
-  const targetWorkspaceID = workspaceID;
-  try {
-    if (rect.kind === textEditorPaneKind) {
-      const pathKey = editorPathKey(path);
-      const existingIndex = rect.textEditorTabs.findIndex((tab) => editorPathKey(tab.path) === pathKey);
-      if (existingIndex >= 0) {
-        activateTextEditorTab(rect, existingIndex);
-        setWorkspaceStatus("saved", "Opened", rect.textEditorTabs[existingIndex].path);
-        return;
-      }
-    }
-    const data = await readHostFile(path);
-    if (workspaceID !== targetWorkspaceID || !rectangles.includes(rect) || !rect.editor) return;
-    if (rect.kind === textEditorPaneKind) {
-      rememberActiveTextEditorTab(rect);
-      rect.textEditorTabs.push(newTextEditorTab(data.path || path, data.text || ""));
-      rect.activeTextEditorTab = rect.textEditorTabs.length - 1;
-      syncActiveTextEditorTab(rect);
-      mountTextEditor(rect, { selection: EditorSelection.cursor(0), skipRemember: true });
-    } else {
-      replaceEditorText(rect, data.text || "");
-    }
-    setWorkspaceStatus("saved", rect.kind === textEditorPaneKind ? "Opened" : "Imported", data.path || path);
-    scheduleWorkspaceSave();
-  } catch (error) {
-    if (workspaceID !== targetWorkspaceID || !rectangles.includes(rect)) return;
-    console.warn(error);
-    setWorkspaceStatus("error", "Import failed", error.message || "Import failed");
-  } finally {
-    if (workspaceID === targetWorkspaceID && rectangles.includes(rect)) rect.editor?.focus();
-  }
-}
-
-async function saveEditorToFile(rect, options = {}) {
-  const path = options.path || "";
-  if (!path) {
-    rect.editor?.focus();
-    return;
-  }
-  try {
-    const data = await writeHostFile(path, rect.editor.state.doc.toString());
-    rect.lastExportPath = data.path || path;
-    if (rect.kind === textEditorPaneKind) {
-      const tab = activeTextEditorTab(rect);
-      if (tab) {
-        tab.path = rect.lastExportPath;
-        tab.text = rect.editor.state.doc.toString();
-        tab.selection = rect.editor.state.selection.main.head;
-      }
-    }
-    updateTextEditorFileUI(rect);
-    setWorkspaceStatus("saved", rect.kind === textEditorPaneKind ? "Saved" : "Exported", rect.lastExportPath);
-    scheduleWorkspaceSave();
-  } catch (error) {
-    console.warn(error);
-    setWorkspaceStatus("error", "Export failed", error.message || "Export failed");
-  } finally {
-    rect.editor?.focus();
-  }
-}
-
-async function readHostFile(path) {
-  const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || `file read failed: ${response.status}`);
-  }
-  return data;
-}
-
-async function writeHostFile(path, text) {
-  const response = await fetch("/api/file", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, text }),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || `file write failed: ${response.status}`);
-  }
-  return data;
-}
-
-function replaceEditorText(rect, text) {
-  const editor = rect.editor;
-  if (!editor) {
-    return;
-  }
-  editor.dispatch({
-    changes: { from: 0, to: editor.state.doc.length, insert: text },
-    selection: EditorSelection.cursor(0),
-    scrollIntoView: true,
-    userEvent: "input.import",
-  });
-  rect.text = text;
-}
-
-function commandTargetForEditor(editor) {
-  if (!editor) {
-    return null;
-  }
-
-  const state = editor.state;
-  const range = state.selection.main;
-  if (!range.empty) {
-    const from = Math.min(range.from, range.to);
-    const to = Math.max(range.from, range.to);
-    const command = state.doc.sliceString(from, to).replace(/\r\n/g, "\n").trimEnd();
-    if (command.trim() === "") {
-      return null;
-    }
-    const commandStart = firstNonWhitespacePosition(state.doc, from, to);
-    const commandStartLine = state.doc.lineAt(commandStart);
-    const lastSelectedPos = Math.max(from, to - 1);
-    return {
-      command,
-      insertPos: state.doc.lineAt(lastSelectedPos).to,
-      outputPrefix: commandStartLine.text.slice(0, commandStart - commandStartLine.from),
-    };
-  }
-
-  const line = state.doc.lineAt(range.head);
-  const command = line.text.trimEnd();
-  if (command.trim() === "") {
-    return null;
-  }
-  const commandStartColumn = line.text.search(/\S/);
-  return {
-    command,
-    insertPos: line.to,
-    outputPrefix: commandStartColumn > 0 ? line.text.slice(0, commandStartColumn) : "",
-  };
-}
-
-function firstNonWhitespacePosition(doc, from, to) {
-  for (let pos = from; pos < to; pos += 1) {
-    if (/\S/.test(doc.sliceString(pos, pos + 1))) {
-      return pos;
-    }
-  }
-  return from;
-}
-
-async function runPaneCommand(rect) {
-  if (!rect?.editor || rect.running) {
-    return true;
-  }
-
-  const target = commandTargetForEditor(rect.editor);
-  if (!target) {
-    return true;
-  }
-
-  await flushWorkspaceSave();
-  setActivePane(rect, { raise: true });
-  markPaneRunning(rect, "");
-
-  const editor = rect.editor;
-  const spinner = createCommandTextSpinner(editor, target.insertPos);
-  rect.commandSpinner = spinner;
-  spinner.start();
-  const transcript = createTranscriptInserter(editor, spinner.after(), target.outputPrefix);
-  let streamStarted = false;
-  let sawExit = false;
-
-  try {
-    const response = await fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspaceId: workspaceID,
-        paneId: rect.id,
-        command: target.command,
-        cwd: rect.cwd || "",
-        insertPos: target.insertPos,
-        outputPrefix: target.outputPrefix,
-      }),
-    });
-
-    if (!response.ok) {
-      const message = await response.text();
-      transcript.appendHostMessage(`tessera: run failed ${response.status}${message ? ` ${message}` : ""}`);
-      sawExit = true;
-      return true;
-    }
-
-    streamStarted = true;
-    await readRunEventStream(response, (event) => {
-      applyRunEvent(rect, event);
-      sawExit = sawExit || event.type === "exit";
-    });
-  } catch (error) {
-    if (!streamStarted) {
-      transcript.appendHostMessage(error.message || "run failed");
-      sawExit = true;
-    } else {
-      console.warn(error);
-    }
-  } finally {
-    try {
-      spinner.stop();
-    } finally {
-      if (rect.commandSpinner === spinner) {
-        rect.commandSpinner = null;
-      }
-    }
-    rect.text = editor.state.doc.toString();
-    if (sawExit || !streamStarted) {
-      clearPaneRunning(rect);
-      if (!streamStarted) {
-        scheduleWorkspaceSave();
-      }
-    } else {
-      void syncRunningCommands();
-    }
-  }
-
-  return true;
-}
-
-function markPaneRunning(rect, runID) {
-  rect.running = true;
-  rect.runID = runID || rect.runID || "";
-  rect.element.dataset.running = "true";
-  updateDeskbar();
-}
-
-function clearPaneRunning(rect) {
-  rect.running = false;
-  rect.runID = "";
-  delete rect.element.dataset.running;
-  updateDeskbar();
-}
-
-function applyRunEvent(rect, event) {
-  if (!rect?.editor || !event) {
-    return;
-  }
-  if (event.runId) {
-    markPaneRunning(rect, event.runId);
-  }
-  if (event.type === "snapshot") {
-    replacePaneTextFromHost(rect, event.bufferText || "");
-    if (event.cwd) {
-      setPaneCwd(rect, event.cwd, { silent: true });
-    }
-    return;
-  }
-  if (event.type === "start" && event.cwd) {
-    setPaneCwd(rect, event.cwd, { silent: true });
-    return;
-  }
-  if (event.type === "insert") {
-    insertPaneTextFromHost(rect, event.from || 0, event.text || "");
-    return;
-  }
-  if (event.type === "error") {
-    console.warn(event.error || "run error");
-    return;
-  }
-  if (event.type === "exit") {
-    if (event.cwd) {
-      setPaneCwd(rect, event.cwd, { silent: true });
-    }
-    clearPaneRunning(rect);
-  }
-}
-
-function replacePaneTextFromHost(rect, text) {
-  const editor = rect.editor;
-  editor.dispatch({
-    changes: { from: 0, to: editor.state.doc.length, insert: text },
-    userEvent: "input.tesseraHostSnapshot",
-  });
-  rect.text = text;
-}
-
-function insertPaneTextFromHost(rect, from, text) {
-  if (!text) {
-    return;
-  }
-  const editor = rect.editor;
-  const insertAt = rect.commandSpinner
-    ? rect.commandSpinner.displayPosition(from)
-    : from;
-  const safeInsertAt = Math.max(0, Math.min(insertAt, editor.state.doc.length));
-  const transaction = {
-    changes: { from: safeInsertAt, insert: text },
-    userEvent: "input.tesseraRunOutput",
-  };
-  if (editor.hasFocus) {
-    transaction.selection = EditorSelection.cursor(safeInsertAt + text.length);
-    transaction.scrollIntoView = true;
-  }
-  editor.dispatch(transaction);
-  rect.text = rect.commandSpinner
-    ? rect.commandSpinner.textWithoutSpinner(editor.state.doc.toString())
-    : editor.state.doc.toString();
-}
-
-function createCommandTextSpinner(editor, position) {
-  let currentPosition = position;
-  let currentText = "";
-  let frameIndex = 0;
-  let timer = null;
-
-  const dispatchSpinnerText = (nextText) => {
-    const previousLength = currentText.length;
-    const from = Math.min(currentPosition, editor.state.doc.length);
-    const to = Math.min(from + previousLength, editor.state.doc.length);
-    currentPosition = from;
-    currentText = nextText;
-    editor.dispatch({
-      changes: { from, to, insert: nextText },
-      userEvent: "input.tesseraSpinner",
-    });
-  };
-
-  return {
-    start() {
-      dispatchSpinnerText(` ${commandSpinnerFrames[frameIndex]}`);
-      timer = window.setInterval(() => {
-        if (document.hidden || olderMacMode) return;
-        frameIndex = (frameIndex + 1) % commandSpinnerFrames.length;
-        dispatchSpinnerText(` ${commandSpinnerFrames[frameIndex]}`);
-      }, commandSpinnerIntervalMs);
-    },
-    after() {
-      return currentPosition + currentText.length;
-    },
-    displayPosition(position) {
-      if (currentText && position >= currentPosition) {
-        return position + currentText.length;
-      }
-      return position;
-    },
-    map(changes) {
-      currentPosition = changes.mapPos(currentPosition, -1);
-    },
-    stop() {
-      if (timer !== null) {
-        window.clearInterval(timer);
-        timer = null;
-      }
-      if (currentText) {
-        const previousLength = currentText.length;
-        const from = Math.min(currentPosition, editor.state.doc.length);
-        const to = Math.min(from + previousLength, editor.state.doc.length);
-        currentPosition = from;
-        currentText = "";
-        editor.dispatch({
-          changes: { from, to, insert: "" },
-          userEvent: "input.tesseraSpinner",
-        });
-      }
-    },
-    textWithoutSpinner(text) {
-      if (!currentText) {
-        return text;
-      }
-      return text.slice(0, currentPosition) + text.slice(currentPosition + currentText.length);
-    },
-  };
-}
-
-function createTranscriptInserter(editor, insertPos, outputPrefix = "") {
-  let cursor = insertPos;
-  let commandOutputChars = 0;
-  let lastInsertedChar = "\n";
-
-  const insert = (text, commandOutputCharCount = 0) => {
-    if (!text) {
-      return;
-    }
-    text = text.replace(/\r\n?/g, "\n");
-    cursor = Math.min(cursor, editor.state.doc.length);
-    editor.dispatch({
-      changes: { from: cursor, insert: text },
-      selection: EditorSelection.cursor(cursor + text.length),
-      scrollIntoView: true,
-      userEvent: "input.tesseraRunOutput",
-    });
-    cursor += text.length;
-    lastInsertedChar = text[text.length - 1];
-    commandOutputChars += commandOutputCharCount;
-  };
-
-  const textAtOutputColumn = (text) => {
-    if (!outputPrefix) {
-      return text;
-    }
-
-    let prefixed = "";
-    let atLineStart = lastInsertedChar === "\n";
-    for (const char of text) {
-      if (atLineStart && char !== "\n") {
-        prefixed += outputPrefix;
-        atLineStart = false;
-      }
-      prefixed += char;
-      if (char === "\n") {
-        atLineStart = true;
-      }
-    }
-    return prefixed;
-  };
-
-  return {
-    startOutputBelowCommand() {
-      insert("\n");
-    },
-    appendCommandOutput(text) {
-      insert(textAtOutputColumn(text), text.length);
-    },
-    appendHostMessage(message) {
-      if (lastInsertedChar !== "\n") {
-        insert("\n");
-      }
-      insert(textAtOutputColumn(`[${message}]\n`));
-    },
-    finish(exitCode) {
-      if (commandOutputChars === 0 || exitCode !== 0) {
-        if (lastInsertedChar !== "\n") {
-          insert("\n");
-        }
-        insert(textAtOutputColumn(`[exit ${exitCode}]\n`));
-      }
-    },
-  };
-}
-
-async function readRunEventStream(response, onEvent) {
-  if (!response.body) {
-    const text = await response.text();
-    for (const line of text.split(/\r?\n/)) {
-      if (line.trim()) {
-        onEvent(JSON.parse(line));
-      }
-    }
-    return;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let pending = "";
-
-  for (;;) {
-    const { value, done } = await reader.read();
-    pending += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const lines = pending.split(/\r?\n/);
-    pending = lines.pop() || "";
-
-    for (const line of lines) {
-      if (line.trim()) {
-        onEvent(JSON.parse(line));
-      }
-    }
-
-    if (done) {
-      break;
-    }
-  }
-
-  if (pending.trim()) {
-    onEvent(JSON.parse(pending));
-  }
-}
-
-function hasEditorSelection(editor) {
-  return editor?.state.selection.ranges.some((range) => !range.empty) ?? false;
-}
-
-function selectedEditorText(editor) {
-  return editor.state.selection.ranges
-    .filter((range) => !range.empty)
-    .map((range) => editor.state.doc.sliceString(range.from, range.to))
-    .join("\n");
-}
-
 // Chrome leaves clipboard.writeText() pending — neither resolved nor rejected —
 // while its window does not hold focus. An OSC 52 copy hits that easily, since
 // it arrives over the terminal socket rather than from a keystroke, and awaiting
@@ -10715,7 +8379,7 @@ function settledWithin(promise, milliseconds) {
 // buffer is updated either way, so pasting back inside Tessera still works
 // when the browser refuses the write.
 async function writeClipboardText(text, { terminal = false } = {}) {
-  editorClipboardText = text;
+  clipboardText = text;
   if (clipboardBridge.status && (!terminal || clipboardBridge.status.terminal)) {
     try {
       await clipboardBridge.writeText(text, terminal);
@@ -10781,7 +8445,7 @@ async function readClipboardText() {
     return pastedText;
   }
   clipboardReadFellBack = true;
-  return editorClipboardText;
+  return clipboardText;
 }
 
 function copyTextWithHiddenField(text) {
@@ -10840,9 +8504,6 @@ function destroyRectangle(rect, options = {}) {
   if (contextMenuRect === rect) {
     contextMenuRect = null;
   }
-  if (editorMenuRect === rect) {
-    editorMenuRect = null;
-  }
   if (terminalMenuRect === rect) {
     terminalMenuRect = null;
   }
@@ -10858,9 +8519,6 @@ function destroyRectangle(rect, options = {}) {
   disposeTerminal(rect, { closeServer: options.closeServerTerminal });
   disposeBrowserPane(rect);
   disposeVNCPane(rect);
-  cancelWorksheetLineSelection(rect.editor);
-  rect.editor?.destroy();
-  rect.editor = null;
   window.clearTimeout(rect.fontSizeIndicatorTimer);
   rect.fontSizeIndicatorTimer = null;
   rect.element.remove();
@@ -10898,7 +8556,7 @@ function paneShortcutAction(keys) {
   // Dialogs and pickers own keyboard input, including relayed iframe keys.
   if ([settingsModal, localHTTPSModal, renameWindowModal, sessionsModal, sessionActionModal,
     serverUpdateModal, serverConnectionModal, workspaceConflictModal, helpModal,
-    directoryBrowser, userSelect].some((overlay) => !overlay.hidden)) {
+    directoryBrowser, userSelect, shortcutsUI.element].some((overlay) => !overlay.hidden)) {
     return null;
   }
   const primary = (keys.ctrlKey || keys.metaKey) && !keys.altKey && !keys.shiftKey;
@@ -10923,9 +8581,6 @@ function paneShortcutAction(keys) {
   if ((keys.ctrlKey || keys.metaKey) && keys.shiftKey && !keys.altKey
     && (keys.key === "ArrowUp" || keys.key === "ArrowDown")) {
     return { run: () => moveWindowInOrder(getActivePane(), keys.key === "ArrowUp" ? -1 : 1, { showSwitcher: true }) };
-  }
-  if (primary && keys.key === "Enter") {
-    return { run: () => runPaneCommand(getActivePane()), propagate: true };
   }
   if (primary && (keys.key === "Backspace" || keys.code === "Backspace")) {
     return { run: destroyActivePane };
@@ -10963,7 +8618,7 @@ function focusAdjacentPane(direction, options = {}) {
   if (!next) {
     return;
   }
-  setActivePane(next, { raise: true, focusEditor: true });
+  setActivePane(next, { raise: true, focus: true });
   if (options.showSwitcher) {
     showWindowSwitcher();
   }
@@ -10974,7 +8629,7 @@ function focusTopVisiblePane() {
     .filter((rect) => rect.kind !== "pending" && !rect.minimized)
     .sort((a, b) => b.zIndex - a.zIndex)[0] || null;
   if (next) {
-    setActivePane(next, { raise: false, focusEditor: true });
+    setActivePane(next, { raise: false, focus: true });
   } else {
     clearActivePane();
   }
@@ -11018,9 +8673,6 @@ function hideMenusWhenOutside(event) {
   if (!dockMenu.hidden && !dockMenu.contains(event.target)) {
     hideDockMenu();
   }
-  if (!editorMenu.hidden && !editorMenu.contains(event.target)) {
-    hideEditorMenu();
-  }
   if (!terminalMenu.hidden && !terminalMenu.contains(event.target)) {
     hideTerminalMenu();
   }
@@ -11045,6 +8697,7 @@ function hideMenusOnEscape(event) {
 }
 
 function hideAllMenus() {
+  shortcutsUI.close();
   hideFloatingMenus();
   hideDirectoryBrowser();
   hideCommandPalette();
@@ -11061,7 +8714,6 @@ function hideAllMenus() {
 
 function hideFloatingMenus() {
   hideDockMenu();
-  hideEditorMenu();
   hideTerminalMenu();
   hideWorkspaceMenu();
   hideWindowTypeMenu();
@@ -11070,11 +8722,6 @@ function hideFloatingMenus() {
 function hideDockMenu() {
   dockMenu.hidden = true;
   contextMenuRect = null;
-}
-
-function hideEditorMenu() {
-  editorMenu.hidden = true;
-  editorMenuRect = null;
 }
 
 function hideTerminalMenu() {
@@ -11106,10 +8753,6 @@ function hideDirectoryBrowser() {
   directoryBrowser.hidden = true;
   directoryBrowserRect = null;
   directoryBrowserPath = "";
-  fileBrowserRect = null;
-  fileBrowserMode = "";
-  fileBrowserPath = "";
-  fileBrowserFilePath = "";
 }
 
 function showMenuAt(menu, clientX, clientY) {

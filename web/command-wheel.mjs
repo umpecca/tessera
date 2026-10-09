@@ -2,18 +2,18 @@ const primaryKeys = ["N", "D", "M", "W", "O", "S", "H", "P"];
 const groupLabels = {
   N: "New / next", D: "Dock / close", M: "Window size", W: "Window title",
   O: "Arrange", S: "Settings", H: "Help / UI", P: "Previous",
-  R: "Repair", B: "Local ports", L: "Local HTTPS", U: "Update", T: "Tessera Sessions",
+  R: "Repair", B: "Local ports", L: "Local HTTPS", U: "Update", T: "Tessera Sessions", C: "Create / shortcuts",
 };
 const shortLabels = {
-  NN: "Terminal", NW: "Worksheet", NF: "Files", NE: "Editor", NB: "Browser",
-  NA: "Audio", NX: "Next window", PW: "Previous", OO: "Cascade",
+  NN: "Terminal", NB: "Browser", NV: "VNC", CS: "Shortcuts",
+  NX: "Next window", PW: "Previous", OO: "Cascade",
   DT: "Top", DL: "Left", DR: "Right", DB: "Bottom", DD: "Destroy",
   WT: "Set title", HP: "Help", HB: "Deskbar", LH: "HTTPS",
   UP: "Update server", RV: "Repair view", BL: "Port help", TS: "Tessera Sessions",
 };
 const compactLabels = {
   N: "New", D: "Dock", M: "Size", W: "Title", O: "Arrange", S: "Settings", H: "Help", P: "Prev",
-  NN: "Term", NW: "Sheet", NF: "Files", NE: "Edit", NB: "Web", NA: "Audio", NX: "Next",
+  NN: "Term", NB: "Web", NV: "VNC", CS: "Shortcuts", NX: "Next",
   PW: "Prev", OO: "Stack", DT: "Top", DL: "Left", DR: "Right", DB: "Bottom", DD: "Close",
   MM: "Max", MN: "Min", WT: "Title", HP: "Help", HB: "Bar", LH: "HTTPS", UP: "Update", RV: "Repair", BL: "Ports",
 };
@@ -218,10 +218,10 @@ export class CommandWheel {
     const step = Math.min(32, 196 / Math.max(1, choices.length));
     choices.forEach((choice, index) => {
       const key = choice.code[1];
-      const label = choice.code === "MM" || choice.code === "MN" ? choice.label.replace(/ Window$/, "")
+      const label = choice.shortcut ? choice.label : choice.code === "MM" || choice.code === "MN" ? choice.label.replace(/ Window$/, "")
         : shortLabels[choice.code] || choice.label.replace(/ Window$/, "");
       const angle = groupAngle + (index - (choices.length - 1) / 2) * step;
-      const compact = /^Restore/.test(label) ? "Back" : compactLabels[choice.code];
+      const compact = choice.shortcut ? undefined : /^Restore/.test(label) ? "Back" : compactLabels[choice.code];
       const button = this.wedge("command-wheel-choice command-wheel-command", key, label, compact,
         angle, step - 1, 34, 49, () => {
           if (!this.element.hidden) this.onCommand(choice);

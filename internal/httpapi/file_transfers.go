@@ -3,47 +3,14 @@ package httpapi
 import (
 	"errors"
 	"io"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"tessera/internal/terminalfile"
 )
 
 const DefaultMaxUploadBytes int64 = 1 << 30
-
-func (a *API) downloadFile(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
-	path := cleanFilePath(r.URL.Query().Get("path"))
-	if path == "" {
-		writeError(w, http.StatusBadRequest, "path is required")
-		return
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if !info.Mode().IsRegular() {
-		writeError(w, http.StatusBadRequest, "path is not a regular file")
-		return
-	}
-	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)})
-	if disposition == "" {
-		disposition = "attachment"
-	}
-	w.Header().Set("Content-Disposition", disposition)
-	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
-}
 
 func (a *API) uploadFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -114,6 +81,14 @@ func (a *API) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := r.Context().Err(); err != nil {
+		writeError(w, 400, "upload cancelled")
+		return
+	}
+	if r.ContentLength >= 0 && written != r.ContentLength {
+		writeError(w, 400, "upload size differs from selection")
+		return
+	}
 	if exists {
 		err = replaceUploadedFile(temporaryPath, target)
 	} else {
@@ -135,7 +110,7 @@ func (a *API) uploadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func validUploadName(name string) bool {
-	return name != "" && name != "." && name != ".." &&
+	return terminalfile.ValidName(name) && name != "" && name != "." && name != ".." &&
 		!filepath.IsAbs(name) && filepath.Base(name) == name &&
 		!strings.ContainsAny(name, `/\`) && !strings.ContainsRune(name, 0)
 }
@@ -203,4 +178,15 @@ func replaceUploadedFile(temporaryPath, target string) error {
 	}
 	_ = os.Remove(backupPath)
 	return nil
+}
+
+func cleanFilePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return filepath.Clean(path)
 }

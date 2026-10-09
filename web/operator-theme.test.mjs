@@ -13,13 +13,10 @@ function appFunction(name, context) {
 test("Operator defaults use unsuffixed titles and other themes retain their naming", () => {
   const context = {
     themeID: "operator", rectangles: [{ title: "Terminal 2" }],
-    fileBrowserPaneKind: "file-browser", textEditorPaneKind: "text-editor",
     browserPaneKind: "browser", vncPaneKind: "vnc",
   };
   const title = appFunction("defaultPaneTitle", context);
   assert.equal(title("terminal"), "Terminal");
-  assert.equal(title("worksheet"), "Worksheet");
-  assert.equal(title("file-browser"), "File Browser");
   context.themeID = "studio";
   assert.equal(title("terminal"), "Terminal 3");
   assert.equal(context.rectangles[0].title, "Terminal 2", "saved titles are never rewritten");
@@ -40,20 +37,20 @@ test("closing a live terminal can be canceled and confirmed close ends its manag
   assert.deepEqual(destroyed, [[terminal, true]]);
 });
 
-test("closing editor panes and already exited terminals needs no shell confirmation", () => {
+test("closing browser panes and already exited terminals needs no shell confirmation", () => {
   const destroyed = [];
   const close = appFunction("closeWindowFromTitleBar", {
     window: { confirm() { assert.fail("no live shell to confirm"); } },
     destroyRectangle: rect => destroyed.push(rect.kind),
   });
-  close({ kind: "text-editor" });
+  close({ kind: "browser" });
   close({ kind: "terminal", terminalStatus: { state: "exited" } });
-  assert.deepEqual(destroyed, ["text-editor", "terminal"]);
+  assert.deepEqual(destroyed, ["browser", "terminal"]);
 });
 
-test("theme switching clears transient wobble and refits the existing editor and terminal views", () => {
+test("theme switching clears transient wobble and refits the existing terminal views", () => {
   const calls = [];
-  const rect = { editor: { requestMeasure: () => calls.push("measure") } };
+  const rect = {};
   const context = {
     themes: { operator: {}, studio: {} }, themeID: "studio", defaultThemeID: "studio",
     windowWobble: { stop: () => calls.push("stop") }, rectangles: [rect],
@@ -65,7 +62,7 @@ test("theme switching clears transient wobble and refits the existing editor and
   };
   appFunction("applyTheme", context)("operator");
   assert.equal(context.document.documentElement.dataset.theme, "operator");
-  assert.deepEqual(calls, ["stop", "reflow", "measure", "fit", "visibility", "save"]);
+  assert.deepEqual(calls, ["stop", "reflow", "fit", "visibility", "save"]);
 });
 
 test("Operator docking is flush and maximization resets a scrolled desktop", () => {

@@ -10,8 +10,6 @@ import (
 	"sync"
 
 	"tessera/internal/localhttps"
-	"tessera/internal/runs"
-	"tessera/internal/shell"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
 	"tessera/internal/update"
@@ -20,8 +18,6 @@ import (
 
 type API struct {
 	Store     *store.Store
-	Runner    *shell.Runner
-	Runs      *runs.Manager
 	Terminals *terminal.Manager
 	WebFS     fs.FS
 	// Users is the roster for multi-user mode. When empty, Tessera runs in
@@ -30,7 +26,7 @@ type API struct {
 	// Updater enables the self-update endpoint; nil (e.g. the desktop build)
 	// makes /api/update report the feature as unavailable.
 	Updater *update.Updater
-	// MaxUploadBytes limits one streamed File Browser upload. Values at or below
+	// MaxUploadBytes limits one streamed terminal file upload. Values at or below
 	// zero use DefaultMaxUploadBytes.
 	MaxUploadBytes int64
 	// HTTPSDefaultAddress and HTTPSPKIDir back the host-level Local HTTPS
@@ -51,15 +47,15 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/users", a.users)
 	mux.HandleFunc("/api/users/", a.userResources)
 	mux.HandleFunc("/api/workspace/", a.workspace)
-	mux.HandleFunc("/api/run", a.runCommand)
-	mux.HandleFunc("/api/runs", a.listRuns)
-	mux.HandleFunc("/api/runs/", a.runEvents)
 	mux.HandleFunc("/api/terminal", a.terminalSession)
 	mux.HandleFunc("/api/directories", a.listDirectories)
-	mux.HandleFunc("/api/file", a.fileContents)
-	mux.HandleFunc("/api/files/download", a.downloadFile)
-	mux.HandleFunc("/api/files/upload", a.uploadFile)
-	mux.HandleFunc("/api/files", a.fileOperations)
+	mux.HandleFunc("/api/terminal-files/claim", a.claimTerminalFiles)
+	mux.HandleFunc("/api/terminal-files/frame", a.terminalFileFrame)
+	mux.HandleFunc("/api/terminal-files/upload", a.uploadTerminalFile)
+	mux.HandleFunc("/api/terminal-files/download", a.downloadTerminalFiles)
+	mux.HandleFunc("/api/terminal-files/result", a.terminalFileResult)
+	mux.HandleFunc("/api/terminal-files/finish", a.finishTerminalFiles)
+	mux.HandleFunc("/api/terminal-files/cancel", a.cancelTerminalFiles)
 	mux.HandleFunc("/api/update", a.selfUpdate)
 	mux.HandleFunc("/api/host/https", a.localHTTPSSettings)
 	mux.HandleFunc("/api/host/https/ca", a.localHTTPSRootCertificate)

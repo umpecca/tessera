@@ -91,7 +91,7 @@ Useful flags:
 -rate-burst int               per-client API burst (default 120)
 -audit-log bool               persist redacted audit events (default false)
 -audit-retention-days int     enabled audit retention in days (default 30)
--max-upload-size int          maximum bytes per File Browser upload (default 1073741824)
+-max-upload-size int          maximum bytes per terminal file upload (default 1073741824)
 ```
 
 For example:
@@ -218,19 +218,9 @@ the outline. Left clicks inside existing panes keep their normal behavior.
 
 Current pane types:
 
-- **Worksheet:** a CodeMirror-backed editable command worksheet. Run the
-  selection or current line with `Ctrl+Enter`/`Cmd+Enter`; streamed output is
-  inserted as editable text below the command.
 - **Terminal:** a persistent PTY terminal using ConPTY on Windows and a Unix
   PTY on macOS/Linux. Terminal sessions retain bounded scrollback while the
   server process remains alive.
-- **Text Editor:** a file-oriented CodeMirror editor with tabs, save/save-as,
-  per-tab state, and syntax highlighting for supported file extensions.
-- **File Browser:** host filesystem navigation with open, copy, move, paste,
-  delete, streamed upload, and attachment download operations. Upload accepts
-  multiple files, reports progress, supports drag-and-drop, and confirms before
-  replacing an existing regular file. Supported text files open in a Text
-  Editor pane.
 - **Browser:** a sandboxed view of an HTTP(S) development server on the Tessera
   host. Enter a loopback address such as `localhost:5000`; Tessera forwards the
   page, assets, forms, fetches, redirects, and hot-reload WebSockets through its
@@ -377,7 +367,6 @@ dimensions, and is disabled by reduced motion or **Older Mac** mode.
 Use `Ctrl+Plus`/`Cmd+Plus` and `Ctrl+Minus`/`Cmd+Minus` to adjust the active
 pane's text size. A brief indicator shows the size as a percentage of the
 configured default; `Ctrl+0`/`Cmd+0` restores that default and shows 100%.
-The same shortcuts work in Worksheet and Text Editor panes.
 
 Terminal panes use the locally bundled JetBrains Mono font by default. Choose
 JetBrains Mono or Fira Code under **Settings → Terminal → Font**; the per-user
@@ -476,8 +465,8 @@ Workspace behavior includes:
   Title, and `close` for Destroy Window.
 - Open the experimental **Command Wheel** with `Ctrl+;`/`Cmd+;`, or from the
   workspace menu. Hover or type a first key to reveal valid second keys, then type or
-  click the next key to run its command (for example, `N` → `W` creates a
-  worksheet). Settings opens directly with `S` in the wheel and `S` then Enter
+  click the next key to run its command (for example, `N` → `N` creates a
+  terminal). Settings opens directly with `S` in the wheel and `S` then Enter
   in the palette.
   **Tessera Sessions** uses `T` → `S` in the wheel and `TS` in the palette.
   Backspace goes back, Escape closes, and **Search all commands**
@@ -491,7 +480,7 @@ Workspace behavior includes:
   `Ctrl+Up/Down`/`Cmd+Up/Down` to reorder it. Shift also works inside the list.
   Enter opens the highlighted window; Escape closes the list.
 - Choose a theme, default pane font size, per-session background image, and
-  independent Terminal and editor wheel-scroll speeds.
+  Terminal wheel-scroll speed.
 - Persist the active pane and complete workspace document to SQLite.
 - Reject stale whole-workspace saves from older tabs or reconnecting computers;
   autosave pauses and offers to reload when a newer revision already exists.
@@ -505,6 +494,36 @@ window switcher, Window List, Deskbar, and window menus. Focusing a window keeps
 this order. Reordering preserves window positions, stacking, and contents;
 minimized windows keep their place and can be moved in the list. Cycling skips
 minimized windows. New windows append, and reorder controls stop at the ends.
+
+## Terminal shortcuts
+
+Open **Shortcuts...** from the workspace menu, **Manage shortcuts...** in Settings,
+or `CS` in the command palette. Add, edit, duplicate, delete, or test a launcher.
+Shortcuts save for the selected user across sessions; concurrent saves report a
+conflict and retain your edits until you choose to reload.
+
+For an Editor launcher, set **Name** to `Editor`, **Palette code** to `CE`, and
+**Base command** to your installed terminal editor, such as `fresh` or `sati`.
+Add a text input named File with an empty CLI switch to pass the filename as a
+positional argument. Use `--file` or another switch only if your program supports
+it. Text inputs can have defaults or be required; optional empty values omit both
+the value and its switch. Boolean inputs append their switch when checked.
+Inputs are appended in their configured order, with values quoted for the host's
+terminal shell. The base command itself is shell syntax. Quote executable paths
+with spaces, and prefix quoted executable paths with `&` in PowerShell.
+
+Invoke `CE` then Enter in the palette, or `C` → `E` in the Command Wheel. Launchers
+with inputs show a compact invocation form; launchers without inputs run directly.
+Each opens a new terminal titled Editor. A blank working directory uses the current
+pane's directory, falling back to the host default; an explicit directory must be
+an absolute host path. Restoring a workspace never reruns a shortcut. **Test
+shortcut** runs your draft without saving it.
+
+Up to 64 shortcuts and 32 inputs per shortcut are supported. Codes use two uppercase
+letters and cannot conflict with built-in commands or other shortcuts. Arguments
+support the host's PowerShell or sh/bash/zsh/ksh/fish shell; unsupported custom
+shells can run shortcuts without text inputs. Shortcut definitions are local to
+this Tessera database and are not included in workspace exports.
 
 ## Users and named sessions
 
@@ -684,13 +703,32 @@ immutable; append a new migration instead of editing an existing one.
 
 ## Releases and self-update
 
-Pushing a `v*` tag runs the GitHub Actions release workflow and publishes:
+The **CI and Release** workflow runs on pull requests to `main`, pushes to `main`,
+version-tag pushes, and manual dispatch. CI rebuilds/verifies the terminal core,
+runs JavaScript and Go tests, vets the terminal helpers, and uploads platform
+binaries as workflow artifacts. Only a pushed `v*` tag publishes a GitHub release:
 
 - `tessera-linux-amd64`
 - `tessera-linux-arm64`
 - `tessera-windows-amd64.exe`
 - `tessera-darwin-arm64`
 - Matching `tessera-audio-<os>-<arch>` helpers (`.exe` on Windows)
+- Matching `tessera-file-<os>-<arch>` helpers (`.exe` on Windows)
+- Verified original LAME companions, source, and license for legacy updater compatibility
+
+| Platform | Audio helper | Upload/download helper |
+| --- | --- | --- |
+| Windows x64 / amd64 | `tessera-audio-windows-amd64.exe` | `tessera-file-windows-amd64.exe` |
+| macOS arm64 | `tessera-audio-darwin-arm64` | `tessera-file-darwin-arm64` |
+| Ubuntu/Linux x64 / amd64 | `tessera-audio-linux-amd64` | `tessera-file-linux-amd64` |
+| Ubuntu/Linux arm64 | `tessera-audio-linux-arm64` | `tessera-file-linux-arm64` |
+
+x64 and amd64 are the same architecture. Native platform jobs use GitHub's
+[supported runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+Missing or empty server/helper assets stop release publication. The helpers are
+independent executables; audio streaming needs separately installed FFmpeg/libopus,
+while file transfers have no additional executable dependency. See
+[audio installation](docs/terminal-audio.md) and [file transfers](docs/terminal-files.md).
 
 Linux and Windows builds use `CGO_ENABLED=0`. Linux builds run server-only
 without tray support. The macOS ARM build runs on a native macOS runner with
@@ -720,10 +758,35 @@ answers its health check. If the privileged update fails, inspect
 `journalctl -u 'run-*.service'` and `journalctl -u tessera.service`; rerunning
 `install-ubuntu.sh` from an external shell remains the recovery path.
 
-Updaters from versions that require a LAME release asset cannot install an
-executable-only release. Upgrade those versions once by replacing the Tessera
-executable manually, or rerun the Ubuntu installer. The new updater manages
-only Tessera; install/update `tessera-audio` and FFmpeg separately.
+Releases retain the original v1.9.0 LAME companions, source archive, and license
+as compatibility assets for older updaters. Those updaters require a companion
+before they can install Tessera v1.9.1 or later. The files are copied with pinned
+size/SHA-256 checks; LAME is no longer built or used by Tessera. New updaters
+install only Tessera; install/update `tessera-audio`, `tessera-file` and FFmpeg separately.
+
+To prepare the same compatibility assets for repairing an existing release:
+
+```text
+node scripts/prepare-legacy-update-assets.mjs .cache/legacy-update-assets
+```
+
+An executable-only release published without these compatibility assets still
+requires a manual executable replacement or Ubuntu installer rerun when updating
+from a LAME-dependent version.
 
 Anonymous GitHub Releases API access is used, so release assets must be
 reachable without private repository credentials.
+
+### Terminal file transfers
+
+Use [`tessera-file`](docs/terminal-files.md) on the Tessera host to upload files
+from an attached browser or download host files. Batch downloads stream as ZIP;
+file bytes never enter terminal history. Build with
+`go build -o tessera-file ./cmd/tessera-file`, or install the matching standalone
+release asset. Browser selection/approval is required; remote SSH transfers and
+directories are outside v1. Saved File Browser panes become terminals in their
+existing directories. Text Editor and Worksheet panes are also retired: saved
+text, tabs, file paths, and modes remain archived in workspace data, while their
+panes become terminals. Moving or saving the workspace preserves these archives;
+no saved text is executed. Edit files and keep notes using terminal applications.
+The terminal working-directory picker remains available.

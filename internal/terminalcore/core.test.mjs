@@ -16,6 +16,18 @@ function audioEffects(t) {
   }
   return records;
 }
+function fileEffects(t) {
+  const e = t.e, ptr = e.ghostty_wasm_alloc_u8_array(4096), chunks = [];
+  try {
+    for (let count; (count = e.tessera_file_read(t.handle, ptr, 4096));) chunks.push(Buffer.from(new Uint8Array(e.memory.buffer, ptr, count)));
+  } finally { e.ghostty_wasm_free_u8_array(ptr, 4096); }
+  const data = Buffer.concat(chunks), records = [];
+  for (let offset = 0; offset < data.length;) {
+    const length = data.readUInt32LE(offset); offset += 4;
+    records.push(data.subarray(offset, offset+length).toString()); offset += length;
+  }
+  return records;
+}
 async function terminal(cols = 20, rows = 6, sharedExports) {
   const e = sharedExports || (await WebAssembly.instantiate(bytes, { env: { log() {} } })).instance.exports;
   let handle = e.ghostty_terminal_new(cols, rows);
@@ -86,6 +98,19 @@ test("audio effects are transient across snapshots, including partial OSC and sp
       assert.deepEqual(audioEffects(t), [], "a snapshot never carries queued effects");
       t.write(sequence.slice(split));
       assert.deepEqual(audioEffects(t), split === sequence.length ? [] : ["stop;clip"], `split ${split}`);
+    } finally { t.dispose(); }
+  }
+});
+test("file effects are transient across snapshots, including partial OSC and split ST", async () => {
+  const sequence = "\x1b]777;tessera-file;1;query;nonce\x1b\\";
+  for (let split = 0; split <= sequence.length; split++) {
+    const t = await terminal();
+    try {
+      t.write(sequence.slice(0, split));
+      t.restore(t.snapshot());
+      assert.deepEqual(fileEffects(t), [], "a snapshot never carries queued effects");
+      t.write(sequence.slice(split));
+      assert.deepEqual(fileEffects(t), split === sequence.length ? [] : ["query;nonce"], `split ${split}`);
     } finally { t.dispose(); }
   }
 });

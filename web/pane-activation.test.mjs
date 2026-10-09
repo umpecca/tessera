@@ -126,14 +126,11 @@ function focusable() {
   };
 }
 
-test("terminal and editor panes use their native focus APIs", () => {
+test("terminal panes use their native focus API", () => {
   const terminal = focusable();
-  const editor = focusable();
 
   assert.equal(focusPane({ kind: "terminal", terminal: { term: terminal } }), true);
-  assert.equal(focusPane({ kind: "worksheet", editor }), true);
   assert.equal(terminal.calls, 1);
-  assert.equal(editor.calls, 1);
 });
 
 test("browser panes focus the live frame or fall back to the address", () => {
@@ -158,29 +155,6 @@ test("VNC panes focus a live RFB client or fall back to the address", () => {
 
   focusPane({ kind: "vnc", vnc: { rfb: null, address } });
   assert.equal(address.calls, 1);
-});
-
-test("file browser, audio, and generic panes use pane-owned DOM targets", () => {
-  const selectedEntry = focusable();
-  const firstEntry = focusable();
-  const upButton = focusable();
-  const play = focusable();
-  const element = focusable();
-  const content = {
-    querySelector(selector) {
-      return selector.includes(".is-selected") ? selectedEntry : firstEntry;
-    },
-  };
-
-  focusPane({ kind: "file-browser", fileBrowserView: { content, upButton } });
-  focusPane({ kind: "audio", audio: { play } });
-  focusPane({ kind: "pending", element });
-
-  assert.equal(selectedEntry.calls, 1);
-  assert.equal(firstEntry.calls, 0);
-  assert.equal(upButton.calls, 0);
-  assert.equal(play.calls, 1);
-  assert.equal(element.calls, 1);
 });
 
 test("disabled pane controls fall back to the pane container", () => {

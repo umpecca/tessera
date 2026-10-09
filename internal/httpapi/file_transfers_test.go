@@ -11,50 +11,6 @@ import (
 	"testing"
 )
 
-func TestDownloadFileStreamsAttachmentAndRanges(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, "report ü.txt")
-	if err := os.WriteFile(path, []byte("0123456789"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	api := &API{}
-
-	request := httptest.NewRequest(http.MethodGet, "/api/files/download?path="+url.QueryEscape(path), nil)
-	response := httptest.NewRecorder()
-	api.downloadFile(response, request)
-	if response.Code != http.StatusOK || response.Body.String() != "0123456789" {
-		t.Fatalf("download = %d %q", response.Code, response.Body.String())
-	}
-	disposition := response.Header().Get("Content-Disposition")
-	if !strings.Contains(disposition, "attachment") || !strings.Contains(disposition, "report") {
-		t.Fatalf("Content-Disposition = %q", disposition)
-	}
-
-	rangeRequest := httptest.NewRequest(http.MethodGet, "/api/files/download?path="+url.QueryEscape(path), nil)
-	rangeRequest.Header.Set("Range", "bytes=2-5")
-	rangeResponse := httptest.NewRecorder()
-	api.downloadFile(rangeResponse, rangeRequest)
-	if rangeResponse.Code != http.StatusPartialContent || rangeResponse.Body.String() != "2345" {
-		t.Fatalf("range download = %d %q", rangeResponse.Code, rangeResponse.Body.String())
-	}
-}
-
-func TestDownloadFileRejectsMissingPathAndDirectory(t *testing.T) {
-	api := &API{}
-	for _, target := range []string{
-		"/api/files/download",
-		"/api/files/download?path=" + url.QueryEscape(t.TempDir()),
-		"/api/files/download?path=" + url.QueryEscape(filepath.Join(t.TempDir(), "missing")),
-	} {
-		request := httptest.NewRequest(http.MethodGet, target, nil)
-		response := httptest.NewRecorder()
-		api.downloadFile(response, request)
-		if response.Code != http.StatusBadRequest {
-			t.Fatalf("%s status = %d, want 400", target, response.Code)
-		}
-	}
-}
-
 func TestUploadFileStagesConflictsAndOverwrites(t *testing.T) {
 	directory := t.TempDir()
 	api := &API{MaxUploadBytes: 64}

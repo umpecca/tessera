@@ -231,7 +231,7 @@ func TestUnversionedCurrentSchemaAdoptionPreservesNamedSessions(t *testing.T) {
 		t.Fatalf("load adopted settings: %v", err)
 	}
 	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" || !settings.DeskbarButtonEnabled ||
-		settings.TerminalWheelSensitivity != 1.5 || settings.EditorWheelSensitivity != 1.5 || settings.OLEDWindowBorderSize != 10 || settings.TerminalTERM != DefaultTerminalTERM || settings.TerminalFont != DefaultTerminalFont || settings.TerminalColorMode != DefaultTerminalColorMode || settings.OlderMacMode {
+		settings.TerminalWheelSensitivity != 1.5 || settings.OLEDWindowBorderSize != 10 || settings.TerminalTERM != DefaultTerminalTERM || settings.TerminalFont != DefaultTerminalFont || settings.TerminalColorMode != DefaultTerminalColorMode || settings.OlderMacMode {
 		t.Fatalf("adopted settings changed: %+v", settings)
 	}
 }

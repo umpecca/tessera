@@ -57,8 +57,8 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 	settings := &UserSettings{
 		UserID: "alice", DefaultPaneFontSize: 18, DefaultTheme: "studio",
 		ThemeID: "hacker", DeskbarButtonEnabled: false,
-		TerminalWheelSensitivity: 0.5, EditorWheelSensitivity: 2,
-		OLEDWindowBorderSize: 16, TerminalTERM: "xterm-ghostty", TerminalFont: "fira-code",
+		TerminalWheelSensitivity: 0.5,
+		OLEDWindowBorderSize:     16, TerminalTERM: "xterm-ghostty", TerminalFont: "fira-code",
 		TerminalColorMode: "light", OlderMacMode: true,
 		TerminalRowSpacing: "comfortable",
 	}
@@ -70,7 +70,7 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		t.Fatalf("load settings: %v", err)
 	}
 	if loaded.DefaultPaneFontSize != 18 || loaded.DefaultTheme != "studio" || loaded.ThemeID != "hacker" || loaded.DeskbarButtonEnabled ||
-		loaded.TerminalWheelSensitivity != 0.5 || loaded.EditorWheelSensitivity != 2 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalRowSpacing != "comfortable" || loaded.TerminalColorMode != "light" || !loaded.OlderMacMode {
+		loaded.TerminalWheelSensitivity != 0.5 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalRowSpacing != "comfortable" || loaded.TerminalColorMode != "light" || !loaded.OlderMacMode {
 		t.Fatalf("loaded settings = %+v", loaded)
 	}
 }
@@ -172,8 +172,8 @@ func TestNewUserWheelSensitivityDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load settings: %v", err)
 	}
-	if settings.TerminalWheelSensitivity != 1.5 || settings.EditorWheelSensitivity != 1.5 {
-		t.Fatalf("new user wheel sensitivity = terminal %v, editor %v", settings.TerminalWheelSensitivity, settings.EditorWheelSensitivity)
+	if settings.TerminalWheelSensitivity != 1.5 {
+		t.Fatalf("new user wheel sensitivity = %v", settings.TerminalWheelSensitivity)
 	}
 }
 
@@ -271,7 +271,7 @@ VALUES ('alice', 'alice', 18, 'studio', 'hacker', '2026-01-01', '2026-01-02');`)
 		t.Fatalf("load migrated settings: %v", err)
 	}
 	if settings.DefaultPaneFontSize != 18 || settings.DefaultTheme != "studio" || settings.ThemeID != "hacker" || !settings.DeskbarButtonEnabled ||
-		settings.TerminalWheelSensitivity != 1 || settings.EditorWheelSensitivity != 1 || settings.OLEDWindowBorderSize != 10 || settings.OlderMacMode {
+		settings.TerminalWheelSensitivity != 1 || settings.OLEDWindowBorderSize != 10 || settings.OlderMacMode {
 		t.Fatalf("migrated settings = %+v", settings)
 	}
 }

@@ -21,7 +21,6 @@ type directoryEntry struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
 	Kind string `json:"kind"`
-	Size *int64 `json:"size"`
 }
 
 func (a *API) listDirectories(w http.ResponseWriter, r *http.Request) {
@@ -62,13 +61,12 @@ func (a *API) listDirectories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	includeFiles := r.URL.Query().Get("files") == "1"
 	entries := make([]directoryEntry, 0, len(children))
 	for _, child := range children {
-		if !child.IsDir() && !includeFiles {
+		if !child.IsDir() {
 			continue
 		}
-		entries = append(entries, directoryEntryFromChild(path, child))
+		entries = append(entries, directoryEntry{Name: child.Name(), Path: filepath.Join(path, child.Name()), Kind: "directory"})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Kind != entries[j].Kind {
@@ -84,25 +82,6 @@ func (a *API) listDirectories(w http.ResponseWriter, r *http.Request) {
 		Roots:     directoryRoots(),
 		Entries:   entries,
 	})
-}
-
-func directoryEntryFromChild(parent string, child os.DirEntry) directoryEntry {
-	entry := directoryEntry{
-		Name: child.Name(),
-		Path: filepath.Join(parent, child.Name()),
-		Kind: "file",
-	}
-	if child.IsDir() {
-		entry.Kind = "directory"
-		return entry
-	}
-	// A file can disappear or become unreadable between ReadDir and Info. Keep
-	// the directory useful and expose a null size for just that entry.
-	if info, err := child.Info(); err == nil && info.Mode().IsRegular() {
-		size := info.Size()
-		entry.Size = &size
-	}
-	return entry
 }
 
 func parentDirectory(path string) string {

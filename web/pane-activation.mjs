@@ -43,10 +43,6 @@ export function focusPane(pane) {
     pane.terminal.term.focus();
     return true;
   }
-  if (typeof pane.editor?.focus === "function") {
-    pane.editor.focus();
-    return true;
-  }
 
   let target = pane.element;
   if (pane.kind === "browser") {
@@ -55,11 +51,6 @@ export function focusPane(pane) {
       : pane.browser?.address || target;
   } else if (pane.kind === "vnc") {
     target = pane.vnc?.rfb || pane.vnc?.address || target;
-  } else if (pane.kind === "file-browser") {
-    const entry = pane.fileBrowserView?.content?.querySelector?.(".pane-file-browser-entry.is-selected")
-      || pane.fileBrowserView?.content?.querySelector?.(".pane-file-browser-entry")
-      || pane.fileBrowserView?.upButton;
-    target = entry && !entry.disabled ? entry : target;
   } else if (pane.kind === "audio") {
     target = pane.audio?.play && !pane.audio.play.disabled ? pane.audio.play : target;
   }

@@ -20,6 +20,8 @@ func (a *API) userResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch resource {
+	case "shortcuts":
+		a.userShortcuts(w, r, userID, id, action)
 	case "sessions":
 		a.sessions(w, r, userID, id, action)
 	case "settings":
@@ -137,12 +139,6 @@ func (a *API) sessions(w http.ResponseWriter, r *http.Request, userID, sessionID
 		defer cancel()
 		if a.Terminals != nil {
 			a.Terminals.TerminateWorkspace(sessionID)
-		}
-		if a.Runs != nil {
-			if err := a.Runs.StopWorkspace(stopCtx, sessionID); err != nil {
-				writeError(w, http.StatusConflict, "session processes did not stop")
-				return
-			}
 		}
 		if err := a.Store.DeleteSession(stopCtx, userID, sessionID); err != nil {
 			writeStoreError(w, err)

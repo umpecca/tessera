@@ -26,6 +26,27 @@ function loadTerminalClass(overrides = {}) {
   });
 }
 
+test("the browser adapter discards native file effects and query responses", () => {
+  class GhosttyTerminal { constructor(options) { this.options = options; } onScroll() {} dispose() {} }
+  const Terminal = loadTerminalClass({ GhosttyTerminal, renderScheduler: { unregister() {} } });
+  const term = new Terminal();
+  let allocated = 0, freed = 0, audio = 2, files = 2, replies = 2;
+  const exports = {
+    ghostty_wasm_alloc_u8_array() { allocated++; return 4; },
+    ghostty_wasm_free_u8_array() { freed++; },
+    tessera_audio_read() { return audio-- > 0 ? 1 : 0; },
+    tessera_file_read() { return files-- > 0 ? 1 : 0; },
+  };
+  term.wasmTerm = { exports, handle: 1, readResponse() { return replies-- > 0 ? "query response" : ""; } };
+  term.processTerminalResponses();
+  assert.equal(files, -1); assert.equal(replies, -1);
+  audio = files = replies = 2;
+  term.wasmTerm.handle = 2; // A restored snapshot replaces only the core handle.
+  term.processTerminalResponses();
+  assert.equal(files, -1); assert.equal(replies, -1); assert.equal(allocated, 1);
+  term.dispose(); assert.equal(freed, 1);
+});
+
 test("the terminal adapter suppresses startup autofocus and explicitly requests output frames", () => {
   let focuses = 0;
   let frames = 0;

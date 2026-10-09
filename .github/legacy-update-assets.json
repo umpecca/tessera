@@ -1,0 +1,12 @@
+{
+  "repository": "umpecca/tessera",
+  "release": "v1.9.0",
+  "assets": [
+    { "name": "tessera-lame-linux-amd64", "size": 558472, "sha256": "2ffa3c705ecac07b9d57cf006018011e79892f6403a69c58f3cbd9b206ae044a" },
+    { "name": "tessera-lame-linux-arm64", "size": 578792, "sha256": "a874595ac4c06bf80d73d0a043d3bb5a67e70c283a89b9fb8e1a01b85aedcdef" },
+    { "name": "tessera-lame-darwin-arm64", "size": 442152, "sha256": "eeec28ffc1c4f28625fc8dca0576a702768fcbc9b55bdb46380df1d6da957238" },
+    { "name": "tessera-lame-windows-amd64.exe", "size": 657589, "sha256": "152025358652e5a5606a0ea0974d70c87b82cdb511220fc84f5d0c27468919be" },
+    { "name": "lame-3.100.tar.gz", "size": 1524133, "sha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e" },
+    { "name": "LICENSE.LAME.txt", "size": 25284, "sha256": "bfe4a52dc4645385f356a8e83cc54216a293e3b6f1cb4f79f5fc0277abf937fd" }
+  ]
+}

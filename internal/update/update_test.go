@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -132,7 +133,8 @@ func serverURL(r *http.Request) string {
 func TestApplyInstallsOnlyExecutableAndLeavesExistingEncoderAlone(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, assetName())
-	legacyEncoder := filepath.Join(dir, "tessera-lame")
+	legacyName := strings.Replace(assetName(), "tessera-", "tessera-lame-", 1)
+	legacyEncoder := filepath.Join(dir, legacyName)
 	for path, contents := range map[string]string{exe: "old", legacyEncoder: "user-managed encoder"} {
 		if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
 			t.Fatal(err)
@@ -143,7 +145,7 @@ func TestApplyInstallsOnlyExecutableAndLeavesExistingEncoderAlone(t *testing.T) 
 		requests = append(requests, r.URL.Path)
 		switch r.URL.Path {
 		case "/repos/owner/repo/releases/latest":
-			_, _ = fmt.Fprintf(w, `{"tag_name":"v999.0.0","assets":[{"name":%q,"browser_download_url":"%s/binary","size":3}]}`, assetName(), serverURL(r))
+			_, _ = fmt.Fprintf(w, `{"tag_name":"v999.0.0","assets":[{"name":%q,"browser_download_url":"%s/binary","size":3},{"name":%q,"browser_download_url":"%s/deprecated","size":1000}]}`, assetName(), serverURL(r), legacyName, serverURL(r))
 		case "/binary":
 			_, _ = w.Write([]byte("new"))
 		default:

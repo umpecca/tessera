@@ -77,8 +77,8 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	settings := map[string]any{
 		"defaultPaneFontSize": 18, "defaultTheme": "studio", "themeId": "hacker",
 		"deskbarButtonEnabled": false, "terminalWheelSensitivity": 0.5,
-		"editorWheelSensitivity": 2.0, "oledWindowBorderSize": 16,
-		"terminalTerm": "xterm-ghostty", "terminalFont": "fira-code",
+		"oledWindowBorderSize": 16,
+		"terminalTerm":         "xterm-ghostty", "terminalFont": "fira-code",
 		"terminalColorMode":  "light",
 		"terminalRowSpacing": "comfortable",
 		"olderMacMode":       true,
@@ -98,7 +98,7 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	if loadedSettings.DeskbarButtonEnabled {
 		t.Fatalf("deskbar button setting was not persisted: %+v", loadedSettings)
 	}
-	if loadedSettings.TerminalWheelSensitivity != 0.5 || loadedSettings.EditorWheelSensitivity != 2 {
+	if loadedSettings.TerminalWheelSensitivity != 0.5 {
 		t.Fatalf("wheel sensitivity settings were not persisted: %+v", loadedSettings)
 	}
 	if loadedSettings.OLEDWindowBorderSize != 16 {

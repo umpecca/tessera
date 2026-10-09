@@ -1,5 +1,4 @@
-// Pane documents (worksheet/editor buffers and the text editor's tab document)
-// are the bulk of a workspace save, but most saves are geometry changes from
+// Archived documents from retired panes may be large; most saves change only
 // dragging or resizing a window. paneContentFields lets a save name the content
 // it already stored instead of resending it; the server keeps its stored copy
 // for every field flagged unchanged.

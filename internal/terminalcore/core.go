@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"tessera/internal/terminalaudio"
+	"tessera/internal/terminalfile"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -244,6 +245,30 @@ func (c *Core) Audio() ([]terminalaudio.Event, []byte, error) {
 		return nil, nil, errors.New("invalid terminal audio effect framing")
 	}
 	return events, replies, nil
+}
+
+// Files drains transient requests; snapshots never own this queue.
+func (c *Core) Files() ([]terminalfile.Command, error) {
+	data, err := c.drain("tessera_file_read")
+	if err != nil {
+		return nil, err
+	}
+	var commands []terminalfile.Command
+	for len(data) >= 4 {
+		n := int(binary.LittleEndian.Uint32(data))
+		data = data[4:]
+		if n > len(data) {
+			return nil, errors.New("invalid terminal file effect")
+		}
+		if c, ok := terminalfile.Parse(string(data[:n])); ok {
+			commands = append(commands, c)
+		}
+		data = data[n:]
+	}
+	if len(data) != 0 {
+		return nil, errors.New("invalid terminal file framing")
+	}
+	return commands, nil
 }
 
 func (c *Core) Clipboard() ([][]byte, error) {

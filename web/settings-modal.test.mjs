@@ -95,6 +95,8 @@ function fixture() {
       clearInterval: timer => intervals.delete(timer),
     },
     hideDeskbar() {},
+    openShortcuts() {},
+    directoryBrowserButton: label => row(label, "button"),
     setTerminalPaintCoalescing() {},
     setTerminalOutputCoalescing() {},
     setTerminalRenderingMetricsEnabled: enabled => metrics.push(enabled),
@@ -163,7 +165,7 @@ test("Settings leads with everyday preferences and hides technical controls by d
   f.flush();
   const content = f.settingsModal.querySelector(".settings-content");
   assert.deepEqual(content.children.map(child => child.children[0].textContent), [
-    "Font size", "Theme", "Terminal", "Scroll wheel", "Background", "Clipboard", "Performance", "Advanced", "Diagnostics",
+    "Font size", "Theme", "Terminal", "Scroll wheel", "Shortcuts", "Background", "Clipboard", "Performance", "Advanced", "Diagnostics",
   ]);
   const advanced = f.settingsModal.querySelector("#settings-advanced");
   assert.equal(advanced.open, false);

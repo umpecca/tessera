@@ -85,16 +85,17 @@ Finder launches start in the user's home directory and obtain PATH from the
 user's login shell, with a five-second timeout and standard Mac paths as fallback.
 
 Closing the window or choosing Quit asks before stopping managed work, awaits
-workspace and user-setting saves, then closes terminal/audio/run managers and
+workspace and user-setting saves, then closes terminal/audio managers and
 SQLite. If saving fails or times out, the app offers Keep Open or Quit Without
-Saving. Persisted editor buffers are retained; quitting does not write unsaved
-edits to their source files. There is no background tray host after closing.
+Saving. Archived legacy pane documents remain in workspace data. There is no background tray host after closing.
 
-File inputs use native open panels; downloads use a native save panel and stage
-the completed file before replacing an existing destination. Native Edit menu
-commands and ordinary web clipboard handling are used. Optional audio capture
-and encoder companions are still optional; place them beside the executable in
-`Contents/MacOS` or on PATH. There is no automatic encoder download in this build.
+Terminal file requests use native open panels for browser selection and a native
+save panel for attachment downloads. The inert same-origin transfer frame is
+allowed only for ticket-based file delivery; it receives no lifecycle bridge.
+Completed downloads are staged before replacing an existing destination.
+Native Edit menu commands and ordinary web clipboard handling are used.
+Terminal audio clips/streams use the existing page activation and mute controls;
+the separate `tessera-audio` streaming helper uses an installed FFmpeg.
 
 ## Validation
 
@@ -122,9 +123,8 @@ Required on macOS before treating the preview as validated:
 2. Test initial load, relaunch, stable preferences, second-instance activation,
    window geometry, error dialogs, and close/save/force-quit behavior.
 3. Exercise terminal input/resize/reconnect/Sixel, large output, IME, Command-key
-   copy/paste, worksheet incremental output, and editor/file operations.
-4. Exercise native upload/download panels, overwrite/cancel, audio SSE/playback/
-   seeking, VNC, and Browser proxy pages/redirects/hot-reload sockets.
+   copy/paste, terminal file transfers, and retained legacy document data.
+4. Exercise native upload/download panels, overwrite/cancel, terminal audio activation/mute/streaming, VNC, and Browser proxy pages/redirects/hot-reload sockets.
 5. Confirm `document.cookie` cannot read the session credential. Attempt API calls
    from a sandboxed Browser pane and HTTP/WebSocket requests to another local port;
    those must fail without leaking the cookie. Inspect listeners and test a second

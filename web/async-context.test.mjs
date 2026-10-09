@@ -31,6 +31,8 @@ test("the latest user selection commits atomically after all of its data loads",
     isAllowedUser: () => true,
     fetchSessions: async (user) => [{ id: `${user}-session`, name: `${user} session` }],
     fetchUserSettings: async (user) => ({ user }),
+    fetchUserShortcuts: async user => ({ user, shortcuts: [] }),
+    shortcutsUI: { setDocument: user => applied.push(`shortcuts:${user}`) },
     fetchWorkspace: (id) => id === "alice-session" ? slowWorkspace.promise : Promise.resolve({ id }),
     userAPIPath: (resource, user) => `/api/users/${user}/${resource}`,
     fetch: async () => ({ ok: true }),
@@ -50,14 +52,14 @@ test("the latest user selection commits atomically after all of its data loads",
   assert.equal(await alice, false);
   assert.equal(ctx.currentUser, "bob");
   assert.equal(ctx.currentSessionID, "bob-session");
-  assert.deepEqual(applied, ["settings:bob", "workspace:bob-session", "stored:bob"]);
+  assert.deepEqual(applied, ["settings:bob", "shortcuts:bob", "workspace:bob-session", "stored:bob"]);
 });
 
 test("a failed user load leaves the current identity and workspace untouched", async () => {
   const ctx = loadFunctions(["selectUser"], {
     currentUser: "original", currentSessionID: "original-session", userSelectionRequestID: 0,
     isAllowedUser: () => true, fetchSessions: async () => { throw new Error("offline"); },
-    fetchUserSettings: async () => ({}), console: { warn() {} }, setWorkspaceStatus() {},
+    fetchUserSettings: async () => ({}), fetchUserShortcuts: async () => ({}), console: { warn() {} }, setWorkspaceStatus() {},
   });
   assert.equal(await ctx.selectUser("alice"), false);
   assert.equal(ctx.currentUser, "original");
@@ -116,42 +118,6 @@ test("disposing a Browser pane releases both active and subsequently created pro
   replies[0].resolve({ ok: true, json: async () => ({ id: "late-id", path: "/late" }) });
   await pending;
   assert.deepEqual(deleted, ["/api/browser-proxy/active-id", "/api/browser-proxy/late-id"]);
-});
-
-test("file-open results are ignored after their source pane or workspace is gone", async () => {
-  const read = deferred();
-  const sourceRect = { width: 500, height: 400, x: 10, y: 20 };
-  let created = 0;
-  const ctx = loadFunctions(["openFileFromPaneFileBrowser"], {
-    workspaceID: "old", rectangles: [sourceRect], textEditorPaneKind: "text-editor",
-    editorPathKey: (value) => value, isTextEditorFilePath: () => true,
-    readHostFile: () => read.promise, createRectangle: () => { created++; },
-    console: { warn() {} }, setWorkspaceStatus() {},
-  });
-  const pending = ctx.openFileFromPaneFileBrowser("file.txt", sourceRect);
-  ctx.workspaceID = "new";
-  read.resolve({ path: "file.txt", text: "late" });
-  await pending;
-  assert.equal(created, 0);
-});
-
-test("an import cannot mutate or focus an editor removed while its file loads", async () => {
-  const read = deferred();
-  let focused = 0;
-  let replaced = 0;
-  const rect = { kind: "worksheet", editor: { focus() { focused++; } } };
-  const ctx = loadFunctions(["openFileIntoEditor"], {
-    workspaceID: "old", rectangles: [rect], textEditorPaneKind: "text-editor",
-    readHostFile: () => read.promise, replaceEditorText: () => { replaced++; },
-    console: { warn() {} }, setWorkspaceStatus() {}, scheduleWorkspaceSave() {},
-  });
-  const pending = ctx.openFileIntoEditor(rect, "file.txt");
-  ctx.rectangles.splice(0);
-  rect.editor = null;
-  read.resolve({ path: "file.txt", text: "late" });
-  await pending;
-  assert.equal(replaced, 0);
-  assert.equal(focused, 0);
 });
 
 test("background completion cannot alter a subsequently displayed workspace", async () => {

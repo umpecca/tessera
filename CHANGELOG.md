@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Run platform CI on main pushes, pull requests and manual dispatch; retain
+  version-tag publishing for Tessera and standalone audio/file helpers on Windows
+  amd64, macOS arm64 and Linux amd64/arm64. Test every target, vet helpers, and
+  reject missing/empty release binaries before publishing.
+
+- Add per-user terminal shortcuts with a management modal, ordered optional or
+  required invocation inputs, CLI switches, defaults, duplicate/delete/test actions,
+  and custom palette/Command Wheel codes. Launch in a new terminal with host shell
+  quoting and directory validation; restored panes never rerun commands. Migration
+  047 persists definitions with independent revisions for concurrent-save conflicts.
+
+- Retire Text Editor and Worksheet panes, CodeMirror/syntax bundles, worksheet
+  command runs, raw file-content APIs, and editor-scroll settings. Migration 046
+  converts legacy panes to terminals while preserving layouts and archived text,
+  tabs, paths and modes. Imported panes receive the same conversion; ordinary
+  workspace saves retain archived documents without executing their contents.
+
+- Add host-local terminal file transfers and the `tessera-file` helper: browser
+  batch uploads, original-file or streamed ZIP downloads, transient live claims,
+  scoped tickets, cancellation and progress. Retire File Browser panes; migration
+  045 preserves their IDs, layout and directories as terminals. Releases include
+  standalone file helpers.
+
+- Preserve verified legacy companion release assets so pre-v1.9.1 updaters can
+  upgrade after the Audio station retirement. Tessera still updates only its
+  own executable and does not use or build LAME.
+
 - Disable browser autofill and writing suggestions in the command palette input.
 
 - Retire the standalone Audio pane, shared station API/state, process capture,

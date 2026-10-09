@@ -23,6 +23,7 @@ test("background polling replaces its timer and restores the foreground cadence"
 });
 
 function appFunction(name, globals) {
+  globals.shortcutsUI ||= { element: { hidden: true } };
   const start = source.indexOf(`function ${name}(`);
   const end = source.indexOf("\n}\n", start) + 2;
   const prefix = source.slice(start - 6, start) === "async " ? "async " : "";
@@ -162,7 +163,6 @@ test("exit saves accept their own pending revision and carry reverted content", 
 });
 
 test("moving panes avoids size measurements, while resize and initial layout still measure", () => {
-  let measurements = 0;
   let fits = 0;
   let saves = 0;
   const setRectangle = appFunction("setRectangle", {
@@ -173,18 +173,18 @@ test("moving panes avoids size measurements, while resize and initial layout sti
     arrangeOutSnapshot: null,
   });
   const rect = { x: 10, y: 20, width: 300, height: 200,
-    element: { style: {} }, editor: { requestMeasure() { measurements++; } } };
+    element: { style: {} } };
   setRectangle(rect, rect);
   assert.equal(rect.element.style.width, "300px");
-  assert.deepEqual([measurements, fits, saves], [1, 1, 1]);
+  assert.deepEqual([fits, saves], [1, 1]);
   setRectangle(rect, { x: 30, y: 40, width: 300, height: 200 });
   assert.equal(rect.element.style.transform, "translate(30px, 40px)");
-  assert.deepEqual([measurements, fits, saves], [1, 1, 2]);
+  assert.deepEqual([fits, saves], [1, 2]);
   setRectangle(rect, { x: 30.1, y: 40.1, width: 300.1, height: 200.1 });
-  assert.deepEqual([measurements, fits, saves], [1, 1, 2]);
+  assert.deepEqual([fits, saves], [1, 2]);
   setRectangle(rect, { x: 30, y: 40, width: 320, height: 210 });
   assert.equal(rect.element.style.width, "320px");
-  assert.deepEqual([measurements, fits, saves], [2, 2, 3]);
+  assert.deepEqual([fits, saves], [2, 3]);
 });
 
 test("refocusing the active frontmost pane preserves explicit focus without rebuilding UI", () => {
@@ -200,7 +200,7 @@ test("refocusing the active frontmost pane preserves explicit focus without rebu
   });
   setActivePane(rect, { raise: true });
   assert.equal(focuses, 0);
-  setActivePane(rect, { focusEditor: true });
+  setActivePane(rect, { focus: true });
   setActivePane(rect, { focusElement: true });
   assert.equal(focuses, 2);
 });

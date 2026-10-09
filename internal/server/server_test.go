@@ -8,8 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -176,18 +174,8 @@ func TestStartWiresFileUploadLimit(t *testing.T) {
 	}
 	defer server.Shutdown(context.Background())
 
-	uploadDirectory := filepath.Join(directory, "uploads")
-	if err := os.Mkdir(uploadDirectory, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	target := server.URL + "/api/files/upload?directory=" + url.QueryEscape(uploadDirectory) + "&name=large.bin"
-	response, err := http.Post(target, "application/octet-stream", bytes.NewReader([]byte("1234")))
-	if err != nil {
-		t.Fatalf("upload: %v", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("upload status = %d, want 413", response.StatusCode)
+	if got := server.terminals.Files.Capabilities().MaxUploadBytes; got != 3 {
+		t.Fatalf("configured terminal file upload limit = %d, want 3", got)
 	}
 	if DefaultMaxUploadBytes != 1<<30 {
 		t.Fatalf("default max upload bytes = %d", DefaultMaxUploadBytes)

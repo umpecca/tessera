@@ -20,7 +20,17 @@ func (p *pidTestPTY) Close() error                   { return nil }
 func (p *pidTestPTY) PID() int                       { return p.pid }
 func (p *pidTestPTY) Wait() error                    { return nil }
 
-type writeTestPTY struct{ bytes.Buffer }
+type writeTestPTY struct {
+	bytes.Buffer
+	mu sync.Mutex
+}
+
+func (p *writeTestPTY) Write(data []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Buffer.Write(data)
+}
+func (p *writeTestPTY) String() string { p.mu.Lock(); defer p.mu.Unlock(); return p.Buffer.String() }
 
 func (p *writeTestPTY) Read([]byte) (int, error) { return 0, io.EOF }
 func (p *writeTestPTY) Resize(int, int) error    { return nil }

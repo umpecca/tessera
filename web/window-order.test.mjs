@@ -6,6 +6,7 @@ import { moveWindowPane } from "./window-switcher.mjs";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 function appFunction(name, globals) {
+  globals.shortcutsUI ||= { element: { hidden: true } };
   globals.windowListDrag ??= null;
   const start = source.indexOf(`function ${name}(`);
   const end = source.indexOf("\n}\n", start) + 2;

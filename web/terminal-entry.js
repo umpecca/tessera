@@ -203,6 +203,7 @@ class Terminal extends GhosttyTerminal {
     if (audioExports.tessera_audio_read) {
       this.audioReadBuffer ??= { exports: audioExports, ptr: audioExports.ghostty_wasm_alloc_u8_array(4096) };
       while (audioExports.tessera_audio_read(audioCore.handle, this.audioReadBuffer.ptr, 4096)) {}
+      while (audioExports.tessera_file_read?.(audioCore.handle, this.audioReadBuffer.ptr, 4096)) {}
     }
     // The host answers queries exactly once, independent of browser count.
     while (this.wasmTerm.readResponse()) {}
