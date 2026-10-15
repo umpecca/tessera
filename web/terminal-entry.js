@@ -14,6 +14,7 @@ import { SixelRenderer, installSixelRenderer } from "./terminal-sixel-renderer.m
 import { installTerminalViewportReader } from "./terminal-viewport.mjs";
 import { TerminalInputBuffer } from "./terminal-input-buffer.mjs";
 import { installTerminalPixelGrid } from "./terminal-pixel-grid.mjs";
+import { TerminalScroll, installTerminalScrollRenderer, terminalScrollMouseEvent } from "./terminal-scroll.mjs";
 import {
   installPlainRenderer,
   plainRendererStatistics,
@@ -23,6 +24,7 @@ import {
 const renderScheduler = new TerminalRenderScheduler();
 installTerminalFontMetrics(CanvasRenderer);
 installSixelRenderer(CanvasRenderer);
+installTerminalScrollRenderer(CanvasRenderer);
 installTerminalPixelGrid(CanvasRenderer);
 installTerminalViewportReader(CanvasRenderer);
 installPlainRenderer(CanvasRenderer);
@@ -46,7 +48,10 @@ class Terminal extends GhosttyTerminal {
       rowSpacing = defaultTerminalRowSpacing,
       ...terminalOptions
     } = options;
-    super({ ...terminalOptions, cursorBlink: false });
+    super({ smoothScrollDuration: 120, ...terminalOptions, cursorBlink: false });
+    this.smoothScroll = new TerminalScroll(this);
+    const handleClick = this.handleClick;
+    this.handleClick = event => handleClick(terminalScrollMouseEvent(this, event));
     this.cursorRedrawPending = false;
     this.cursorBlink = new TerminalCursorBlink((visible) => {
       if (this.renderer) this.renderer.cursorVisible = visible;
@@ -70,11 +75,12 @@ class Terminal extends GhosttyTerminal {
     this.coreID = __TESSERA_CORE_ID__;
     this.sixelRenderer = new SixelRenderer();
     this.clipboardReadBuffer = null;
+    this.titleRevision = null;
     this.audioReadBuffer = null;
     this.inputBuffer = new TerminalInputBuffer();
     this.desiredCols = this.cols;
     this.desiredRows = this.rows;
-    this.onScroll(() => this.requestRender());
+    this.onScroll(() => { if (!this.advancingScroll) this.requestRender(); });
   }
 
   startRenderLoop() {
@@ -150,6 +156,11 @@ class Terminal extends GhosttyTerminal {
       this.renderer.devicePixelRatio = pixelRatio;
       this.renderer.resize(this.cols, this.rows);
     }
+    this.advancingScroll = true;
+    let scrolling;
+    try { scrolling = this.smoothScroll.advance(); }
+    finally { this.advancingScroll = false; }
+    const fadingScrollbar = this.advanceScrollbar();
     const forceFullRedraw = resolutionChanged || this.fullRedrawPending;
     try {
       this.renderer.render(
@@ -168,6 +179,7 @@ class Terminal extends GhosttyTerminal {
       return;
     }
     this.fullRedrawPending = false;
+    if (scrolling || fadingScrollbar) this.requestRender();
     this.outputTiming?.painted();
     const cursor = this.wasmTerm.getCursor();
     if (cursor.y !== this.lastCursorY) {
@@ -177,7 +189,27 @@ class Terminal extends GhosttyTerminal {
   }
 
   write(data, callback) {
-    super.write(data);
+    const readingHistory = this.viewportY > 0 || (this.smoothScroll.target ?? 0) > 0;
+    const historyBefore = readingHistory ? this.getScrollbackLength() : 0;
+    // Ghostty follows every write, which fights wheel gestures and makes it
+    // impossible to read history while a command continues producing output.
+    this.writingWhileScrolled = readingHistory;
+    try { super.write(data); }
+    finally { this.writingWhileScrolled = false; }
+    this.syncWindowTitle();
+    if (readingHistory) {
+      if (this.wasmTerm.isAlternateScreen?.()) this.scrollToBottom();
+      else {
+        const historyAfter = this.getScrollbackLength();
+        const added = Math.max(0, historyAfter - historyBefore);
+        this.viewportY = Math.min(historyAfter, this.viewportY + added);
+        if (this.smoothScroll.target !== null) {
+          this.smoothScroll.target = Math.min(historyAfter,
+            this.smoothScroll.target > 0 ? this.smoothScroll.target + added : 0);
+        }
+        this.targetViewportY = this.smoothScroll.target ?? this.viewportY;
+      }
+    }
     this.sixelRenderer.prune(this.wasmTerm);
     renderScheduler.noteOutput(this);
     if (callback) {
@@ -186,15 +218,35 @@ class Terminal extends GhosttyTerminal {
   }
 
   reset() {
+    this.smoothScroll.cancel();
     this.sixelRenderer.clear();
     super.reset();
     this.inputBuffer.attach(this.wasmTerm);
+    this.titleRevision = null;
     this.requestRender();
   }
 
   clear() {
+    this.smoothScroll.cancel();
     super.clear();
     this.requestRender();
+  }
+
+  // The library's regex only sees complete string writes. Read the shared
+  // parser instead so byte writes, split OSC sequences, and snapshots agree.
+  checkForTitleChange() {}
+
+  syncWindowTitle() {
+    const b = this.wasmTerm, e = b?.exports;
+    if (!e?.tessera_sixel_title_revision) return;
+    const revision = e.tessera_sixel_title_revision(b.handle);
+    if (revision === this.titleRevision) return;
+    this.titleRevision = revision;
+    const length = e.tessera_sixel_title_length(b.handle);
+    if (!length) return;
+    this.currentTitle = new TextDecoder().decode(new Uint8Array(e.memory.buffer,
+      e.tessera_sixel_title_data(b.handle), length));
+    this.titleChangeEmitter.fire(this.currentTitle);
   }
 
   processTerminalResponses() {
@@ -222,6 +274,7 @@ class Terminal extends GhosttyTerminal {
   }
 
   applyGeometry(cols, rows, cellWidth, cellHeight) {
+    this.smoothScroll.cancel();
     // Avoid emitting another resize request while applying the host's event.
     this.cols = cols; this.rows = rows;
     this.wasmTerm.resize(cols, rows);
@@ -256,6 +309,7 @@ class Terminal extends GhosttyTerminal {
   }
 
   restoreSnapshot(data, geometry) {
+    this.smoothScroll.cancel();
     const b = this.wasmTerm, e = b.exports;
     const ptr = e.ghostty_wasm_alloc_u8_array(data.length);
     let handle;
@@ -266,10 +320,13 @@ class Terminal extends GhosttyTerminal {
     if (!handle) throw new Error("Terminal snapshot could not be restored");
     b.free();
     b.handle = handle;
+    this.titleRevision = null;
+    this.syncWindowTitle();
     b._cols = geometry.cols; b._rows = geometry.rows;
     b.initCellPool();
     this.cols = geometry.cols; this.rows = geometry.rows;
     this.viewportY = 0;
+    this.targetViewportY = 0;
     this.sixelRenderer.clear();
     this.clearSelection();
     this.linkDetector?.invalidateCache();
@@ -280,6 +337,71 @@ class Terminal extends GhosttyTerminal {
 
   requestRender() {
     renderScheduler.request(this);
+  }
+
+  scrollWheelLines(lines) {
+    this.smoothScroll.by(lines);
+  }
+
+  smoothScrollTo(position) {
+    this.smoothScroll.to(position);
+  }
+
+  scrollLines(lines) {
+    this.smoothScroll.cancel();
+    super.scrollLines(lines);
+    this.targetViewportY = this.viewportY;
+  }
+
+  scrollToLine(line) {
+    this.smoothScroll.cancel();
+    super.scrollToLine(line);
+    this.targetViewportY = this.viewportY;
+  }
+
+  scrollToTop() {
+    this.smoothScroll.cancel();
+    super.scrollToTop();
+    this.targetViewportY = this.viewportY;
+  }
+
+  scrollToBottom() {
+    if (this.writingWhileScrolled) return;
+    this.smoothScroll.cancel();
+    super.scrollToBottom();
+    this.targetViewportY = this.viewportY;
+  }
+
+  processMouseMove(event) {
+    super.processMouseMove(terminalScrollMouseEvent(this, event));
+  }
+
+  fadeInScrollbar() {
+    this.scrollbarFade = { from: this.scrollbarOpacity, to: 1, started: performance.now() };
+    this.requestRender();
+  }
+
+  showScrollbar() {
+    const visible = this.scrollbarVisible;
+    super.showScrollbar();
+    if (visible) this.scrollbarFade = null;
+  }
+
+  fadeOutScrollbar() {
+    this.scrollbarFade = { from: this.scrollbarOpacity, to: 0, started: performance.now() };
+    this.requestRender();
+  }
+
+  advanceScrollbar() {
+    const fade = this.scrollbarFade;
+    if (!fade) return false;
+    const progress = Math.min(1, (performance.now() - fade.started) / this.SCROLLBAR_FADE_DURATION_MS);
+    this.scrollbarOpacity = fade.from + (fade.to - fade.from) * progress;
+    if (progress === 1) {
+      this.scrollbarVisible = fade.to > 0;
+      this.scrollbarFade = null;
+    }
+    return progress < 1;
   }
 
   setPaintFPSLimit(limit) {
@@ -357,12 +479,15 @@ class Terminal extends GhosttyTerminal {
   }
 
   setRenderPaused(paused) {
+    if (paused) this.smoothScroll.cancel();
     this.renderPaused = paused;
     renderScheduler.setPaused(this, paused);
     this.cursorBlink.setVisible(!paused && renderScheduler.enabled);
   }
 
   dispose() {
+    this.smoothScroll.cancel();
+    this.scrollbarFade = null;
     if (this.audioReadBuffer) {
       const { exports, ptr } = this.audioReadBuffer;
       this.audioReadBuffer = null;
@@ -391,6 +516,7 @@ class Terminal extends GhosttyTerminal {
 function setTerminalDocumentVisible(visible) {
   renderScheduler.setEnabled(visible);
   for (const terminal of renderScheduler.entries.keys()) {
+    if (!visible) terminal.smoothScroll.cancel();
     terminal.cursorBlink.setVisible(visible && !terminal.renderPaused);
   }
 }

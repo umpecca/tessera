@@ -1,7 +1,7 @@
 # Terminal audio: clips and streams
 
 Terminal programs can send embedded WAV or MP3 clips directly to attached
-Tessera browsers, or progressively encode a file/stdin to an Opus stream.
+Tessera browsers, or send progressively encoded Opus streams.
 Right-click a terminal and choose **Enable terminal audio**,
 or click the compact enable action when a program first sends a clip. Activation
 applies to this browser page; earlier clips are dropped. **Disable terminal
@@ -14,75 +14,34 @@ terminals can produce sound even while their text delivery is paused. A hidden
 browser tab can continue playing when its browser/OS permits background audio.
 Disconnecting stops local playback; reconnecting and restoring terminal history
 never replay old sound; running streams resume from future packets. Clips need
-no encoder. Streaming requires FFmpeg with libopus on the helper machine.
+no encoder. Streaming producers must supply Opus packets as specified below.
 The former standalone Audio pane, shared station, process capture, and bundled
 LAME encoder have been removed. Terminal playback uses explicit OSC requests;
 it does not capture sound from unmodified applications.
 
-## Command-line helper
+## External audio producers
 
-Build from the repository root:
+The `tessera-audio` CLI is maintained and released in an independent repository.
+Its source, CLI tests, installation instructions and release assets live there.
+This repository maintains Tessera's OSC implementation and protocol reference.
 
-```sh
-go build -o tessera-audio ./cmd/tessera-audio
-```
+Applications send clip bytes or Opus packets through terminal output. Tessera
+does not open a host path or URL for playback. This also works from a remote
+shell when its terminal connection passes the extension through. Multiplexers
+may require explicit escape passthrough configuration. TUI applications should
+send capability queries and parse matching replies in their own input loops.
 
-On Windows, use `-o tessera-audio.exe`. Releases also include separate
-`tessera-audio-<os>-<arch>` assets (`.exe` on Windows) for the platforms that
-ship Tessera. Rename the matching asset to `tessera-audio`, make it executable
-on Unix, and place it on your command PATH. It is not installed by the Ubuntu
-service installer or Tessera self-updater.
+## Streaming behavior
 
-```sh
-tessera-audio capabilities
-tessera-audio play notification.wav --id notification
-tessera-audio play speech.mp3 --id speech
-tessera-audio stop speech
-tessera-audio stop
-cat notification.wav | tessera-audio play - --format wav --id notification
-```
+Producers encode audio to 48 kHz Opus with 20 ms packets, for example using
+FFmpeg/libopus, and pace file playback in real time. Opus encoding is lossy;
+original-format/lossless passthrough is not included. The protocol carries a
+100–2000 ms startup/rebuffer target. Smaller targets reduce buffering but tolerate
+less jitter; encoder, network, and browser delays add to the target.
 
-The helper reads files on the machine where it runs and sends their bytes;
-Tessera never interprets the filename as a host path. This also works from a
-remote shell when its terminal connection passes the extension through.
-Terminal multiplexers may require explicit escape passthrough configuration;
-automatic tmux/screen wrapping is not included.
-
-Format detection uses the file header, independent of its extension. Stdin
-requires `--format wav` or `--format mp3`. IDs are optional and otherwise random.
-Play and stop write escape sequences to stdout and never read terminal input;
-diagnostics go to stderr. Capability discovery requires terminal stdin/stdout,
-temporarily sets raw input, matches a random nonce, waits up to one second,
-and restores terminal settings on success, timeout, cancellation, or failure.
-It prints the capability JSON after restoring input. When integrating a TUI,
-send the query and parse the reply through the application's own input loop.
-
-## Streaming helper
-
-```sh
-tessera-audio stream music.flac --id music --bitrate 128k --buffer-ms 500
-tessera-audio stream speech.mp3 --bitrate 64k --buffer-ms 100
-cat music.flac | tessera-audio stream - --buffer-ms 1000
-```
-
-The helper starts an installed `ffmpeg` with libopus, or the executable selected
-by `--ffmpeg PATH`. It reads progressively, encodes to 48 kHz stereo Opus with
-20 ms packets, and paces file playback in real time. It never downloads a whole
-file to the browser or holds the entire input in memory. Stdin accepts encoded
-audio that FFmpeg can probe, such as MP3, FLAC, WAV, or Ogg. No host path or URL
-is transmitted; the helper's machine opens the input. This remains compatible
-with remote terminals that pass the OSC extension through.
-
-`--bitrate` accepts 16k–256k (or the equivalent integer in kbps), default 128k.
-Encoding is lossy, including when the source is FLAC. Original-format/lossless
-passthrough is not included. `--buffer-ms` accepts 100–2000, default 500, and is
-carried in the protocol as the requested startup/rebuffer target. Smaller
-values reduce buffering but tolerate less jitter; encoder, network, and browser
-delays add to the target. Ctrl+C stops FFmpeg and aborts this stream generation.
-Existing `stop ID` / `stop` commands stop streams as well as clips in that terminal;
-they stop client playback, while the producer continues until it exits or is
-interrupted. Run stop from the application's input loop or another producer
-that shares the terminal output, since the helper runs in the foreground.
+The v1 stop commands stop client playback for streams as well as clips. They
+do not terminate the external producer; the producer must handle its own
+cancellation and send a v2 abort to stop a stream immediately.
 
 Enabling or unmuting audio joins future packets. A reconnect gets current
 decoder setup and then new packets, with no historical audio. An ended stream
@@ -142,7 +101,7 @@ Evicted streams remain stopped until a new start or live resubscription.
 This is a Tessera-specific, namespaced extension; OSC 777 is not an allocated
 cross-terminal audio standard. Applications should discover support before
 depending on it. Sequences start with `ESC ] 777;tessera-audio;1;` and end with
-ST (`ESC \\`) or BEL. The helper emits ST. Send these commands:
+ST (`ESC \\`) or BEL. Send these commands:
 
 | Command | Fields after the prefix | Behavior |
 |---|---|---|
@@ -213,11 +172,12 @@ cores discard them. Rebuild/verify using the commands in
 For an isolated end-to-end check, run:
 
 ```sh
-node scripts/terminal-audio-smoke.mjs --playwright=/absolute/path/to/playwright/index.mjs --chrome=/absolute/path/to/chrome
+node scripts/terminal-audio-smoke.mjs --helper=/absolute/path/to/tessera-audio --playwright=/absolute/path/to/playwright/index.mjs --chrome=/absolute/path/to/chrome
 ```
 
 The smoke runner requires Go, ffmpeg with MP3 encoding, and Playwright's Firefox
-test browser. It builds temporary binaries, starts a private host/database,
+test browser and an externally built `tessera-audio` binary supplied with
+`--helper`. It builds a temporary Tessera binary, starts a private host/database,
 generates its own WAV/MP3 tones, measures rendered audio, and exercises the real
 helper, activation, mixing, mute, hidden playback, and reconnect behavior. It
 does not attach to the operator's Tessera host or existing browser. Artifacts

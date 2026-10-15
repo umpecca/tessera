@@ -20,10 +20,29 @@ image-memory budget, toggle discarded-image markers, or clear images while
 keeping text. See [terminal core documentation](docs/terminal-core.md)
 for the pinned source build, protocol, resource limits, and restoration guarantees.
 
+Right-click a terminal or its window menu and choose **Terminal colors** to use
+**Dark**, **Light**, or **Use default** for that pane. The choice is saved with
+the session. **Use default** follows the user's Terminal colors setting;
+explicit choices remain independent when that default changes. Changing colors
+keeps the running shell and restores its retained output.
+
+Terminal wheel and trackpad scrolling moves smoothly at every Terminal wheel
+speed in Settings. Rapid gestures retain their distance and direction changes
+respond promptly. Scrolling into history keeps that view while output arrives;
+typing resumes following live output. System reduced-motion preferences disable
+the scroll animation.
+
+Terminal windows follow application titles sent with OSC 0 or OSC 2. The title
+appears in the window tab and window lists and recovers when a terminal view
+reconnects. Apps that do not send titles keep the current name. Manual renaming
+remains available; the next application title can replace it. Title updates
+pause while that window's title editor is open. Empty titles are ignored.
+
 Terminal apps can also send short WAV/MP3 clips directly to enabled browsers,
 or stream files/stdin incrementally as Opus using FFmpeg, with selectable
 bitrate and buffering. Both mix with local per-terminal mute. See [terminal audio](docs/terminal-audio.md)
-for the `tessera-audio` helper and private escape-sequence protocol.
+for the private escape-sequence protocol. The audio and file CLI programs are
+maintained and released in an independent repository.
 
 ## Security and trusted-environment status
 
@@ -70,6 +89,10 @@ Then open:
 ```text
 http://127.0.0.1:7331
 ```
+
+Returning browsers show the last theme for that user while the saved session
+restores, then reveal the workspace with keyboard focus ready. Slow startup
+shows a quiet loading message; failed startup offers **Reload Tessera**.
 
 The SPA is embedded in the binary, so a built executable can run from any
 directory. During frontend development, serve the working `web/` directory:
@@ -132,7 +155,7 @@ uses `127.0.0.1`.
 
 Running the installer again downloads the latest Tessera executable, prompts
 for the listen address when interactive, and restarts the service. Install the
-optional terminal audio helper separately as described in
+optional terminal audio CLI from its independent repository; see
 [terminal audio](docs/terminal-audio.md).
 
 With the default selection, Tessera listens only on `127.0.0.1:7331`. From the
@@ -441,9 +464,9 @@ operator's clipboard.
 
 Terminal applications can send short WAV/MP3 clips or live Opus streams through
 the private OSC protocol. Enable playback from a terminal's context menu and
-mute individual terminals locally. The `tessera-audio` helper sends files or
-stdin; streaming uses FFmpeg/libopus installed on the producer machine. See
-[terminal audio](docs/terminal-audio.md) for installation, controls, and protocol
+mute individual terminals locally. Audio producers send embedded clip bytes or
+Opus packets; CLI tools are maintained separately. See
+[terminal audio](docs/terminal-audio.md) for controls and protocol
 examples.
 
 The standalone Audio pane, shared file/URL transport, process capture, and
@@ -705,30 +728,21 @@ immutable; append a new migration instead of editing an existing one.
 
 The **CI and Release** workflow runs on pull requests to `main`, pushes to `main`,
 version-tag pushes, and manual dispatch. CI rebuilds/verifies the terminal core,
-runs JavaScript and Go tests, vets the terminal helpers, and uploads platform
+runs JavaScript and Go tests, and uploads platform
 binaries as workflow artifacts. Only a pushed `v*` tag publishes a GitHub release:
 
 - `tessera-linux-amd64`
 - `tessera-linux-arm64`
 - `tessera-windows-amd64.exe`
 - `tessera-darwin-arm64`
-- Matching `tessera-audio-<os>-<arch>` helpers (`.exe` on Windows)
-- Matching `tessera-file-<os>-<arch>` helpers (`.exe` on Windows)
 - Verified original LAME companions, source, and license for legacy updater compatibility
-
-| Platform | Audio helper | Upload/download helper |
-| --- | --- | --- |
-| Windows x64 / amd64 | `tessera-audio-windows-amd64.exe` | `tessera-file-windows-amd64.exe` |
-| macOS arm64 | `tessera-audio-darwin-arm64` | `tessera-file-darwin-arm64` |
-| Ubuntu/Linux x64 / amd64 | `tessera-audio-linux-amd64` | `tessera-file-linux-amd64` |
-| Ubuntu/Linux arm64 | `tessera-audio-linux-arm64` | `tessera-file-linux-arm64` |
 
 x64 and amd64 are the same architecture. Native platform jobs use GitHub's
 [supported runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
-Missing or empty server/helper assets stop release publication. The helpers are
-independent executables; audio streaming needs separately installed FFmpeg/libopus,
-while file transfers have no additional executable dependency. See
-[audio installation](docs/terminal-audio.md) and [file transfers](docs/terminal-files.md).
+Missing or empty server assets stop release publication. The audio and file OSC
+CLI programs are maintained and released in an independent repository. Tessera
+continues to implement both protocols; see [terminal audio](docs/terminal-audio.md)
+and [file transfers](docs/terminal-files.md).
 
 Linux and Windows builds use `CGO_ENABLED=0`. Linux builds run server-only
 without tray support. The macOS ARM build runs on a native macOS runner with
@@ -762,7 +776,7 @@ Releases retain the original v1.9.0 LAME companions, source archive, and license
 as compatibility assets for older updaters. Those updaters require a companion
 before they can install Tessera v1.9.1 or later. The files are copied with pinned
 size/SHA-256 checks; LAME is no longer built or used by Tessera. New updaters
-install only Tessera; install/update `tessera-audio`, `tessera-file` and FFmpeg separately.
+install only Tessera; install/update external OSC CLI tools separately.
 
 To prepare the same compatibility assets for repairing an existing release:
 
@@ -779,11 +793,11 @@ reachable without private repository credentials.
 
 ### Terminal file transfers
 
-Use [`tessera-file`](docs/terminal-files.md) on the Tessera host to upload files
-from an attached browser or download host files. Batch downloads stream as ZIP;
-file bytes never enter terminal history. Build with
-`go build -o tessera-file ./cmd/tessera-file`, or install the matching standalone
-release asset. Browser selection/approval is required; remote SSH transfers and
+Terminal applications can use the [file transfer protocol](docs/terminal-files.md)
+on the Tessera host to upload files from an attached browser or download host
+files. Batch downloads stream as ZIP; file bytes never enter terminal history.
+The file CLI is maintained and released in an independent repository.
+Browser selection/approval is required; remote SSH transfers and
 directories are outside v1. Saved File Browser panes become terminals in their
 existing directories. Text Editor and Worksheet panes are also retired: saved
 text, tabs, file paths, and modes remain archived in workspace data, while their

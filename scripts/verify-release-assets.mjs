@@ -1,11 +1,11 @@
-// Every supported platform ships the server and both independent OSC helpers.
+// Every supported platform ships the Tessera server; OSC CLIs live separately.
 import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const releaseTargets = ["linux-amd64", "linux-arm64", "darwin-arm64", "windows-amd64"];
-export const releaseBinaries = releaseTargets.flatMap(target =>
-  ["tessera", "tessera-audio", "tessera-file"].map(command => `${command}-${target}${target.startsWith("windows-") ? ".exe" : ""}`));
+export const releaseBinaries = releaseTargets.map(target =>
+  `tessera-${target}${target.startsWith("windows-") ? ".exe" : ""}`);
 
 export async function verifyReleaseAssets(directory) {
   for (const name of releaseBinaries) {
@@ -23,5 +23,5 @@ export async function verifyReleaseAssets(directory) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (!process.argv[2]) throw new Error("Usage: node scripts/verify-release-assets.mjs <artifact-directory>");
   const files = await verifyReleaseAssets(path.resolve(process.argv[2]));
-  console.log(`Verified ${files.length} server/audio/file release binaries.`);
+  console.log(`Verified ${files.length} Tessera release binaries.`);
 }

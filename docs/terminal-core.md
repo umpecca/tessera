@@ -195,10 +195,18 @@ replica or close its pane. Network retries and wake recovery skip hidden panes;
 visibility resumes recoverable connections while permanent exit and core
 compatibility failures remain settled.
 
-Snapshots use the `TSS2` schema and require the exact matching core hash. They
+Snapshots use the `TSS3` schema and require the exact matching core hash. They
 include both screens, retained history, cells and image attachments, styles,
 palettes, cursor/saved cursor, modes, tab stops, UTF-8/escape/Sixel continuation,
-and incomplete OSC input, image settings, and discarded-image markers.
+and incomplete OSC input, image settings, discarded-image markers, and the last
+nonempty application window title. OSC 0/2 titles are validated as UTF-8 by the
+shared parser and retained up to 4096 bytes; empty and oversized requests leave
+the retained title unchanged. OSC 1 does not change the window title. The browser
+reads title revisions after writes and snapshot imports and emits the existing
+`onTitleChange` event for the pane UI, including repeated application requests
+that can replace a manual rename. Title editing suppresses automatic pane
+updates while the editor is open; repeated identical displayed titles do not
+trigger saves. A full terminal reset clears the core's retained title.
 Pointer-bearing structures are reconstructed; page
 payloads use native relative offsets, not addresses. Snapshot buffers are
 released after transfer/copy. Closing the managed shell releases its module.

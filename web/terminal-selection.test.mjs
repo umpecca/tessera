@@ -152,6 +152,27 @@ test("programmatic selection also requests a frame", () => {
   assert.equal(f.painted(), true);
 });
 
+test("fractional scrolling keeps partial-row selection hit tests and highlights aligned", () => {
+  const f = fixture();
+  f.term.viewportY = 2.5;
+  f.manager.wasmTerm.getScrollbackLength = () => 100;
+  f.manager.wasmTerm.getScrollbackLine = () => [{ codepoint: 66 }];
+  let cancelled = 0;
+  f.term.smoothScroll = { cancel() { cancelled++; } };
+  f.emit("pointerdown", { offsetY: 2 });
+  f.emit("mousedown", { offsetX: 0, offsetY: 2 });
+  f.emit("mousemove", { offsetX: 20, offsetY: 2 });
+  assert.equal(cancelled, 2);
+  assert.equal(f.manager.selectionStart.absoluteRow, 97);
+  assert.equal(f.manager.selectionEnd.absoluteRow, 97);
+  assert.deepEqual({ ...f.manager.getSelectionCoords() }, { startRow: -1, startCol: 0, endRow: -1, endCol: 2 });
+  assert.equal(f.term.hasSelection(), true);
+  f.emit("mousemove", { offsetX: 20, offsetY: 8 });
+  assert.equal(f.manager.selectionEnd.absoluteRow, 98);
+  assert.deepEqual({ ...f.manager.getSelectionCoords() }, { startRow: -1, startCol: 0, endRow: 0, endCol: 2 });
+  f.integration.dispose();
+});
+
 test("clearing an empty drag resets its endpoints and stops autoscroll", () => {
   const f = fixture();
   f.emit("mousedown", { offsetY: 5 });

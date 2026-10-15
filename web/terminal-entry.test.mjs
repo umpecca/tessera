@@ -7,6 +7,7 @@ import { installTerminalSelection } from "./terminal-selection.mjs";
 import { plainRendererStatistics, setPlainRendererEnabled } from "./terminal-plain-renderer.mjs";
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
 import { TerminalInputBuffer } from "./terminal-input-buffer.mjs";
+import { TerminalScroll, terminalScrollMouseEvent } from "./terminal-scroll.mjs";
 import { defaultTerminalRowSpacing, normalizeTerminalRowSpacing } from "./terminal-settings.mjs";
 
 function loadTerminalClass(overrides = {}) {
@@ -18,8 +19,11 @@ function loadTerminalClass(overrides = {}) {
     plainRendererStatistics,
     setPlainRendererEnabled,
     TerminalInputBuffer,
+    TerminalScroll,
+    terminalScrollMouseEvent,
     defaultTerminalRowSpacing,
     normalizeTerminalRowSpacing,
+    TextDecoder,
     __TESSERA_CORE_ID__: "test",
     SixelRenderer: class { prune() {} clear() {} },
     ...overrides,
@@ -112,6 +116,48 @@ test("ordinary text and fallback symbols use separate font stacks", () => {
   assert.equal(term.renderer.tesseraSymbolFontFamily, '"Fira Code", "Noto Sans Symbols 2", monospace');
   assert.equal(term.fullRedrawPending, true);
   assert.equal(frames, 1);
+});
+
+test("live output preserves history and pending gestures while explicit navigation cancels motion", () => {
+  class GhosttyTerminal {
+    constructor(options) {
+      this.options = options; this.viewportY = 0; this.rows = 24; this.cols = 80;
+      this.wasmTerm = { history: 100, isAlternateScreen: () => this.alternate === true };
+    }
+    onScroll() {}
+    getScrollbackLength() { return this.wasmTerm.history; }
+    showScrollbar() {}
+    write(lines) { this.wasmTerm.history += lines; if (this.viewportY !== 0) this.scrollToBottom(); }
+    scrollToBottom() { this.viewportY = 0; }
+    scrollToTop() { this.viewportY = this.getScrollbackLength(); }
+    scrollToLine(row) { this.viewportY = row; }
+    scrollLines(lines) { this.viewportY -= lines; }
+    clear() { this.viewportY = 0; }
+    reset() { this.viewportY = 0; }
+    dispose() {}
+  }
+  const Terminal = loadTerminalClass({ GhosttyTerminal, performance,
+    renderScheduler: { request() {}, noteOutput() {}, setPaused() {}, unregister() {} } });
+  const term = new Terminal();
+  term.write(3); assert.equal(term.viewportY, 0, "the live view still follows output");
+  term.scrollToLine(20); term.write(5);
+  assert.equal(term.viewportY, 25, "new history does not pull the reader back to the live view");
+  term.scrollWheelLines(-5); term.write(3);
+  assert.equal(term.viewportY, 28); assert.equal(term.smoothScroll.target, 33);
+  term.scrollToBottom(); assert.equal(term.viewportY, 0); assert.equal(term.smoothScroll.target, null);
+  term.write(3); assert.equal(term.viewportY, 0);
+  for (const navigate of [() => term.scrollLines(1), () => term.scrollToLine(3),
+    () => term.scrollToTop(), () => term.scrollToBottom(), () => term.clear(),
+    () => term.reset(), () => term.setRenderPaused(true)]) {
+    term.scrollToLine(5); term.scrollWheelLines(-4); navigate();
+    assert.equal(term.smoothScroll.target, null);
+    term.setRenderPaused(false);
+  }
+  term.scrollToLine(10); term.scrollWheelLines(-4);
+  term.alternate = true; term.write(1);
+  assert.equal(term.viewportY, 0); assert.equal(term.smoothScroll.target, null);
+  term.alternate = false; term.scrollWheelLines(-5); term.dispose();
+  assert.equal(term.smoothScroll.target, null);
 });
 
 test("row spacing can be selected before opening and refits metrics without clearing terminal content", () => {
@@ -387,6 +433,54 @@ test("terminals sharing a WASM module own and release separate clipboard scratch
   assert.equal(live.size, 1);
   assert.equal(reads[2][1], reads[1][1], "disposing a sibling preserves this terminal's scratch space");
   b.dispose(); assert.equal(live.size, 0);
+});
+
+test("real WASM titles reach the browser callback from bytes, snapshots, and repeated application requests", async () => {
+  const bytes = readFileSync(new URL("../internal/terminalcore/ghostty-vt.wasm", import.meta.url));
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports, titles = [];
+  class GhosttyTerminal {
+    constructor(options) { this.options = options; this.titleChangeEmitter = { fire: title => titles.push(title) }; }
+    onScroll() {}
+    clearSelection() {}
+    write(data) {
+      const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+      const ptr = e.ghostty_wasm_alloc_u8_array(bytes.length);
+      try {
+        new Uint8Array(e.memory.buffer).set(bytes, ptr);
+        e.ghostty_terminal_write(this.wasmTerm.handle, ptr, bytes.length);
+      } finally { e.ghostty_wasm_free_u8_array(ptr, bytes.length); }
+      this.checkForTitleChange(data);
+    }
+    reset() { this.write("\x1bc"); }
+    dispose() { if (!this.isDisposed) { this.wasmTerm.free(); this.isDisposed = true; } }
+  }
+  const Terminal = loadTerminalClass({ GhosttyTerminal,
+    renderScheduler: { noteOutput() {}, request() {}, unregister() {} } });
+  const term = new Terminal({ cursorBlinkEnabled: false });
+  term.wasmTerm = { handle: e.ghostty_terminal_new(20, 6), exports: e, initCellPool() {}, free() { e.ghostty_terminal_free(this.handle); } };
+  term.renderer = { resize() {} };
+  try {
+    const data = new TextEncoder().encode("\x1b]2;vim — 界\x07");
+    term.write(data.subarray(0, 12));
+    assert.deepEqual(titles, []);
+    term.write(data.subarray(12));
+    assert.deepEqual(titles, ["vim — 界"]);
+    term.write("ordinary output");
+    assert.equal(titles.length, 1);
+    const length = e.tessera_sixel_snapshot_export(term.wasmTerm.handle);
+    const snapshot = new Uint8Array(e.memory.buffer, e.tessera_sixel_snapshot_data(term.wasmTerm.handle), length).slice();
+    e.memory.grow(1);
+    term.write("\x1b]0;other app\x1b\\");
+    term.restoreSnapshot(snapshot, { cols: 20, rows: 6 });
+    assert.deepEqual(titles, ["vim — 界", "other app", "vim — 界"]);
+    term.write(data);
+    assert.equal(titles.at(-1), "vim — 界");
+    assert.equal(titles.length, 4, "a later identical request can replace a manual pane title");
+    term.reset();
+    term.write(data);
+    assert.equal(titles.length, 5, "titles resume after a full reset");
+  } finally { term.dispose(); }
 });
 
 test("real WASM clipboard draining reuses scratch space through reset, memory growth, and snapshot restoration", async () => {

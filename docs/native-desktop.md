@@ -95,7 +95,7 @@ allowed only for ticket-based file delivery; it receives no lifecycle bridge.
 Completed downloads are staged before replacing an existing destination.
 Native Edit menu commands and ordinary web clipboard handling are used.
 Terminal audio clips/streams use the existing page activation and mute controls;
-the separate `tessera-audio` streaming helper uses an installed FFmpeg.
+audio CLI programs are maintained and released in an independent repository.
 
 ## Validation
 

@@ -2,10 +2,34 @@
 
 ## Unreleased
 
+- Follow terminal application window titles from OSC 0/2 in title tabs and
+  window lists. Retain titles in the shared terminal core and snapshots so
+  byte-stream fragmentation, refreshes, and hidden-pane recovery preserve them.
+  Protect active title edits and ignore empty or oversized title requests.
+
+- Remove the audio and file OSC CLI programs and their release assets from this
+  repository now that they are maintained independently. Keep terminal protocol
+  support and documentation; smoke checks accept external helper binaries.
+
+- Apply each returning user's cached theme before the first paint and restore
+  sessions behind a startup visibility gate. Reveal terminal snapshots and
+  keyboard focus together, defer optional prompts, and provide delayed loading
+  feedback with reload recovery for failed or stalled startup.
+
+- Smooth terminal wheel and trackpad scrolling at every wheel speed, with
+  accumulated gestures, responsive reversal, pixel-level row movement, and
+  synchronized scrollbar fades. Preserve the history view during live output,
+  resume following output on typing, and respect reduced motion.
+
+- Add per-terminal Dark/Light color choices to the terminal and window menus,
+  with a Use default option. Persist choices in sessions with migration 048;
+  user default changes affect only inheriting terminals. Color changes keep
+  the managed shell running and restore its retained output.
+
 - Run platform CI on main pushes, pull requests and manual dispatch; retain
-  version-tag publishing for Tessera and standalone audio/file helpers on Windows
-  amd64, macOS arm64 and Linux amd64/arm64. Test every target, vet helpers, and
-  reject missing/empty release binaries before publishing.
+  version-tag publishing for Tessera on Windows amd64, macOS arm64 and Linux
+  amd64/arm64. Test every target and reject missing/empty release binaries
+  before publishing.
 
 - Add per-user terminal shortcuts with a management modal, ordered optional or
   required invocation inputs, CLI switches, defaults, duplicate/delete/test actions,
@@ -19,11 +43,10 @@
   tabs, paths and modes. Imported panes receive the same conversion; ordinary
   workspace saves retain archived documents without executing their contents.
 
-- Add host-local terminal file transfers and the `tessera-file` helper: browser
+- Add host-local terminal file transfers: browser
   batch uploads, original-file or streamed ZIP downloads, transient live claims,
   scoped tickets, cancellation and progress. Retire File Browser panes; migration
-  045 preserves their IDs, layout and directories as terminals. Releases include
-  standalone file helpers.
+  045 preserves their IDs, layout and directories as terminals.
 
 - Preserve verified legacy companion release assets so pre-v1.9.1 updaters can
   upgrade after the Audio station retirement. Tessera still updates only its
@@ -35,7 +58,7 @@
   and bundled LAME encoder. Migration 044 removes legacy Audio panes while
   preserving other workspace content and invalidating affected stale saves.
   Releases, self-updates, and the Ubuntu installer no longer manage LAME.
-  Terminal clips, Opus streaming, local controls, and the FFmpeg helper remain.
+  Terminal clips, Opus streaming and local controls remain.
 
 - Stream terminal audio incrementally from files/stdin through FFmpeg's Opus
   encoder. Add configurable bitrate and 100–2000 ms buffering, live joining
@@ -61,7 +84,7 @@
   Terminal. Reclaim the title-bar space and retain shortcut and command-palette
   restore actions.
 
-- Add a private terminal audio protocol and `tessera-audio` helper for embedded
+- Add a private terminal audio protocol for embedded
   WAV/MP3 clips, capability discovery, and stop commands. Enabled browser clients
   mix live sounds independently with per-terminal mute, including hidden panes;
   reconnect and terminal history never replay sounds. Bound decoding, memory,

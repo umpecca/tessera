@@ -165,7 +165,11 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer attachment.Unsubscribe()
-	if err := session.Configure(settings.TerminalColorMode == "light"); err != nil {
+	colorMode := r.URL.Query().Get("colorMode")
+	if colorMode != "dark" && colorMode != "light" {
+		colorMode = settings.TerminalColorMode
+	}
+	if err := session.Configure(colorMode == "light"); err != nil {
 		closeTerminalWithFailure(conn, err)
 		return
 	}

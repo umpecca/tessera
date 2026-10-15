@@ -31,6 +31,11 @@ func TestRetireEditorsPreservesDocumentsLayoutAndRevisions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Current store methods build the fixture; remove their new column before
+	// exercising the migration from the legacy schema.
+	if _, err := db.ExecContext(ctx, `ALTER TABLE panes ADD COLUMN terminal_color_mode TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatal(err)
+	}
 	legacy := &Workspace{ID: "legacy", ActivePaneID: "editor", Layout: json.RawMessage(`{"panes":["notes","editor","blank"],"custom":"keep"}`), Panes: []Pane{
 		{ID: "notes", Kind: "terminal", Title: "Notes", BufferText: "do not run this\n世界", Cwd: "/notes", EditorMode: "free", X: 19, Y: 37, Width: 450, Height: 320, ZIndex: 8, Minimized: true},
 		{ID: "editor", Kind: "terminal", Title: "Draft", BufferText: "unsaved draft", EditorTabs: `{"active":1,"tabs":[{"text":"first"},{"path":"/draft.txt","text":"unsaved draft"}]}`, LastExportPath: "/draft.txt", EditorMode: "normal", Cwd: "/project", X: 23, Y: 54, Width: 520, Height: 410, ZIndex: 13, IsFull: true, RestoreBox: `{"x":23,"y":54,"width":520,"height":410}`},
@@ -44,6 +49,9 @@ func TestRetireEditorsPreservesDocumentsLayoutAndRevisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE panes SET kind='worksheet' WHERE id='notes'; UPDATE panes SET kind='text-editor' WHERE id='editor'; UPDATE panes SET kind='' WHERE id='blank';`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE panes DROP COLUMN terminal_color_mode`); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.migrate(ctx); err != nil {

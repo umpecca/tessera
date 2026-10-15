@@ -222,7 +222,7 @@ func TestStateSnapshotAndLiveOrdering(t *testing.T) {
 	s.publish([]byte("before\x1bPq#1;2;100;0;0!8"))
 	a := s.subscribe(Cursor{Protocol: StateProtocol})
 	defer a.Unsubscribe()
-	if a.Err != nil || !a.Reset || !bytes.HasPrefix(a.Snapshot, []byte("TSS2")) {
+	if a.Err != nil || !a.Reset || !bytes.HasPrefix(a.Snapshot, []byte("TSS3")) {
 		t.Fatalf("snapshot: %+v", a)
 	}
 	s.publish([]byte("~\x1b\\after"))

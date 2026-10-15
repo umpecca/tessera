@@ -42,28 +42,29 @@ type Workspace struct {
 // Legacy document fields remain opaque archive data for workspace exports.
 // No active pane renders or executes BufferText or EditorTabs.
 type Pane struct {
-	ID             string `json:"id"`
-	Kind           string `json:"kind"`
-	Title          string `json:"title"`
-	BufferText     string `json:"bufferText"`
-	EditorMode     string `json:"editorMode"`
-	FontSize       int    `json:"fontSize"`
-	Cwd            string `json:"cwd"`
-	LastExportPath string `json:"lastExportPath"`
-	EditorTabs     string `json:"editorTabs"`
-	BrowserURL     string `json:"browserUrl"`
-	VNCTarget      string `json:"vncTarget"`
-	VNCViewOnly    bool   `json:"vncViewOnly"`
-	VNCScaleMode   string `json:"vncScaleMode"`
-	IsFull         bool   `json:"isFull"`
-	RestoreBox     string `json:"restoreBox"`
-	Minimized      bool   `json:"minimized"`
-	X              int    `json:"x"`
-	Y              int    `json:"y"`
-	Width          int    `json:"width"`
-	Height         int    `json:"height"`
-	ZIndex         int    `json:"zIndex"`
-	Position       int    `json:"position"`
+	ID                string `json:"id"`
+	Kind              string `json:"kind"`
+	Title             string `json:"title"`
+	BufferText        string `json:"bufferText"`
+	EditorMode        string `json:"editorMode"`
+	FontSize          int    `json:"fontSize"`
+	TerminalColorMode string `json:"terminalColorMode,omitempty"`
+	Cwd               string `json:"cwd"`
+	LastExportPath    string `json:"lastExportPath"`
+	EditorTabs        string `json:"editorTabs"`
+	BrowserURL        string `json:"browserUrl"`
+	VNCTarget         string `json:"vncTarget"`
+	VNCViewOnly       bool   `json:"vncViewOnly"`
+	VNCScaleMode      string `json:"vncScaleMode"`
+	IsFull            bool   `json:"isFull"`
+	RestoreBox        string `json:"restoreBox"`
+	Minimized         bool   `json:"minimized"`
+	X                 int    `json:"x"`
+	Y                 int    `json:"y"`
+	Width             int    `json:"width"`
+	Height            int    `json:"height"`
+	ZIndex            int    `json:"zIndex"`
+	Position          int    `json:"position"`
 	// BufferTextUnchanged and EditorTabsUnchanged let a save skip resending a
 	// pane's documents: the stored copy is kept and BufferText/EditorTabs above
 	// are ignored. They are request-only, so a loaded workspace never sets them.
@@ -149,7 +150,7 @@ WHERE id = ?`, id).Scan(&ws.ID, &ws.Revision, &ws.OwnerID, &ws.Name, &ws.ActiveP
 	ws.ThemeID = normalizeThemeID(ws.ThemeID)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ?
 ORDER BY position ASC, created_at ASC`, id)
@@ -161,7 +162,7 @@ ORDER BY position ASC, created_at ASC`, id)
 	for rows.Next() {
 		var pane Pane
 		var vncSettings string
-		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.BrowserURL, &vncSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
+		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.TerminalColorMode, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.BrowserURL, &vncSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
 			return nil, fmt.Errorf("scan pane: %w", err)
 		}
 		applyPaneVNCSettings(&pane, vncSettings)
@@ -205,10 +206,10 @@ func (s *Store) LoadPane(ctx context.Context, workspaceID, paneID string) (*Pane
 	var pane Pane
 	var vncSettings string
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ? AND id = ?`, workspaceID, paneID).Scan(
-		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.BrowserURL, &vncSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
+		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.TerminalColorMode, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.BrowserURL, &vncSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
 	if err != nil {
 		return nil, err
 	}
@@ -366,17 +367,21 @@ WHERE id = ? AND (revision = ? OR (revision = ? AND ? <> ''))`,
 			pane.Height = 240
 		}
 		pane.Position = i
+		if pane.TerminalColorMode != "dark" && pane.TerminalColorMode != "light" {
+			pane.TerminalColorMode = ""
+		}
 		seen[pane.ID] = true
 
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   kind = excluded.kind,
   title = excluded.title,
   buffer_text = CASE WHEN ? THEN panes.buffer_text ELSE excluded.buffer_text END,
   editor_mode = excluded.editor_mode,
   font_size = excluded.font_size,
+  terminal_color_mode = excluded.terminal_color_mode,
   cwd = excluded.cwd,
   last_export_path = excluded.last_export_path,
   editor_tabs = CASE WHEN ? THEN panes.editor_tabs ELSE excluded.editor_tabs END,
@@ -392,7 +397,7 @@ ON CONFLICT(id) DO UPDATE SET
   z_index = excluded.z_index,
   position = excluded.position,
   updated_at = excluded.updated_at`,
-			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.BrowserURL, paneVNCSettingsJSON(pane), pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now,
+			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.TerminalColorMode, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.BrowserURL, paneVNCSettingsJSON(pane), pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now,
 			pane.BufferTextUnchanged, pane.EditorTabsUnchanged); err != nil {
 			return fmt.Errorf("upsert pane %s: %w", pane.ID, err)
 		}

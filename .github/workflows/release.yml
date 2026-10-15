@@ -97,11 +97,6 @@ jobs:
           CGO_ENABLED: ${{ matrix.cgo }}
         run: go test ./...
 
-      - name: Vet terminal helpers
-        env:
-          CGO_ENABLED: "0"
-        run: go vet ./cmd/tessera-audio ./cmd/tessera-file
-
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -113,32 +108,6 @@ jobs:
         with:
           name: tessera-${{ matrix.goos }}-${{ matrix.goarch }}
           path: tessera-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
-          if-no-files-found: error
-
-      - name: Build terminal audio helper
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: go build -ldflags "-s -w" -o tessera-audio-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/tessera-audio
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tessera-audio-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: tessera-audio-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
-          if-no-files-found: error
-
-      - name: Build terminal file helper
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: go build -ldflags "-s -w" -o tessera-file-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/tessera-file
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tessera-file-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: tessera-file-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           if-no-files-found: error
 
   installer-test:
@@ -170,7 +139,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Verify all server and terminal helper binaries
+      - name: Verify all Tessera binaries
         run: node scripts/verify-release-assets.mjs dist
 
       - name: Preserve assets required by pre-v1.9.1 updaters

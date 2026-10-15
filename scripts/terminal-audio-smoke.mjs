@@ -1,6 +1,6 @@
 // Exercise the real app, PTY/helper, OSC parser, WebSocket, and Web Audio in
 // isolated Chrome and Firefox contexts. Requires Go, ffmpeg, and Playwright.
-// --playwright=<module> --chrome=<executable> --output=<directory>
+// --helper=<external-tessera-audio> --playwright=<module> --chrome=<executable> --output=<directory>
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -8,19 +8,21 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const arg = (name, fallback) => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3) || fallback;
+const helperPath = arg("helper");
+if (!helperPath) throw new Error("Pass --helper=/absolute/path/to/tessera-audio from the independent CLI repository");
+const helper = path.resolve(helperPath);
 const root = path.resolve(import.meta.dirname, "..");
 const output = path.resolve(arg("output", ".cache/review/terminal-audio-162"));
 await mkdir(output, { recursive: true });
 const modulePath = arg("playwright", "playwright");
 const { chromium, firefox } = await import(path.isAbsolute(modulePath) ? pathToFileURL(modulePath).href : modulePath);
 const ext = process.platform === "win32" ? ".exe" : "";
-const serverBinary = path.join(output, "tessera-smoke" + ext), helper = path.join(output, "tessera-audio" + ext);
+const serverBinary = path.join(output, "tessera-smoke" + ext);
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: root, encoding: "utf8", windowsHide: true });
   if (result.error || result.status !== 0) throw result.error || new Error(result.stderr || `${command} failed`);
 }
 run("go", ["build", "-o", serverBinary, "./cmd/tessera"]);
-run("go", ["build", "-o", helper, "./cmd/tessera-audio"]);
 const tone = Buffer.alloc(44 + 8000 * 3 * 2);
 tone.write("RIFF"); tone.writeUInt32LE(tone.length - 8, 4); tone.write("WAVEfmt ", 8);
 tone.writeUInt32LE(16, 16); tone.writeUInt16LE(1, 20); tone.writeUInt16LE(1, 22);

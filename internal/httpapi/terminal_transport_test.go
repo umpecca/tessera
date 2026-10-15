@@ -106,10 +106,56 @@ func readTerminalAttachment(t *testing.T, events <-chan terminalSocketEvent) ter
 		}
 		snapshot = append(snapshot, event.data[terminal.StateFrameHeader:]...)
 	}
-	if message.SnapshotBytes > 0 && (len(snapshot) != message.SnapshotBytes || !bytes.HasPrefix(snapshot, []byte("TSS2"))) {
+	if message.SnapshotBytes > 0 && (len(snapshot) != message.SnapshotBytes || !bytes.HasPrefix(snapshot, []byte("TSS3"))) {
 		t.Fatal("snapshot transfer is incomplete")
 	}
 	return message
+}
+
+func TestTerminalAttachmentColorChoiceKeepsShellAndConfiguresRetainedState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Setenv("TESSERA_TERMINAL_SHELL", "powershell.exe -NoLogo -NoProfile")
+	} else {
+		t.Setenv("TESSERA_TERMINAL_SHELL", "/bin/sh")
+	}
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "colors.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	manager := terminal.NewManager()
+	t.Cleanup(manager.Close)
+	api := &API{Store: st, Terminals: manager}
+	server := httptest.NewServer(http.HandlerFunc(api.terminalSession))
+	t.Cleanup(server.Close)
+	query := "workspaceId=default&paneId=colors&cols=80&rows=24&protocol=2&core=" + terminalcore.Compatibility
+	var epoch string
+	for _, mode := range []string{"light", "dark", "light", "unknown"} {
+		conn, events := terminalTestSocket(t, server.URL, query+"&colorMode="+mode)
+		attachment := readTerminalAttachment(t, events)
+		if epoch != "" && attachment.Epoch != epoch {
+			t.Fatal("color change replaced the managed shell")
+		}
+		epoch = attachment.Epoch
+		for {
+			event := nextTerminalSocketEvent(t, events)
+			if event.err != nil {
+				t.Fatal(event.err)
+			}
+			if event.kind != websocket.BinaryMessage || len(event.data) < terminal.StateFrameHeader || event.data[0] != terminal.StateConfiguration {
+				continue
+			}
+			want := byte(0)
+			if mode == "light" {
+				want = 1
+			}
+			if len(event.data) != terminal.StateFrameHeader+1 || event.data[terminal.StateFrameHeader] != want {
+				t.Fatalf("mode %q: unexpected configuration %v", mode, event.data)
+			}
+			break
+		}
+		conn.Close()
+	}
 }
 
 func TestHiddenTerminalWebSocketStopsOutputAndKeepsExitLive(t *testing.T) {

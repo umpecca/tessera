@@ -197,7 +197,7 @@ await edit("src/terminal/stream.zig", (source) => {
 await edit("src/lib_vt.zig", (source) => {
   const marker = '@export(&c.terminal_write, .{ .name = "ghostty_terminal_write" });';
   source = source.replace(/^\s*@export\(&c\.terminal\.sixel_[^\n]+\n/gm, "");
-  const exports = ["version", "configure", "geometry", "image_count", "image_info", "image_pixels", "image_settings", "image_settings_read", "clear_images", "tiles", "viewport_row", "snapshot_export", "snapshot_release", "snapshot_data", "snapshot_import", "clipboard_read"];
+  const exports = ["version", "configure", "geometry", "image_count", "image_info", "image_pixels", "image_settings", "image_settings_read", "clear_images", "tiles", "viewport_row", "snapshot_export", "snapshot_release", "snapshot_data", "snapshot_import", "clipboard_read", "title_revision", "title_length", "title_data"];
   source = source.replace(/^\s*@export\(&c\.terminal\.audio_read[^\n]+\n/gm, "");
   return replace(source, marker, marker + "\n" + exports.map((name) => `        @export(&c.terminal.sixel_${name}, .{ .name = "tessera_sixel_${name}" });`).join("\n") + '\n        @export(&c.terminal.audio_read, .{ .name = "tessera_audio_read" });\n        @export(&c.terminal.file_read, .{ .name = "tessera_file_read" });');
 });
@@ -250,8 +250,26 @@ await edit("src/terminal/c/terminal.zig", (source) => {
 
 await edit("src/terminal/c/terminal.zig", (source) => source.replace(
   /\.full_reset => \{[^\n]*self\.terminal\.fullReset\(\); \},/,
-  '.full_reset => { const cw = self.sixel.cell_width; const ch = self.sixel.cell_height; const limit = self.sixel.memory_limit; const placeholders = self.sixel.show_placeholders; self.sixel.deinit(self.alloc); self.sixel.cell_width = cw; self.sixel.cell_height = ch; self.sixel.memory_limit = limit; self.sixel.show_placeholders = placeholders; self.osc_raw.clearRetainingCapacity(); self.audio.deinit(self.alloc); try self.audio.push(self.alloc, "reset"); self.files.deinit(self.alloc); try self.files.push(self.alloc, "reset"); self.terminal.fullReset(); },'
+  '.full_reset => { const cw = self.sixel.cell_width; const ch = self.sixel.cell_height; const limit = self.sixel.memory_limit; const placeholders = self.sixel.show_placeholders; self.sixel.deinit(self.alloc); self.sixel.cell_width = cw; self.sixel.cell_height = ch; self.sixel.memory_limit = limit; self.sixel.show_placeholders = placeholders; self.osc_raw.clearRetainingCapacity(); self.audio.deinit(self.alloc); try self.audio.push(self.alloc, "reset"); self.files.deinit(self.alloc); try self.files.push(self.alloc, "reset"); self.title.clearRetainingCapacity(); self.title_revision +%= 1; self.terminal.fullReset(); },'
 ));
+
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("title_revision: u32")) return source;
+  source = replace(source, "    clipboard: std.ArrayList(u8) = .{},", "    clipboard: std.ArrayList(u8) = .{},\n    title: std.ArrayList(u8) = .{},\n    title_revision: u32 = 0,");
+  source = replace(source, "        self.clipboard.deinit(self.alloc);", "        self.clipboard.deinit(self.alloc);\n        self.title.deinit(self.alloc);");
+  source = replace(source, "            .window_title,\n", "");
+  source = replace(source, "            // Actions that require no response", `            .window_title => {
+                // Empty/oversized requests leave the existing pane name intact.
+                if (value.title.len > 0 and value.title.len <= 4096) {
+                    try self.title.ensureTotalCapacity(self.alloc, value.title.len);
+                    self.title.clearRetainingCapacity();
+                    self.title.appendSliceAssumeCapacity(value.title);
+                    self.title_revision +%= 1;
+                }
+            },
+            // Actions that require no response`);
+  return source;
+});
 
 await edit("src/terminal/c/terminal.zig", (source) => {
   if (source.includes("// Tessera line limit")) return source;

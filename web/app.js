@@ -242,7 +242,8 @@ const themes = {
   },
 };
 let defaultTheme = defaultThemeID;
-let themeID = defaultThemeID;
+let themeID = Object.hasOwn(themes, document.documentElement.dataset.theme)
+  ? document.documentElement.dataset.theme : defaultThemeID;
 const reducedWindowMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const windowWobble = new WindowWobble({
   enabled: () => themeID === "operator" && windowWobbleEnabled && !olderMacMode && !reducedWindowMotion.matches,
@@ -321,7 +322,16 @@ async function setTerminalColorMode(value, { save = true } = {}) {
   if (save) {
     scheduleUserSettingsSave();
   }
-  await recreateOpenTerminalViews(rectangles, disposeTerminal, startTerminal);
+  await recreateOpenTerminalViews(rectangles.filter((rect) => !rect.terminalColorMode), disposeTerminal, startTerminal);
+}
+
+async function setPaneTerminalColorMode(rect, value) {
+  if (rect?.kind !== "terminal") return;
+  const nextMode = Object.hasOwn(terminalColorModes, value) ? value : "";
+  if (rect.terminalColorMode === nextMode) return;
+  rect.terminalColorMode = nextMode;
+  scheduleWorkspaceSave();
+  await recreateOpenTerminalViews([rect], disposeTerminal, startTerminal);
 }
 
 function setOlderMacMode(enabled, { save = true } = {}) {
@@ -406,6 +416,7 @@ function applyTheme(id, { save = true } = {}) {
     rectangles.forEach((rect) => setOLEDMoveMode(rect, false));
   }
   document.documentElement.dataset.theme = themeID;
+  window.tesseraStartup?.cacheTheme(currentUser, themeID);
   reflowDockedPanesForTheme();
   // Operator puts its title bar inside the window; other themes use an
   // external tab. Re-measure contents after the chrome changes, never on move.
@@ -481,20 +492,83 @@ async function startApp() {
 
   const routed = parseSessionRoute();
   if (routed && isAllowedUser(routed.userID)) {
-    await selectUser(routed.userID, { sessionID: routed.sessionID, historyMode: "replace" });
-    return;
+    return selectUser(routed.userID, { sessionID: routed.sessionID, historyMode: "replace" });
   }
 
   if (!multiUser) {
-    await selectUser("default", { historyMode: "replace" });
-    return;
+    return selectUser("default", { historyMode: "replace" });
   }
 
   const stored = readStoredUser();
   if (stored && userRoster.includes(stored)) {
-    await selectUser(stored, { historyMode: "replace" });
+    return selectUser(stored, { historyMode: "replace" });
   } else {
     showUserSelect();
+    return true;
+  }
+}
+
+async function openStartupWorkspace() {
+  try {
+    if (!await startApp()) {
+      showStartupFailure();
+      return;
+    }
+    if (currentUser) await waitForStartupWorkspace();
+    else applyTheme(defaultThemeID, { save: false });
+    // Keep a fallback for an unavailable early script: a loaded app must still
+    // release the gate and remain usable.
+    if (window.tesseraStartup) window.tesseraStartup.finish();
+    else {
+      delete document.documentElement.dataset.startup;
+      document.getElementById("startup").hidden = true;
+      board.removeAttribute("inert");
+      board.removeAttribute("aria-busy");
+    }
+    if (currentUser) focusPane(activeRect);
+    void refreshClipboardBridgeAndPrompt();
+    showIPadHTTPGuidanceIfNeeded();
+  } catch (error) {
+    console.warn(error);
+    showStartupFailure();
+  } finally {
+    startServerConnectionMonitor();
+  }
+}
+
+function showStartupFailure() {
+  if (window.tesseraStartup) {
+    window.tesseraStartup.fail();
+    return;
+  }
+  document.documentElement.dataset.startup = "error";
+  document.getElementById("startup-message").textContent = "Tessera could not open your workspace. Please reload to try again.";
+  document.getElementById("startup-reload").hidden = false;
+}
+
+async function waitForStartupWorkspace() {
+  const deadline = performance.now() + 3000;
+  if (workspaceHasBackground) {
+    const image = new Image();
+    image.src = backgroundURL(workspaceBackgroundVersion);
+    let timeout;
+    await Promise.race([
+      image.decode().catch(() => {}),
+      new Promise(resolve => { timeout = window.setTimeout(resolve, 3000); }),
+    ]);
+    window.clearTimeout(timeout);
+  }
+  // Visibility:hidden preserves pane dimensions, so fits and initial snapshot
+  // paints can finish behind the gate. Hidden/covered terminals need not attach.
+  while (!document.hidden && performance.now() < deadline) {
+    const ready = rectangles.every(rect => {
+      if (rect.kind !== "terminal" || rect.minimized || terminalIsCovered(rect, rectangles)) return true;
+      const state = rect.terminal;
+      return Boolean(state?.replica?.cursor?.epoch && !state.replica.needsSnapshot
+        && !state.term.fullRedrawPending) || Boolean(rect.terminalStatus);
+    });
+    if (ready) break;
+    await new Promise(resolve => window.setTimeout(resolve, 25));
   }
 }
 
@@ -1280,12 +1354,7 @@ window.addEventListener("resize", hideAllMenus);
 window.addEventListener("popstate", () => void handleSessionHistoryNavigation());
 window.addEventListener("message", handleBrowserPaneMessage);
 
-applyTheme(themeID, { save: false });
-void refreshClipboardBridgeAndPrompt();
-showIPadHTTPGuidanceIfNeeded();
-void startApp()
-  .catch((error) => console.warn(error))
-  .finally(startServerConnectionMonitor);
+void openStartupWorkspace();
 
 function startDrawing(event, { capture = true } = {}) {
   if (interaction || (event.button !== 1 && (event.button !== 0 || event.target !== board))) {
@@ -1483,6 +1552,7 @@ function createRectangle(x, y, width, height, options = {}) {
       lastExportPath: options.lastExportPath || "",
     },
     fontSize: normalizePaneFontSize(options.fontSize),
+    terminalColorMode: Object.hasOwn(terminalColorModes, options.terminalColorMode) ? options.terminalColorMode : "",
     cwd: options.cwd || "",
     oledMoveMode: false,
     terminal: null,
@@ -2596,12 +2666,30 @@ function setActivePane(rect, options = {}) {
   updateDeskbar();
 }
 
+function applyTerminalWindowTitle(rect, title) {
+  if (rect.kind !== "terminal" || !rectangles.includes(rect) || !title.trim() || title === rect.title) return;
+  // A program can keep reporting titles while the user types a custom name.
+  if (!rect.titleInput.readOnly || (!renameWindowModal.hidden && renameWindowModal.dataset.paneId === rect.id)) return;
+  rect.title = title;
+  rect.titleInput.value = title;
+  updateDeskbar();
+  if (!windowSwitcher.hidden) {
+    for (const row of windowSwitcherList.children) {
+      if (row.dataset.paneId === rect.id) {
+        row.querySelector(".window-switcher-name").textContent = `${title.trim()}${rect.minimized ? " (minimized)" : ""}`;
+      }
+    }
+  }
+  scheduleWorkspaceSave();
+}
+
 function openRenameWindowModal(rect) {
   if (!rect || !rectangles.includes(rect)) {
     return;
   }
   hideAllMenus();
   renameWindowModal.replaceChildren();
+  renameWindowModal.dataset.paneId = rect.id;
 
   const panel = document.createElement("section");
   panel.className = "settings-panel rename-window-panel";
@@ -3089,6 +3177,7 @@ function loadWorkspace(workspace) {
         text: pane.bufferText,
         editorMode: pane.editorMode,
         fontSize: pane.fontSize,
+        terminalColorMode: pane.terminalColorMode,
         cwd: pane.cwd,
         lastExportPath: pane.lastExportPath,
         editorTabs: pane.editorTabs,
@@ -3355,6 +3444,7 @@ function workspaceSavePayload() {
     ...paneContentFields(contentByPaneID.get(rect.id), savedPaneContent.get(rect.id)),
     editorMode: rect.archivedContent?.editorMode || "",
     fontSize: rect.kind === "terminal" ? rect.fontSize : defaultPaneFontSize,
+    terminalColorMode: rect.kind === "terminal" ? rect.terminalColorMode : "",
     cwd: rect.cwd || "",
     lastExportPath: rect.archivedContent?.lastExportPath || "",
     browserUrl: rect.kind === browserPaneKind ? rect.browserUrl : "",
@@ -3586,7 +3676,7 @@ async function startTerminal(rect) {
     // ANSI assigns color roles rather than RGB values. The terminal's neutral
     // light/dark mode supplies an xterm-compatible palette independently from
     // Tessera's decorative workspace theme.
-    const terminalTheme = terminalColorTheme(terminalColorMode);
+    const terminalTheme = terminalColorTheme(rect.terminalColorMode || terminalColorMode);
     rect.terminalContainer.style.background = terminalTheme.background;
     const term = new Terminal({
       cols: 80,
@@ -3648,14 +3738,16 @@ async function startTerminal(rect) {
     fit.fit();
     fit.observeResize();
     const dataDisposable = term.onData((data) => {
+      term.scrollToBottom();
       term.noteInteractiveInput?.();
       sendTerminalInput(rect.terminal?.socket, data);
     });
     const resizeDisposable = term.onResize(() => {
       requestTerminalGridSize(rect.terminal);
     });
+    const titleDisposable = term.onTitleChange(title => applyTerminalWindowTitle(rect, title));
     rect.terminal = {
-      term, fit, socket: null, dataDisposable, resizeDisposable, mouseBridge: null,
+      term, fit, socket: null, dataDisposable, resizeDisposable, titleDisposable, mouseBridge: null,
       pasteBridge: attachTerminalPasteBridge(rect, term),
       output: new TerminalWriteScheduler((data) => term.write(data)),
       reconnectTimer: null, reconnectAttempts: 0, outputPaused: false, snapshotIfChanged: false,
@@ -3709,7 +3801,8 @@ function connectTerminalSocket(rect) {
   }
   const { term } = terminalState;
   terminalState.replica.disconnect();
-  const socket = new WebSocket(terminalWebSocketURL(rect, term.desiredCols || term.cols, term.desiredRows || term.rows));
+  const socket = new WebSocket(terminalWebSocketURL(rect, term.desiredCols || term.cols, term.desiredRows || term.rows,
+    rect.terminalColorMode || terminalColorMode));
   socket.binaryType = "arraybuffer";
   terminalState.socket = socket;
   // A new connection has not been told any size yet.
@@ -4255,22 +4348,16 @@ function attachTerminalMouseBridge(rect, term, socket) {
         return false;
       }
       const buttonCode = direction < 0 ? 64 : 65;
-      const baseSteps = Math.min(5, Math.max(1, Math.round(Math.abs(event.deltaY) / 40)));
-      const steps = terminalWheelSensitivity === 1
-        ? baseSteps
-        : scaledDiscreteWheelSteps(baseSteps, direction);
+      const baseSteps = Math.min(5, Math.abs(wheelDeltaUnits(event.deltaY, event.deltaMode, 40, term.rows)));
+      const steps = scaledDiscreteWheelSteps(baseSteps, direction);
       for (let index = 0; index < steps; index += 1) {
         sendTerminalMouseSequence(socket, terminalMouseEventCode(buttonCode, event), position, "M");
       }
       return true;
     }
 
-    if (terminalWheelSensitivity === 1) {
-      return false;
-    }
-
     if (term.wasmTerm?.isAlternateScreen?.()) {
-      const baseSteps = Math.min(5, Math.abs(Math.round(event.deltaY / 33)));
+      const baseSteps = Math.min(5, Math.abs(wheelDeltaUnits(event.deltaY, event.deltaMode, 33, term.rows)));
       const steps = scaledDiscreteWheelSteps(baseSteps, direction);
       const sequence = direction < 0 ? "\x1B[A" : "\x1B[B";
       for (let index = 0; index < steps; index += 1) {
@@ -4280,8 +4367,10 @@ function attachTerminalMouseBridge(rect, term, socket) {
     }
 
     const lineHeight = term.renderer?.getMetrics?.().height || 20;
+    wheelRemainder = 0;
+    wheelDirection = 0;
     const lines = wheelDeltaUnits(event.deltaY, event.deltaMode, lineHeight, term.rows);
-    term.scrollLines(lines * terminalWheelSensitivity);
+    term.scrollWheelLines(lines * terminalWheelSensitivity);
     return true;
   };
 
@@ -4372,7 +4461,7 @@ function stopTerminalMouseEvent(event) {
   event.stopImmediatePropagation?.();
 }
 
-function terminalWebSocketURL(rect, cols, rows) {
+function terminalWebSocketURL(rect, cols, rows, colorMode = "") {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({
     workspaceId: workspaceID,
@@ -4383,6 +4472,9 @@ function terminalWebSocketURL(rect, cols, rows) {
     protocol: "2",
     core: rect.terminal.term.coreID,
   });
+  // Appearance changes reconnect before their debounced workspace save may
+  // finish. Configure the host's retained cells with this view's chosen mode.
+  if (colorMode === "dark" || colorMode === "light") params.set("colorMode", colorMode);
   // Saying what this pane already holds lets the server send only what it
   // missed. Bound every replay, including interrupted visibility recovery.
   // An overrun or incomplete snapshot omits the cursor to request a fresh
@@ -4499,6 +4591,7 @@ function disposeTerminal(rect, options = {}) {
   }
   terminalState.dataDisposable?.dispose?.();
   terminalState.resizeDisposable?.dispose?.();
+  terminalState.titleDisposable?.dispose?.();
   terminalState.mouseBridge?.dispose?.();
   terminalState.pasteBridge?.dispose?.();
   terminalState.output?.dispose?.();
@@ -4618,6 +4711,7 @@ function renderDockMenu(rect) {
     });
     dockMenu.appendChild(button);
   }
+  if (rect.kind === "terminal") appendTerminalColorSetting(dockMenu, rect, hideDockMenu);
 }
 
 function renderWorkspaceMenu() {
@@ -6547,9 +6641,9 @@ function renderSettingsTerminalColorModeRow() {
   const label = document.createElement("span");
   label.className = "settings-row-label";
   const name = document.createElement("strong");
-  name.textContent = "Colors";
+  name.textContent = "Default colors";
   const detail = document.createElement("span");
-  detail.textContent = "Neutral xterm colors, independent of the workspace theme.";
+  detail.textContent = "Used by terminals set to Use default. Choose colors for one terminal from its right-click menu.";
   label.append(name, detail);
 
   const select = document.createElement("select");
@@ -6748,6 +6842,7 @@ function showWindowSwitcher(options = {}) {
   for (const entry of entries) {
     const row = document.createElement("div");
     row.className = "window-switcher-item";
+    row.dataset.paneId = entry.id;
     if (entry.active) {
       row.classList.add("is-selected");
       activeRow = row;
@@ -7892,6 +7987,28 @@ function paneSpawnPoint() {
   return { x: 48 + step * 32, y: tabHeight + 40 + step * 28 };
 }
 
+function appendTerminalColorSetting(menu, rect, hideMenu) {
+  const label = document.createElement("label");
+  label.className = "terminal-image-setting";
+  label.textContent = "Terminal colors";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Terminal colors");
+  const defaultLabel = `Use default (${terminalColorModes[terminalColorMode].label})`;
+  for (const [id, choice] of [["", { label: defaultLabel }], ...Object.entries(terminalColorModes)]) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = choice.label;
+    option.selected = id === (rect.terminalColorMode || "");
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => {
+    hideMenu();
+    void setPaneTerminalColorMode(rect, select.value);
+  });
+  label.appendChild(select);
+  menu.appendChild(label);
+}
+
 function renderTerminalMenu(rect) {
   terminalMenu.replaceChildren();
   const actions = [
@@ -7924,6 +8041,10 @@ function renderTerminalMenu(rect) {
   const separator = document.createElement("div");
   separator.className = "dock-menu-separator";
   terminalMenu.appendChild(separator);
+  appendTerminalColorSetting(terminalMenu, rect, hideTerminalMenu);
+  const themeSeparator = document.createElement("div");
+  themeSeparator.className = "dock-menu-separator";
+  terminalMenu.appendChild(themeSeparator);
   const audioToggle = document.createElement("button");
   audioToggle.type = "button";
   audioToggle.textContent = terminalAudioPlayer.enabled ? "Disable terminal audio" : "Enable terminal audio";

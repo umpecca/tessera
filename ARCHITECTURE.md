@@ -29,8 +29,6 @@ Constraints and assumptions:
 tessera/
   cmd/tessera/
     main.go                    # flags, process lifecycle, tray and update restart
-  cmd/tessera-audio/
-    main.go                    # clip/query helper and FFmpeg Opus stream producer
   internal/app/
     app.go                     # dependency wiring and HTTP handler construction
   internal/server/
@@ -86,7 +84,7 @@ tessera/
     001_*.sql ... 047_*.sql     # append-only application schema migrations
   tasks/                       # small implementation task records
   .github/workflows/
-    release.yml                # platform CI and tagged server/helper releases
+    release.yml                # platform CI and tagged Tessera releases
 ```
 
 The Go backend is separated by concrete responsibility. The frontend currently
@@ -400,13 +398,14 @@ and optional GitHub Releases access.
 
 CI/CD Pipeline: `.github/workflows/release.yml` runs on main-branch pushes, pull
 requests targeting main, manual dispatch, and `v*` tag pushes. It builds and
-tests every Tessera platform, vets both helpers, and uploads separate artifacts
+tests every Tessera platform and uploads separate artifacts
 for Windows amd64, Linux amd64/arm64, and macOS arm64. Version-tag pushes publish
-Tessera plus `tessera-audio` and `tessera-file` binaries after installer tests and
-verification of all 12 required release binaries. Missing or empty assets block
-publication. Non-tag CI runs retain build artifacts without publishing releases.
-The helper streams through independently installed FFmpeg/libopus. The pinned
-browser Opus decoder and its license notices ship in the web assets.
+Tessera binaries after installer tests and verification of all four required
+release binaries. Missing or empty assets block publication. Non-tag CI runs
+retain build artifacts without publishing releases.
+The audio and file OSC CLI programs are maintained and released in an independent
+repository. External audio producers can encode streams with FFmpeg/libopus.
+The pinned browser Opus decoder and its license notices ship in the web assets.
 Release packaging also retains the original v1.9.0 LAME companions and their
 source/license, verified against pinned sizes and SHA-256 hashes, solely for
 pre-v1.9.1 updater compatibility. Current Tessera does not build or use LAME.

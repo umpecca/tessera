@@ -2,6 +2,19 @@
 // Tessera Sixel API. Appended to the pinned terminal C wrapper.
 pub fn sixel_version() callconv(.c) u32 { return 2; }
 
+pub fn sixel_title_revision(ptr: ?*anyopaque) callconv(.c) u32 {
+    const w: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
+    return w.stream.handler.title_revision;
+}
+pub fn sixel_title_length(ptr: ?*anyopaque) callconv(.c) u32 {
+    const w: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
+    return @intCast(w.stream.handler.title.items.len);
+}
+pub fn sixel_title_data(ptr: ?*anyopaque) callconv(.c) ?[*]const u8 {
+    const w: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return null));
+    return w.stream.handler.title.items.ptr;
+}
+
 pub fn sixel_image_settings(ptr: ?*anyopaque, memory_mib: u32, placeholders: u32) callconv(.c) bool {
     const w: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
     if ((memory_mib != 16 and memory_mib != 32 and memory_mib != 64) or placeholders > 1) return false;

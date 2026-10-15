@@ -44,7 +44,7 @@ export const terminalColorModes = Object.freeze({
 });
 
 export function normalizeTerminalColorMode(value) {
-  return terminalColorModes[value] ? value : defaultTerminalColorMode;
+  return Object.hasOwn(terminalColorModes, value) ? value : defaultTerminalColorMode;
 }
 
 export function terminalColorTheme(value) {

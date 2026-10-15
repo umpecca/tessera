@@ -10,6 +10,8 @@ export function installTerminalSelection(terminal) {
   const view = doc.defaultView;
   const originalRequestRender = manager.requestRender;
   const originalClearSelection = manager.clearSelection;
+  const originalPixelToCell = manager.pixelToCell;
+  const originalNormalizeSelection = manager.normalizeSelection;
   const listeners = [];
   let pointerID = null;
 
@@ -28,6 +30,31 @@ export function installTerminalSelection(terminal) {
   };
 
   manager.requestRender = () => terminal.requestRender();
+  if (originalPixelToCell) manager.pixelToCell = (x, y) => {
+    const fraction = terminal.viewportY - Math.floor(terminal.viewportY);
+    if (!fraction) return originalPixelToCell.call(manager, x, y);
+    const height = terminal.renderer.getMetrics().height;
+    const ratio = terminal.renderer.devicePixelRatio || 1;
+    const offset = Math.round(fraction * height * ratio) / ratio;
+    const cell = originalPixelToCell.call(manager, x, y - offset);
+    // The partial history row above row zero is visible during pixel scrolling.
+    if (y < offset) cell.row = -1;
+    return cell;
+  };
+  if (originalNormalizeSelection) manager.normalizeSelection = () => {
+    if (Number.isInteger(terminal.viewportY)) return originalNormalizeSelection.call(manager);
+    if (!manager.selectionStart || !manager.selectionEnd) return null;
+    let start = manager.selectionStart, end = manager.selectionEnd;
+    if (start.absoluteRow > end.absoluteRow
+        || (start.absoluteRow === end.absoluteRow && start.col > end.col)) [start, end] = [end, start];
+    const startRow = manager.absoluteRowToViewport(start.absoluteRow);
+    const endRow = manager.absoluteRowToViewport(end.absoluteRow);
+    if (endRow < -1 || startRow >= terminal.rows) return null;
+    return {
+      startRow: Math.max(-1, startRow), startCol: startRow < -1 ? 0 : start.col,
+      endRow: Math.min(terminal.rows - 1, endRow), endCol: endRow >= terminal.rows ? terminal.cols - 1 : end.col,
+    };
+  };
   manager.clearSelection = () => {
     manager.stopAutoScroll();
     manager.isSelecting = false;
@@ -62,9 +89,13 @@ export function installTerminalSelection(terminal) {
     listeners.push(() => target.removeEventListener(type, handler, { capture: true }));
   };
   listen(canvas, "pointerdown", (event) => {
+    terminal.smoothScroll?.cancel();
     if (event.button === 0) pointerID = event.pointerId;
   });
-  listen(canvas, "mousedown", clearNativeSelection);
+  listen(canvas, "mousedown", () => {
+    terminal.smoothScroll?.cancel();
+    clearNativeSelection();
+  });
   listen(container, "selectstart", (event) => {
     if (event.target === canvas) event.preventDefault();
   });
@@ -97,6 +128,8 @@ export function installTerminalSelection(terminal) {
       for (const remove of listeners) remove();
       manager.requestRender = originalRequestRender;
       manager.clearSelection = originalClearSelection;
+      if (originalPixelToCell) manager.pixelToCell = originalPixelToCell;
+      if (originalNormalizeSelection) manager.normalizeSelection = originalNormalizeSelection;
     },
   };
 }

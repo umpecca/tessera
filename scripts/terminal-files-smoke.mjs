@@ -1,22 +1,23 @@
 // Real app + PTY + controlling-console helper + two browser clients.
-// --playwright=<module> --browsers=chrome,edge,firefox --output=<directory>
+// --helper=<external-tessera-file> --playwright=<module> --browsers=chrome,edge,firefox --output=<directory>
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 const arg = (name, fallback) => process.argv.find(v => v.startsWith(`--${name}=`))?.slice(name.length + 3) || fallback;
+const helperPath = arg("helper");
+if (!helperPath) throw new Error("Pass --helper=/absolute/path/to/tessera-file from the independent CLI repository");
+const helper = path.resolve(helperPath);
 const root = path.resolve(import.meta.dirname, "..");
 const output = path.resolve(arg("output", ".cache/review/terminal-files-172"));
 await mkdir(output, { recursive: true });
 const modulePath = arg("playwright", "playwright");
 const { chromium, firefox } = await import(path.isAbsolute(modulePath) ? pathToFileURL(modulePath).href : modulePath);
 const ext = process.platform === "win32" ? ".exe" : "";
-const serverBinary = path.join(output, "tessera-smoke" + ext), helper = path.join(output, "tessera-file" + ext);
-for (const [file, command] of [[serverBinary, "./cmd/tessera"], [helper, "./cmd/tessera-file"]]) {
-  const result = spawnSync("go", ["build", "-o", file, command], { cwd: root, encoding: "utf8", windowsHide: true });
-  if (result.status !== 0) throw new Error(result.stderr);
-}
+const serverBinary = path.join(output, "tessera-smoke" + ext);
+const build = spawnSync("go", ["build", "-o", serverBinary, "./cmd/tessera"], { cwd: root, encoding: "utf8", windowsHide: true });
+if (build.error || build.status !== 0) throw build.error || new Error(build.stderr);
 const host = spawn(serverBinary, ["-addr", "127.0.0.1:0", "-db", path.join(output, `smoke-${Date.now()}.db`), "-tray=false", "-web", path.join(root, "web")], { cwd: root, windowsHide: true });
 let log = "";
 const baseURL = await new Promise((resolve, reject) => {

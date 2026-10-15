@@ -1,9 +1,23 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-startup="loading">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
     <title>Tessera</title>
+    <style>
+      html[data-startup] body { margin: 0; background: var(--board-bg, #10141c); }
+      html[data-startup]:not([data-theme]) body { background: #10141c; }
+      html[data-startup]:not([data-theme]) .startup-shell { color: #e5e1d5; }
+      html[data-startup] body > :not(#startup):not(noscript) { visibility: hidden; }
+      .startup-shell { position: fixed; inset: 0; display: grid; place-content: center; gap: 16px; padding: 24px; text-align: center; color: var(--text, #e5e1d5); font: 14px system-ui, sans-serif; opacity: 0; animation: startup-appear 150ms linear 600ms forwards; }
+      .startup-shell[hidden] { display: none; }
+      .startup-shell p { margin: 0; }
+      .startup-shell a { color: inherit; }
+      html[data-startup="error"] .startup-shell { opacity: 1; animation: none; }
+      @keyframes startup-appear { to { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { .startup-shell { animation-duration: 0s; } }
+    </style>
+    <script src="/startup.js?v=dev"></script>
 
     <!-- Installable web app (home screen / standalone). -->
     <link rel="manifest" href="/manifest.webmanifest">
@@ -22,7 +36,15 @@
     <link rel="stylesheet" href="/styles.css?v=dev">
   </head>
   <body>
-    <main id="board" class="board" aria-label="Tessera workspace"></main>
+    <main id="board" class="board" aria-label="Tessera workspace" aria-busy="true" inert></main>
+    <div id="startup" class="startup-shell" role="status" aria-live="polite">
+      <p id="startup-message">Opening your workspace…</p>
+      <a id="startup-reload" href="" hidden>Reload Tessera</a>
+    </div>
+    <noscript>
+      <style>.startup-shell { display: none; } noscript { position: fixed; inset: 0; display: grid; place-content: center; padding: 24px; color: #e5e1d5; font: 14px system-ui, sans-serif; }</style>
+      <p>Tessera needs JavaScript to open your workspace. Enable it, then reload this page.</p>
+    </noscript>
     <script type="module" src="/app.js?v=dev"></script>
   </body>
 </html>

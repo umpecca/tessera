@@ -88,6 +88,48 @@ async function terminal(cols = 20, rows = 6, sharedExports) {
   return { e, get handle() { return handle; }, write, cursor, tiles, snapshot, restore, cells, grapheme, resize, dispose() { e.ghostty_terminal_free(handle); } };
 }
 
+function windowTitle(t) {
+  const length = t.e.tessera_sixel_title_length(t.handle);
+  return new TextDecoder().decode(new Uint8Array(t.e.memory.buffer, t.e.tessera_sixel_title_data(t.handle), length));
+}
+
+test("OSC window titles survive every byte split and snapshot, including Unicode and split ST", async () => {
+  const t = await terminal();
+  try {
+    for (const command of [0, 2]) for (const end of ["\x07", "\x1b\\"]) {
+      const data = new TextEncoder().encode(`\x1b]${command};vim — 界 😀${end}`);
+      for (let split = 0; split <= data.length; split++) {
+        t.write("\x1b]2;Previous\x07");
+        t.write(data.subarray(0, split));
+        t.restore(t.snapshot());
+        t.write(data.subarray(split));
+        assert.equal(windowTitle(t), "vim — 界 😀", `OSC ${command}, split ${split}`);
+        t.restore(t.snapshot());
+        assert.equal(windowTitle(t), "vim — 界 😀");
+      }
+    }
+  } finally { t.dispose(); }
+});
+
+test("title requests ignore icon, empty, invalid UTF-8 and oversized titles and reset with the core", async () => {
+  const t = await terminal();
+  try {
+    t.write("\x1b]2;Keep\x07");
+    for (const sequence of ["\x1b]1;Icon\x07", "\x1b]2;\x07", `\x1b]0;${"x".repeat(4097)}\x07`,
+      new Uint8Array([27, 93, 50, 59, 0xff, 7])]) {
+      t.write(sequence);
+      assert.equal(windowTitle(t), "Keep");
+    }
+    t.write("\x1b]2;First\x07\x1b]0;<b>Last</b>; title\x1b\\");
+    assert.equal(windowTitle(t), "<b>Last</b>; title");
+    const revision = t.e.tessera_sixel_title_revision(t.handle);
+    t.write("\x1b]2;<b>Last</b>; title\x07");
+    assert.notEqual(t.e.tessera_sixel_title_revision(t.handle), revision, "a later request can replace a manually renamed window");
+    t.write("\x1bc");
+    assert.equal(windowTitle(t), "");
+  } finally { t.dispose(); }
+});
+
 test("audio effects are transient across snapshots, including partial OSC and split ST", async () => {
   const sequence = "\x1b]777;tessera-audio;1;stop;clip\x1b\\";
   for (let split = 0; split <= sequence.length; split++) {

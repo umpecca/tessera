@@ -53,6 +53,7 @@ test("theme switching clears transient wobble and refits the existing terminal v
   const rect = {};
   const context = {
     themes: { operator: {}, studio: {} }, themeID: "studio", defaultThemeID: "studio",
+    currentUser: "alice", window: { tesseraStartup: { cacheTheme: (user, theme) => calls.push(`cache:${user}:${theme}`) } },
     windowWobble: { stop: () => calls.push("stop") }, rectangles: [rect],
     document: { documentElement: { dataset: {} } }, setOLEDMoveMode() {},
     reflowDockedPanesForTheme: () => calls.push("reflow"),
@@ -62,7 +63,7 @@ test("theme switching clears transient wobble and refits the existing terminal v
   };
   appFunction("applyTheme", context)("operator");
   assert.equal(context.document.documentElement.dataset.theme, "operator");
-  assert.deepEqual(calls, ["stop", "reflow", "fit", "visibility", "save"]);
+  assert.deepEqual(calls, ["stop", "cache:alice:operator", "reflow", "fit", "visibility", "save"]);
 });
 
 test("Operator docking is flush and maximization resets a scrolled desktop", () => {
