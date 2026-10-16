@@ -66,6 +66,24 @@ export class TerminalFitScheduler {
     this.clearTimer(timerID);
   }
 
+  // Several browsers can show one shell, and the shell has one size. Whichever
+  // browser is in use claims it: when the host is at another browser's grid,
+  // this one sends its own again, even though it already sent that grid once.
+  claimGridSize(terminalState) {
+    const term = terminalState?.term;
+    if (!term) {
+      return;
+    }
+    const cols = term.desiredCols ?? term.cols;
+    const rows = term.desiredRows ?? term.rows;
+    if (term.cols === cols && term.rows === rows) {
+      return;
+    }
+    terminalState.sentCols = 0;
+    terminalState.sentRows = 0;
+    this.sendGridSize(terminalState);
+  }
+
   // A fresh socket has not been told any size yet, so callers reset sentCols and
   // sentRows when they connect one.
   sendGridSize(terminalState) {

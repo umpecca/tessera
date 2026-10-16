@@ -192,9 +192,7 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 	}
 	m.mu.Unlock()
 	if existing != nil && !existing.isClosed() {
-		attachment := existing.subscribe(cursor)
-		_ = existing.Resize(cols, rows)
-		return existing, attachment, nil
+		return existing, existing.join(cursor, cols, rows), nil
 	}
 
 	core, err := terminalcore.New(cols, rows)
@@ -227,11 +225,9 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 	}
 	if existing != nil {
 		m.mu.Unlock()
-		attachment := existing.subscribe(cursor)
 		_ = session.Close()
 		core.Close()
-		_ = existing.Resize(cols, rows)
-		return existing, attachment, nil
+		return existing, existing.join(cursor, cols, rows), nil
 	}
 	m.sessions[key] = managed
 	m.mu.Unlock()
@@ -337,6 +333,22 @@ func (s *ManagedSession) WriteMouse(p []byte) (int, error) {
 		return len(p), nil
 	}
 	return s.session.Write(p)
+}
+
+// join subscribes another browser to a running session. The shell has one
+// size however many browsers show it, and it stays with whoever is using the
+// terminal: a browser that attaches while another is already showing it, such
+// as a background tab reconnecting after sleep, does not take the size. The
+// browser in use claims it by sending its own grid.
+func (s *ManagedSession) join(cursor Cursor, cols, rows int) *Attachment {
+	s.mu.Lock()
+	shared := len(s.subscribers) > 0
+	s.mu.Unlock()
+	attachment := s.subscribe(cursor)
+	if !shared {
+		_ = s.Resize(cols, rows)
+	}
+	return attachment
 }
 
 func (s *ManagedSession) Resize(cols, rows int) error {

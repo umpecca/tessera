@@ -223,3 +223,22 @@ test("disposing after a fit cancels its pending grid size", () => {
   timers.run();
   assert.deepEqual(terminal.sent, []);
 });
+
+test("a browser in use reclaims the grid another browser resized the shell to", () => {
+  const sent = [];
+  const scheduler = new TerminalFitScheduler({ setTimer: () => 1, clearTimer: () => {} });
+  const term = { cols: 120, rows: 40, desiredCols: 120, desiredRows: 40, renderer: { getMetrics: () => ({ width: 9, height: 18 }) } };
+  const state = { term, socket: { readyState: 1, send: (message) => sent.push(JSON.parse(message)) }, sentCols: 0, sentRows: 0 };
+  scheduler.sendGridSize(state);
+  assert.equal(sent.length, 1);
+
+  scheduler.claimGridSize(state);
+  assert.equal(sent.length, 1, "nothing to claim while the host is at this grid");
+
+  // Another browser resized the shell; the host's geometry replaced ours.
+  term.cols = 80; term.rows = 50;
+  scheduler.sendGridSize(state);
+  assert.equal(sent.length, 1, "an ordinary send still dedupes against what this browser sent");
+  scheduler.claimGridSize(state);
+  assert.deepEqual(sent.at(-1), { type: "resize", cols: 120, rows: 40, cellWidth: 9, cellHeight: 18 });
+});

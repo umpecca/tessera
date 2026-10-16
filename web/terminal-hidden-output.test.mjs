@@ -59,7 +59,7 @@ function fixture() {
     terminalIsCovered, terminalBacklogCloseCode, terminalCloseOutcome, terminalConnectingStatus, terminalShouldRetry,
     ghosttyModulePromise: null, terminalOutputCoalescing: false, terminalColorMode: "dark", serverConnectionModal: { hidden: true },
     window: { location: { protocol: "http:", host: "localhost:7331" }, setTimeout: schedule, clearTimeout: cancel },
-    attachTerminalMouseBridge: () => ({ dispose() {} }), setPaneCwd() {}, sendTerminalGridSize() {},
+    attachTerminalMouseBridge: () => ({ dispose() {} }), setPaneCwd() {}, sendTerminalGridSize() {}, browserInUse: () => true,
     terminalAudioPlayer: { receive: (key, event) => audio.push([key, event]), disconnect: key => audio.push([key, "disconnect"]) },
     clearTerminalStatus: target => { target.terminalStatus = null; },
     setTerminalStatus: (target, status) => { target.terminalStatus = status; },

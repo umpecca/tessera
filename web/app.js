@@ -1822,6 +1822,7 @@ function createRectangle(x, y, width, height, options = {}) {
     event.stopPropagation();
     setActivePane(rect, { raise: true });
     if (rect.kind === "terminal") {
+      claimTerminalSize(rect);
       rect.terminal?.term?.focus();
     }
   });
@@ -2672,15 +2673,45 @@ function applyTerminalWindowTitle(rect, title) {
   if (!rect.titleInput.readOnly || (!renameWindowModal.hidden && renameWindowModal.dataset.paneId === rect.id)) return;
   rect.title = title;
   rect.titleInput.value = title;
-  updateDeskbar();
+  // Programs animate their titles (Claude Code spins one several times a
+  // second), so this neither saves nor rebuilds the open window lists: a
+  // save per frame never lets autosave settle and races other browsers into
+  // conflicts, and a rebuilt list swaps its buttons out from under a click.
+  // The shared terminal core retains the title for the next attachment, and
+  // the next save of anything else carries it along.
+  updatePaneTitleLabels(rect);
+}
+
+// Rewrites a pane's name wherever an open list already shows it.
+function updatePaneTitleLabels(rect) {
+  const suffix = rect.minimized ? " (minimized)" : "";
   if (!windowSwitcher.hidden) {
     for (const row of windowSwitcherList.children) {
       if (row.dataset.paneId === rect.id) {
-        row.querySelector(".window-switcher-name").textContent = `${title.trim()}${rect.minimized ? " (minimized)" : ""}`;
+        row.querySelector(".window-switcher-name").textContent = `${rect.title.trim()}${suffix}`;
       }
     }
   }
-  scheduleWorkspaceSave();
+  if (!deskbarPanel.hidden) {
+    for (const row of deskbarPanel.querySelectorAll(".workspace-menu-row")) {
+      if (row.dataset.paneId !== rect.id) continue;
+      const button = row.querySelector(".workspace-menu-name");
+      button.textContent = workspaceMenuLabel(rect);
+      button.title = rect.cwd ? `${button.textContent} (${rect.cwd})` : button.textContent;
+    }
+  }
+  if (!windowList.hidden) {
+    const index = windowListEntries.indexOf(rect);
+    for (const row of windowListItems.querySelectorAll(".window-list-item")) {
+      if (row.dataset.paneId !== rect.id) continue;
+      const name = row.querySelector(".window-list-name");
+      name.textContent = `${index + 1}. ${workspaceMenuLabel(rect)}${suffix}`;
+      name.setAttribute("aria-label", name.textContent);
+      for (const move of row.querySelectorAll(".window-list-move")) {
+        move.setAttribute("aria-label", `Move ${workspaceMenuLabel(rect)} ${move.dataset.windowListAction}`);
+      }
+    }
+  }
 }
 
 function openRenameWindowModal(rect) {
@@ -3115,7 +3146,7 @@ function chooseDirectory(path) {
   hideDirectoryBrowser();
 }
 
-function setRectangle(rect, next) {
+function setRectangle(rect, next, { save = true } = {}) {
   const x = Math.round(next.x);
   const y = Math.round(next.y);
   const width = Math.max(1, Math.round(next.width));
@@ -3139,7 +3170,9 @@ function setRectangle(rect, next) {
   if (!isArrangingWindows) {
     arrangeOutSnapshot = null;
   }
-  scheduleWorkspaceSave();
+  if (save) {
+    scheduleWorkspaceSave();
+  }
 }
 
 async function fetchWorkspace(id) {
@@ -3699,6 +3732,7 @@ async function startTerminal(rect) {
     term.loadAddon(fit);
     openTerminalWithoutFocus(term, rect.terminalContainer);
     term.attachCustomKeyEventHandler((event) => {
+      if (event.type === "keydown") claimTerminalSize(rect);
       if (isTerminalCopyShortcut(event)) {
         void applyTerminalMenuAction("copy", rect);
         return true;
@@ -3740,6 +3774,7 @@ async function startTerminal(rect) {
     const dataDisposable = term.onData((data) => {
       term.scrollToBottom();
       term.noteInteractiveInput?.();
+      claimTerminalSize(rect);
       sendTerminalInput(rect.terminal?.socket, data);
     });
     const resizeDisposable = term.onResize(() => {
@@ -3823,7 +3858,10 @@ function connectTerminalSocket(rect) {
     setPaneCwd(rect, rect.cwd, { silent: true });
     // It may have become hidden while the connection was opening.
     if (terminalState.outputPaused) socket.send(JSON.stringify({ type: "pause-output" }));
-    sendTerminalGridSize(terminalState);
+    // The server sizes a shell no other browser is showing from this
+    // connection's address. One that is shared keeps its size unless this
+    // browser is the one in use; typing or clicking claims it later.
+    if (browserInUse()) sendTerminalGridSize(terminalState);
     if (terminalOutputCoalescing) sendTerminalOutputCoalescing(terminalState);
     if (terminalState.replica.timing) sendTerminalTimingEnabled(terminalState);
     // Reconnection must not take keyboard focus away from a dialog.
@@ -4558,8 +4596,41 @@ function repairTerminalView(rect) {
   setWorkspaceStatus("saved", "Terminal view repair requested");
 }
 
+// Re-measures every terminal on screen and gives each shell this browser's
+// size, for when another browser showing the same terminals resized them.
+// The fit runs in the next frame; the claim is queued behind it so it sends
+// the grid just measured, and sends it at once rather than after the settle
+// delay a dragged pane waits for.
+function refreshTerminalSizes() {
+  let refreshed = 0;
+  for (const rect of rectangles) {
+    const state = rect.kind === "terminal" && !rect.minimized ? rect.terminal : null;
+    if (!state?.term || !state.fit) continue;
+    state.fit.lastColumns = undefined;
+    state.fit.lastRows = undefined;
+    requestTerminalFit(rect);
+    window.requestAnimationFrame(() => {
+      if (rect.terminal === state) terminalFits.claimGridSize(state);
+    });
+    refreshed += 1;
+  }
+  setWorkspaceStatus("saved", refreshed === 1 ? "Terminal size refreshed" : `${refreshed} terminal sizes refreshed`);
+}
+
 function sendTerminalGridSize(terminalState) {
   terminalFits.sendGridSize(terminalState);
+}
+
+// Whether someone is using this browser right now, rather than it sitting in
+// a background tab or on another device's desk.
+function browserInUse() {
+  return !document.hidden && document.hasFocus();
+}
+
+// Typing into or clicking a terminal takes its shell's size back for this
+// browser after another one, showing the same terminal, resized it.
+function claimTerminalSize(rect) {
+  if (rect?.kind === "terminal" && browserInUse()) terminalFits.claimGridSize(rect.terminal);
 }
 
 function requestTerminalGridSize(terminalState) {
@@ -5005,6 +5076,7 @@ function renderDeskbar() {
   for (const rect of panes) {
     const row = document.createElement("div");
     row.className = "workspace-menu-row";
+    row.dataset.paneId = rect.id;
     if (rect.id === activePaneID) {
       row.classList.add("is-active");
     }
@@ -7640,6 +7712,15 @@ function buildPaletteCommands() {
       run: () => toggleArrangeWindows(),
     });
   }
+  if (rectangles.some((rect) => rect.kind === "terminal" && !rect.minimized && rect.terminal?.term)) {
+    commands.push({
+      id: "refresh-terminal-size",
+      label: "Refresh Terminal Size",
+      aliases: ["resize terminal", "fix terminal size", "refit terminals"],
+      hint: "fit shells to this screen",
+      run: () => refreshTerminalSizes(),
+    });
+  }
   const dockTarget = getActivePane();
   if (dockTarget) {
     if (dockTarget.kind === "terminal" && dockTarget.terminal?.term) {
@@ -8244,7 +8325,7 @@ function toggleFullRestore(rect) {
 // screen it's actually being viewed on — including a different device's
 // screen after the workspace reloads, or the browser window being resized
 // while a pane is maximized.
-function applyFullGeometry(rect) {
+function applyFullGeometry(rect, options = {}) {
   if (themeID === "operator") {
     // Focusing an offscreen control can scroll an overflow:hidden desktop.
     // A maximized Operator window must start at the visible desktop origin.
@@ -8252,16 +8333,20 @@ function applyFullGeometry(rect) {
     board.scrollTop = 0;
   }
   const bounds = board.getBoundingClientRect();
-  setRectangle(rect, { x: 0, y: 0, width: bounds.width, height: bounds.height });
+  setRectangle(rect, { x: 0, y: 0, width: bounds.width, height: bounds.height }, options);
 }
 
 // Re-fills every maximized pane when the viewport changes size, so "full"
 // keeps meaning "fills the board" instead of freezing at whatever size it
-// happened to be maximized at.
+// happened to be maximized at. Each screen fits a maximized pane to itself,
+// and what is saved is only that the pane is maximized, so fitting it is not
+// an edit: saving here would have every device that shows the workspace
+// rewrite it at its own size whenever its viewport moves (an iPad toolbar
+// collapsing is enough), and push the others into save conflicts.
 function reapplyFullGeometryForViewport() {
   for (const rect of rectangles) {
     if (rect.kind !== "pending" && rect.isFull && !rect.minimized) {
-      applyFullGeometry(rect);
+      applyFullGeometry(rect, { save: false });
     }
   }
 }

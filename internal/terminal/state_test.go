@@ -386,3 +386,21 @@ func TestOutputTimingRecordsReadAndQueueTimes(t *testing.T) {
 		t.Fatal("slot reuse matched a different sequence")
 	}
 }
+
+func TestJoiningASharedSessionLeavesItsSizeToTheBrowserInUse(t *testing.T) {
+	s, _ := stateSession(t)
+	first := s.join(Cursor{Protocol: StateProtocol}, 120, 40)
+	if s.cols != 120 || s.rows != 40 {
+		t.Fatalf("sole browser size = %dx%d, want 120x40", s.cols, s.rows)
+	}
+	second := s.join(Cursor{Protocol: StateProtocol}, 70, 50)
+	if s.cols != 120 || s.rows != 40 {
+		t.Fatalf("joining browser took the size: %dx%d", s.cols, s.rows)
+	}
+	second.Unsubscribe()
+	first.Unsubscribe()
+	defer s.join(Cursor{Protocol: StateProtocol}, 90, 30).Unsubscribe()
+	if s.cols != 90 || s.rows != 30 {
+		t.Fatalf("reattaching sole browser size = %dx%d, want 90x30", s.cols, s.rows)
+	}
+}

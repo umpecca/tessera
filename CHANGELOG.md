@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Stop animated application titles (such as Claude Code's spinner) from
+  saving the workspace on every frame and rebuilding open window lists; they
+  now relabel those lists in place. Give a shared terminal's size to the
+  browser in use: typing or clicking reclaims it, and a browser joining a
+  terminal another is showing no longer resizes it. Refitting maximized panes
+  to a changed viewport no longer saves, so devices stop overwriting each
+  other's sizes and colliding in save conflicts.
+  Add a Refresh Terminal Size palette command that refits every terminal on
+  screen and gives their shells this browser's size without reloading.
+
 - Follow terminal application window titles from OSC 0/2 in title tabs and
   window lists. Retain titles in the shared terminal core and snapshots so
   byte-stream fragmentation, refreshes, and hidden-pane recovery preserve them.
