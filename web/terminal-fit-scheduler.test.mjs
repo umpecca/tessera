@@ -242,3 +242,48 @@ test("a browser in use reclaims the grid another browser resized the shell to", 
   scheduler.claimGridSize(state);
   assert.deepEqual(sent.at(-1), { type: "resize", cols: 120, rows: 40, cellWidth: 9, cellHeight: 18 });
 });
+
+test("a hidden page never resizes the shell, and sends the real size once visible", () => {
+  // iPadOS resizes a backgrounded web app while drawing the app switcher.
+  let hidden = false;
+  const frames = frameQueue();
+  const timers = timerQueue();
+  const scheduler = new TerminalFitScheduler({
+    requestFrame: frames.requestFrame,
+    cancelFrame: frames.cancelFrame,
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    isHidden: () => hidden,
+  });
+  const terminal = fakeTerminal(120, 40);
+  scheduler.sendGridSize(terminal);
+  assert.equal(terminal.sent.length, 1);
+
+  hidden = true;
+  terminal.nextSize = { cols: 90, rows: 60 };
+  scheduler.request(terminal);
+  frames.run();
+  timers.run();
+  assert.equal(terminal.sent.length, 1, "the switcher's size never reached the shell");
+  assert.equal(terminal.sentCols, 120);
+
+  // Back in the foreground at the original size: nothing changed for the shell.
+  hidden = false;
+  terminal.nextSize = { cols: 120, rows: 40 };
+  scheduler.request(terminal);
+  frames.run();
+  timers.run();
+  assert.equal(terminal.sent.length, 1);
+
+  // A real change made while hidden (say, a rotation) is sent once visible.
+  hidden = true;
+  terminal.nextSize = { cols: 100, rows: 50 };
+  scheduler.request(terminal);
+  frames.run();
+  timers.run();
+  hidden = false;
+  scheduler.request(terminal);
+  frames.run();
+  timers.run();
+  assert.deepEqual(terminal.sent.at(-1), { type: "resize", cols: 100, rows: 50, cellWidth: 8, cellHeight: 16 });
+});

@@ -307,13 +307,13 @@ func (s *ManagedSession) Write(p []byte) (int, error) {
 	if s == nil {
 		return 0, io.ErrClosedPipe
 	}
-	s.mu.Lock()
-	session := s.session
-	s.mu.Unlock()
-	if s.isClosed() || session == nil {
+	// s.session is fixed when the session is created, so input reads it
+	// without s.mu. Taking the lock here made keystrokes such as Ctrl+C wait
+	// for the parser to finish whatever output chunk it was holding it for.
+	if s.isClosed() || s.session == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return session.Write(p)
+	return s.session.Write(p)
 }
 
 // WriteMouse forwards a browser-generated mouse report only while the PTY's

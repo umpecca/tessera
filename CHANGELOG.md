@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Stop a backgrounded page from resizing its shells. iPadOS resizes a
+  home-screen web app while showing the app switcher, and that size reached
+  running programs, leaving output such as Homebrew logs misaligned after
+  switching back.
+
+- Compress large terminal output frames over the websocket
+  (permessage-deflate at best speed, frames of 1 KiB or more), cutting
+  bandwidth for bulk output and full-screen redraws by about 6-8x. Terminal
+  input no longer waits for the server to finish parsing output.
+- Verify self-update downloads against GitHub's published SHA-256 digest and
+  bound their size. Keep Browser pane pages sandboxed when opened outside the
+  pane. Reject bare IPv6 VNC targets, which Go 1.26 misparsed; bracket them.
+
 - Trigger the CI and Release workflow only on `v*` tag pushes; branch
   pushes, pull requests and manual dispatch no longer run CI. The daily
   artifact cleanup keeps its schedule.

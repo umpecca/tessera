@@ -16,6 +16,8 @@ export class TerminalFitScheduler {
     this.clearTimer = options.clearTimer
       || ((timerID) => globalThis.clearTimeout(timerID));
     this.gridSizeDelay = options.gridSizeDelay ?? defaultGridSizeDelay;
+    this.isHidden = options.isHidden
+      || (() => globalThis.document?.hidden === true);
     this.frames = new Map();
     this.gridSizeTimers = new Map();
   }
@@ -90,6 +92,14 @@ export class TerminalFitScheduler {
     this.cancelGridSize(terminalState);
     const term = terminalState?.term;
     if (!term || terminalState.socket?.readyState !== socketOpen) {
+      return;
+    }
+    // A hidden page is not in use, and its viewport is not the one anyone is
+    // looking at: iPadOS resizes a backgrounded web app while it renders the
+    // app switcher, and sending that size reflows a running program's output
+    // at the wrong width. The local canvas may still fit; the shell keeps the
+    // last size sent, and the refit on becoming visible sends the real one.
+    if (this.isHidden()) {
       return;
     }
     const cols = term.desiredCols ?? term.cols;

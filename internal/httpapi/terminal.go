@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"compress/flate"
 	"encoding/binary"
 	"encoding/json"
 	"net/http"
@@ -134,13 +135,18 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	rows := queryInt(r, "rows", 24)
 
 	upgrader := websocket.Upgrader{
-		CheckOrigin: sameOriginWebSocket,
+		CheckOrigin:       sameOriginWebSocket,
+		EnableCompression: true,
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
+	// Compression is negotiated per connection but applied per message:
+	// writeTerminalBinary turns it on only for output large enough to gain.
+	conn.EnableWriteCompression(false)
+	_ = conn.SetCompressionLevel(flate.BestSpeed)
 	if r.URL.Query().Get("protocol") != "2" || r.URL.Query().Get("core") != terminalcore.Compatibility {
 		_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(4503, "terminal core changed; reload Tessera"))
 		return
@@ -215,7 +221,7 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 			writeMu.Lock()
 			var err error
 			if !outputPaused.Load() {
-				err = conn.WriteMessage(websocket.BinaryMessage, frame)
+				err = writeTerminalBinary(conn, frame)
 			}
 			writeMu.Unlock()
 			if err != nil {
@@ -226,7 +232,7 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 			writeMu.Lock()
 			var err error
 			if !outputPaused.Load() {
-				err = conn.WriteMessage(websocket.BinaryMessage, attachment.Replay)
+				err = writeTerminalBinary(conn, attachment.Replay)
 			}
 			writeMu.Unlock()
 			if err != nil {
@@ -275,7 +281,7 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 			writeMu.Lock()
 			var writeErr error
 			if !outputPaused.Load() {
-				writeErr = conn.WriteMessage(websocket.BinaryMessage, chunk)
+				writeErr = writeTerminalBinary(conn, chunk)
 				if writeErr == nil && timingEnabled.Load() {
 					writeErr = writeTerminalTimings(conn, session, chunk)
 				}
@@ -388,6 +394,22 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 	}
+}
+
+// Terminal output is mostly repeated text and escape sequences, which
+// compress 6-8x at flate.BestSpeed. Below this size the deflate framing costs
+// more than it saves, and a keystroke echo would grow rather than shrink.
+const terminalCompressMinBytes = 1024
+
+// writeTerminalBinary sends one output frame, compressing it only when the
+// client negotiated permessage-deflate and the frame is large enough to gain.
+// Callers hold the connection's write lock, which also guards the toggle.
+func writeTerminalBinary(conn *websocket.Conn, data []byte) error {
+	if len(data) >= terminalCompressMinBytes {
+		conn.EnableWriteCompression(true)
+		defer conn.EnableWriteCompression(false)
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 const (
