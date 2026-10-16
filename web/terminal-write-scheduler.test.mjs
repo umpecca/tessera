@@ -382,3 +382,62 @@ test("active output arriving between turns cannot repeatedly jump ahead of waiti
   schedules.runAll();
 });
 
+
+test("applies small active output immediately and queues everything else", () => {
+  const schedules = scheduleQueue();
+  const options = schedulerOptions(schedules, { maximumChunkBytes: 16 });
+  const active = new TerminalWriteScheduler(() => {}, { ...options, immediateBytes: 4 });
+  const background = new TerminalWriteScheduler(() => {}, options);
+  const ran = [];
+  active.setActive(true);
+
+  active.enqueueTask(() => ran.push("echo"), 1);
+  assert.deepEqual(ran, ["echo"]);
+  assert.equal(schedules.pending, 0);
+
+  // Control tasks such as snapshot imports and oversized output still queue.
+  active.enqueueTask(() => ran.push("snapshot"), 0);
+  active.enqueueTask(() => ran.push("large"), 5);
+  // Output behind queued work keeps its order.
+  active.enqueueTask(() => ran.push("after"), 1);
+  background.enqueueTask(() => ran.push("background"), 1);
+  assert.deepEqual(ran, ["echo"]);
+  schedules.runAll();
+  assert.deepEqual(ran, ["echo", "snapshot", "large", "after", "background"]);
+
+  // Inactive panes keep sharing scheduled turns.
+  active.setActive(false);
+  active.enqueueTask(() => ran.push("inactive"), 1);
+  assert.equal(ran.at(-1), "background");
+  schedules.runAll();
+  assert.equal(ran.at(-1), "inactive");
+});
+
+test("does not apply output immediately inside a drain", () => {
+  const schedules = scheduleQueue();
+  const options = schedulerOptions(schedules);
+  const active = new TerminalWriteScheduler(() => {}, options);
+  const ran = [];
+  active.setActive(true);
+  active.enqueueTask(() => {
+    ran.push("first");
+    active.enqueueTask(() => ran.push("nested"), 1);
+    ran.push("first done");
+  }, 0);
+  schedules.runAll();
+  assert.deepEqual(ran, ["first", "first done", "nested"]);
+});
+
+test("bounds immediate output per message", async () => {
+  const schedules = scheduleQueue();
+  const active = new TerminalWriteScheduler(() => {}, { ...schedulerOptions(schedules), immediateBytes: 4 });
+  const ran = [];
+  active.setActive(true);
+  for (const name of ["a", "b", "c"]) active.enqueueTask(() => ran.push(name), 2);
+  assert.deepEqual(ran, ["a", "b"]);
+  schedules.runAll();
+  assert.deepEqual(ran, ["a", "b", "c"]);
+  await Promise.resolve();
+  active.enqueueTask(() => ran.push("next message"), 2);
+  assert.equal(ran.at(-1), "next message");
+});

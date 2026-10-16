@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Show keystroke echoes and other small output in the active terminal without
+  occasionally waiting an extra frame (about 5% of keystrokes measured in
+  Chrome, now none). The active pane now applies small output as it arrives
+  instead of after a posted task; other panes and large output keep the
+  shared, budgeted queue.
+
 - Cache the web app's scripts for good between page loads. Module imports now
   carry the build hash, and assets requested at the current hash are served
   immutable, so reopening Tessera no longer revalidates every module; any

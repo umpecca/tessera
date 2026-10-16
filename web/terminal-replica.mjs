@@ -90,7 +90,9 @@ export class TerminalReplica {
     // attachment may admit output after disconnect or backlog recovery.
     if (!this.accepting) return;
     let offset = 0;
-    while (offset < data.length) {
+    // Small active output is applied during this loop; a failed event
+    // disconnects, and the rest of the message belongs to no attachment.
+    while (offset < data.length && this.accepting) {
       if (data.length - offset < headerBytes) throw new Error("Incomplete terminal event header");
       const view = new DataView(data.buffer, data.byteOffset + offset, headerBytes);
       const kind = view.getUint8(0);

@@ -2,6 +2,10 @@ const defaultMaximumChunkBytes = 16 * 1024;
 const defaultMaximumBytesPerTurn = 64 * 1024;
 const defaultTimeBudgetMilliseconds = 5;
 const activeEventsPerVisit = 3;
+// Small output for the active pane, such as a keystroke echo, is applied as
+// it arrives. Deferring it to a posted task lets a frame render in between
+// and show the echo a whole frame late.
+const defaultImmediateBytes = 4 * 1024;
 
 // All browser replicas share one turn. The active pane gets extra complete
 // events per visit, while other ready panes keep their place in the rotation.
@@ -136,9 +140,20 @@ export class TerminalWriteScheduler {
     this.write = write;
     this.coordinator = options.coordinator || sharedWriteCoordinator;
     this.maximumChunkBytes = options.maximumChunkBytes ?? defaultMaximumChunkBytes;
+    this.immediateBytes = options.immediateBytes ?? defaultImmediateBytes;
+    this.immediateSpent = 0;
     this.chunks = [];
     this.head = 0;
     this.disposed = false;
+  }
+
+  // Only output with nothing queued ahead of it may skip the queue, within the
+  // per-message budget and never inside a drain. Control tasks (outputBytes 0)
+  // include snapshot imports, too large to run inside a socket message handler.
+  canWriteImmediately(outputBytes) {
+    return outputBytes > 0 && this.immediateSpent + outputBytes <= this.immediateBytes
+      && this.coordinator.activeScheduler === this && !this.coordinator.draining
+      && this.head >= this.chunks.length;
   }
 
   enqueue(data) {
@@ -152,6 +167,14 @@ export class TerminalWriteScheduler {
 
   enqueueTask(task, outputBytes = 0) {
     if (this.disposed) return;
+    if (this.canWriteImmediately(outputBytes)) {
+      // The budget covers one socket message, so a replay of many small
+      // events still yields once it has applied a few kilobytes.
+      if (!this.immediateSpent) queueMicrotask(() => { this.immediateSpent = 0; });
+      this.immediateSpent += outputBytes;
+      task();
+      return;
+    }
     this.chunks.push({ work: task, bytes: outputBytes });
     this.coordinator.request(this);
   }

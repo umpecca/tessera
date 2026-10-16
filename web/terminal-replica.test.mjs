@@ -34,6 +34,8 @@ test("active replica priority preserves byte accounting and fully applied cursor
   for (const f of [a, b]) { f.replica.attach(attach); f.replica.receive(frame(4, 3, 12, new Uint8Array(4))); }
   shared.drain();
   a.replica.scheduler.setActive(true);
+  // Exercise queued priority; immediate active output is covered separately.
+  a.replica.scheduler.immediateBytes = 0;
   for (let i = 1; i <= 6; i++) {
     for (const f of [b, a]) f.replica.receive(frame(1, i + 3, 12 + i, new Uint8Array([i])));
   }
@@ -321,4 +323,21 @@ test("a stalled consumer receiving 16 MiB stays bounded and cancels its pending 
   assert.equal(replica.queuedOutputBytes, 0);
   assert.equal(scheduler.chunks.length, 0);
   assert.equal(scheduled, null);
+});
+
+test("small active output applies during receive and stops at a failed event", () => {
+  const shared = sharedScheduler(), f = fixture({}, shared.coordinator);
+  f.replica.attach(attach); f.replica.receive(frame(4, 3, 12, new Uint8Array(4))); shared.drain();
+  f.replica.scheduler.setActive(true);
+  f.replica.receive(frame(1, 4, 13, new Uint8Array([1])));
+  assert.equal(shared.pending, false);
+  assert.deepEqual(f.replica.cursor, { epoch: "shell", sequence: 4, offset: 13 });
+  assert.equal(f.replica.queuedOutputBytes, 0);
+
+  // A failing event disconnects; later frames in the same message are dropped
+  // rather than reported as a sequence gap.
+  f.term.write = () => { throw new Error("parse failed"); };
+  f.replica.receive(new Uint8Array([...frame(1, 5, 14, new Uint8Array([2])), ...frame(1, 6, 15, new Uint8Array([3]))]));
+  assert.deepEqual(f.errors.map(error => error.message), ["parse failed"]);
+  assert.equal(f.replica.accepting, false);
 });

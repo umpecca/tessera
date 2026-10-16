@@ -252,6 +252,7 @@ test("a small gap replays discarded queued output and ordered controls without i
   assert.equal(params.get("catchUpReplay"), "1");
   assert.equal(params.get("snapshotIfChanged"), "1", "older hosts still choose snapshots for changed state");
   socket.open(); f.calls.length = 0;
+  f.state.output.immediateBytes = 0; // Exercise the queued replay path.
   socket.text({ ...attachment, reset: false, snapshotBytes: 0 });
   socket.binary(frame(1, 4, 14, new Uint8Array([65, 66])));
   socket.binary(frame(2, 5, 14, new Uint8Array(new Uint32Array([90, 30, 8, 16]).buffer)));
@@ -278,6 +279,7 @@ test("an interrupted small replay retries with the same bound from its fully app
   const socket = f.sockets[1]; socket.open(); f.calls.length = 0;
   socket.text({ ...attachment, reset: false, snapshotBytes: 0 });
   f.state.output.coordinator.maximumBytesPerTurn = 2;
+  f.state.output.immediateBytes = 0;
   socket.binary(frame(1, 4, 14, new Uint8Array([65, 66])));
   socket.binary(frame(1, 5, 16, new Uint8Array([67, 68])));
   const [id, callback] = f.timers.entries().next().value;
