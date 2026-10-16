@@ -12,7 +12,9 @@ Constraints and assumptions:
 
 - Target users are one operator or a small trusted group controlling a local
   machine or trusted LAN host.
-- Tessera currently has no authentication and no robust authorization.
+- Sign-in (`-auth=system` or `-auth=file`) is optional and off by default; there is no
+  authorization beyond it, and every signed-in account runs terminals as the
+  Tessera process's operating-system account.
 - The `-users` roster separates state but is not an identity or access-control
   system.
 - Network access is trusted access: API clients can execute commands and
@@ -47,6 +49,17 @@ tessera/
     background.go              # workspace background image API
     update.go                  # self-update API
     security.go                # origins, proxy trust, headers, limits and audit
+    auth.go, login.html        # sign-in gate, login/logout, sign-in cookie
+    auth_recovery.go           # loopback recovery links and revoke-all
+    auth_devices.go            # signed-in devices list and revocation
+    auth_watch.go              # closes live sockets when their sign-in ends
+    host_allowlist.go          # Host check against DNS rebinding
+  internal/auth/
+    credentials.go             # credentials file, argon2id hashing, reload
+    token.go                   # host recovery token
+    throttle.go                # per-client backoff and global sign-in cap
+  internal/sysauth/            # host account password check, no cgo:
+                               # unix_chkpwd, OpenDirectory via purego, LogonUserW
     static.go                  # embedded SPA and history fallback
   internal/store/
     store.go                   # SQLite open and embedded migration runner
@@ -341,6 +354,11 @@ Key Schemas/Collections:
 - `user_settings`: default theme and terminal font, terminal color
   mode, terminal `TERM`, and interaction settings shared across a user's
   sessions.
+- `audit_events.sign_in_id` (migration 050): the sign-in a request used or
+  created.
+- `auth_sign_ins`: sign-ins for `-auth=file`, keyed by the SHA-256 of the
+  cookie secret, with account, credential tag, idle and absolute expiry, and
+  revocation time (migration 049).
 - `user_shortcuts`: per-user launcher definitions and an independent revision,
   added by migration 047. Whole-list updates compare revisions to prevent silent
   overwrites. Saved and draft launches validate session ownership, expand ordered
@@ -422,13 +440,43 @@ no centralized telemetry service.
 
 ## Security Considerations
 
-Authentication: None. Browser-stored user selection and the configured roster
-are convenience mechanisms, not proof of identity.
+Authentication: Off by default. `-auth=system` checks the password of the
+account Tessera runs as through `internal/sysauth` (PAM's `unix_chkpwd` on
+Linux, OpenDirectory through purego on macOS, `LogonUserW` on Windows; no
+cgo), separating "incorrect" from "unavailable". With either mode,
+`tessera login` and `tessera logout -all` reach loopback-only endpoints with a
+private host recovery token, for one-time 2-minute sign-in links and ending
+every sign-in. With `-auth=file`, `httpapi.NewAuthHandler`
+runs inside the security handler (which resolves the client address and
+scheme) and in front of every route. Accounts come from a private credentials
+file of argon2id hashes (`internal/auth`), reloaded when it changes. A
+successful sign-in stores a row in `auth_sign_ins` holding the SHA-256 of a
+random cookie secret, never the secret; the `tessera_signin` cookie is
+`HttpOnly`, `SameSite=Strict` and `Secure` over HTTPS. Each row records a tag
+of the password hash it was made with, so changing or removing an account ends
+its sign-ins. Signed-out page loads redirect to `/login`, API calls and
+WebSocket upgrades get `401`, and a small public list (health, Local HTTPS
+enrollment, static assets, Browser pane proxy traffic) stays reachable.
+Passwords over plain HTTP from another device are refused unless
+`-allow-http-sign-in` is set. Browser-stored user selection and the `-users`
+roster remain convenience mechanisms, not proof of identity.
 
-Authorization: No robust authorization exists yet. User and session ownership
-checks prevent accidental cross-session routing within the configured model,
-but any client that can reach the service can select a configured user and call
-powerful APIs.
+Live connections: terminal and VNC websockets register with the sign-in they
+were opened under. Sign-out, device revocation and `logout -all` close them at
+once with code 4401; while any are open, their sign-ins are re-checked every 30
+seconds for expiry or account changes. The page then shows a sign-in dialog
+(`web/sign-in.mjs`), retries the API calls that were refused, and reconnects
+the terminals. Audit records carry the sign-in ID of the request.
+
+Host allowlist: before routing, the security handler refuses (`421`) any
+request whose effective `Host` is a DNS name other than `localhost`, the
+machine's names, the Local HTTPS certificate's names, or `-allowed-host`. IP
+literals are always accepted, since they cannot be rebound.
+
+Authorization: With `-auth=file` the signed-in account is the only user a
+request can reach, through the same roster check that guards user- and
+workspace-scoped routes. There is no finer authorization: every account can
+run commands and reach files as the host account.
 
 Data Encryption: SQLite and workspace background BLOBs are not encrypted by
 Tessera. Local HTTP is plaintext. Operating-system storage controls and network
@@ -464,8 +512,6 @@ Key Security Tools/Practices:
 
 Planned security direction:
 
-1. Introduce real user authentication with secure server-side sessions or
-   equivalent short-lived credentials.
 2. Add robust authorization checks to every workspace, session, settings,
    filesystem, command, terminal, update, and administrative operation.
 3. Define explicit roles/capabilities and ownership rules instead of inferring

@@ -179,6 +179,7 @@ func (a *API) vncProxyConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer websocketConnection.Close()
+	defer closeOnSignInEnd(r.Context(), websocketConnection)()
 	websocketConnection.SetReadLimit(vncClientMaxBytes)
 
 	clientDone := make(chan error, 1)

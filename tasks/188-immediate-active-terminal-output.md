@@ -80,3 +80,33 @@ Mean keystroke-to-paint went from about 26.7 to 25.5-26.4 ms idle.
   a worker (`OffscreenCanvas`), which this scheduling does not hold back,
   could avoid it; that would move the renderer off the main thread and was
   not attempted. Measured in headless Chrome; Safari was not measured.
+
+## Follow-up (tabled 2026-10-16)
+
+The user mainly uses Safari on iPadOS and macOS, often remotely over
+Tailscale from another state, and plans a native iPadOS WKWebView wrapper.
+The Chrome measurements above do not establish WebKit behavior.
+
+Next steps, in order:
+
+1. **Measure on the iPad over the VPN.** `scripts/latency-check` is a
+   standalone echo server and page (no shell access). Build it with
+   `cd scripts/latency-check && go build -o /tmp/latency-check .`, run it
+   bound to the Tailscale address (for example
+   `/tmp/latency-check 100.125.47.118:6970`), and open it in Safari. It
+   reports the network round trip, the extra wait after a keypress versus a
+   timer send, the frame rate, and arrival-to-paint, and uploads results as
+   `results-*.json` beside the server. Not yet run: starting the listener
+   needs the user's go-ahead.
+2. **Frame rate.** Safari may cap page rendering at 60 fps on ProMotion
+   displays ("Prefer Page Rendering Updates near 60fps" feature flag). The
+   user has an iPad Pro, so 120 fps could halve each frame wait. Confirm the
+   flag, measure, and check whether a WKWebView app can enable it.
+3. **Predictive local echo (mosh-style).** Over a 30-80 ms link the network
+   round trip likely dominates. Draw typed characters locally at once,
+   underline them until the server's echo confirms them, and suppress
+   prediction when the PTY has echo off (password prompts) or in
+   full-screen applications. Scope only after step 1's numbers.
+4. **Worker rendering (`OffscreenCanvas`).** Only if Safari shows Chrome's
+   wait after a keypress, and only after a standalone spike confirms WebKit
+   presents worker canvas frames without the main thread.

@@ -143,6 +143,7 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	defer closeOnSignInEnd(r.Context(), conn)()
 	// Compression is negotiated per connection but applied per message:
 	// writeTerminalBinary turns it on only for output large enough to gain.
 	conn.EnableWriteCompression(false)

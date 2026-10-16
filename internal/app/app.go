@@ -24,6 +24,8 @@ type App struct {
 	HTTPSDefaultAddress string
 	HTTPSPKIDir         string
 	RequestRestart      func(localhttps.Config)
+	// Auth configures sign-in; the zero value leaves it off.
+	Auth httpapi.AuthOptions
 	// Security configures origin checks, proxy trust, rate limiting, response
 	// headers, and audit persistence around the complete application handler.
 	Security httpapi.SecurityOptions
@@ -43,6 +45,7 @@ func (a *App) Handler() http.Handler {
 		Terminals:           terminalManager,
 		WebFS:               webFS,
 		Users:               a.Users,
+		AuthMode:            a.Auth.Mode,
 		Updater:             a.Updater,
 		MaxUploadBytes:      a.MaxUploadBytes,
 		HTTPSDefaultAddress: a.HTTPSDefaultAddress,
@@ -51,5 +54,12 @@ func (a *App) Handler() http.Handler {
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)
-	return httpapi.NewSecurityHandler(httpapi.NewCompressionHandler(mux), a.Store, a.Security)
+	// Sign-in runs inside the security handler, which resolves the client
+	// address and scheme it relies on.
+	authOptions := a.Auth
+	if a.Security.AuditEnabled {
+		authOptions.AuditRetention = a.Security.AuditRetention
+	}
+	authenticated := httpapi.NewAuthHandler(mux, a.Store, authOptions)
+	return httpapi.NewSecurityHandler(httpapi.NewCompressionHandler(authenticated), a.Store, a.Security)
 }

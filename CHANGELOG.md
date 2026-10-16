@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **Tessera now refuses requests addressed to unrecognized DNS names** (`421`),
+  blocking DNS-rebinding attacks. This applies with sign-in off too. IP
+  addresses, `localhost`, the machine's own name, and the Local HTTPS
+  certificate's names keep working; add any other name you use, such as a
+  Tailscale MagicDNS or reverse-proxy name, with `-allowed-host`. Refused names
+  are logged once with the flag to add.
+- When a sign-in ends, open terminal and VNC connections close and the
+  workspace shows a sign-in dialog instead of leaving the page; signing in
+  reconnects the same terminals and retries pending saves. Add **Settings →
+  Signed-in devices** with per-device Sign Out and Sign Out Everywhere. With
+  `-audit-log`, sign-in events are recorded with the sign-in's ID.
+
+- Add `-auth=system`: sign in with the password of the account Tessera runs
+  as, checked without cgo (OpenDirectory through purego on macOS, PAM's
+  `unix_chkpwd` on Linux, `LogonUserW` on Windows). Add `tessera login`, which
+  prints a one-time sign-in link valid for two minutes, and `tessera logout
+  -all`, which ends every sign-in; both work only on the host, using a private
+  recovery token kept beside the credentials file.
+
+- Add optional sign-in. Start the server with `-auth=file` to require a
+  password; accounts live in a private credentials file of argon2id hashes,
+  managed with `tessera user add|passwd|remove|list` and picked up without a
+  restart. Each account signs into its own workspaces (an account named after
+  an earlier `-users` entry, or `default`, keeps those workspaces). Sign-ins
+  use an `HttpOnly`, `SameSite=Strict` cookie, last 12 hours idle (30 days
+  when remembered), end when the account's password changes, and are slowed
+  after repeated failures. Passwords over plain HTTP from other devices need
+  `-allow-http-sign-in`. **Sign out** is in the desktop menu and command
+  palette. Sign-in stays off by default, so existing installs are unchanged.
+
 - Show keystroke echoes and other small output in the active terminal without
   occasionally waiting an extra frame (about 5% of keystrokes measured in
   Chrome, now none). The active pane now applies small output as it arrives

@@ -13,4 +13,5 @@ import "embed"
 //go:embed terminal-audio.mjs terminal-files.mjs
 //go:embed terminal-audio-stream.mjs
 //go:embed startup.js
+//go:embed sign-in.mjs
 var Files embed.FS

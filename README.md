@@ -47,11 +47,15 @@ maintained and released in an independent repository.
 ## Security and trusted-environment status
 
 Tessera is currently intended for use by one operator or a small group in a
-trusted environment. It does not yet provide authentication or robust
-authorization.
+trusted environment. [Sign-in](#sign-in) is available but off by default, and
+Tessera has no authorization beyond it.
 
 This is an important operational boundary:
 
+- Without sign-in, anyone who can reach Tessera controls the host account it
+  runs as. With `-auth=system` or `-auth=file`, a password is required, but
+  every signed-in account still runs terminals as that same host account, so
+  file accounts separate workspaces without isolating people from each other.
 - The `-users` roster and named sessions separate workspace state; they do not
   verify identity or prevent one connected user from selecting another user.
 - The HTTP API can execute shell commands and read, write, copy, move, or
@@ -70,10 +74,13 @@ This is an important operational boundary:
   private certificate authority. It does not add authentication or authorization;
   direct public-internet exposure remains unsupported.
 
-Future security work is expected to add real authentication, robust
-authorization for users, sessions, files, commands, and administrative
-operations, request-forgery protection, and an auditable access model. Until
-that work exists, network reachability should be treated as trusted access to
+- Tessera answers only to IP addresses, `localhost`, the machine's own name
+  (and `.local` name), the Local HTTPS certificate's names, and names given with
+  `-allowed-host`. Other names get `421`, which blocks DNS-rebinding attacks
+  from web pages. If you reach Tessera by another DNS name, such as a Tailscale
+  MagicDNS name or a reverse proxy's name, add it with `-allowed-host`.
+
+Without sign-in, network reachability should be treated as trusted access to
 the host.
 
 ## Run
@@ -108,8 +115,15 @@ Useful flags:
 -db string      SQLite database path
 -tray bool      enable native tray controls when supported
 -users string   comma-separated local workspace roster
+-auth string    sign-in: off (default), system, or file
+-auth-file string             credentials file for -auth=file
+-auth-token string            host recovery token for `tessera login` / `logout`
+-allow-http-sign-in bool      accept passwords over plain HTTP from other devices
+-signin-idle duration         unused time before a remembered sign-in ends (default 720h)
+-signin-max duration          longest a remembered sign-in lasts (default 2160h)
 -web string     serve SPA assets from a directory instead of the embedded copy
 -trusted-proxy value          trusted immediate proxy IP/CIDR (repeatable)
+-allowed-host value           extra DNS name Tessera answers to (repeatable)
 -rate-limit int               API requests per client per minute (default 600)
 -rate-burst int               per-client API burst (default 120)
 -audit-log bool               persist redacted audit events (default false)
@@ -540,6 +554,85 @@ letters and cannot conflict with built-in commands or other shortcuts. Arguments
 support the host's PowerShell or sh/bash/zsh/ksh/fish shell; unsupported custom
 shells can run shortcuts without text inputs. Shortcut definitions are local to
 this Tessera database and are not included in workspace exports.
+
+## Sign-in
+
+Sign-in is off unless you start Tessera with `-auth=system` or `-auth=file`.
+
+### The host account (`-auth=system`)
+
+```sh
+tessera -addr 0.0.0.0:7331 -auth=system
+```
+
+The login page asks for the password of the account Tessera runs as, and no
+other account. `-users` still offers its workspace picker after sign-in, and
+single-user workspaces stay as they are. Passwords are checked without cgo:
+
+- **macOS:** OpenDirectory, as the login window does.
+- **Linux:** PAM's `unix_chkpwd` helper. It is setuid, so a systemd unit must
+  not set `NoNewPrivileges=true` or `RestrictSUIDSGID=true`; the Ubuntu
+  installer's unit does not.
+- **Windows:** `LogonUserW`. Accounts without a password cannot sign in this
+  way.
+
+### Getting in without a password
+
+Every sign-in mode keeps a private recovery token beside the credentials file
+(`-auth-token`). Someone on the host, as the account Tessera runs as, can:
+
+```sh
+tessera login -addr 127.0.0.1:7331             # prints a one-time link, valid 2 minutes
+tessera login -addr 127.0.0.1:7331 -account alice   # with -auth=file
+tessera logout -all -addr 127.0.0.1:7331       # ends every sign-in everywhere
+```
+
+Pass the server's `-addr` (a `0.0.0.0` address is reached through
+`127.0.0.1`). These only work from the host itself.
+
+### Tessera accounts (`-auth=file`)
+
+Accounts live in a credentials file that only the host account can read (default
+`<user config dir>/Tessera/credentials`; `~/Library/Application
+Support/Tessera/credentials` on macOS). Manage them with:
+
+```sh
+tessera user add alice        # prompts for a password twice
+tessera user passwd alice     # ends alice's existing sign-ins
+tessera user remove alice     # ends alice's sign-ins; keeps her workspaces
+tessera user list
+printf '%s\n' "$PASSWORD" | tessera user add -password-stdin bob
+```
+
+Pass `-auth-file` to the commands and the server when the file lives
+elsewhere. Changes apply to a running server without a restart. Passwords are
+stored as argon2id hashes and are never accepted as command arguments.
+
+```sh
+tessera -addr 0.0.0.0:7331 -auth=file
+```
+
+- Each account signs into its own workspaces, so `-users` cannot be combined
+  with `-auth=file`. An account with the same name as an earlier `-users`
+  entry gets that user's workspaces; an account named `default` gets the
+  workspaces from single-user mode.
+- "Keep me signed in on this device" lasts 30 days without use and 90 days at
+  most; otherwise a sign-in ends after 12 hours without use or 7 days.
+- In both modes, repeated wrong passwords from one address are slowed down, up
+  to a 15-minute wait.
+- Passwords are refused over plain HTTP from other devices. Use
+  [Local HTTPS](#local-https-for-ipados), or, on a link that is already
+  encrypted such as Tailscale or another VPN, start the server with
+  `-allow-http-sign-in`.
+- **Sign out** is in the desktop menu and the command palette.
+- **Settings → Signed-in devices** lists this account's sign-ins, with Sign
+  Out for each and Sign Out Everywhere.
+- When a sign-in ends (signed out elsewhere, expired, or its password
+  changed), open terminal and VNC connections close, and the workspace shows a
+  sign-in dialog. Signing in there reconnects the same terminals; their
+  programs keep running throughout, and pending changes are saved.
+- With `-audit-log`, sign-ins, failures, throttling, sign-outs and recovery
+  links are recorded with the sign-in's ID, never passwords or cookies.
 
 ## Users and named sessions
 

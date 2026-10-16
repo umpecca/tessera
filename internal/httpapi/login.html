@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Sign in · Tessera</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="/assets/tessera-app-icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/tessera-app-icon-192.png">
+<style>
+@font-face { font-family: "Fira Code"; src: url("/assets/FiraCode-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Fira Code"; src: url("/assets/FiraCode-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+:root {
+  --board-bg: #fbfaf6; --pane-bg: #f4f2ec; --chrome-bg: #ddd9cf; --input-bg: #fbfaf6;
+  --bevel-hi: #ffffff; --bevel-lo: #b9b7b0; --border: #7d7a72; --text: #1f1f1b; --muted: #4f4b43;
+  --accent: #0b2a4d; --accent-text: #ffffff; --error: #8a1c1c; --focus: #2f5f6a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --board-bg: #10141c; --pane-bg: #181d27; --chrome-bg: #232a36; --input-bg: #10141c;
+    --bevel-hi: #39414f; --bevel-lo: #0b0e14; --border: #4a5262; --text: #e5e1d5; --muted: #a9a59a;
+    --accent: #8fb4ff; --accent-text: #0b1220; --error: #ff9b9b; --focus: #8fb4ff;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  min-height: 100vh; display: grid; place-items: center; padding: 16px;
+  background: var(--board-bg); color: var(--text);
+  font: 14px/1.45 "Fira Code", ui-monospace, monospace;
+}
+.dialog {
+  width: 100%; max-width: 380px; background: var(--pane-bg);
+  border: 1px solid var(--border); box-shadow: inset 1px 1px 0 var(--bevel-hi), inset -1px -1px 0 var(--bevel-lo), 4px 4px 0 rgba(0,0,0,.12);
+}
+.title { background: var(--chrome-bg); border-bottom: 1px solid var(--border); padding: 6px 12px; font-weight: 700; }
+form, .body { padding: 16px 16px 18px; display: grid; gap: 12px; }
+.host { margin: 0; color: var(--muted); }
+label { display: grid; gap: 4px; }
+input[type=text], input[type=password] {
+  width: 100%; padding: 7px 8px; font: inherit; color: var(--text); background: var(--input-bg);
+  border: 1px solid var(--border); border-radius: 0; box-shadow: inset 1px 1px 0 var(--bevel-lo);
+}
+input:focus-visible, button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.check { display: flex; gap: 8px; align-items: center; }
+.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+button {
+  justify-self: end; min-width: 96px; padding: 6px 16px; font: inherit; font-weight: 700;
+  color: var(--accent-text); background: var(--accent); border: 1px solid var(--border); cursor: pointer;
+}
+button[disabled] { opacity: .5; cursor: default; }
+.error { margin: 0; color: var(--error); font-weight: 700; }
+.note { margin: 0; color: var(--muted); }
+a { color: inherit; }
+code { font: inherit; }
+</style>
+</head>
+<body>
+<main class="dialog" aria-labelledby="title">
+  <div class="title" id="title">Sign in to Tessera</div>
+  {{if .HTTPBlocked}}
+  <div class="body">
+    <p class="host">{{.Host}}</p>
+    <p class="error">Signing in from another device needs HTTPS.</p>
+    <p class="note">Open Tessera's HTTPS address, which you can set up under Settings → Local HTTPS on the host. On a network that is already encrypted, such as Tailscale or another VPN, the host can be started with <code>-allow-http-sign-in</code> instead.</p>
+    {{if .HTTPSURL}}<p class="note"><a href="{{.HTTPSURL}}">Open the HTTPS address</a></p>{{end}}
+  </div>
+  {{else if .Unavailable}}
+  <div class="body">
+    <p class="host">{{.Host}}</p>
+    <p class="error">{{.Unavailable}}</p>
+  </div>
+  {{else}}
+  <form method="post" action="/login">
+    <p class="host">{{if .FixedAccount}}{{.FixedAccount}} on {{end}}{{.Host}}</p>
+    {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+    <input type="hidden" name="next" value="{{.Next}}">
+    {{if .FixedAccount}}
+    <input type="hidden" name="username" autocomplete="username" value="{{.FixedAccount}}">
+    {{else}}
+    <label>Name
+      <input type="text" name="username" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required value="{{.Username}}"{{if not .Username}} autofocus{{end}}>
+    </label>
+    {{end}}
+    <label>Password
+      <input type="password" name="password" autocomplete="current-password" required{{if or .FixedAccount .Username}} autofocus{{end}}>
+    </label>
+    <label class="check"><input type="checkbox" name="remember" value="1"{{if .Remember}} checked{{end}}> Keep me signed in on this device</label>
+    <button type="submit"{{if .RetryAfter}} disabled{{end}}>Sign In</button>
+  </form>
+  {{end}}
+</main>
+</body>
+</html>

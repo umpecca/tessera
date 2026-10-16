@@ -40,24 +40,24 @@ func TestParseWorkspacePath(t *testing.T) {
 
 func TestUserAllowed(t *testing.T) {
 	single := &API{}
-	if !single.userAllowed("default") {
+	if !single.userAllowed(context.Background(), "default") {
 		t.Error("single-user mode should allow the default workspace")
 	}
-	if !single.userAllowed("") {
+	if !single.userAllowed(context.Background(), "") {
 		t.Error("single-user mode should allow the empty (default) id")
 	}
-	if single.userAllowed("alice") {
+	if single.userAllowed(context.Background(), "alice") {
 		t.Error("single-user mode should reject non-default workspaces")
 	}
 
 	multi := &API{Users: []string{"alice", "bob"}}
-	if !multi.userAllowed("alice") || !multi.userAllowed("bob") {
+	if !multi.userAllowed(context.Background(), "alice") || !multi.userAllowed(context.Background(), "bob") {
 		t.Error("multi-user mode should allow rostered users")
 	}
-	if multi.userAllowed("default") {
+	if multi.userAllowed(context.Background(), "default") {
 		t.Error("multi-user mode should not allow the default workspace")
 	}
-	if multi.userAllowed("carol") {
+	if multi.userAllowed(context.Background(), "carol") {
 		t.Error("multi-user mode should reject users outside the roster")
 	}
 }

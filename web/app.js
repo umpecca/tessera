@@ -11,6 +11,7 @@ import { ShortcutsModal } from "./shortcuts.mjs";
 import { WindowWobble } from "./window-wobble.mjs";
 import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
+import { renderSignedInDevices, SignInRecovery, signInEndedCloseCode, signOut } from "./sign-in.mjs";
 import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL, validateLocalHTTPSDraft } from "./local-https-settings.mjs";
 import { shouldShowIPadHTTPGuidance } from "./ipad-http-guidance.mjs";
 import {
@@ -121,6 +122,14 @@ let workspaceInFlightRevision = "";
 let workspaceSaveQueued = false;
 let multiUser = false;
 let userRoster = [];
+// "off", "file" or "system". With file sign-in the signed-in account is the
+// only user, so switching users means signing out.
+let authMode = "off";
+let signedInAccount = "";
+// An ended sign-in shows a dialog over the workspace, then retries what was
+// waiting, instead of leaving the page.
+const signInRecovery = new SignInRecovery({ target: window, doc: document, config: () => ({ mode: authMode, account: signedInAccount }) });
+signInRecovery.install();
 let currentUser = null;
 let userSelectionRequestID = 0;
 let sessions = [];
@@ -484,6 +493,8 @@ async function startApp() {
       const config = await response.json();
       multiUser = Boolean(config.enabled) && Array.isArray(config.users) && config.users.length > 0;
       userRoster = multiUser ? config.users : [];
+      authMode = typeof config.auth === "string" ? config.auth : "off";
+      signedInAccount = typeof config.signedIn === "string" ? config.signedIn : "";
     }
   } catch (error) {
     console.warn(error);
@@ -496,6 +507,9 @@ async function startApp() {
 
   if (!multiUser) {
     return selectUser("default", { historyMode: "replace" });
+  }
+  if (authMode === "file" && signedInAccount) {
+    return selectUser(signedInAccount, { historyMode: "replace" });
   }
 
   const stored = readStoredUser();
@@ -606,6 +620,12 @@ async function selectUser(name, options = {}) {
     }
     return false;
   }
+}
+
+// Save what is pending before the sign-in ends; later saves would be refused.
+async function signOutOfTessera() {
+  try { await flushAllPersistence(); } catch (error) { console.warn(error); }
+  await signOut(window);
 }
 
 async function switchUser() {
@@ -3984,6 +4004,18 @@ function handleTerminalSocketClose(rect, terminalState, closeEvent) {
   if (terminalState.reconnectTimer !== null) {
     return;
   }
+  // The server closed this socket because its sign-in ended. Sign in again,
+  // then reconnect; the shell kept running meanwhile.
+  if (closeEvent?.code === signInEndedCloseCode) {
+    setTerminalStatus(rect, { state: "disconnected", summary: "Signed out; sign in to reconnect", reconnect: false, settled: true, showBadge: true });
+    void signInRecovery.ensureSignedIn().then(() => {
+      if (rect.terminal === terminalState) connectTerminalSocket(rect);
+    });
+    return;
+  }
+  // A refused upgrade reaches the page only as an abnormal close. With
+  // sign-in on, ask the server once; a 401 sends the page to the login screen.
+  if (authMode !== "off" && closeEvent?.code === 1006) void fetch("/api/users").catch(() => {});
   const outcome = terminalCloseOutcome(closeEvent, {
     // Successful socket opens reset ordinary connection backoff. Overloads
     // keep their own counter so a busy shell cannot cause a tight retry loop.
@@ -4876,11 +4908,12 @@ function renderWorkspaceMenu() {
   });
   workspaceMenu.appendChild(sessionsButton);
 
-  if (multiUser) {
+  if (multiUser || authMode !== "off") {
     const userSeparator = document.createElement("div");
     userSeparator.className = "dock-menu-separator";
     workspaceMenu.appendChild(userSeparator);
-
+  }
+  if (multiUser && authMode !== "file") {
     const switchButton = document.createElement("button");
     switchButton.type = "button";
     switchButton.textContent = currentUser ? `Switch user (${currentUser})...` : "Switch user...";
@@ -4889,6 +4922,16 @@ function renderWorkspaceMenu() {
       void switchUser();
     });
     workspaceMenu.appendChild(switchButton);
+  }
+  if (authMode !== "off") {
+    const signOutButton = document.createElement("button");
+    signOutButton.type = "button";
+    signOutButton.textContent = signedInAccount ? `Sign out (${signedInAccount})` : "Sign out";
+    signOutButton.addEventListener("click", () => {
+      hideWorkspaceMenu();
+      void signOutOfTessera();
+    });
+    workspaceMenu.appendChild(signOutButton);
   }
 
   const paletteSeparator = document.createElement("div");
@@ -5853,6 +5896,11 @@ function renderSettingsModal() {
   ]));
   content.appendChild(renderSettingsSection("Clipboard", [renderSettingsClipboardRow()]));
   content.appendChild(renderSettingsSection("Performance", [renderSettingsPerformanceRow()]));
+  if (authMode !== "off") {
+    const devices = renderSettingsSection("Signed-in devices", []);
+    void renderSignedInDevices(devices);
+    content.appendChild(devices);
+  }
 
   const advanced = document.createElement("details");
   advanced.id = "settings-advanced";
@@ -7757,7 +7805,10 @@ function buildPaletteCommands() {
   }
   commands.push({ id: "local-https", label: "Local HTTPS...", hint: "server and iPad certificates", run: () => void openLocalHTTPSModal() });
   commands.push({ id: "update-server", label: "Update Server", hint: "server", run: () => void runServerUpdate() });
-  if (multiUser) {
+  if (authMode !== "off") {
+    commands.push({ id: "sign-out", label: "Sign Out", aliases: ["log out", "logout"], hint: signedInAccount || "account", run: () => void signOutOfTessera() });
+  }
+  if (multiUser && authMode !== "file") {
     for (const name of userRoster) {
       if (name !== currentUser) {
         commands.push({ label: `Switch user: ${name}`, hint: "user", run: () => void jumpToUser(name) });

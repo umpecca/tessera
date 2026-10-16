@@ -103,7 +103,7 @@ test("successful socket opens do not reset overload backoff, and a quiet interva
   };
   const rect = { terminal: state };
   const context = loadFunctions(["recoverTerminalBacklog", "handleTerminalSocketClose"], {
-    terminalBacklogCloseCode, terminalCloseOutcome, Date: { now: () => now }, serverConnectionModal: { hidden: true },
+    terminalBacklogCloseCode, terminalCloseOutcome, Date: { now: () => now }, serverConnectionModal: { hidden: true }, authMode: "off", signInEndedCloseCode: 4401,
     window: { setTimeout(callback, delay) { delays.push(delay); return 1; } },
     setTerminalStatus() {}, connectTerminalSocket() {},
     terminalAudioPlayer: { disconnect() {} },

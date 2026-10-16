@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Latency Check</title>
+<style>
+  :root { --bg: #fbfaf6; --fg: #1d1d1b; --muted: #6b6a64; --accent: #0b2a4a; --box: #fff; --line: #d8d5cc; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #10141c; --fg: #e5e1d5; --muted: #9a978d; --accent: #8fb4ff; --box: #181d27; --line: #2b3240; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 -apple-system, system-ui, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { margin: 8px 0; color: var(--muted); }
+  #status { font-weight: 600; color: var(--fg); margin: 16px 0; }
+  #pad { width: 100%; box-sizing: border-box; height: 120px; font: 20px ui-monospace, monospace; background: var(--box); color: var(--fg); border: 2px solid var(--line); border-radius: 8px; padding: 12px; }
+  #pad:focus { outline: none; border-color: var(--accent); }
+  canvas { width: 100%; height: 48px; display: block; margin-top: 12px; border-radius: 8px; background: var(--box); }
+  pre { background: var(--box); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 14px; }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--box); color: var(--fg); }
+</style></head>
+<body><main>
+<h1>Latency check</h1>
+<p>Use the hardware keyboard. Tap the box, then type about 200 keys at your normal pace (any letters). The page sends each key to the Mac mini and draws the echo, like Tessera does. Results upload automatically when done.</p>
+<div id="status">Measuring network and frame rate…</div>
+<textarea id="pad" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Tap here, then type"></textarea>
+<canvas id="echo"></canvas>
+<pre id="out"></pre>
+</main>
+<script>
+const now = () => performance.now();
+const status = document.getElementById("status"), out = document.getElementById("out"), pad = document.getElementById("pad");
+const canvas = document.getElementById("echo"), ctx = canvas.getContext("2d");
+const target = 200, timerSamples = 60;
+const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+ws.binaryType = "arraybuffer";
+let seq = 0; const pending = new Map();
+const timer = [], keys = [], frames = [];
+let phase = "timer", drawn = "";
+const quantile = (values, f) => { const s = [...values].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(f * s.length))] : NaN; };
+const fmt = v => Number.isFinite(v) ? v.toFixed(1) : "—";
+function send(meta) { const id = ++seq; const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, id); meta.sent = now(); pending.set(id, meta); ws.send(b); }
+ws.onmessage = e => {
+  const arrived = now(); const id = new DataView(e.data).getUint32(0); const meta = pending.get(id); if (!meta) return; pending.delete(id);
+  meta.arrived = arrived;
+  if (meta.kind === "timer") { timer.push(meta); return; }
+  // Draw the echo in the next frame, as Tessera's renderer does.
+  requestAnimationFrame(t => { meta.painted = now(); meta.frame = t; drawn = (drawn + meta.ch).slice(-60); draw(); keys.push(meta); progress(); });
+};
+function draw() { const r = devicePixelRatio || 1; canvas.width = canvas.clientWidth * r; canvas.height = canvas.clientHeight * r; ctx.scale(r, r);
+  ctx.fillStyle = getComputedStyle(document.body).color; ctx.font = "20px ui-monospace, monospace"; ctx.fillText(drawn, 12, 31); }
+pad.addEventListener("keydown", e => {
+  if (phase !== "keys" || e.key.length !== 1) return;
+  e.preventDefault();
+  send({ kind: "key", ch: e.key, eventStamp: e.timeStamp, handler: now() });
+});
+pad.addEventListener("input", () => { pad.value = ""; });
+function progress() { status.textContent = keys.length < target ? `Typing: ${keys.length} / ${target}` : "Done, uploading…"; if (keys.length === target) finish(); }
+ws.onopen = async () => {
+  for (let i = 0; i < timerSamples; i++) { send({ kind: "timer" }); await new Promise(r => setTimeout(r, 50 + Math.random() * 50)); }
+  const start = now(); await new Promise(r => { const f = t => { frames.push(t); if (now() - start < 2000) requestAnimationFrame(f); else r(); }; requestAnimationFrame(f); });
+  phase = "keys"; status.textContent = `Ready. Tap the box and type ${target} keys.`;
+};
+ws.onclose = () => { if (keys.length < target) status.textContent = "Connection closed; reload to retry."; };
+async function finish() {
+  phase = "done";
+  const intervals = frames.slice(1).map((t, i) => t - frames[i]);
+  const rtt = timer.map(m => m.arrived - m.sent), keyRtt = keys.map(m => m.arrived - m.sent);
+  const toPaint = keys.map(m => m.painted - m.arrived), total = keys.map(m => m.painted - m.handler), inputDelay = keys.map(m => m.handler - m.eventStamp);
+  const summary = {
+    userAgent: navigator.userAgent, frameMs: quantile(intervals, 0.5), fps: 1000 / quantile(intervals, 0.5),
+    timerRtt: { p50: quantile(rtt, 0.5), p90: quantile(rtt, 0.9), min: Math.min(...rtt) },
+    keyRtt: { p50: quantile(keyRtt, 0.5), p90: quantile(keyRtt, 0.9), min: Math.min(...keyRtt) },
+    arrivalToPaint: { p50: quantile(toPaint, 0.5), p90: quantile(toPaint, 0.9) },
+    keyToPaint: { p50: quantile(total, 0.5), p90: quantile(total, 0.9) },
+    eventToHandler: { p50: quantile(inputDelay, 0.5), p90: quantile(inputDelay, 0.9) },
+  };
+  out.textContent = [
+    `Frame rate: ${fmt(summary.fps)} fps (${fmt(summary.frameMs)} ms per frame)`,
+    `Network round trip (timer):   p50 ${fmt(summary.timerRtt.p50)}  p90 ${fmt(summary.timerRtt.p90)}  min ${fmt(summary.timerRtt.min)} ms`,
+    `Round trip after a keypress:  p50 ${fmt(summary.keyRtt.p50)}  p90 ${fmt(summary.keyRtt.p90)}  min ${fmt(summary.keyRtt.min)} ms`,
+    `Echo arrival to paint:        p50 ${fmt(summary.arrivalToPaint.p50)}  p90 ${fmt(summary.arrivalToPaint.p90)} ms`,
+    `Keypress to paint:            p50 ${fmt(summary.keyToPaint.p50)}  p90 ${fmt(summary.keyToPaint.p90)} ms`,
+  ].join("\n");
+  try { await fetch("/results", { method: "POST", body: JSON.stringify({ summary, timer, keys, frames }) }); status.textContent = "Done. Results uploaded — you can go back to Claude."; }
+  catch { status.textContent = "Done, but upload failed. Copy the numbers below."; }
+}
+</script>
+</body></html>

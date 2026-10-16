@@ -23,6 +23,9 @@ type API struct {
 	// Users is the roster for multi-user mode. When empty, Tessera runs in
 	// single-user mode with just the default workspace.
 	Users []string
+	// AuthMode is AuthOff, AuthFile or AuthSystem. With AuthFile the signed-in
+	// account is the only user a request may reach.
+	AuthMode string
 	// Updater enables the self-update endpoint; nil makes /api/update report
 	// the feature as unavailable.
 	Updater *update.Updater
@@ -83,23 +86,42 @@ func (a *API) users(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	roster := a.Users
+	roster := a.roster(r.Context())
 	if roster == nil {
 		roster = []string{}
 	}
+	mode := a.AuthMode
+	if mode == "" {
+		mode = AuthOff
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": len(roster) > 0,
-		"users":   roster,
+		"enabled":  len(roster) > 0,
+		"users":    roster,
+		"auth":     mode,
+		"signedIn": SignedInAccount(r.Context()),
 	})
 }
 
-// userAllowed reports whether a session owner is part of this local server's
-// configured roster. Single-user mode uses the synthetic "default" owner.
-func (a *API) userAllowed(id string) bool {
-	if len(a.Users) == 0 {
-		return id == "" || id == store.DefaultWorkspaceID
+// roster is the users a request may reach: the signed-in account with file
+// sign-in, otherwise the configured -users roster.
+func (a *API) roster(ctx context.Context) []string {
+	if a.AuthMode == AuthFile {
+		if account := SignedInAccount(ctx); account != "" {
+			return []string{account}
+		}
+		return nil
 	}
-	for _, user := range a.Users {
+	return a.Users
+}
+
+// userAllowed reports whether a session owner is one of the users this
+// request may reach. Single-user mode uses the synthetic "default" owner.
+func (a *API) userAllowed(ctx context.Context, id string) bool {
+	roster := a.roster(ctx)
+	if len(roster) == 0 {
+		return a.AuthMode != AuthFile && (id == "" || id == store.DefaultWorkspaceID)
+	}
+	for _, user := range roster {
 		if user == id {
 			return true
 		}
@@ -113,14 +135,14 @@ func (a *API) workspaceAllowed(ctx context.Context, id string) bool {
 	}
 	ownerID, err := a.Store.SessionOwner(ctx, id)
 	if err == nil {
-		return a.userAllowed(ownerID)
+		return a.userAllowed(ctx, ownerID)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false
 	}
 	// The first workspace historically used its user id as its workspace id.
 	// Allow that one missing row so first-load creation remains compatible.
-	return a.userAllowed(id)
+	return a.userAllowed(ctx, id)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

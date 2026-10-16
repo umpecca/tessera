@@ -1,0 +1,1 @@
+ALTER TABLE audit_events ADD COLUMN sign_in_id TEXT NOT NULL DEFAULT '';

@@ -57,7 +57,7 @@ function fixture() {
     WebSocket: Socket, Uint8Array, URLSearchParams, document, rectangles: [rect], activeRect: rect, workspaceID: "workspace",
     activePaneID: rect.id, board: { dataset: {} }, scheduleWorkspaceSave() {}, updateDeskbar() {},
     terminalIsCovered, terminalBacklogCloseCode, terminalCloseOutcome, terminalConnectingStatus, terminalShouldRetry,
-    ghosttyModulePromise: null, terminalOutputCoalescing: false, terminalColorMode: "dark", serverConnectionModal: { hidden: true },
+    ghosttyModulePromise: null, terminalOutputCoalescing: false, authMode: "off", signInEndedCloseCode: 4401, terminalColorMode: "dark", serverConnectionModal: { hidden: true },
     window: { location: { protocol: "http:", host: "localhost:7331" }, setTimeout: schedule, clearTimeout: cancel },
     attachTerminalMouseBridge: () => ({ dispose() {} }), setPaneCwd() {}, sendTerminalGridSize() {}, browserInUse: () => true,
     terminalAudioPlayer: { receive: (key, event) => audio.push([key, event]), disconnect: key => audio.push([key, "disconnect"]) },

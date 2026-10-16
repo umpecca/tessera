@@ -221,7 +221,7 @@ function sessionPaletteCommands(activePane, onSessions = () => {}) {
     sessions: [{ id: "main", name: "Main" }, { id: "other", name: "Other" }],
     rectangles: activePane ? [activePane] : [], getActivePane: () => activePane,
     arrangeOutSnapshot: null, workspaceMenuLabel: pane => pane.title,
-    window: {}, multiUser: false, openSessionsModal: onSessions,
+    window: {}, multiUser: false, authMode: "off", openSessionsModal: onSessions,
     openShortcuts() {}, shortcutsUI: { items: [] },
   };
   const available = appFunction("buildPaletteCommands", globals)();

@@ -15,7 +15,7 @@ import (
 
 func (a *API) userResources(w http.ResponseWriter, r *http.Request) {
 	userID, resource, id, action, ok := parseUserResourcePath(r.URL.Path)
-	if !ok || !a.userAllowed(userID) {
+	if !ok || !a.userAllowed(r.Context(), userID) {
 		writeError(w, http.StatusNotFound, "unknown user")
 		return
 	}

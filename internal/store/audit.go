@@ -19,6 +19,8 @@ type AuditEvent struct {
 	Status     int    `json:"status"`
 	Outcome    string `json:"outcome"`
 	DurationMS int64  `json:"durationMs"`
+	// SignInID names the sign-in a request used or created; never its secret.
+	SignInID string `json:"signInId,omitempty"`
 }
 
 // RecordAuditEvent appends an event and deletes entries older than the
@@ -36,8 +38,8 @@ func (s *Store) RecordAuditEvent(ctx context.Context, event AuditEvent, retentio
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO audit_events (
-  occurred_at, request_id, client_ip, method, path, status, outcome, duration_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  occurred_at, request_id, client_ip, method, path, status, outcome, duration_ms, sign_in_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.OccurredAt,
 		event.RequestID,
 		event.ClientIP,
@@ -46,6 +48,7 @@ INSERT INTO audit_events (
 		event.Status,
 		event.Outcome,
 		event.DurationMS,
+		event.SignInID,
 	); err != nil {
 		return fmt.Errorf("insert audit event: %w", err)
 	}
@@ -67,7 +70,7 @@ func (s *Store) ListAuditEvents(ctx context.Context, limit int) ([]AuditEvent, e
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, occurred_at, request_id, client_ip, method, path, status, outcome, duration_ms
+SELECT id, occurred_at, request_id, client_ip, method, path, status, outcome, duration_ms, sign_in_id
 FROM audit_events
 ORDER BY id DESC
 LIMIT ?`, limit)
@@ -89,6 +92,7 @@ LIMIT ?`, limit)
 			&event.Status,
 			&event.Outcome,
 			&event.DurationMS,
+			&event.SignInID,
 		); err != nil {
 			return nil, fmt.Errorf("scan audit event: %w", err)
 		}

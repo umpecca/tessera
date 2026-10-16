@@ -35,6 +35,10 @@ type SecurityOptions struct {
 	AuditEnabled      bool
 	AuditRetention    time.Duration
 	AuditWriteTimeout time.Duration
+	// AllowedHosts adds DNS names to the Host allowlist; DefaultAddress finds
+	// the Local HTTPS certificate names, which are allowed too.
+	AllowedHosts   []string
+	DefaultAddress string
 	// ConnectionLog receives one line for each distinct client identity. It
 	// defaults to stdout; tests may supply a buffer.
 	ConnectionLog io.Writer
@@ -52,6 +56,7 @@ type securityHandler struct {
 	connectionMu    sync.Mutex
 	connections     map[[sha256.Size]byte]struct{}
 	fingerprintSalt [sha256.Size]byte
+	hosts           *hostAllowlist
 }
 
 type requestSecurity struct {
@@ -85,6 +90,7 @@ func NewSecurityHandler(next http.Handler, st *store.Store, opts SecurityOptions
 		auditTimeout:   auditTimeout,
 		connectionLog:  log.New(connectionLog, "", 0),
 		connections:    make(map[[sha256.Size]byte]struct{}),
+		hosts:          newHostAllowlist(st, opts.DefaultAddress, opts.AllowedHosts),
 	}
 	_, _ = rand.Read(handler.fingerprintSalt[:])
 	return handler
@@ -131,11 +137,17 @@ func (h *securityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.audit(r, tracked.status, requestID, directClientIP(r.RemoteAddr), started)
 		return
 	}
+	if !h.hosts.allowed(r.Context(), info.host) {
+		h.hosts.refuse(tracked, info.host)
+		h.audit(r, tracked.status, requestID, info.clientIP, started)
+		return
+	}
 	if info.scheme == "https" {
 		w.Header().Set("Strict-Transport-Security", "max-age=86400")
 	}
 	w.Header().Set("Content-Security-Policy", contentSecurityPolicy(info))
-	r = r.WithContext(context.WithValue(r.Context(), requestSecurityKey{}, info))
+	note := &auditNote{}
+	r = r.WithContext(context.WithValue(context.WithValue(r.Context(), requestSecurityKey{}, info), auditNoteKey{}, note))
 	h.logClientConnection(info.clientIP, r.UserAgent())
 
 	if h.limiter != nil && strings.HasPrefix(r.URL.Path, "/api/") && !h.limiter.allow(info.clientIP, time.Now()) {
@@ -152,6 +164,26 @@ func (h *securityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.next.ServeHTTP(tracked, r)
 	h.audit(r, tracked.status, requestID, info.clientIP, started)
+}
+
+// auditNote lets handlers deeper in the chain add sign-in details to the
+// request's audit record, which the security handler writes afterwards.
+type auditNote struct {
+	signInID string
+	outcome  string
+}
+
+type auditNoteKey struct{}
+
+func noteAuditDetails(r *http.Request, signInID, outcome string) {
+	if note, ok := r.Context().Value(auditNoteKey{}).(*auditNote); ok {
+		if signInID != "" {
+			note.signInID = signInID
+		}
+		if outcome != "" {
+			note.outcome = outcome
+		}
+	}
 }
 
 func (h *securityHandler) logClientConnection(clientIP, userAgent string) {
@@ -452,6 +484,13 @@ func (h *securityHandler) audit(r *http.Request, status int, requestID, clientIP
 	if status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests {
 		outcome = "denied"
 	}
+	note, _ := r.Context().Value(auditNoteKey{}).(*auditNote)
+	if note == nil {
+		note = &auditNote{}
+	}
+	if note.outcome != "" {
+		outcome = note.outcome
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), h.auditTimeout)
 	defer cancel()
 	err := h.store.RecordAuditEvent(ctx, store.AuditEvent{
@@ -463,6 +502,7 @@ func (h *securityHandler) audit(r *http.Request, status int, requestID, clientIP
 		Status:     status,
 		Outcome:    outcome,
 		DurationMS: time.Since(started).Milliseconds(),
+		SignInID:   note.signInID,
 	}, h.auditRetention)
 	if err != nil {
 		log.Printf("write audit event: %v", err)
@@ -472,6 +512,13 @@ func (h *securityHandler) audit(r *http.Request, status int, requestID, clientIP
 func auditRequest(r *http.Request) bool {
 	if strings.HasPrefix(r.URL.Path, "/api/") && stateChangingMethod(r.Method) {
 		return true
+	}
+	// Sign-in, sign-out and recovery links, including failures.
+	switch r.URL.Path {
+	case "/logout", "/login/link":
+		return true
+	case "/login":
+		return r.Method == http.MethodPost
 	}
 	return (r.URL.Path == "/api/terminal" || r.URL.Path == "/api/vnc-proxy/connect") && r.Method == http.MethodGet
 }

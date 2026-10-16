@@ -158,7 +158,7 @@ func TestTrustedProxyControlsEffectiveOriginAndClient(t *testing.T) {
 	handler := NewSecurityHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Context().Value(requestSecurityKey{}).(requestSecurity)
 		w.WriteHeader(http.StatusNoContent)
-	}), nil, SecurityOptions{TrustedProxies: prefixes})
+	}), nil, SecurityOptions{TrustedProxies: prefixes, AllowedHosts: []string{"tessera.example"}})
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7331/api/run", nil)
 	req.RemoteAddr = "127.0.0.1:49152"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
@@ -231,7 +231,7 @@ func TestForwardedHeaderUsesSingleTrustedHop(t *testing.T) {
 	handler := NewSecurityHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Context().Value(requestSecurityKey{}).(requestSecurity)
 		w.WriteHeader(http.StatusNoContent)
-	}), nil, SecurityOptions{TrustedProxies: prefixes})
+	}), nil, SecurityOptions{TrustedProxies: prefixes, AllowedHosts: []string{"tessera.example"}})
 	req := httptest.NewRequest(http.MethodPost, "http://10.0.0.2:7331/api/run", nil)
 	req.RemoteAddr = "10.0.0.2:49152"
 	req.Header.Set("Forwarded", `for="[2001:db8::7]";proto=https;host="tessera.example:443"`)

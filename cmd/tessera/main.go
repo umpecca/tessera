@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,10 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"tessera/internal/auth"
 	"tessera/internal/desktop"
+	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
 	"tessera/internal/server"
 	"tessera/internal/store"
+	"tessera/internal/sysauth"
 	"tessera/internal/update"
 )
 
@@ -23,6 +27,24 @@ const updateRepo = "umpecca/tessera"
 
 func main() {
 	log.SetFlags(0)
+	if len(os.Args) > 1 {
+		var err error
+		switch os.Args[1] {
+		case "user":
+			err = runUserCommand(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, terminalPasswordReader())
+		case "login":
+			err = runLoginCommand(os.Args[2:], os.Stdout, os.Stderr)
+		case "logout":
+			err = runLogoutCommand(os.Args[2:], os.Stdout, os.Stderr)
+		default:
+			goto serve
+		}
+		if err != nil {
+			log.Fatalf("tessera %s: %v", os.Args[1], err)
+		}
+		return
+	}
+serve:
 
 	addr := flag.String("addr", "127.0.0.1:7331", "address to listen on")
 	dbPath := flag.String("db", server.DefaultDBPath(), "SQLite database path")
@@ -30,12 +52,20 @@ func main() {
 	usersFlag := flag.String("users", "", "comma-separated user roster; enables the user selection screen and a separate workspace per user")
 	tray := flag.Bool("tray", desktop.TraySupported(), "show Start, Stop, Configure, and Exit controls in the system tray")
 	var trustedProxies stringListFlag
+	var allowedHosts stringListFlag
+	flag.Var(&allowedHosts, "allowed-host", "extra DNS name Tessera answers to, such as a Tailscale or reverse-proxy name; repeat or use a comma-separated list")
 	flag.Var(&trustedProxies, "trusted-proxy", "trusted immediate proxy IP or CIDR; repeat or use a comma-separated list")
 	rateLimit := flag.Int("rate-limit", 600, "maximum API requests per client per minute; negative disables")
 	rateBurst := flag.Int("rate-burst", 120, "maximum per-client API request burst; negative disables")
 	auditLog := flag.Bool("audit-log", false, "persist redacted security audit events")
 	auditRetention := flag.Int("audit-retention-days", 30, "audit-event retention in days when -audit-log is enabled; negative disables")
 	maxUploadSize := flag.Int64("max-upload-size", server.DefaultMaxUploadBytes, "maximum bytes per terminal file upload")
+	authMode := flag.String("auth", httpapi.AuthOff, "sign-in: off, system (this host account's password), or file (accounts managed with `tessera user`)")
+	authToken := flag.String("auth-token", auth.DefaultTokenPath(), "host recovery token for `tessera login` and `tessera logout`")
+	authFile := flag.String("auth-file", auth.DefaultCredentialsPath(), "credentials file for -auth=file")
+	allowHTTPSignIn := flag.Bool("allow-http-sign-in", false, "accept passwords over plain HTTP from other devices; only for already-encrypted links such as Tailscale or a VPN")
+	signInIdle := flag.Duration("signin-idle", httpapi.DefaultRememberIdle, "how long a remembered sign-in lasts without use")
+	signInMax := flag.Duration("signin-max", httpapi.DefaultRememberMax, "longest a remembered sign-in lasts")
 	systemdUpdate := flag.Bool("systemd-update", false, "apply an update and restart tessera.service (root transient-unit helper)")
 	flag.Parse()
 
@@ -48,6 +78,17 @@ func main() {
 	}
 
 	users := parseUsers(*usersFlag)
+	authOptions, err := authOptionsFromFlags(*authMode, *authFile, users, *allowHTTPSignIn, *signInIdle, *signInMax)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if authOptions.Mode != httpapi.AuthOff {
+		if _, err := auth.EnsureToken(*authToken); err != nil {
+			log.Printf("host recovery token unavailable, so `tessera login` will not work: %v", err)
+		} else {
+			authOptions.TokenPath = *authToken
+		}
+	}
 	useTray := *tray && desktop.TraySupported()
 	if *tray && !desktop.TraySupported() {
 		log.Printf("system tray is not supported on this platform; continuing without it")
@@ -74,12 +115,14 @@ func main() {
 		Users:              users,
 		Updater:            updater,
 		TrustedProxies:     trustedProxies,
+		AllowedHosts:       allowedHosts,
 		RateLimitPerMinute: *rateLimit,
 		RateLimitBurst:     *rateBurst,
 		AuditEnabled:       *auditLog,
 		AuditRetentionDays: *auditRetention,
 		MaxUploadBytes:     *maxUploadSize,
 		RequestRestart:     requestLocalRestart,
+		Auth:               authOptions,
 	})
 	if err := controller.Start(context.Background()); err != nil {
 		if signalErr := update.SignalReplacementFailure(err); signalErr != nil {
@@ -95,6 +138,12 @@ func main() {
 	log.Printf("SQLite database: %s", *dbPath)
 	if len(users) > 0 {
 		log.Printf("Multi-user mode: %s", strings.Join(users, ", "))
+	}
+	switch authOptions.Mode {
+	case httpapi.AuthFile:
+		log.Printf("Sign-in required; accounts from %s", *authFile)
+	case httpapi.AuthSystem:
+		log.Printf("Sign-in required with the password of %s", authOptions.SystemAccount)
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -264,4 +313,51 @@ func parseUsers(raw string) []string {
 		users = append(users, name)
 	}
 	return users
+}
+
+// authOptionsFromFlags validates the sign-in flags. With -auth=file the
+// accounts are the users, so -users would be a second, conflicting roster.
+func authOptionsFromFlags(mode, file string, users []string, allowHTTP bool, idle, maxAge time.Duration) (httpapi.AuthOptions, error) {
+	options := httpapi.AuthOptions{Mode: mode, AllowHTTPSignIn: allowHTTP, RememberIdle: idle, RememberMax: maxAge}
+	switch mode {
+	case httpapi.AuthOff:
+		return options, nil
+	case httpapi.AuthFile:
+	case httpapi.AuthSystem:
+		if idle <= 0 || maxAge <= 0 {
+			return options, errors.New("-signin-idle and -signin-max must be positive")
+		}
+		account, err := sysauth.Account()
+		if err != nil {
+			return options, fmt.Errorf("find the account Tessera runs as: %w", err)
+		}
+		options.SystemAccount = account
+		options.VerifySystem = func(ctx context.Context, password []byte) error {
+			err := sysauth.Verify(ctx, account, password)
+			if errors.Is(err, sysauth.ErrUnavailable) {
+				// The reason names a helper or system call, never the password.
+				log.Printf("system sign-in unavailable: %v", err)
+				return httpapi.ErrSystemAuthUnavailable
+			}
+			return err
+		}
+		return options, nil
+	default:
+		return options, fmt.Errorf("-auth must be off, system or file, not %q", mode)
+	}
+	if len(users) > 0 {
+		return options, errors.New("-users cannot be combined with -auth=file: each account in the credentials file is a user")
+	}
+	if idle <= 0 || maxAge <= 0 {
+		return options, errors.New("-signin-idle and -signin-max must be positive")
+	}
+	accounts, err := auth.ReadCredentialsFile(file)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && len(accounts) == 0) {
+		return options, fmt.Errorf("-auth=file needs at least one account in %s; create one with: tessera user add <name>", file)
+	}
+	if err != nil {
+		return options, fmt.Errorf("read credentials: %w", err)
+	}
+	options.Credentials = auth.NewCredentials(file)
+	return options, nil
 }

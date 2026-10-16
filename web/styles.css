@@ -3867,3 +3867,41 @@ input {
 .shortcut-input-row legend { color: var(--text-muted); font: 12px var(--tessera-font); }
 .shortcut-input-row .shortcut-actions { grid-column: 1 / -1; }
 @media (max-width: 480px) { .shortcuts-modal { padding: 8px; } .shortcut-input-row { grid-template-columns: minmax(0, 1fr); } }
+
+/* Sign-in dialog shown over the workspace when a sign-in ends. */
+.sign-in-modal {
+  z-index: 100010;
+}
+
+.sign-in-panel {
+  width: min(380px, calc(100vw - 32px));
+}
+
+.sign-in-content {
+  display: grid;
+  gap: 10px;
+}
+
+.sign-in-content p {
+  margin: 0;
+}
+
+.sign-in-field {
+  display: grid;
+  gap: 4px;
+}
+
+.sign-in-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sign-in-error:empty {
+  display: none;
+}
+
+.sign-in-error {
+  color: var(--danger-text);
+  font-weight: 700;
+}

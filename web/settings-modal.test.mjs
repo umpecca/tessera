@@ -83,7 +83,7 @@ function fixture() {
   const frames = [], metrics = [], intervals = new Set();
   let diagnosticsCreated = 0, paneFocusCount = 0;
   const context = vm.createContext({
-    document, settingsModal, deskbarButton,
+    authMode: "off", document, settingsModal, deskbarButton,
     commandPalette: { hidden: true }, commandWheel: { hidden: true }, windowList: { hidden: true },
     compatibilityUpdateTimer: null, settingsReturnFocus: null,
     defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,

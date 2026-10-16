@@ -39,6 +39,9 @@ type Options struct {
 	// TrustedProxies contains exact IP addresses or CIDR ranges for immediate
 	// peers whose Forwarded or X-Forwarded-* headers Tessera may use.
 	TrustedProxies []string
+	// AllowedHosts are DNS names, beyond the machine's own, that requests may
+	// use as their Host. IP addresses are always accepted.
+	AllowedHosts []string
 	// RateLimitPerMinute and RateLimitBurst control the per-client in-memory API
 	// limiter. Negative values disable it; zero selects the server defaults.
 	RateLimitPerMinute int
@@ -55,6 +58,8 @@ type Options struct {
 	// It is primarily useful for tests and portable deployments.
 	PKIDir         string
 	RequestRestart func(localhttps.Config)
+	// Auth configures sign-in; the zero value leaves it off.
+	Auth httpapi.AuthOptions
 }
 
 const DefaultMaxUploadBytes int64 = httpapi.DefaultMaxUploadBytes
@@ -132,8 +137,11 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		Users:          opts.Users,
 		Updater:        opts.Updater,
 		MaxUploadBytes: maxUploadBytes,
+		Auth:           opts.Auth,
 		Security: httpapi.SecurityOptions{
 			TrustedProxies: trustedProxies,
+			AllowedHosts:   opts.AllowedHosts,
+			DefaultAddress: opts.Addr,
 			RatePerMinute:  ratePerMinute,
 			RateBurst:      rateBurst,
 			AuditEnabled:   opts.AuditEnabled,

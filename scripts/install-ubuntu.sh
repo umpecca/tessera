@@ -179,6 +179,8 @@ ExecStart=/usr/local/bin/tessera -addr ${listen_address}:7331 -db /var/lib/tesse
 Restart=on-failure
 RestartSec=5s
 PrivateTmp=true
+# -auth=system checks passwords through PAM's setuid unix_chkpwd helper, so
+# this unit must not set NoNewPrivileges=true or RestrictSUIDSGID=true.
 
 [Install]
 WantedBy=multi-user.target

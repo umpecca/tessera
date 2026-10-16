@@ -48,7 +48,7 @@ test("the palette offers Refresh Terminal Size only while a terminal is on scree
     browseLocalPortHelpCommand: { id: "browse-local-port-help", label: "Browse local port" },
     deskbarButtonEnabled: true, currentSessionName: "Main", currentSessionID: "main", sessions: [],
     rectangles, getActivePane: () => null, arrangeOutSnapshot: null, workspaceMenuLabel: (pane) => pane.title,
-    window: {}, multiUser: false, openShortcuts() {}, shortcutsUI: { items: [] },
+    window: {}, multiUser: false, authMode: "off", openShortcuts() {}, shortcutsUI: { items: [] },
   });
   const ids = (rectangles) => appFunction("buildPaletteCommands", globals(rectangles))().map((command) => command.id);
   const live = { kind: "terminal", title: "Terminal", minimized: false, terminal: { term: {} } };
