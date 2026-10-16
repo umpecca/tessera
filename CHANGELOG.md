@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Trigger the CI and Release workflow only on `v*` tag pushes; branch
+  pushes, pull requests and manual dispatch no longer run CI. The daily
+  artifact cleanup keeps its schedule.
+- Remove the Tessera Desktop macOS preview app (`cmd/tessera-desktop`,
+  `internal/nativeapp`), its build script and workflow, and the server's
+  desktop-only request policy. The webserver is the only application target.
+
 - Stop animated application titles (such as Claude Code's spinner) from
   saving the workspace on every frame and rebuilding open window lists; they
   now relabel those lists in place. Give a shared terminal's size to the

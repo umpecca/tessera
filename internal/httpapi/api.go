@@ -23,8 +23,8 @@ type API struct {
 	// Users is the roster for multi-user mode. When empty, Tessera runs in
 	// single-user mode with just the default workspace.
 	Users []string
-	// Updater enables the self-update endpoint; nil (e.g. the desktop build)
-	// makes /api/update report the feature as unavailable.
+	// Updater enables the self-update endpoint; nil makes /api/update report
+	// the feature as unavailable.
 	Updater *update.Updater
 	// MaxUploadBytes limits one streamed terminal file upload. Values at or below
 	// zero use DefaultMaxUploadBytes.

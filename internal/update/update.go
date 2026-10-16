@@ -5,6 +5,8 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,9 @@ import (
 )
 
 const defaultAPIBase = "https://api.github.com"
+
+// maxAssetBytes bounds a download whose release metadata gives no size.
+const maxAssetBytes = 512 << 20
 
 const (
 	replacementReadyEnvironment = "TESSERA_UPDATE_READY_FILE"
@@ -82,6 +87,9 @@ type CheckResult struct {
 	assetURL  string
 	assetName string
 	assetSize int64
+	// assetSHA256 is the hex digest GitHub publishes for the asset; releases
+	// uploaded before GitHub added asset digests have none.
+	assetSHA256 string
 }
 
 func (u *Updater) ServiceManaged() bool {
@@ -100,6 +108,7 @@ type releaseAsset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
+	Digest             string `json:"digest"`
 }
 
 type release struct {
@@ -152,6 +161,9 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 			result.assetURL = asset.BrowserDownloadURL
 			result.assetName = asset.Name
 			result.assetSize = asset.Size
+			if digest, ok := strings.CutPrefix(asset.Digest, "sha256:"); ok {
+				result.assetSHA256 = strings.ToLower(digest)
+			}
 		}
 	}
 	if result.assetURL == "" {
@@ -181,7 +193,7 @@ func (u *Updater) Apply(ctx context.Context) (*CheckResult, error) {
 	}
 
 	newPath := u.exePath + ".new"
-	if err := u.downloadAsset(ctx, result.assetURL, result.assetName, result.assetSize, newPath); err != nil {
+	if err := u.downloadAsset(ctx, result.assetURL, result.assetName, result.assetSize, result.assetSHA256, newPath); err != nil {
 		_ = os.Remove(newPath)
 		return nil, err
 	}
@@ -192,7 +204,7 @@ func (u *Updater) Apply(ctx context.Context) (*CheckResult, error) {
 	return result, nil
 }
 
-func (u *Updater) downloadAsset(ctx context.Context, assetURL, name string, size int64, dest string) error {
+func (u *Updater) downloadAsset(ctx context.Context, assetURL, name string, size int64, wantSHA256, dest string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
 	if err != nil {
 		return err
@@ -213,18 +225,31 @@ func (u *Updater) downloadAsset(ctx context.Context, assetURL, name string, size
 	if err != nil {
 		return err
 	}
-	written, err := io.Copy(f, resp.Body)
+	limit := int64(maxAssetBytes)
+	if size > 0 {
+		limit = size
+	}
+	hash := sha256.New()
+	written, err := io.Copy(io.MultiWriter(f, hash), io.LimitReader(resp.Body, limit+1))
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return fmt.Errorf("write %s: %w", dest, err)
 	}
+	if written > limit {
+		return fmt.Errorf("download %s: asset exceeds %d bytes", name, limit)
+	}
 	if size > 0 && written != size {
 		return fmt.Errorf("download %s: got %d bytes, expected %d", name, written, size)
 	}
 	if written == 0 {
 		return fmt.Errorf("download %s: empty asset", name)
+	}
+	if wantSHA256 != "" {
+		if got := hex.EncodeToString(hash.Sum(nil)); got != wantSHA256 {
+			return fmt.Errorf("download %s: sha256 %s does not match release digest %s", name, got, wantSHA256)
+		}
 	}
 	return nil
 }

@@ -13,7 +13,6 @@ import { browserWakeDetected, nextServerConnectionState } from "./server-connect
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
 import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL, validateLocalHTTPSDraft } from "./local-https-settings.mjs";
 import { shouldShowIPadHTTPGuidance } from "./ipad-http-guidance.mjs";
-import { installNativeClose } from "./native-desktop.mjs";
 import {
   terminalBacklogCloseCode,
   terminalCloseOutcome,
@@ -3366,8 +3365,6 @@ async function flushAllPersistence() {
   await Promise.all([flushWorkspaceSave(), flushUserSettingsSave()]);
 }
 
-installNativeClose(window, flushAllPersistence);
-
 async function flushWorkspaceSave() {
   if (isLoadingWorkspace || workspaceSaveSuspended || workspaceNeedsRevalidation) {
     throw new Error("Workspace saving is paused. Resolve the connection or conflict before leaving this session.");
@@ -5505,7 +5502,6 @@ function hideSettingsModal() {
 }
 
 async function openLocalHTTPSModal() {
-  if (window.__tesseraDesktop === true) return;
   hideDeskbar();
   localHTTPSModal.hidden = false;
   localHTTPSModal.replaceChildren();
@@ -7594,7 +7590,6 @@ async function waitForUpdatedServer(check, { timeoutMs = 60000, timeoutMessage =
 // Checks GitHub for a newer release via the server, chooses the direct or
 // systemd-owned install path, and waits for the expected version before reload.
 async function runServerUpdate() {
-  if (window.__tesseraDesktop === true) return;
   showUpdateStatus("Checking for updates...", { busy: true });
   let check;
   try {
@@ -7760,10 +7755,8 @@ function buildPaletteCommands() {
     }
     commands.push({ id: "destroy-window", label: "Destroy Window", aliases: ["close", "close window"], hint: "Ctrl+Backspace", run: () => destroyActivePane() });
   }
-  if (window.__tesseraDesktop !== true) {
-    commands.push({ id: "local-https", label: "Local HTTPS...", hint: "server and iPad certificates", run: () => void openLocalHTTPSModal() });
-    commands.push({ id: "update-server", label: "Update Server", hint: "server", run: () => void runServerUpdate() });
-  }
+  commands.push({ id: "local-https", label: "Local HTTPS...", hint: "server and iPad certificates", run: () => void openLocalHTTPSModal() });
+  commands.push({ id: "update-server", label: "Update Server", hint: "server", run: () => void runServerUpdate() });
   if (multiUser) {
     for (const name of userRoster) {
       if (name !== currentUser) {

@@ -89,6 +89,8 @@ func TestBrowserProxyRewritesDevelopmentPageAndRedirect(t *testing.T) {
 	}
 	if policy := response.Header().Get("Content-Security-Policy"); strings.Contains(policy, "frame-ancestors") || strings.Contains(policy, ",") {
 		t.Errorf("outer content security policy survived: %q", policy)
+	} else if !strings.HasPrefix(policy, "sandbox ") || strings.Contains(policy, "allow-same-origin") {
+		t.Errorf("proxied pages must stay sandboxed outside the pane iframe: %q", policy)
 	}
 
 	request = httptest.NewRequest(http.MethodGet, prefix+"/redirect", nil)

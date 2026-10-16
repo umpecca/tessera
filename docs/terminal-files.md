@@ -109,4 +109,4 @@ the external helper through a PTY, and checks batch uploads, original/ZIP
 downloads, hidden invitations, hide/reveal handoff, decline, and redirected
 stdout. Go/JS tests cover parser
 splits, snapshots, claims, limits, cancellation, temporary files and migrations.
-Safari and the native macOS preview require final verification on a Mac.
+Safari requires final verification on a Mac.

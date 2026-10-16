@@ -121,6 +121,11 @@ func normalizeVNCTarget(raw string) (string, error) {
 		return "", errors.New("invalid VNC target")
 	}
 	host := target.Hostname()
+	// Bare IPv6 such as 2001:db8::1 parses as host "2001:db8:" port "1";
+	// IPv6 targets must be bracketed so the port is unambiguous.
+	if strings.Contains(host, ":") && !strings.HasPrefix(target.Host, "[") {
+		return "", errors.New("IPv6 VNC targets must be bracketed, e.g. [2001:db8::1]:5900")
+	}
 	if strings.ContainsFunc(host, unicode.IsSpace) || strings.ContainsAny(host, "/\\@?#") {
 		return "", errors.New("invalid VNC target host")
 	}

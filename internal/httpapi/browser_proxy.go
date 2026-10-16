@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -229,7 +230,7 @@ func newBrowserProxySession(requested *url.URL) (*browserProxySession, error) {
 			setBrowserProxyResponseHeaders(w.Header())
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = fmt.Fprintf(w, "<!doctype html><title>Browser proxy error</title><p>Could not reach %s.</p><pre>%s</pre>", target.Host, err)
+			_, _ = fmt.Fprintf(w, "<!doctype html><title>Browser proxy error</title><p>Could not reach %s.</p><pre>%s</pre>", html.EscapeString(target.Host), html.EscapeString(err.Error()))
 		},
 	}
 	return session, nil
@@ -344,7 +345,11 @@ document.addEventListener("submit",event=>{const form=event.target;if(form&&form
 func setBrowserProxyResponseHeaders(header http.Header) {
 	header.Set("Access-Control-Allow-Origin", "null")
 	header.Set("Cross-Origin-Resource-Policy", "cross-origin")
-	header.Set("Content-Security-Policy", "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src * ws: wss:; frame-src *; img-src * data: blob:; media-src * data: blob:")
+	// The sandbox directive mirrors the pane iframe's sandbox attribute so proxied
+	// pages keep an opaque origin even when opened outside the iframe (for
+	// example "Open link in new tab"); otherwise they would share Tessera's
+	// origin and could drive its API.
+	header.Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads; default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src * ws: wss:; frame-src *; img-src * data: blob:; media-src * data: blob:")
 	header.Set("Referrer-Policy", "no-referrer")
 }
 

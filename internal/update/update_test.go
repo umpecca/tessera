@@ -2,6 +2,8 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -179,5 +181,42 @@ func TestFailedExecutableSwapRestoresPreviousBinary(t *testing.T) {
 	}
 	if got, err := os.ReadFile(exe); err != nil || string(got) != "old" {
 		t.Fatalf("rollback = %q %v", got, err)
+	}
+}
+
+func TestApplyVerifiesReleaseDigest(t *testing.T) {
+	sum := sha256.Sum256([]byte("new"))
+	for name, test := range map[string]struct {
+		digest string
+		want   string
+		fails  bool
+	}{
+		"match":    {digest: "sha256:" + hex.EncodeToString(sum[:]), want: "new"},
+		"mismatch": {digest: "sha256:" + strings.Repeat("0", 64), want: "old", fails: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			exe := filepath.Join(t.TempDir(), assetName())
+			if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/binary" {
+					_, _ = w.Write([]byte("new"))
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"tag_name":"v999.0.0","assets":[{"name":%q,"browser_download_url":"%s/binary","size":3,"digest":%q}]}`, assetName(), serverURL(r), test.digest)
+			}))
+			defer server.Close()
+			u := &Updater{Repo: "owner/repo", APIBase: server.URL, exePath: exe}
+			if _, err := u.Apply(context.Background()); (err != nil) != test.fails {
+				t.Fatalf("Apply error = %v, want failure %v", err, test.fails)
+			}
+			if got, err := os.ReadFile(exe); err != nil || string(got) != test.want {
+				t.Fatalf("executable = %q %v, want %q", got, err, test.want)
+			}
+			if _, err := os.Stat(exe + ".new"); !os.IsNotExist(err) {
+				t.Fatalf("partial download left behind: %v", err)
+			}
+		})
 	}
 }

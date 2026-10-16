@@ -124,13 +124,6 @@ go run ./cmd/tessera -addr 127.0.0.1:7331 -db .\tessera.sqlite3 -web .\web
 go run ./cmd/tessera -users alice,bob,carol
 ```
 
-## Native macOS application (preview)
-
-For the additional native macOS application, see
-[Tessera Desktop build instructions](docs/native-desktop.md). It uses a separate
-local-only profile and build target; the webserver deployment above remains the
-primary supported path. The desktop preview still requires macOS GUI validation.
-
 ## Install as an Ubuntu service
 
 On an Ubuntu amd64 or ARM64 host, download and run the installer as root:
@@ -726,10 +719,11 @@ immutable; append a new migration instead of editing an existing one.
 
 ## Releases and self-update
 
-The **CI and Release** workflow runs on pull requests to `main`, pushes to `main`,
-version-tag pushes, and manual dispatch. CI rebuilds/verifies the terminal core,
-runs JavaScript and Go tests, and uploads platform
-binaries as workflow artifacts. Only a pushed `v*` tag publishes a GitHub release:
+The **CI and Release** workflow runs only when a `v*` tag is pushed; branch
+pushes, pull requests, and manual dispatch trigger nothing (the daily artifact
+cleanup still runs on its schedule). On a tag, the **CI and Release** workflow
+rebuilds/verifies the terminal core, runs JavaScript and Go tests, and publishes
+a GitHub release:
 
 - `tessera-linux-amd64`
 - `tessera-linux-arm64`

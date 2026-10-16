@@ -1,5 +1,5 @@
 // Package server wires Tessera's storage, managers, and HTTP API into a
-// runnable localhost server shared by the web and desktop entry points.
+// runnable localhost server.
 package server
 
 import (
@@ -25,9 +25,6 @@ import (
 )
 
 type Options struct {
-	// DesktopToken enables the private native host policy. Empty preserves the
-	// existing webserver behavior. Native hosts supply a fresh 32-byte hex token.
-	DesktopToken string
 	// Addr is the listen address; use "127.0.0.1:0" for an ephemeral port.
 	Addr   string
 	DBPath string
@@ -77,14 +74,9 @@ type Server struct {
 	store          *store.Store
 	terminals      *terminal.Manager
 	serveErr       chan error
-	desktopToken   string
-	desktopCancel  context.CancelFunc
 }
 
 func Start(ctx context.Context, opts Options) (*Server, error) {
-	if err := validateDesktopOptions(opts); err != nil {
-		return nil, err
-	}
 	trustedProxies, err := httpapi.ParseTrustedProxies(opts.TrustedProxies)
 	if err != nil {
 		return nil, err
@@ -117,13 +109,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
-	var httpsConfig localhttps.Config
-	if opts.DesktopToken == "" {
-		httpsConfig, err = st.LoadLocalHTTPSConfig(ctx, opts.Addr)
-		if err != nil {
-			_ = st.Close()
-			return nil, err
-		}
+	httpsConfig, err := st.LoadLocalHTTPSConfig(ctx, opts.Addr)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
 	}
 	pkiDir := opts.PKIDir
 	if pkiDir == "" {
@@ -162,7 +151,6 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		store:          st,
 		terminals:      terminalManager,
 		serveErr:       make(chan error, 1),
-		desktopToken:   opts.DesktopToken,
 	}
 	if err := srv.startListeners(httpsConfig); err != nil {
 		terminalManager.Close()
@@ -216,16 +204,7 @@ func (s *Server) startListenersLocked(config localhttps.Config) error {
 		})
 	}
 
-	handler := s.handler
-	if s.desktopToken != "" {
-		handler = desktopHandler(handler, httpAddress, s.desktopToken)
-	}
-	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-	if s.desktopToken != "" {
-		ctx, cancel := context.WithCancel(context.Background())
-		s.desktopCancel = cancel
-		httpServer.BaseContext = func(net.Listener) context.Context { return ctx }
-	}
+	httpServer := &http.Server{Handler: s.handler, ReadHeaderTimeout: 5 * time.Second}
 	var httpsServer *http.Server
 	if httpsListener != nil {
 		httpsServer = &http.Server{Handler: s.handler, ReadHeaderTimeout: 5 * time.Second}
@@ -260,9 +239,6 @@ func (s *Server) serve(server *http.Server, listener net.Listener) {
 // terminal manager, and native PTYs stay alive so changing transport settings
 // cannot tear down active Windows ConPTY sessions.
 func (s *Server) ReloadLocalHTTPS(ctx context.Context) error {
-	if s.desktopToken != "" {
-		return errors.New("Local HTTPS is unavailable in the desktop application")
-	}
 	config, err := s.store.LoadLocalHTTPSConfig(ctx, s.defaultAddress)
 	if err != nil {
 		return err
@@ -316,12 +292,6 @@ func (s *Server) ServeErr() <-chan error {
 // Shutdown stops the HTTP server, then closes managers and storage in the
 // reverse of their startup order.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.desktopCancel != nil {
-		// The native window has already flushed persistence. End its long-lived
-		// subscriptions before waiting for HTTP shutdown; otherwise an idle SSE
-		// listener can consume the entire shutdown deadline on every app quit.
-		s.desktopCancel()
-	}
 	s.listenerMu.Lock()
 	err := s.shutdownListenersLocked(ctx)
 	s.listenerMu.Unlock()
