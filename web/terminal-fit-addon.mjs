@@ -53,9 +53,15 @@ export class TesseraFitAddon {
     if (!dimensions || !terminal) {
       return;
     }
+    // terminal.cols is the host's grid, which another browser showing the
+    // same shell may have set; what this browser asked for is the desired
+    // grid. Comparing against the host's would leave a stale request in place
+    // whenever this pane happened to measure the other browser's size.
+    const cols = terminal.desiredCols ?? terminal.cols;
+    const rows = terminal.desiredRows ?? terminal.rows;
     if (
       (dimensions.cols === this.lastColumns && dimensions.rows === this.lastRows)
-      || (dimensions.cols === terminal.cols && dimensions.rows === terminal.rows)
+      || (dimensions.cols === cols && dimensions.rows === rows)
     ) {
       return;
     }

@@ -134,3 +134,18 @@ test("dispose cancels resize guard timers and pending fits", () => {
     assert.deepEqual(resizeCalls, [{ cols: 100, rows: 25 }]);
   });
 });
+
+test("a pane that measures another browser's grid still replaces this browser's stale request", () => {
+  // Another browser resized the shared shell to 100x25, the size this pane
+  // now measures, while this browser's last request was 120x40.
+  const { resizeCalls, terminal } = testTerminal({ cols: 100, rows: 25 });
+  terminal.desiredCols = 120;
+  terminal.desiredRows = 40;
+  const fit = new TesseraFitAddon();
+  fit.activate(terminal);
+
+  withComputedPadding({}, () => {
+    fit.fit();
+    assert.deepEqual(resizeCalls, [{ cols: 100, rows: 25 }]);
+  });
+});
