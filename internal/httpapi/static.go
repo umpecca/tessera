@@ -44,6 +44,16 @@ var staticContentTypes = map[string]string{
 // attribute, so a match can never run past the end of the tag it is in.
 var assetVersionPattern = regexp.MustCompile(`\?v=[^"'\s<>]*`)
 
+// moduleImportPattern matches a relative specifier in a static import or
+// export, or in a dynamic import of a string literal, along with any version
+// query already on it. Group 2 and 4 are the quotes, which must agree.
+var moduleImportPattern = regexp.MustCompile(`(\b(?:from|import)\s*\(?\s*)(["'])(\.{1,2}/[^"'?#\s]+\.m?js)(?:\?v=[^"'\s]*)?(["'])`)
+
+// immutableCacheControl is sent for an asset requested at the current build
+// hash. Its URL changes whenever any served file does, so the browser can keep
+// it without asking again; index.html, which names the hash, stays no-cache.
+const immutableCacheControl = "public, max-age=31536000, immutable"
+
 func (a *API) staticFiles() http.HandlerFunc {
 	webFS := a.WebFS
 	if webFS == nil {
@@ -55,6 +65,13 @@ func (a *API) staticFiles() http.HandlerFunc {
 	}
 	fileServer := http.FileServer(http.FS(webFS))
 	buildHash := webBuildHash(webFS)
+	// Embedded assets cannot change while the server runs, so their module
+	// graph can be versioned once and cached for good. Files served from disk
+	// (a dev WebDir) can be edited underneath us and keep revalidating.
+	var modules map[string][]byte
+	if embeddedAssets(webFS) {
+		modules = versionModuleImports(webFS, buildHash)
+	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -68,9 +85,19 @@ func (a *API) staticFiles() http.HandlerFunc {
 			serveIndex(w, r, webFS, buildHash)
 			return
 		}
+		if modules != nil && r.URL.Query().Get("v") == buildHash {
+			w.Header().Set("Cache-Control", immutableCacheControl)
+		}
+		if module, ok := modules[requestPath]; ok {
+			setContentType(w, requestPath)
+			w.Header().Set("ETag", `"`+buildHash+`"`)
+			http.ServeContent(w, r, requestPath, time.Time{}, bytes.NewReader(module))
+			return
+		}
 
 		info, err := fs.Stat(webFS, requestPath)
 		if err != nil || info.IsDir() {
+			w.Header().Set("Cache-Control", "no-cache")
 			if strings.HasPrefix(requestPath, "extensions/") {
 				writeError(w, http.StatusNotFound, "extension asset not found")
 				return
@@ -137,6 +164,60 @@ func webBuildHash(webFS fs.FS) string {
 		return fmt.Sprintf("%x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(digest.Sum(nil))[:12]
+}
+
+// embeddedAssets reports whether webFS is the build's embedded tree, whose
+// files carry no modification time, rather than a directory on disk. Any
+// file with one could be edited while the server runs.
+func embeddedAssets(webFS fs.FS) bool {
+	embedded := true
+	err := fs.WalkDir(webFS, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && !info.ModTime().IsZero() {
+			embedded = false
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return err == nil && embedded
+}
+
+// versionModuleImports stamps the build hash onto every relative module
+// import in Tessera's own scripts. index.html already loads app.js at the
+// hash; without this, the modules app.js imports would be fetched at bare
+// URLs, which can never be cached immutably, and every page load would
+// revalidate each one in dependent waves. Every module must be reached at a
+// single URL, or the browser would instantiate it twice. Vendor bundles are
+// esbuild output with no relative imports and are left byte-for-byte alone.
+func versionModuleImports(webFS fs.FS, buildHash string) map[string][]byte {
+	modules := map[string][]byte{}
+	_ = fs.WalkDir(webFS, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || strings.HasPrefix(name, "vendor/") || strings.HasPrefix(name, "extensions/") {
+			return nil
+		}
+		if ext := path.Ext(name); ext != ".js" && ext != ".mjs" {
+			return nil
+		}
+		source, err := fs.ReadFile(webFS, name)
+		if err != nil {
+			return nil
+		}
+		modules[name] = moduleImportPattern.ReplaceAllFunc(source, func(match []byte) []byte {
+			parts := moduleImportPattern.FindSubmatch(match)
+			if !bytes.Equal(parts[2], parts[4]) {
+				return match
+			}
+			return []byte(string(parts[1]) + string(parts[2]) + string(parts[3]) + "?v=" + buildHash + string(parts[4]))
+		})
+		return nil
+	})
+	return modules
 }
 
 func hashBytes(content []byte) string {

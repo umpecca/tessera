@@ -176,3 +176,78 @@ func TestUnknownPathsStillFallBackToTheStampedIndex(t *testing.T) {
 		t.Fatalf("SPA fallback served an unstamped index: %s", body)
 	}
 }
+
+func servedBuildHash(t *testing.T, files fstest.MapFS) string {
+	t.Helper()
+	body := serveStatic(t, files, "/", nil).Body.String()
+	start := strings.Index(body, "/app.js?v=")
+	if start < 0 {
+		t.Fatalf("index carries no app.js version: %s", body)
+	}
+	hash := body[start+len("/app.js?v="):]
+	return hash[:strings.IndexByte(hash, '"')]
+}
+
+// app.js is loaded at the build hash, so the modules it imports must be too,
+// or each page load would revalidate them; and each module must be reached
+// at one URL, or the browser would run it twice.
+func TestModuleImportsCarryTheBuildHash(t *testing.T) {
+	files := testWebFS(`import { x } from "./terminal-reconnect.mjs";
+export { y } from './pane.mjs';
+const later = import("./vendor/vnc.js?v=novnc-1.7.0");
+const mixed = import("./odd.mjs');
+const absolute = import("https://example.com/x.js");`)
+	files["vendor/terminal.js"] = &fstest.MapFile{Data: []byte(`import("./chunk.js")`)}
+	hash := servedBuildHash(t, files)
+
+	body := serveStatic(t, files, "/app.js?v="+hash, nil).Body.String()
+	for _, want := range []string{
+		`from "./terminal-reconnect.mjs?v=` + hash + `"`,
+		`from './pane.mjs?v=` + hash + `'`,
+		`import("./vendor/vnc.js?v=` + hash + `")`,
+		`import("./odd.mjs')`,
+		`import("https://example.com/x.js")`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("served app.js lacks %s:\n%s", want, body)
+		}
+	}
+	if got := serveStatic(t, files, "/vendor/terminal.js", nil).Body.String(); got != `import("./chunk.js")` {
+		t.Errorf("vendor bundle was rewritten: %s", got)
+	}
+}
+
+func TestOnlyTheCurrentBuildHashIsCachedForGood(t *testing.T) {
+	files := testWebFS(`import { x } from "./terminal-reconnect.mjs";`)
+	hash := servedBuildHash(t, files)
+
+	for target, want := range map[string]string{
+		"/":                                 "no-cache",
+		"/app.js?v=" + hash:                 immutableCacheControl,
+		"/terminal-reconnect.mjs?v=" + hash: immutableCacheControl,
+		"/styles.css?v=" + hash:             immutableCacheControl,
+		"/app.js":                           "no-cache",
+		"/app.js?v=stale":                   "no-cache",
+		"/missing.js?v=" + hash:             "no-cache",
+	} {
+		if got := serveStatic(t, files, target, nil).Header().Get("Cache-Control"); got != want {
+			t.Errorf("%s: Cache-Control = %q, want %q", target, got, want)
+		}
+	}
+}
+
+// A dev WebDir can change under a running server, so it is never cached for
+// good and its sources are served exactly as written.
+func TestAssetsOnDiskAreNeitherRewrittenNorCachedForGood(t *testing.T) {
+	files := testWebFS(`import { x } from "./terminal-reconnect.mjs";`)
+	files["app.js"].ModTime = time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	hash := servedBuildHash(t, files)
+
+	response := serveStatic(t, files, "/app.js?v="+hash, nil)
+	if got := response.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	if body := response.Body.String(); body != `import { x } from "./terminal-reconnect.mjs";` {
+		t.Errorf("disk asset was rewritten: %s", body)
+	}
+}

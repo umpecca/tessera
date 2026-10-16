@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Cache the web app's scripts for good between page loads. Module imports now
+  carry the build hash, and assets requested at the current hash are served
+  immutable, so reopening Tessera no longer revalidates every module; any
+  server update changes the hash. Assets served from a `-web` directory still
+  revalidate.
+
 - Stop a backgrounded page from resizing its shells. iPadOS resizes a
   home-screen web app while showing the app switcher, and that size reached
   running programs, leaving output such as Homebrew logs misaligned after
