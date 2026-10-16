@@ -9,6 +9,8 @@ import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
 import { TerminalInputBuffer } from "./terminal-input-buffer.mjs";
 import { TerminalScroll, terminalScrollMouseEvent } from "./terminal-scroll.mjs";
 import { defaultTerminalRowSpacing, normalizeTerminalRowSpacing } from "./terminal-settings.mjs";
+import { TerminalPrediction } from "./terminal-prediction.mjs";
+import { TerminalPredictionOverlay } from "./terminal-prediction-overlay.mjs";
 
 function loadTerminalClass(overrides = {}) {
   const source = readFileSync(new URL("./terminal-entry.js", import.meta.url), "utf8");
@@ -23,7 +25,11 @@ function loadTerminalClass(overrides = {}) {
     terminalScrollMouseEvent,
     defaultTerminalRowSpacing,
     normalizeTerminalRowSpacing,
+    TerminalPrediction,
+    TerminalPredictionOverlay,
     TextDecoder,
+    setTimeout,
+    clearTimeout,
     __TESSERA_CORE_ID__: "test",
     SixelRenderer: class { prune() {} clear() {} },
     ...overrides,
@@ -535,4 +541,53 @@ test("real WASM clipboard draining reuses scratch space through reset, memory gr
     term.dispose(); term.dispose();
     assert.deepEqual(frees.filter(([ptr]) => ptr === scratch.ptr), [[scratch.ptr, 4096]]);
   } finally { term.dispose(); }
+});
+
+test("typing prediction draws at once and is erased in the paint that shows the echo", () => {
+  const cells = new Map();
+  const cursor = { x: 2, y: 0, visible: true };
+  const drawn = [];
+  const requested = [];
+  class GhosttyTerminal {
+    constructor(options) {
+      this.options = options; this.cols = 80; this.rows = 24; this.viewportY = 0;
+      this.scrollbarOpacity = 0; this.lastCursorY = 0; this.cursorMoveEmitter = { fire() {} };
+    }
+    onScroll() {}
+    write(data) { for (const ch of data) { cells.set(`${cursor.x},${cursor.y}`, ch.charCodeAt(0)); cursor.x += 1; } }
+  }
+  class Overlay {
+    constructor() { this.drawn = false; }
+    draw(visible) { drawn.push(visible.cells.map(c => c.char).join("")); this.drawn = visible.cells.length > 0; }
+    dispose() {}
+  }
+  const Terminal = loadTerminalClass({
+    GhosttyTerminal, TerminalPredictionOverlay: Overlay,
+    renderScheduler: { request: term => requested.push(term), noteOutput() {}, setActive() {}, unregister() {} },
+  });
+  const term = new Terminal({ cols: 80, rows: 24, predictionMode: "always" });
+  term.isOpen = true;
+  term.getScrollbackLength = () => 0;
+  term.syncWindowTitle = () => {};
+  term.renderer = { cursorVisible: false, devicePixelRatio: 1, render() {} };
+  term.wasmTerm = {
+    getCursor: () => ({ ...cursor }), isAlternateScreen: () => false,
+    getLine: row => Array.from({ length: 80 }, (_, col) => ({ codepoint: cells.get(`${col},${row}`) ?? 0 })),
+  };
+  globalThis.devicePixelRatio = 1;
+  // The first character starts an unconfirmed epoch: nothing is drawn.
+  term.predictInput("l");
+  term.write("l");
+  assert.equal(term.prediction.epochConfirmed, true);
+  term.predictInput("s");
+  assert.deepEqual(drawn, ["s"], "drawn immediately, before any paint");
+  term.write("s");
+  assert.deepEqual(drawn, ["s"], "kept until the paint that shows the echo");
+  term.renderScheduledFrame();
+  assert.deepEqual(drawn, ["s", ""], "erased together with that paint");
+  // Enter ends the run; the next character waits for a fresh confirmation.
+  term.predictInput("\r");
+  term.predictInput("x");
+  assert.deepEqual(drawn, ["s", ""]);
+  term.resetPredictions();
 });

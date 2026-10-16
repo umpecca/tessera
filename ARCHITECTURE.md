@@ -88,6 +88,7 @@ tessera/
     index.html                 # application shell and bundled module loading
     embed.go                   # go:embed filesystem
     terminal-entry.js          # terminal bundle entry point
+    terminal-prediction*.mjs   # typing prediction engine and its overlay canvas
     terminal-audio*.mjs         # Web Audio playback and bounded Opus decoding
     terminal-opus-entry.js      # bundled decoder worker entry point
     vendor/                    # committed esbuild output

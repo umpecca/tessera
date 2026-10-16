@@ -66,6 +66,7 @@ function fixture() {
     completeTerminalWakeRecovery: target => retired.push(target),
     destroyRectangle: target => { target.terminal = null; },
     sendTerminalInput: (socket, data) => socket.send(new TextEncoder().encode(data)),
+    sendTerminalKeys: (target, data) => target.terminal.socket.send(new TextEncoder().encode(data)),
   });
   for (const name of ["setActivePane", "clearActivePane", "clearActivePaneClass", "setTerminalCursorBlink",
     "updateTerminalRenderState", "setTerminalOutputPaused", "updateTerminalDocumentVisibility", "connectTerminalSocket",

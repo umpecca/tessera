@@ -11,6 +11,7 @@ import { ShortcutsModal } from "./shortcuts.mjs";
 import { WindowWobble } from "./window-wobble.mjs";
 import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
+import { normalizePredictionMode } from "./terminal-prediction.mjs";
 import { renderSignedInDevices, SignInRecovery, signInEndedCloseCode, signOut } from "./sign-in.mjs";
 import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL, validateLocalHTTPSDraft } from "./local-https-settings.mjs";
 import { shouldShowIPadHTTPGuidance } from "./ipad-http-guidance.mjs";
@@ -190,6 +191,8 @@ const terminalPaintCoalescingStorageKey = "tessera.terminal-paint-coalescing.v1"
 let terminalPaintCoalescing = true;
 const terminalOutputCoalescingStorageKey = "tessera.terminal-output-coalescing.v1";
 let terminalOutputCoalescing = false;
+const terminalPredictionStorageKey = "tessera.terminal-prediction.v1";
+let terminalPredictionMode = "auto";
 const terminalBacklogLimitStorageKey = "tessera.terminal-output-backlog.v1";
 let terminalBacklogLimit = "auto";
 const windowWobbleStorageKey = "tessera.window-wobble.v1";
@@ -200,6 +203,7 @@ try {
   terminalPaintCoalescing = window.localStorage.getItem(terminalPaintCoalescingStorageKey) !== "false";
   terminalOutputCoalescing = window.localStorage.getItem(terminalOutputCoalescingStorageKey) === "true";
   terminalBacklogLimit = normalizeTerminalBacklogLimit(window.localStorage.getItem(terminalBacklogLimitStorageKey));
+  terminalPredictionMode = normalizePredictionMode(window.localStorage.getItem(terminalPredictionStorageKey));
   windowWobbleEnabled = window.localStorage.getItem(windowWobbleStorageKey) !== "false";
 } catch {
   // Storage can be unavailable in hardened or private browser contexts.
@@ -392,6 +396,14 @@ function setTerminalPaintCoalescing(enabled) {
     if (rect.kind === "terminal") {
       rect.terminal?.term?.setPaintCoalescing?.(terminalPaintCoalescing);
     }
+  }
+}
+
+function setTerminalPredictionMode(mode) {
+  terminalPredictionMode = normalizePredictionMode(mode);
+  saveBrowserSetting(terminalPredictionStorageKey, terminalPredictionMode);
+  for (const rect of rectangles) {
+    if (rect.kind === "terminal") rect.terminal?.term?.setPredictionMode?.(terminalPredictionMode);
   }
 }
 
@@ -3740,6 +3752,7 @@ async function startTerminal(rect) {
       renderPixelRatioCap: olderMacMode ? 1 : 0,
       paintFPSLimit: olderMacMode ? 30 : 0,
       paintCoalescing: terminalPaintCoalescing,
+      predictionMode: terminalPredictionMode,
       renderMetricsEnabled: settingsDiagnosticsOpen(),
       experimentalRenderer: experimentalTerminalRenderer,
       smoothScrollDuration: olderMacMode ? 0 : 100,
@@ -3767,7 +3780,7 @@ async function startTerminal(rect) {
       }
       const controlSequence = terminalControlSequence(event, { appleKeyboard: appleKeyboardLayout });
       if (controlSequence) {
-        sendTerminalInput(rect.terminal?.socket, controlSequence);
+        sendTerminalKeys(rect, controlSequence);
         return true;
       }
       // Swallowing beats ghostty-web's encoder falling back to the bare
@@ -3782,7 +3795,7 @@ async function startTerminal(rect) {
       if (!sequence) {
         return false;
       }
-      sendTerminalInput(rect.terminal?.socket, sequence);
+      sendTerminalKeys(rect, sequence);
       return true;
     });
     term.registerLinkProvider(new WrappedHTTPLinkProvider(term));
@@ -3792,7 +3805,7 @@ async function startTerminal(rect) {
       term.scrollToBottom();
       term.noteInteractiveInput?.();
       claimTerminalSize(rect);
-      sendTerminalInput(rect.terminal?.socket, data);
+      sendTerminalKeys(rect, data);
     });
     const resizeDisposable = term.onResize(() => {
       requestTerminalGridSize(rect.terminal);
@@ -3888,7 +3901,7 @@ function connectTerminalSocket(rect) {
     if (rect.terminalStartupCommand) {
       const command = rect.terminalStartupCommand;
       rect.terminalStartupCommand = "";
-      sendTerminalInput(socket, `${command}\r`);
+      sendTerminalKeys(rect, `${command}\r`);
     }
   });
   socket.addEventListener("message", (event) => {
@@ -3998,6 +4011,7 @@ function renderTerminalAudioStatus(rect, status) {
 }
 
 function handleTerminalSocketClose(rect, terminalState, closeEvent) {
+  terminalState.term?.resetPredictions?.();
   terminalAudioPlayer.disconnect(terminalState.audioKey);
   terminalState.files?.disconnect();
   terminalState.replica?.disconnect();
@@ -4556,6 +4570,14 @@ function terminalWebSocketURL(rect, cols, rows, colorMode = "") {
     params.set("resumeSequence", String(stream.sequence));
   }
   return `${protocol}//${window.location.host}/api/terminal?${params.toString()}`;
+}
+
+// Every keystroke passes the typing predictor first: a printable character
+// may be drawn before the server echoes it, and anything else ends the run.
+function sendTerminalKeys(rect, data) {
+  const socket = rect.terminal?.socket;
+  if (socket?.readyState === WebSocket.OPEN) rect.terminal?.term?.predictInput?.(data);
+  sendTerminalInput(socket, data);
 }
 
 function sendTerminalInput(socket, data) {
@@ -5880,6 +5902,7 @@ function renderSettingsModal() {
     renderSettingsTerminalFontRow(),
     renderSettingsTerminalRowSpacingRow(),
     renderSettingsTerminalColorModeRow(),
+    renderSettingsTerminalPredictionRow(),
   ]));
   content.appendChild(renderSettingsSection("Scroll wheel", [
     renderSettingsWheelRow(
@@ -6773,6 +6796,31 @@ function renderSettingsTerminalColorModeRow() {
     select.appendChild(option);
   }
   select.addEventListener("change", () => void setTerminalColorMode(select.value));
+  row.append(label, select);
+  return row;
+}
+
+function renderSettingsTerminalPredictionRow() {
+  const row = document.createElement("label");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "Typing prediction";
+  const detail = document.createElement("span");
+  detail.textContent = "Shows typed characters before the server echoes them, underlined until confirmed. Auto turns on over slow connections; nothing is shown where the program does not echo, such as password prompts. Saved in this browser.";
+  label.append(name, detail);
+  const select = document.createElement("select");
+  select.className = "settings-theme-select";
+  select.setAttribute("aria-label", "Typing prediction");
+  for (const [value, text] of [["auto", "Auto"], ["always", "Always"], ["off", "Off"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = value === terminalPredictionMode;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => setTerminalPredictionMode(select.value));
   row.append(label, select);
   return row;
 }

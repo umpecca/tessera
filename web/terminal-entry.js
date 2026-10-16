@@ -15,6 +15,8 @@ import { installTerminalViewportReader } from "./terminal-viewport.mjs";
 import { TerminalInputBuffer } from "./terminal-input-buffer.mjs";
 import { installTerminalPixelGrid } from "./terminal-pixel-grid.mjs";
 import { TerminalScroll, installTerminalScrollRenderer, terminalScrollMouseEvent } from "./terminal-scroll.mjs";
+import { TerminalPrediction } from "./terminal-prediction.mjs";
+import { TerminalPredictionOverlay } from "./terminal-prediction-overlay.mjs";
 import {
   installPlainRenderer,
   plainRendererStatistics,
@@ -46,6 +48,7 @@ class Terminal extends GhosttyTerminal {
       renderMetricsEnabled = false,
       symbolFontFamily = "",
       rowSpacing = defaultTerminalRowSpacing,
+      predictionMode = "auto",
       ...terminalOptions
     } = options;
     super({ smoothScrollDuration: 120, ...terminalOptions, cursorBlink: false });
@@ -81,6 +84,87 @@ class Terminal extends GhosttyTerminal {
     this.desiredCols = this.cols;
     this.desiredRows = this.rows;
     this.onScroll(() => { if (!this.advancingScroll) this.requestRender(); });
+    this.prediction = new TerminalPrediction({ mode: predictionMode });
+    this.predictionOverlay = null;
+    this.predictionOverlayDirty = false;
+    this.predictionTimer = null;
+    this.predictionAlternateScreen = false;
+  }
+
+  // predictInput sees keyboard input before it is sent. A printable
+  // character may be drawn at once; anything else ends the prediction run.
+  predictInput(data) {
+    if (!this.wasmTerm || !this.renderer || this.renderPaused) {
+      this.resetPredictions();
+      return;
+    }
+    if (this.prediction.input(data, this.predictionScreen())) {
+      // Nothing on the terminal canvas changes yet, so draw immediately.
+      this.predictionOverlay ??= new TerminalPredictionOverlay(this.renderer);
+      this.predictionOverlay.draw(this.prediction.visible());
+    } else if (!this.prediction.predictions.length) {
+      this.markPredictionsChanged();
+    }
+    this.schedulePredictionCheck();
+  }
+
+  // predictionScreen exposes the cursor and cells the engine may compare.
+  predictionScreen() {
+    const core = this.wasmTerm;
+    const cursor = core.getCursor();
+    const alternate = core.isAlternateScreen?.() ?? false;
+    if (!this.prediction.predictions.length) this.predictionAlternateScreen = alternate;
+    const atBottom = this.viewportY === 0 && !((this.smoothScroll.target ?? 0) > 0);
+    const lines = new Map();
+    return {
+      cols: this.cols,
+      cursorX: cursor.x,
+      cursorY: cursor.y,
+      canPredict: atBottom && cursor.visible !== false && alternate === this.predictionAlternateScreen,
+      cellAt: (col, row) => {
+        if (!lines.has(row)) lines.set(row, core.getLine(row));
+        return lines.get(row)?.[col]?.codepoint ?? 0;
+      },
+    };
+  }
+
+  checkPredictions() {
+    if (!this.prediction.predictions.length || !this.wasmTerm) return;
+    if (this.prediction.check(this.predictionScreen())) this.markPredictionsChanged();
+    this.schedulePredictionCheck();
+  }
+
+  // A confirmed prediction is erased in the same paint that draws the real
+  // character, so the text never blinks out between the two.
+  markPredictionsChanged() {
+    this.predictionOverlayDirty = true;
+    this.requestRender();
+  }
+
+  schedulePredictionCheck() {
+    globalThis.clearTimeout(this.predictionTimer);
+    this.predictionTimer = null;
+    const deadline = this.prediction.nextDeadline();
+    if (deadline === null) return;
+    this.predictionTimer = globalThis.setTimeout(() => {
+      this.predictionTimer = null;
+      this.checkPredictions();
+    }, Math.max(0, deadline - this.prediction.now()) + 1);
+  }
+
+  resetPredictions() {
+    globalThis.clearTimeout(this.predictionTimer);
+    this.predictionTimer = null;
+    if (this.prediction.reset()) this.markPredictionsChanged();
+  }
+
+  setPredictionMode(mode) {
+    if (this.prediction.setMode(mode)) this.markPredictionsChanged();
+  }
+
+  predictionStatistics() {
+    const { mode, srtt, showing } = this.prediction;
+    return { mode, latencyMs: srtt === null ? null : Math.round(srtt), showing };
   }
 
   startRenderLoop() {
@@ -179,6 +263,11 @@ class Terminal extends GhosttyTerminal {
       return;
     }
     this.fullRedrawPending = false;
+    if (this.predictionOverlayDirty || (forceFullRedraw && this.predictionOverlay?.drawn)) {
+      this.predictionOverlayDirty = false;
+      this.predictionOverlay ??= new TerminalPredictionOverlay(this.renderer);
+      this.predictionOverlay.draw(this.prediction.visible());
+    }
     if (scrolling || fadingScrollbar) this.requestRender();
     this.outputTiming?.painted();
     const cursor = this.wasmTerm.getCursor();
@@ -211,6 +300,7 @@ class Terminal extends GhosttyTerminal {
       }
     }
     this.sixelRenderer.prune(this.wasmTerm);
+    this.checkPredictions();
     renderScheduler.noteOutput(this);
     if (callback) {
       globalThis.requestAnimationFrame(callback);
@@ -218,6 +308,7 @@ class Terminal extends GhosttyTerminal {
   }
 
   reset() {
+    this.resetPredictions();
     this.smoothScroll.cancel();
     this.sixelRenderer.clear();
     super.reset();
@@ -274,6 +365,7 @@ class Terminal extends GhosttyTerminal {
   }
 
   applyGeometry(cols, rows, cellWidth, cellHeight) {
+    this.resetPredictions();
     this.smoothScroll.cancel();
     // Avoid emitting another resize request while applying the host's event.
     this.cols = cols; this.rows = rows;
@@ -309,6 +401,7 @@ class Terminal extends GhosttyTerminal {
   }
 
   restoreSnapshot(data, geometry) {
+    this.resetPredictions();
     this.smoothScroll.cancel();
     const b = this.wasmTerm, e = b.exports;
     const ptr = e.ghostty_wasm_alloc_u8_array(data.length);
@@ -340,26 +433,31 @@ class Terminal extends GhosttyTerminal {
   }
 
   scrollWheelLines(lines) {
+    this.resetPredictions();
     this.smoothScroll.by(lines);
   }
 
   smoothScrollTo(position) {
+    if (position > 0) this.resetPredictions();
     this.smoothScroll.to(position);
   }
 
   scrollLines(lines) {
+    this.resetPredictions();
     this.smoothScroll.cancel();
     super.scrollLines(lines);
     this.targetViewportY = this.viewportY;
   }
 
   scrollToLine(line) {
+    this.resetPredictions();
     this.smoothScroll.cancel();
     super.scrollToLine(line);
     this.targetViewportY = this.viewportY;
   }
 
   scrollToTop() {
+    this.resetPredictions();
     this.smoothScroll.cancel();
     super.scrollToTop();
     this.targetViewportY = this.viewportY;
@@ -479,13 +577,18 @@ class Terminal extends GhosttyTerminal {
   }
 
   setRenderPaused(paused) {
-    if (paused) this.smoothScroll.cancel();
+    if (paused) {
+      this.smoothScroll.cancel();
+      this.resetPredictions();
+    }
     this.renderPaused = paused;
     renderScheduler.setPaused(this, paused);
     this.cursorBlink.setVisible(!paused && renderScheduler.enabled);
   }
 
   dispose() {
+    globalThis.clearTimeout(this.predictionTimer);
+    this.predictionOverlay?.dispose();
     this.smoothScroll.cancel();
     this.scrollbarFade = null;
     if (this.audioReadBuffer) {

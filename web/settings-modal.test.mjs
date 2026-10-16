@@ -122,6 +122,7 @@ function fixture() {
     renderSettingsTerminalFontRow: () => row("Terminal font"),
     renderSettingsTerminalRowSpacingRow: () => row("Terminal row spacing"),
     renderSettingsTerminalColorModeRow: () => row("Terminal colors"),
+    renderSettingsTerminalPredictionRow: () => row("Typing prediction"),
     renderSettingsWheelRow: label => row(`${label} wheel speed`),
     renderSettingsBackgroundRow: () => row("Set background", "button"),
     renderSettingsBackgroundModeRow: () => row("Background display"),
