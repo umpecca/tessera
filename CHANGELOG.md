@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Typing prediction is quieter. Predicted characters now look like ordinary
+  text, since a quick echo replaces them within a frame or two; they are
+  underlined only while echoes take over 80 ms, or after a wrong or slow
+  guess until later echoes come back quickly. The cursor also stays solid
+  while you type instead of flickering with each key, and starts blinking
+  again once you stop.
+
 - Typing prediction now covers Left and Right and editing mid-line. Moving
   the cursor, typing into the middle of a line and Backspace there show at
   once, with the rest of the line shifted, so fixing a typo in a long command

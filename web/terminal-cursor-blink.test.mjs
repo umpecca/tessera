@@ -48,3 +48,32 @@ test("an idle active terminal renders only on cursor changes, and stops when hid
   blink.dispose();
   assert.equal(timers.size, 0);
 });
+
+test("typing keeps the cursor solid and starts the blink cycle over", () => {
+  const timers = new Map();
+  let id = 0;
+  const renders = [];
+  const blink = new TerminalCursorBlink(visible => renders.push(visible), {
+    setInterval(callback) { timers.set(++id, callback); return id; },
+    clearInterval(id) { timers.delete(id); },
+  });
+  blink.wake();
+  assert.equal(timers.size, 0, "an inactive cursor stays hidden");
+  blink.setActive(true);
+  const tick = () => [...timers.values()][0]();
+  renders.length = 0;
+  const before = [...timers.keys()][0];
+  blink.wake();
+  assert.deepEqual(renders, [], "a visible cursor needs no redraw");
+  assert.notEqual([...timers.keys()][0], before, "the blink cycle starts over");
+  assert.equal(timers.size, 1);
+  tick();
+  assert.equal(blink.cursorVisible, false);
+  blink.wake();
+  assert.equal(blink.cursorVisible, true, "a key shows a hidden cursor at once");
+  assert.deepEqual(renders, [false, true]);
+  assert.equal(timers.size, 1);
+  blink.setEnabled(false);
+  blink.wake();
+  assert.equal(timers.size, 0, "a steady cursor gets no timer");
+});

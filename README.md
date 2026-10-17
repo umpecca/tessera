@@ -423,8 +423,10 @@ roles but does not assign exact RGB values to them.
 Over a slow connection, such as a VPN to a distant host, each typed character
 normally appears only after a round trip to the server. **Settings → Terminal
 → Typing prediction** draws printable characters as soon as you type them,
-lightly underlined until the server's echo confirms them, in the manner of
-mosh. **Auto** (the default) turns on once the measured echo time exceeds
+in the manner of mosh. They look like ordinary text, since a quick echo
+replaces them within a frame or two; they are lightly underlined only while
+the echo time is above 80 ms, or after a wrong or slow guess until enough
+later echoes come back quickly. **Auto** (the default) turns on once the measured echo time exceeds
 20 ms, so a fast local connection looks unchanged; **Always** and **Off** are
 also available. The choice is saved in this browser.
 

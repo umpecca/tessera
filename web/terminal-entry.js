@@ -59,6 +59,8 @@ class Terminal extends GhosttyTerminal {
     this.cursorBlink = new TerminalCursorBlink((visible) => {
       if (this.renderer) this.renderer.cursorVisible = visible;
       this.cursorRedrawPending = true;
+      // A predicted cursor blinks with the real one.
+      if (this.predictionOverlay?.drawn) this.predictionOverlayDirty = true;
       this.requestRender();
     });
     this.renderPaused = false;
@@ -94,18 +96,25 @@ class Terminal extends GhosttyTerminal {
   // predictInput sees keyboard input before it is sent. A printable
   // character may be drawn at once; anything else ends the prediction run.
   predictInput(data) {
+    this.cursorBlink.wake();
     if (!this.wasmTerm || !this.renderer || this.renderPaused) {
       this.resetPredictions();
       return;
     }
     if (this.prediction.input(data, this.predictionScreen())) {
       // Nothing on the terminal canvas changes yet, so draw immediately.
-      this.predictionOverlay ??= new TerminalPredictionOverlay(this.renderer);
-      this.predictionOverlay.draw(this.prediction.visible());
+      this.drawPredictions();
     } else if (!this.prediction.predictions.length) {
       this.markPredictionsChanged();
     }
     this.schedulePredictionCheck();
+  }
+
+  drawPredictions() {
+    this.predictionOverlay ??= new TerminalPredictionOverlay(this.renderer);
+    const visible = this.prediction.visible();
+    if (!this.cursorBlink.cursorVisible) visible.cursor = null;
+    this.predictionOverlay.draw(visible);
   }
 
   // predictionScreen exposes the cursor and cells the engine may compare.
@@ -177,7 +186,10 @@ class Terminal extends GhosttyTerminal {
 
   predictionStatistics() {
     const { mode, srtt, showing } = this.prediction;
-    return { mode, latencyMs: srtt === null ? null : Math.round(srtt), showing, breakdown: this.prediction.latencyBreakdown() };
+    return {
+      mode, latencyMs: srtt === null ? null : Math.round(srtt), showing,
+      underlined: this.prediction.underlined(), breakdown: this.prediction.latencyBreakdown(),
+    };
   }
 
   startRenderLoop() {
@@ -278,8 +290,7 @@ class Terminal extends GhosttyTerminal {
     this.fullRedrawPending = false;
     if (this.predictionOverlayDirty || (forceFullRedraw && this.predictionOverlay?.drawn)) {
       this.predictionOverlayDirty = false;
-      this.predictionOverlay ??= new TerminalPredictionOverlay(this.renderer);
-      this.predictionOverlay.draw(this.prediction.visible());
+      this.drawPredictions();
     }
     if (scrolling || fadingScrollbar) this.requestRender();
     this.outputTiming?.painted();

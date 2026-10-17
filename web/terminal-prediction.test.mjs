@@ -54,7 +54,7 @@ test("hides a new epoch until the server confirms one character", () => {
   assert.equal(prediction.check(s), false);
   assert.equal(prediction.predictions.length, 0, "confirmed prediction removed");
   assert.equal(prediction.input("s", s), true, "the confirmed epoch now shows predictions");
-  assert.deepEqual(prediction.visible(), { cells: [{ col: 3, row: 0, char: "s", underline: true }], cursor: { col: 4, row: 0 }, cover: null });
+  assert.deepEqual(prediction.visible(), { cells: [{ col: 3, row: 0, char: "s", underline: false }], cursor: { col: 4, row: 0 }, cover: null });
 });
 
 test("predictions advance along the line and are confirmed in order", () => {
@@ -195,7 +195,7 @@ test("Backspace withdraws a character that is still only predicted", () => {
   for (const ch of " -la") prediction.input(ch, s);
   assert.equal(prediction.input("\x7f", s), true);
   assert.deepEqual(prediction.visible(), {
-    cells: [{ col: 4, row: 0, char: " ", underline: true }, { col: 5, row: 0, char: "-", underline: true }, { col: 6, row: 0, char: "l", underline: true }],
+    cells: [{ col: 4, row: 0, char: " ", underline: false }, { col: 5, row: 0, char: "-", underline: false }, { col: 6, row: 0, char: "l", underline: false }],
     cursor: { col: 7, row: 0 },
     cover: null,
   });
@@ -276,11 +276,11 @@ test("Backspace in a password prompt draws nothing", () => {
 });
 
 // promptLine is confirmedLine after a "$ " prompt, as a shell draws it.
-function promptLine(text, mode = "always") {
+function promptLine(text, mode = "always", echoMs = 30) {
   const { prediction, advance } = engine(mode);
   const s = screen();
   s.put(0, "$ ");
-  for (const ch of text) { prediction.input(ch, s); advance(30); s.echo(ch); prediction.check(s); }
+  for (const ch of text) { prediction.input(ch, s); advance(echoMs); s.echo(ch); prediction.check(s); }
   return { prediction, advance, s };
 }
 
@@ -329,7 +329,8 @@ test("Left never enters the prompt and Right never passes the end of the text", 
 });
 
 test("typing mid-line shifts the rest of the line until the shell confirms it", () => {
-  const { prediction, advance, s } = promptLine("echo hllo");
+  // A slow link, so guesses are underlined.
+  const { prediction, advance, s } = promptLine("echo hllo", "always", 100);
   for (let i = 0; i < 3; i++) prediction.input("\x1b[D", s);
   prediction.input("e", s);
   assert.equal(shown(prediction, s), "$ echo hello");
@@ -409,9 +410,11 @@ test("diagnostics say whether predictions are drawn and why", async () => {
   const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
   const start = source.indexOf("function describeTypingPrediction(");
   const describe = vm.runInNewContext(`(${source.slice(start, source.indexOf("\n}\n", start) + 2)})`, {});
-  assert.equal(describe({ mode: "auto", latencyMs: null, showing: false }), "Auto, not drawing (no echo measured yet; draws above 20 ms)");
-  assert.equal(describe({ mode: "auto", latencyMs: 118, showing: true }), "Auto, drawing (echo 118 ms; draws above 20 ms)");
-  assert.equal(describe({ mode: "always", latencyMs: 3, showing: false }), "Always, drawing (echo 3 ms)");
+  const marks = "underlined above 80 ms or after a wrong guess";
+  assert.equal(describe({ mode: "auto", latencyMs: null, showing: false, underlined: false }), `Auto, not drawing (no echo measured yet; draws above 20 ms, ${marks})`);
+  assert.equal(describe({ mode: "auto", latencyMs: 31, showing: true, underlined: false }), `Auto, drawing (echo 31 ms; draws above 20 ms, ${marks})`);
+  assert.equal(describe({ mode: "auto", latencyMs: 118, showing: true, underlined: true }), `Auto, drawing underlined (echo 118 ms; draws above 20 ms, ${marks})`);
+  assert.equal(describe({ mode: "always", latencyMs: 3, showing: false, underlined: false }), `Always, drawing (echo 3 ms; ${marks})`);
   assert.equal(describe({ mode: "off", latencyMs: null, showing: false }), "Off");
 });
 
@@ -443,4 +446,73 @@ test("diagnostics describe the echo breakdown", async () => {
   assert.equal(describe(null), "");
   assert.equal(describe({ count: 64, total: 43.6, beforeSend: 0.42, transit: 41.2, apply: 1.25 }),
     "; last 64 echoes, medians: 44 ms total, 0.4 ms before sending, 41 ms until the reply is handled, 1.3 ms applying");
+});
+
+// typeEchoed types `text`, each character echoed after `ms` and the next
+// typed `gap` later, and reports whether each guess was drawn underlined.
+function typeEchoed(prediction, advance, s, text, ms, gap = 0) {
+  const marks = [];
+  for (const ch of text) {
+    prediction.input(ch, s);
+    marks.push(prediction.visible().cells.some(cell => cell.underline));
+    advance(ms); s.echo(ch); prediction.check(s); advance(gap);
+  }
+  return marks;
+}
+
+test("guesses are drawn plain over a quick link and underlined over a slow one", () => {
+  const { prediction, advance, s } = confirmedLine("ls");
+  assert.deepEqual(typeEchoed(prediction, advance, s, " -l", 30), [false, false, false]);
+  const slow = engine();
+  const t = screen();
+  typeEchoed(slow.prediction, slow.advance, t, "ls", 120);
+  assert.equal(slow.prediction.underlined(), true, "echo above 80 ms");
+  // Quick echoes bring the smoothed time down: it stays underlined until
+  // that drops below 50 ms.
+  const marks = typeEchoed(slow.prediction, slow.advance, t, " -la /tmp/x", 20);
+  assert.equal(marks[0], true);
+  assert.equal(marks.at(-1), false);
+  assert.ok(slow.prediction.srtt < 50);
+});
+
+test("a wrong guess underlines until ten later echoes come back quickly", () => {
+  const { prediction, advance, s } = confirmedLine("ls");
+  prediction.input("x", s);
+  advance(30);
+  s.echo("y"); // Not what was guessed.
+  prediction.check(s);
+  assert.equal(prediction.predictions.length, 0, "withdrawn");
+  assert.equal(prediction.underlined(), true);
+  // Fast typing counts no more than one echo per 150 ms.
+  const fast = typeEchoed(prediction, advance, s, "abcdefghijkl", 30);
+  assert.equal(fast.at(-1), true, "twelve echoes in 360 ms are not enough");
+  const marks = typeEchoed(prediction, advance, s, "mnopqrstuvwxyz", 30, 130);
+  assert.equal(marks.indexOf(false) > 0, true, "plain again after enough quick echoes");
+  assert.equal(prediction.underlined(), false);
+});
+
+test("a drawn guess the server takes over 250 ms to confirm underlines", () => {
+  const { prediction, advance, s } = confirmedLine("ls");
+  assert.deepEqual(typeEchoed(prediction, advance, s, " ", 300), [false], "drawn plain while waiting");
+  assert.equal(prediction.underlined(), true);
+  assert.ok(prediction.srtt < 80, "the smoothed echo time alone would not underline");
+});
+
+test("guesses that were never drawn do not underline later ones", () => {
+  // At a password prompt the unconfirmed guess expires without being drawn.
+  const { prediction, advance, s } = confirmedLine("ls");
+  prediction.input("\r", s);
+  s.cursorY = 1; s.cursorX = 10;
+  prediction.input("p", s);
+  advance(700);
+  prediction.check(s, { output: false });
+  assert.equal(prediction.predictions.length, 0);
+  assert.equal(prediction.underlined(), false);
+  // Hidden by Auto over a fast link, a late echo does not count either.
+  const auto = engine("auto");
+  const t = screen();
+  typeEchoed(auto.prediction, auto.advance, t, "ls", 2);
+  assert.equal(auto.prediction.isVisible(), false);
+  typeEchoed(auto.prediction, auto.advance, t, " ", 300);
+  assert.equal(auto.prediction.glitches, 0);
 });

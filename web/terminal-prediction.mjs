@@ -16,6 +16,14 @@
 export const predictionModes = ["auto", "always", "off"];
 const showAboveMs = 20;
 const hideBelowMs = 10;
+// Guesses are drawn like real text unless one could stay wrong long enough
+// to notice, as mosh does: underlined while echo is slow, and after a wrong
+// or slow guess until enough later echoes have come back quickly.
+const underlineAboveMs = 80;
+const plainBelowMs = 50;
+const glitchMs = 250;
+const glitchRepairs = 10;
+const repairIntervalMs = 150;
 // A guess the screen contradicts is dropped at once; one merely unconfirmed
 // gets this long, so a late echo on a jittery link does not make typed text
 // vanish and reappear.
@@ -50,6 +58,11 @@ export class TerminalPrediction {
     this.epochConfirmed = false;
     this.srtt = null;
     this.showing = false;
+    this.slow = false;
+    // Quick echoes still needed after a wrong or slow guess, and when the
+    // last one counted: fast typing alone does not clear it.
+    this.glitches = 0;
+    this.repairedAt = -Infinity;
     // The latest screen, and the cells read from it so far.
     this.screen = null;
     this.cells = new Map();
@@ -254,7 +267,10 @@ export class TerminalPrediction {
     // Only output can show the server acted; a deadline check confirms nothing.
     if (output) this.confirm(screen, now);
     const first = this.predictions[0];
-    if (first && (this.contradicted(screen, output) || now >= this.deadline(first))) this.reset();
+    if (first && (this.contradicted(screen, output) || now >= this.deadline(first))) {
+      if (this.isVisible()) this.glitches = glitchRepairs;
+      this.reset();
+    }
     return before !== this.signature();
   }
 
@@ -300,9 +316,12 @@ export class TerminalPrediction {
     // A run that leaves the cursor where it started proves nothing: the
     // screen may simply not have changed yet.
     if (run.at(-1).after === run[0].before) return;
+    // Only a guess that was drawn can have looked wrong for too long.
+    const drawn = this.isVisible();
     for (const prediction of run) {
       if (prediction.kind === "move") continue;
       this.sample(now - prediction.sentAt);
+      if (drawn) this.repair(now - prediction.sentAt, now);
       this.recordBreakdown(prediction, now);
       this.epochConfirmed = true;
     }
@@ -343,6 +362,23 @@ export class TerminalPrediction {
     this.srtt = this.srtt === null ? ms : this.srtt + (ms - this.srtt) / 8;
     if (this.srtt > showAboveMs) this.showing = true;
     else if (this.srtt < hideBelowMs) this.showing = false;
+    if (this.srtt > underlineAboveMs) this.slow = true;
+    else if (this.srtt < plainBelowMs) this.slow = false;
+  }
+
+  // repair counts one echo toward drawing guesses plain again after a
+  // glitch; a slow one starts the count over.
+  repair(ms, now) {
+    if (ms > glitchMs) this.glitches = glitchRepairs;
+    else if (this.glitches > 0 && now - this.repairedAt >= repairIntervalMs) {
+      this.glitches -= 1;
+      this.repairedAt = now;
+    }
+  }
+
+  // underlined reports whether guesses are marked as unconfirmed.
+  underlined() {
+    return this.slow || this.glitches > 0;
   }
 
   // recordBreakdown splits one echo into time before the send, time until the
@@ -382,12 +418,13 @@ export class TerminalPrediction {
   }
 
   // visible lists the cells to draw where the predicted line differs from the
-  // real one (predicted characters underlined, shifted text plain), where the
+  // real one (predicted characters underlined while marked), where the
   // cursor should appear and the character under it, and the real cursor's
   // cell to redraw without its cursor, so only one cursor shows.
   visible() {
     if (!this.predictions.length || !this.isVisible() || !this.screen) return { cells: [], cursor: null, cover: null };
     const line = this.line(this.screen);
+    const marked = this.underlined();
     const cells = [];
     const span = Math.min(Math.max(line.cells.length, line.to - line.from), this.screen.cols - line.from);
     for (let index = 0; index < span; index++) {
@@ -397,7 +434,7 @@ export class TerminalPrediction {
       const typed = line.typed[index] ?? false;
       if (!typed && (code === real || (isBlank(code) && isBlank(real)))) continue;
       const char = typed || !isBlank(code) ? String.fromCharCode(code) : "";
-      cells.push({ col, row: line.row, char, underline: typed });
+      cells.push({ col, row: line.row, char, underline: typed && marked });
     }
     const cursor = { col: line.cursor, row: line.row };
     const under = line.at(line.cursor);

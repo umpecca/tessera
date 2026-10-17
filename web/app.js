@@ -6039,12 +6039,14 @@ function currentCompatibility() {
 
 // describeTypingPrediction says whether predictions are drawn and why, from
 // the echo time the predictor has measured.
-function describeTypingPrediction({ mode, latencyMs, showing }) {
+function describeTypingPrediction({ mode, latencyMs, showing, underlined }) {
   const label = { auto: "Auto", always: "Always", off: "Off" }[mode] || mode;
   if (mode === "off") return "Off";
   const measured = latencyMs === null ? "no echo measured yet" : `echo ${latencyMs} ms`;
-  if (mode === "always") return `${label}, drawing (${measured})`;
-  return `${label}, ${showing ? "drawing" : "not drawing"} (${measured}; draws above 20 ms)`;
+  const marks = "underlined above 80 ms or after a wrong guess";
+  const drawing = underlined ? "drawing underlined" : "drawing";
+  if (mode === "always") return `${label}, ${drawing} (${measured}; ${marks})`;
+  return `${label}, ${showing ? drawing : "not drawing"} (${measured}; draws above 20 ms, ${marks})`;
 }
 
 // describeEchoBreakdown splits recent echoes into time in the page before
@@ -6835,7 +6837,7 @@ function renderSettingsTerminalPredictionRow() {
   const name = document.createElement("strong");
   name.textContent = "Typing prediction";
   const detail = document.createElement("span");
-  detail.textContent = "Shows typed characters before the server echoes them, underlined until confirmed. Auto turns on over slow connections; nothing is shown where the program does not echo, such as password prompts. Saved in this browser.";
+  detail.textContent = "Shows typed characters before the server echoes them, underlined only over a slow connection or after a wrong guess. Auto turns on over slow connections; nothing is shown where the program does not echo, such as password prompts. Saved in this browser.";
   label.append(name, detail);
   const select = document.createElement("select");
   select.className = "settings-theme-select";

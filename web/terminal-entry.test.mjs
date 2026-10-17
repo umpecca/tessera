@@ -591,3 +591,59 @@ test("typing prediction draws at once and is erased in the paint that shows the 
   assert.deepEqual(drawn, ["s", ""]);
   term.resetPredictions();
 });
+
+test("the predicted cursor blinks with the real one and typing keeps both solid", () => {
+  const cells = new Map();
+  const cursor = { x: 2, y: 0, visible: true };
+  const drawn = [];
+  class GhosttyTerminal {
+    constructor(options) {
+      this.options = options; this.cols = 80; this.rows = 24; this.viewportY = 0;
+      this.scrollbarOpacity = 0; this.lastCursorY = 0; this.cursorMoveEmitter = { fire() {} };
+    }
+    onScroll() {}
+    write(data) { for (const ch of data) { cells.set(`${cursor.x},${cursor.y}`, ch.charCodeAt(0)); cursor.x += 1; } }
+  }
+  class Overlay {
+    constructor() { this.drawn = false; }
+    draw(visible) { drawn.push(visible.cursor ? "cursor" : "none"); this.drawn = visible.cells.length > 0; }
+    dispose() {}
+  }
+  const Terminal = loadTerminalClass({
+    GhosttyTerminal, TerminalPredictionOverlay: Overlay,
+    renderScheduler: { request() {}, noteOutput() {}, setActive() {}, unregister() {} },
+  });
+  const term = new Terminal({ cols: 80, rows: 24, predictionMode: "always" });
+  const timers = new Map();
+  let id = 0;
+  term.cursorBlink.timers = { setInterval(callback) { timers.set(++id, callback); return id; }, clearInterval(id) { timers.delete(id); } };
+  term.isOpen = true;
+  term.getScrollbackLength = () => 0;
+  term.syncWindowTitle = () => {};
+  term.renderer = { cursorVisible: false, devicePixelRatio: 1, render() {} };
+  term.wasmTerm = {
+    getCursor: () => ({ ...cursor }), isAlternateScreen: () => false,
+    getGrapheme: (row, col) => [cells.get(`${col},${row}`) ?? 0],
+  };
+  globalThis.devicePixelRatio = 1;
+  term.setCursorActive(true);
+  const tick = () => [...timers.values()][0]();
+  term.predictInput("l");
+  term.write("l");
+  term.predictInput("s");
+  assert.deepEqual(drawn, ["cursor"]);
+  tick();
+  assert.equal(term.renderer.cursorVisible, false);
+  term.renderScheduledFrame();
+  assert.deepEqual(drawn, ["cursor", "none"], "the predicted cursor hides with the real one");
+  tick();
+  term.predictInput("x");
+  assert.equal(term.cursorBlink.cursorVisible, true);
+  tick();
+  assert.equal(term.cursorBlink.cursorVisible, false, "it blinks again once typing stops");
+  term.predictInput("y");
+  assert.equal(term.cursorBlink.cursorVisible, true, "a key shows a hidden cursor at once");
+  assert.equal(drawn.at(-1), "cursor");
+  term.resetPredictions();
+  term.cursorBlink.dispose();
+});

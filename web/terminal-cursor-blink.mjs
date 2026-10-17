@@ -33,12 +33,23 @@ export class TerminalCursorBlink {
     this.dispose();
     this.cursorVisible = this.active;
     this.render(this.cursorVisible);
-    if (this.active && this.visible && this.enabled) {
-      this.timer = this.timers.setInterval(() => {
-        this.cursorVisible = !this.cursorVisible;
-        this.render(this.cursorVisible);
-      }, 530);
-    }
+    if (this.active && this.visible && this.enabled) this.startTimer();
+  }
+
+  // wake keeps the cursor solid while the user types: each key shows it and
+  // starts the blink cycle over, redrawing only if it was hidden.
+  wake() {
+    if (!this.active || !this.visible || !this.enabled) return;
+    if (!this.cursorVisible) return this.restart();
+    this.dispose();
+    this.startTimer();
+  }
+
+  startTimer() {
+    this.timer = this.timers.setInterval(() => {
+      this.cursorVisible = !this.cursorVisible;
+      this.render(this.cursorVisible);
+    }, 530);
   }
 
   dispose() {
