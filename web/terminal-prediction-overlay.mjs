@@ -31,7 +31,8 @@ export class TerminalPredictionOverlay {
     this.drawn = false;
   }
 
-  // draw shows { cells: [{col, row, char}], cursor: {col, row} | null }.
+  // draw shows { cells: [{col, row, char}], cursor, cover }, where cursor and
+  // cover are {col, row} or null.
   draw(visible) {
     if (!visible.cells.length) {
       this.clear();
@@ -66,12 +67,19 @@ export class TerminalPredictionOverlay {
       const y = row * height;
       ctx.fillStyle = theme.background || "#000";
       ctx.fillRect(x, y, width, height);
+      // An erase is just the empty cell.
+      if (!char) continue;
       ctx.fillStyle = foreground;
       ctx.fillText(char, x, y + baseline);
       // The underline marks a character the server has not echoed yet.
       ctx.globalAlpha = 0.6;
       ctx.fillRect(x, y + height - underline, width, underline);
       ctx.globalAlpha = 1;
+    }
+    if (visible.cover) {
+      // The terminal's own cursor, left behind by an erase.
+      ctx.fillStyle = theme.background || "#000";
+      ctx.fillRect(visible.cover.col * width, visible.cover.row * height, width, height);
     }
     if (visible.cursor) {
       const x = visible.cursor.col * width;

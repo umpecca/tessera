@@ -5,7 +5,10 @@
 - Add typing prediction for slow connections. Typed characters appear at
   once, lightly underlined until the server's echo confirms them, instead of
   after a full round trip. **Auto** (default, under Settings → Terminal)
-  turns on once echoes take over 20 ms. Nothing is shown where the program
+  turns on once echoes take over 20 ms. Backspace is predicted too: it
+  withdraws a still-predicted character, or erases echoed text at the end of
+  the line. Settings → Diagnostics shows whether it is drawing and the
+  measured echo time. Nothing is shown where the program
   does not echo, such as password prompts, and the terminal's contents are
   never changed by a prediction.
 

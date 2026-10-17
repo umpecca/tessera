@@ -428,11 +428,15 @@ mosh. **Auto** (the default) turns on once the measured echo time exceeds
 20 ms, so a fast local connection looks unchanged; **Always** and **Off** are
 also available. The choice is saved in this browser.
 
-Predictions never change the terminal's contents. After Enter, Backspace,
-arrow keys, a paste, or any wrong guess, nothing is predicted again until the
-server echoes a character, so programs that do not echo, such as password
-prompts, never show typed text. Only single-width ASCII characters are
-predicted, and never past the end of the line.
+Predictions never change the terminal's contents. After Enter, arrow keys, a
+paste, or any wrong guess, nothing is predicted again until the server echoes
+a character, so programs that do not echo, such as password prompts, never
+show typed text. Backspace removes a character that is still only predicted,
+and erases already-echoed text when the cursor is at the end of the line (not
+mid-line, where the shell shifts the rest of the line). Only single-width
+ASCII characters are predicted, and never past the end of the line. Settings
+→ Diagnostics shows whether prediction is drawing and the echo time it
+measured.
 
 Solid Unicode block elements are drawn as pixel-aligned cell geometry instead
 of font glyphs. This keeps fractional blocks and quadrant art joined without

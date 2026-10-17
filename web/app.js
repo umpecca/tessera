@@ -6022,12 +6022,24 @@ function currentCompatibility() {
     }).filter(Boolean);
   info.paintCoalescing = terminalPaintCoalescing;
   info.outputCoalescing = terminalOutputCoalescing;
+  info.typingPrediction = rectangles.filter(rect => rect.kind === "terminal" && rect.terminal?.term?.predictionStatistics)
+    .map((rect, index) => `Terminal ${index + 1}: ${describeTypingPrediction(rect.terminal.term.predictionStatistics())}`);
   info.outputTiming = rectangles.filter(rect => rect.kind === "terminal" && rect.terminal?.term)
     .map((rect, index) => rect.terminal.outputTiming
       ? `Terminal ${index + 1}${rect.terminal.replica?.timing ? " (capturing)" : ""}: ${formatOutputTiming(rect.terminal.outputTiming.summary())}`
       : "")
     .filter(Boolean);
   return info;
+}
+
+// describeTypingPrediction says whether predictions are drawn and why, from
+// the echo time the predictor has measured.
+function describeTypingPrediction({ mode, latencyMs, showing }) {
+  const label = { auto: "Auto", always: "Always", off: "Off" }[mode] || mode;
+  if (mode === "off") return "Off";
+  const measured = latencyMs === null ? "no echo measured yet" : `echo ${latencyMs} ms`;
+  if (mode === "always") return `${label}, drawing (${measured})`;
+  return `${label}, ${showing ? "drawing" : "not drawing"} (${measured}; draws above 20 ms)`;
 }
 
 function renderSettingsCompatibilityRow() {
@@ -6068,6 +6080,7 @@ function renderSettingsCompatibilityRow() {
       ["Terminal renderer", info.terminalRenderer],
       ["Renderer row paths", info.rendererRows.join("; ") || (experimentalTerminalRenderer ? "No rows painted yet" : "Available in Experimental mode")],
       ["Rendering costs", info.renderingCosts.join("; ") || "No terminals open"],
+      ["Typing prediction", info.typingPrediction.join("; ") || "No terminals open"],
       ["Output timing", info.outputTiming.join("; ") || `Not captured. Start a capture, close Settings, and leave the terminal visible for ${terminalTimingCaptureSeconds} s.`],
     ];
     captureButton.disabled = terminalTimingCaptureTimer !== null;

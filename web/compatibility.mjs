@@ -78,6 +78,7 @@ export function compatibilityDiagnostics(info) {
     `Painting limit: ${info.performanceProfile === "Older Mac" ? "30 FPS; input temporarily bypasses cap" : "Display refresh rate"}`,
     `Paint coalescing: ${info.paintCoalescing ? "On" : "Off"}`,
     `Server output coalescing: ${info.outputCoalescing ? "On" : "Off"}`,
+    `Typing prediction: ${info.typingPrediction?.join("; ") || "No terminals open"}`,
     "Renderer row paths:",
     ...(info.rendererRows || ["Not collected"]),
     "Rendering costs (sampled while Settings is open; recent rates use the last 5 seconds):",

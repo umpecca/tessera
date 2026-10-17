@@ -99,6 +99,56 @@ Validation:
   after the echoes; typing into `read -s` drew nothing and the shell received
   all six characters.
 
-Follow-ups: predict Backspace within a run; a slightly stronger underline if
+## Backspace prediction (2026-10-16)
+
+- **Withdraw:** Backspace (DEL or Ctrl+H) when the newest prediction is a
+  character drops it; the character and the Backspace reach the server
+  together, so the line ends as if neither was typed.
+- **Erase:** otherwise, if the row is blank from the predicted cursor to the
+  end (cells with a pending erase count as blank), predict an erase of the
+  cell before the cursor: drawn as an empty cell with the cursor on it. It is
+  confirmed when the cell is blank and the real cursor is on or before it, or
+  when a later prediction on the same cell is confirmed (the erase and the
+  next character often arrive in one output chunk, so the blank is never
+  seen). Mid-line or at column 0, Backspace resets to a hidden epoch.
+- A refused erase (Backspace into a prompt) is withdrawn at its deadline, as
+  any wrong guess is; in an unconfirmed epoch (password prompt) nothing draws.
+
+Validation: 6 new engine tests (withdraw incl. Ctrl+H, erase and per-step
+confirmation, erase plus next character in one chunk, mid-line and left edge,
+refused erase withdrawn, password prompt), 567 JavaScript tests passing, and
+the relay run in headless Chrome: a typo corrected while still predicted
+(overlay `helo` → `hel` → `he` → new text, matching what the shell received),
+two Backspaces over echoed `abc` blanking `bc` before the echo and `xy`
+confirmed in their place (`axy`), and a mid-line Backspace after arrow keys
+drawing nothing (`1245`).
+
+## Review fixes (2026-10-16)
+
+- **Double cursor after an erase.** The overlay drew the predicted cursor
+  while the terminal still drew its real cursor at the old end of the line.
+  The engine now tracks the real cursor cell and, when no prediction covers
+  it and it is blank, reports it as `cover`; the overlay blanks it.
+- **Wrong guesses lingered until their deadline.** `check` now withdraws the
+  oldest unconfirmed prediction as soon as the screen contradicts it: the
+  cursor left its row, or passed a character prediction's cell while that
+  cell holds something else. Erases still wait, since a refused erase looks
+  like a slow one.
+- **Late echoes were cut off.** With contradictions caught immediately, the
+  judgement deadline rose from `max(250 ms, 3 × RTT)` (cap 2 s) to
+  `max(600 ms, 4 × RTT)` (cap 3 s), so a jitter spike no longer makes typed
+  text vanish and reappear.
+- **Diagnostics.** Settings → Diagnostics and copied diagnostics show each
+  terminal's prediction mode, whether it is drawing, and the measured echo
+  time, for checking Auto on the iPad.
+
+Validation: engine tests now 17 (contradiction withdrawn at once, row change,
+late echo waited for and confirming without reset, four-round-trip deadline
+on slow links, cover after erases, diagnostics wording); 570 JavaScript tests
+pass; relay run repeated: erase blanks the real cursor (7 overlay fills, was
+5), fast typing still leads the echo by 122-148 ms with no false resets,
+password prompt draws nothing.
+
+Follow-ups: a slightly stronger underline if
 it proves too faint on the iPad; server-side termios as an extra
 password-prompt signal; verify in Safari on iPadOS over Tailscale.
