@@ -572,7 +572,7 @@ test("typing prediction draws at once and is erased in the paint that shows the 
   term.renderer = { cursorVisible: false, devicePixelRatio: 1, render() {} };
   term.wasmTerm = {
     getCursor: () => ({ ...cursor }), isAlternateScreen: () => false,
-    getLine: row => Array.from({ length: 80 }, (_, col) => ({ codepoint: cells.get(`${col},${row}`) ?? 0 })),
+    getGrapheme: (row, col) => [cells.get(`${col},${row}`) ?? 0],
   };
   globalThis.devicePixelRatio = 1;
   // The first character starts an unconfirmed epoch: nothing is drawn.

@@ -152,3 +152,22 @@ password prompt draws nothing.
 Follow-ups: a slightly stronger underline if
 it proves too faint on the iPad; server-side termios as an extra
 password-prompt signal; verify in Safari on iPadOS over Tailscale.
+
+## iPad check (2026-10-16)
+
+Current build (15ac2a4) run as a separate test server on the Mac's Tailscale
+address, opened in Safari 27.0.1 on the iPad over a direct Tailscale
+connection (network round trip 26-27 ms, measured with
+`scripts/latency-check`; see task 188).
+
+- Settings → Diagnostics: **Auto, drawing**, measured echo **44 ms**. Auto
+  turns on as intended at this round trip.
+- `read -s` on the iPad: nothing drawn while typing, as intended.
+- The echo time is about 17 ms longer than the network round trip; zsh has no
+  per-keystroke plugins. That time is spent in the PTY, the shell, Tessera's
+  server or the client applying output. Broken down in task 190: the 44 ms
+  was the smoothed average (median 31 ms), and the real extra cost was the
+  prediction check reading the whole viewport, now fixed.
+- Note: the user's day-to-day server (`~/Desktop/tessera-darwin-arm64`) was
+  built from f7145d5 and lacked the review fixes and the diagnostics line;
+  it needs a rebuild to get them.

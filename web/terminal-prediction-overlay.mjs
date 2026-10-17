@@ -31,10 +31,10 @@ export class TerminalPredictionOverlay {
     this.drawn = false;
   }
 
-  // draw shows { cells: [{col, row, char}], cursor, cover }, where cursor and
-  // cover are {col, row} or null.
+  // draw shows { cells: [{col, row, char, underline}], cursor, cover }:
+  // cursor is {col, row, char?} and cover {col, row, char}, or null.
   draw(visible) {
-    if (!visible.cells.length) {
+    if (!visible.cells.length && !visible.cover) {
       this.clear();
       return;
     }
@@ -62,7 +62,10 @@ export class TerminalPredictionOverlay {
     ctx.font = `${renderer.fontSize}px ${renderer.fontFamily}`;
     ctx.textBaseline = "alphabetic";
     const underline = Math.max(1, Math.round(height * 0.06));
-    for (const { col, row, char } of visible.cells) {
+    // The terminal's own cursor, left behind by an erase or a move, is drawn
+    // over with the plain cell.
+    const cells = visible.cover ? [...visible.cells, { ...visible.cover, underline: false }] : visible.cells;
+    for (const { col, row, char, underline: typed } of cells) {
       const x = col * width;
       const y = row * height;
       ctx.fillStyle = theme.background || "#000";
@@ -71,15 +74,12 @@ export class TerminalPredictionOverlay {
       if (!char) continue;
       ctx.fillStyle = foreground;
       ctx.fillText(char, x, y + baseline);
-      // The underline marks a character the server has not echoed yet.
+      // The underline marks a character the server has not echoed yet; text
+      // a prediction only shifted is drawn plain.
+      if (!typed) continue;
       ctx.globalAlpha = 0.6;
       ctx.fillRect(x, y + height - underline, width, underline);
       ctx.globalAlpha = 1;
-    }
-    if (visible.cover) {
-      // The terminal's own cursor, left behind by an erase.
-      ctx.fillStyle = theme.background || "#000";
-      ctx.fillRect(visible.cover.col * width, visible.cover.row * height, width, height);
     }
     if (visible.cursor) {
       const x = visible.cursor.col * width;
@@ -94,6 +94,11 @@ export class TerminalPredictionOverlay {
         ctx.fillRect(x, y, Math.max(2, Math.floor(width * 0.15)), height);
       } else {
         ctx.fillRect(x, y, width, height);
+        // A block cursor over text shows the character in reverse.
+        if (visible.cursor.char) {
+          ctx.fillStyle = theme.cursorAccent || theme.background || "#000";
+          ctx.fillText(visible.cursor.char, x, y + baseline);
+        }
       }
     }
     this.drawn = true;

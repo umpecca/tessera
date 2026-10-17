@@ -3924,6 +3924,7 @@ function connectTerminalSocket(rect) {
       applyTerminalTextMessage(rect, terminalState, event.data);
       return;
     }
+    rect.terminal.term?.noteOutputArrival?.();
     try { terminalState.replica.receive(new Uint8Array(event.data)); }
     catch (error) { socket.close(4500, error.message.slice(0, 100)); }
   });
@@ -4578,6 +4579,7 @@ function sendTerminalKeys(rect, data) {
   const socket = rect.terminal?.socket;
   if (socket?.readyState === WebSocket.OPEN) rect.terminal?.term?.predictInput?.(data);
   sendTerminalInput(socket, data);
+  rect.terminal?.term?.noteInputSent?.();
 }
 
 function sendTerminalInput(socket, data) {
@@ -6023,7 +6025,10 @@ function currentCompatibility() {
   info.paintCoalescing = terminalPaintCoalescing;
   info.outputCoalescing = terminalOutputCoalescing;
   info.typingPrediction = rectangles.filter(rect => rect.kind === "terminal" && rect.terminal?.term?.predictionStatistics)
-    .map((rect, index) => `Terminal ${index + 1}: ${describeTypingPrediction(rect.terminal.term.predictionStatistics())}`);
+    .map((rect, index) => {
+      const stats = rect.terminal.term.predictionStatistics();
+      return `Terminal ${index + 1}: ${describeTypingPrediction(stats)}${describeEchoBreakdown(stats.breakdown)}`;
+    });
   info.outputTiming = rectangles.filter(rect => rect.kind === "terminal" && rect.terminal?.term)
     .map((rect, index) => rect.terminal.outputTiming
       ? `Terminal ${index + 1}${rect.terminal.replica?.timing ? " (capturing)" : ""}: ${formatOutputTiming(rect.terminal.outputTiming.summary())}`
@@ -6040,6 +6045,15 @@ function describeTypingPrediction({ mode, latencyMs, showing }) {
   const measured = latencyMs === null ? "no echo measured yet" : `echo ${latencyMs} ms`;
   if (mode === "always") return `${label}, drawing (${measured})`;
   return `${label}, ${showing ? "drawing" : "not drawing"} (${measured}; draws above 20 ms)`;
+}
+
+// describeEchoBreakdown splits recent echoes into time in the page before
+// sending, on the network and server until the page handles the reply, and
+// applying it. Each figure is a median, so they need not add up.
+function describeEchoBreakdown(breakdown) {
+  if (!breakdown) return "";
+  const ms = value => `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`;
+  return `; last ${breakdown.count} echoes, medians: ${ms(breakdown.total)} total, ${ms(breakdown.beforeSend)} before sending, ${ms(breakdown.transit)} until the reply is handled, ${ms(breakdown.apply)} applying`;
 }
 
 function renderSettingsCompatibilityRow() {

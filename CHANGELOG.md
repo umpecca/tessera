@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Typing prediction now covers Left and Right and editing mid-line. Moving
+  the cursor, typing into the middle of a line and Backspace there show at
+  once, with the rest of the line shifted, so fixing a typo in a long command
+  no longer waits for the round trip. Moves never enter the prompt.
+
+- Make typing prediction cheaper per keystroke. Checking a prediction read the
+  whole visible screen out of the terminal engine twice per key, about 5 ms
+  on an iPad after each echo and again before the key was sent; it now reads
+  only the cells it compares. Settings → Diagnostics now splits recent echoes
+  into time before sending, until the reply is handled, and applying.
+
 - Add typing prediction for slow connections. Typed characters appear at
   once, lightly underlined until the server's echo confirms them, instead of
   after a full round trip. **Auto** (default, under Settings → Terminal)

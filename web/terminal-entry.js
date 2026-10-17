@@ -115,22 +115,25 @@ class Terminal extends GhosttyTerminal {
     const alternate = core.isAlternateScreen?.() ?? false;
     if (!this.prediction.predictions.length) this.predictionAlternateScreen = alternate;
     const atBottom = this.viewportY === 0 && !((this.smoothScroll.target ?? 0) > 0);
-    const lines = new Map();
     return {
       cols: this.cols,
       cursorX: cursor.x,
       cursorY: cursor.y,
       canPredict: atBottom && cursor.visible !== false && alternate === this.predictionAlternateScreen,
+      // One cell from the render state getCursor just refreshed. getLine
+      // would copy and parse the whole viewport, which cost a few
+      // milliseconds per keystroke on an iPad.
       cellAt: (col, row) => {
-        if (!lines.has(row)) lines.set(row, core.getLine(row));
-        return lines.get(row)?.[col]?.codepoint ?? 0;
+        if (row < 0 || row >= this.rows || col < 0 || col >= this.cols) return 0;
+        return core.getGrapheme(row, col)?.[0] ?? 0;
       },
     };
   }
 
-  checkPredictions() {
+  // checkPredictions runs after each write, and at a deadline (output false).
+  checkPredictions(output = true) {
     if (!this.prediction.predictions.length || !this.wasmTerm) return;
-    if (this.prediction.check(this.predictionScreen())) this.markPredictionsChanged();
+    if (this.prediction.check(this.predictionScreen(), { output })) this.markPredictionsChanged();
     this.schedulePredictionCheck();
   }
 
@@ -148,7 +151,7 @@ class Terminal extends GhosttyTerminal {
     if (deadline === null) return;
     this.predictionTimer = globalThis.setTimeout(() => {
       this.predictionTimer = null;
-      this.checkPredictions();
+      this.checkPredictions(false);
     }, Math.max(0, deadline - this.prediction.now()) + 1);
   }
 
@@ -162,9 +165,19 @@ class Terminal extends GhosttyTerminal {
     if (this.prediction.setMode(mode)) this.markPredictionsChanged();
   }
 
+  // noteInputSent runs once keyboard input has been handed to the socket.
+  noteInputSent() {
+    this.prediction.noteSent();
+  }
+
+  // noteOutputArrival runs as the socket handler for server output starts.
+  noteOutputArrival() {
+    if (this.prediction.predictions.length) this.prediction.noteArrival();
+  }
+
   predictionStatistics() {
     const { mode, srtt, showing } = this.prediction;
-    return { mode, latencyMs: srtt === null ? null : Math.round(srtt), showing };
+    return { mode, latencyMs: srtt === null ? null : Math.round(srtt), showing, breakdown: this.prediction.latencyBreakdown() };
   }
 
   startRenderLoop() {

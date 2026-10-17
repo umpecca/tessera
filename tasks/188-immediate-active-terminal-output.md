@@ -110,3 +110,51 @@ Next steps, in order:
 4. **Worker rendering (`OffscreenCanvas`).** Only if Safari shows Chrome's
    wait after a keypress, and only after a standalone spike confirms WebKit
    presents worker canvas frames without the main thread.
+
+## iPad measurement (2026-10-16)
+
+Step 1 run: `scripts/latency-check` on the Mac's Tailscale address, opened in
+Safari 27.0.1 on the iPad (`vinsons-ipad`, direct Tailscale connection;
+`tailscale ping` 24-28 ms), 200 keys from the hardware keyboard plus 60
+timer sends.
+
+| | p50 | p90 |
+|---|---|---|
+| Network round trip (timer send) | 26 ms | 28 ms |
+| Round trip from a keypress | 27 ms | 30 ms |
+| Echo arrival to paint | 0 ms | 1 ms |
+| Key event to handler | 11 ms | 20 ms |
+| Key event to echo painted | 39 ms | 47 ms |
+
+Frame rate 58.8 fps.
+
+- The network is about 70% of the wait. A keypress adds about 1 ms over
+  a timer send, and an arriving echo is painted at once, so Safari does not
+  show the extra frame Chrome did. **Step 4 (worker rendering) is not
+  needed for Safari** and is dropped.
+- Step 3 (predictive local echo, task 189) removes the round trip; what is
+  left is the 4-23 ms between the key event and its handler, spread
+  roughly evenly across one frame, before any Tessera code runs. It is
+  consistent with key events being delivered at the frame rate, but this run
+  does not prove that.
+
+Step 2 runs on the same iPad, with Safari's "Prefer Page Rendering Updates
+near 60fps" feature flag turned off:
+
+| | flag on (default) | flag off, Safari not restarted | flag off, Safari restarted |
+|---|---|---|---|
+| Frame rate | 58.8 fps | 58.8 fps | 125 fps (8 ms frames) |
+| Key event to handler, p50 / p90 | 11 / 20 ms | 11 / 20 ms | 10 / 21 ms |
+| Key event to echo painted, p50 / p90 | 39 / 47 ms | 39 / 48 ms | 38 / 47 ms |
+
+- The iPad is ProMotion. Safari caps pages at 60 fps by default, and the
+  flag takes effect only after Safari is quit and reopened.
+- 120 fps did not shorten the delay before the handler runs, so that delay
+  is not set by the page's frame rate. It comes from somewhere in the
+  hardware keyboard and the OS delivering the event, not from Tessera. The
+  frame-rate explanation suggested above is ruled out.
+- "Painted" here is when the canvas draw returns, not when the frame reaches
+  the screen; 120 fps should still save about half of an 8 ms frame on
+  average before the frame is shown, which this page cannot measure.
+- Still to check for the WKWebView wrapper: whether an app can get 120 fps
+  page rendering without the user changing a Safari feature flag.
