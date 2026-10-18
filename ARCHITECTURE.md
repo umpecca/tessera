@@ -93,6 +93,9 @@ tessera/
     terminal-opus-entry.js      # bundled decoder worker entry point
     vendor/                    # committed esbuild output
     assets/                    # fonts, application icons, and pane icons
+  apple/                       # native iPad/Mac thin client (see apple/README.md)
+    Tessera/                   # SwiftUI app around a WKWebView of a chosen server
+    TesseraCore/               # Swift package: address parsing, download names
   migrations/
     embed.go                   # embeds the ordered SQL sequence
     001_*.sql ... 047_*.sql     # append-only application schema migrations

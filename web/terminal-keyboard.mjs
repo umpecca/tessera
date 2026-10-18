@@ -149,6 +149,25 @@ export function terminalShouldSwallowCommandKey(event) {
   return event.key?.length === 1;
 }
 
+// The iPad Magic Keyboard has no Home or End key. On an Apple keyboard
+// Command+Left and Command+Right stand in for them, as they go to the start
+// and end of a line in macOS text fields. Command never reaches the
+// application, so this takes no binding away from it. They send exactly what
+// the Home and End keys send here (Globe+Left/Right on the iPad), so either
+// works wherever the other does. That is not ^A and ^E, which mean other
+// things in vim and tmux.
+export function terminalCommandArrowSequence(event, options = {}) {
+  if (!event || !options.appleKeyboard) {
+    return null;
+  }
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+    return null;
+  }
+  return event.key === "ArrowLeft" ? navigationKeys.Home.sequence
+    : event.key === "ArrowRight" ? navigationKeys.End.sequence
+      : null;
+}
+
 export function isTerminalCopyShortcut(event) {
   if (!event || event.altKey) {
     return false;

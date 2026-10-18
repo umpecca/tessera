@@ -7,3 +7,9 @@ node_modules/
 *.sqlite3-wal
 /.claude/*
 /.agents/*
+# Xcode and SwiftPM state for apple/
+xcuserdata/
+.swiftpm/
+.build/
+DerivedData/
+/apple/build/

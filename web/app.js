@@ -12,6 +12,7 @@ import { WindowWobble } from "./window-wobble.mjs";
 import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
 import { normalizePredictionMode } from "./terminal-prediction.mjs";
+import { KeyReadout, keyReadoutShouldPreventKeydown } from "./key-readout.mjs";
 import { renderSignedInDevices, SignInRecovery, signInEndedCloseCode, signOut } from "./sign-in.mjs";
 import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL, validateLocalHTTPSDraft } from "./local-https-settings.mjs";
 import { shouldShowIPadHTTPGuidance } from "./ipad-http-guidance.mjs";
@@ -25,6 +26,7 @@ import {
 import {
   isTerminalCopyShortcut,
   shouldIsolateMacTerminalPasteKeydown,
+  terminalCommandArrowSequence,
   terminalControlSequence,
   terminalNavigationSequence,
   terminalPasteSource,
@@ -3783,6 +3785,11 @@ async function startTerminal(rect) {
         sendTerminalKeys(rect, controlSequence);
         return true;
       }
+      const commandArrowSequence = terminalCommandArrowSequence(event, { appleKeyboard: appleKeyboardLayout });
+      if (commandArrowSequence) {
+        sendTerminalKeys(rect, commandArrowSequence);
+        return true;
+      }
       // Swallowing beats ghostty-web's encoder falling back to the bare
       // character and typing it into the application.
       if (terminalShouldSwallowCommandKey(event)) {
@@ -4360,8 +4367,10 @@ function attachTerminalMouseBridge(rect, term, socket) {
     if (!position) {
       return;
     }
-    activePress.update(event.pointerId, position);
     stopTerminalMouseEvent(event);
+    if (!activePress.update(event.pointerId, position)) {
+      return;
+    }
     sendTerminalMouseSequence(
       socket,
       terminalMouseEventCode(activePress.buttonCode + 32, event),
@@ -5501,6 +5510,7 @@ function openSettingsModal(options = {}) {
 
 let compatibilityUpdateTimer = null;
 let settingsReturnFocus = null;
+const keyReadout = new KeyReadout();
 
 function settingsOwnsFocus() {
   return !settingsModal.hidden && ![...document.querySelectorAll(".settings-modal")]
@@ -5972,7 +5982,7 @@ function renderSettingsModal() {
     compatibilityUpdateTimer = null;
     setTerminalRenderingMetricsEnabled(diagnostics.open);
     diagnosticsContent.replaceChildren();
-    if (diagnostics.open) diagnosticsContent.appendChild(renderSettingsCompatibilityRow());
+    if (diagnostics.open) diagnosticsContent.append(renderSettingsCompatibilityRow(), renderSettingsKeyReadoutRow());
   };
   diagnostics.addEventListener("toggle", updateDiagnostics);
   diagnostics.append(diagnosticsSummary, diagnosticsContent);
@@ -6142,6 +6152,87 @@ function renderSettingsCompatibilityRow() {
     if (row.isConnected && !document.hidden) update();
   }, 1000);
   void refresh();
+  return row;
+}
+
+// renderSettingsKeyReadoutRow lists what the browser reports for keys typed
+// into its test field. See key-readout.mjs.
+function renderSettingsKeyReadoutRow() {
+  const row = document.createElement("div");
+  row.className = "settings-compatibility settings-key-readout";
+  const instructions = document.createElement("p");
+  instructions.textContent = "Key test: press keys in the field to see what the browser reports for each one. The text does not change. A combination that adds no line never reaches Tessera.";
+  const field = document.createElement("textarea");
+  field.id = "settings-key-test";
+  field.rows = 1;
+  field.spellcheck = false;
+  field.setAttribute("aria-label", "Key test");
+  field.setAttribute("autocapitalize", "off");
+  field.setAttribute("autocomplete", "off");
+  field.setAttribute("autocorrect", "off");
+  // Text on both sides of the cursor gives a delete in either direction
+  // something to act on, so the browser still reports the edit.
+  const sample = "Press keys here";
+  const resetField = () => {
+    field.value = sample;
+    if (document.activeElement === field) field.setSelectionRange(6, 6);
+  };
+  const log = document.createElement("ol");
+  log.className = "settings-key-readout-log";
+  log.reversed = true;
+  const status = document.createElement("p");
+  status.className = "settings-compatibility-status";
+  status.setAttribute("role", "status");
+  const actions = document.createElement("div");
+  actions.className = "settings-compatibility-actions";
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Copy key log";
+  const clearButton = document.createElement("button");
+  clearButton.type = "button";
+  clearButton.textContent = "Clear";
+
+  const update = () => {
+    log.replaceChildren(...keyReadout.entries.map(entry => {
+      const item = document.createElement("li");
+      item.textContent = entry;
+      return item;
+    }));
+    copyButton.disabled = clearButton.disabled = keyReadout.entries.length === 0;
+  };
+  field.addEventListener("keydown", (event) => {
+    keyReadout.record(event);
+    if (keyReadoutShouldPreventKeydown(event)) event.preventDefault();
+    update();
+  });
+  // Record the edit, then cancel it so the field stays empty.
+  field.addEventListener("beforeinput", (event) => {
+    keyReadout.record(event);
+    event.preventDefault();
+    update();
+  });
+  // Composition and some deletes cannot be cancelled.
+  field.addEventListener("input", resetField);
+  field.addEventListener("keyup", resetField);
+  field.addEventListener("focus", resetField);
+  copyButton.addEventListener("click", async () => {
+    const info = currentCompatibility();
+    const copied = await writeClipboardText(keyReadout.text(`Tessera key readout · ${info.browser} · ${info.platform}`));
+    if (!row.isConnected) return;
+    status.textContent = copied
+      ? "Key log copied to the system clipboard."
+      : "The browser blocked the system clipboard. The key log is available to Tessera Paste.";
+  });
+  clearButton.addEventListener("click", () => {
+    keyReadout.clear();
+    status.textContent = "";
+    update();
+    field.focus();
+  });
+  actions.append(copyButton, clearButton);
+  row.append(instructions, field, log, actions, status);
+  resetField();
+  update();
   return row;
 }
 

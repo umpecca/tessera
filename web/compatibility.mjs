@@ -9,6 +9,9 @@ function formatScale(value) {
 
 export function browserName(userAgent = "") {
   const candidates = [
+    // The native Apple app's web view (apple/), which names itself instead
+    // of Safari.
+    ["Tessera app", /TesseraApp\/([\d.]+)/],
     ["Firefox", /Firefox\/([\d.]+)/],
     ["Edge", /Edg\/([\d.]+)/],
     ["Chrome", /(?:Chrome|CriOS)\/([\d.]+)/],

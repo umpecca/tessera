@@ -6,6 +6,11 @@ test("identifies Firefox ESR without copying the complete user agent", () => {
   assert.equal(browserName("Mozilla/5.0 (Macintosh) Gecko/20100101 Firefox/115.37.0"), "Firefox 115.37.0");
 });
 
+test("identifies the native Apple app's web view", () => {
+  assert.equal(browserName("Mozilla/5.0 (iPad; CPU OS 27_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TesseraApp/0.1"), "Tessera app 0.1");
+  assert.equal(browserName("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) TesseraApp/0.1"), "Tessera app 0.1");
+});
+
 test("reports the clipboard bridge and Older Mac render cap", () => {
   const info = detectCompatibility({
     userAgent: "Mozilla/5.0 Firefox/115.37.0",

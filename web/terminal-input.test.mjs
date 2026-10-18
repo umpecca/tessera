@@ -64,6 +64,16 @@ test("terminal mouse press returns one matching release", () => {
   assert.equal(press.finish(7), null);
 });
 
+test("terminal mouse press reports a drag once per cell", () => {
+  const press = new TerminalMousePress();
+  press.begin(5, 0, { col: 5, row: 5 });
+  assert.equal(press.update(5, { col: 5, row: 5 }), false);
+  assert.equal(press.update(5, { col: 6, row: 5 }), true);
+  assert.equal(press.update(5, { col: 6, row: 5 }), false);
+  assert.equal(press.update(5, { col: 6, row: 4 }), true);
+  assert.deepEqual(press.finish(5).position, { col: 6, row: 4 });
+});
+
 test("terminal mouse cancellation reuses the last valid position", () => {
   const press = new TerminalMousePress();
   press.begin(9, 0, { col: 3, row: 8 });

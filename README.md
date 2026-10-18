@@ -458,6 +458,16 @@ there. `Command` with a letter is a menu accelerator and is not sent to the
 terminal at all, so `Cmd+S` in a full-screen editor does nothing instead of
 typing an `s`.
 
+On macOS and iPadOS, `Cmd+Left` and `Cmd+Right` send Home and End, for
+keyboards without those keys such as the iPad Magic Keyboard, where
+`Globe+Left` and `Globe+Right` do the same. bash handles
+them as it is. zsh only does if they are bound; add this to `~/.zshrc` if
+Home and End do nothing at the prompt:
+
+```zsh
+bindkey '^[[H' beginning-of-line '^[[F' end-of-line
+```
+
 A mouse-aware program owns unmodified dragging, so dragging inside one moves
 that program's cursor rather than selecting terminal text. Hold `Shift` while
 dragging to select on the terminal's own layer, then copy as usual. `Cmd`-drag
@@ -733,6 +743,10 @@ Screen** for standalone display. The command button provides touch access to
 context actions, and the window button opens the Deskbar. On Windows, allow
 inbound TCP ports 7331 and 7332 through Windows Firewall for the active network
 profile.
+
+A native iPad and Mac app is in early development in [`apple/`](apple/README.md).
+It shows the same web client from a server you choose, with native dialogs,
+downloads and plain HTTP over Tailscale. It is built from Xcode, not released.
 
 ### Local HTTPS for iPadOS
 

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   isTerminalCopyShortcut,
   shouldIsolateMacTerminalPasteKeydown,
+  terminalCommandArrowSequence,
   terminalControlSequence,
   terminalNavigationSequence,
   terminalPasteSource,
@@ -179,4 +180,24 @@ test("recognizes terminal copy shortcuts without consuming Ctrl+C", () => {
   assert.equal(isTerminalCopyShortcut({ key: "c", metaKey: true, altKey: true }), false);
   assert.equal(isTerminalCopyShortcut({ key: "v", metaKey: true }), false);
   assert.equal(isTerminalCopyShortcut(null), false);
+});
+
+test("sends Home and End for Command+Left and Command+Right on an Apple keyboard", () => {
+  const apple = { appleKeyboard: true };
+  assert.equal(terminalCommandArrowSequence({ key: "ArrowLeft", metaKey: true }, apple), "\x1B[H");
+  assert.equal(terminalCommandArrowSequence({ key: "ArrowRight", metaKey: true }, apple), "\x1B[F");
+});
+
+test("leaves other arrows, modifiers and keyboards to the encoder", () => {
+  const apple = { appleKeyboard: true };
+  assert.equal(terminalCommandArrowSequence({ key: "ArrowLeft", metaKey: true }, {}), null);
+  assert.equal(terminalCommandArrowSequence({ key: "ArrowLeft" }, apple), null);
+  assert.equal(terminalCommandArrowSequence({ key: "ArrowLeft", ctrlKey: true }, apple), null);
+  assert.equal(terminalCommandArrowSequence({ key: "ArrowLeft", altKey: true }, apple), null);
+  assert.equal(terminalCommandArrowSequence({ key: "ArrowUp", metaKey: true }, apple), null);
+  assert.equal(terminalCommandArrowSequence({ key: "Backspace", metaKey: true }, apple), null);
+  for (const extra of [{ shiftKey: true }, { ctrlKey: true }, { altKey: true }]) {
+    assert.equal(terminalCommandArrowSequence({ key: "ArrowRight", metaKey: true, ...extra }, apple), null);
+  }
+  assert.equal(terminalCommandArrowSequence(null, apple), null);
 });

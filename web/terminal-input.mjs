@@ -86,8 +86,15 @@ export class TerminalMousePress {
     return this.buttonCode !== null && this.pointerID === pointerID;
   }
 
+  // Returns whether the press moved to another cell. Like xterm, a drag is
+  // reported once per cell: a pointer wobbling inside one cell would otherwise
+  // send a stream of identical reports, and any the program has not read when
+  // it exits are left for the shell to print.
   update(pointerID, position) {
     if (!this.matches(pointerID)) {
+      return false;
+    }
+    if (this.position?.col === position.col && this.position?.row === position.row) {
       return false;
     }
     this.position = position;

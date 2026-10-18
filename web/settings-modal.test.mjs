@@ -108,6 +108,7 @@ function fixture() {
       intervals.add(diagnosticsCreated);
       return row("Copy diagnostics");
     },
+    renderSettingsKeyReadoutRow: () => row("Key test", "textarea"),
   });
   function row(label, tag = "select") {
     const control = new Element(tag);

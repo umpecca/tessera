@@ -543,3 +543,38 @@ func TestMouseModeTrackerKeepsOtherTrackingModesEnabled(t *testing.T) {
 		t.Fatal("mouse tracking remained enabled after every tracking mode was reset")
 	}
 }
+
+func TestMouseModeTrackerAllowsReportsTheModesAskFor(t *testing.T) {
+	press := []byte("\x1b[<0;5;5M")
+	release := []byte("\x1b[<0;5;5m")
+	drag := []byte("\x1b[<32;5;5M")
+	shiftDrag := []byte("\x1b[<36;5;5M")
+	motion := []byte("\x1b[<35;5;5M")
+	wheel := []byte("\x1b[<64;5;5M")
+	legacy := []byte("\x1b[M #%")
+
+	cases := []struct {
+		modes string
+		allow [][]byte
+		block [][]byte
+	}{
+		{"", nil, [][]byte{press, release, drag, motion, wheel, legacy}},
+		{"\x1b[?1000;1006h", [][]byte{press, release, wheel, legacy}, [][]byte{drag, shiftDrag, motion}},
+		{"\x1b[?1002;1006h", [][]byte{press, release, wheel, drag, shiftDrag}, [][]byte{motion}},
+		{"\x1b[?1003;1006h", [][]byte{press, release, wheel, drag, shiftDrag, motion}, nil},
+	}
+	for _, c := range cases {
+		var tracker mouseModeTracker
+		tracker.consume([]byte(c.modes))
+		for _, report := range c.allow {
+			if !tracker.allows(report) {
+				t.Errorf("modes %q blocked %q", c.modes, report)
+			}
+		}
+		for _, report := range c.block {
+			if tracker.allows(report) {
+				t.Errorf("modes %q allowed %q", c.modes, report)
+			}
+		}
+	}
+}

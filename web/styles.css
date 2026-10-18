@@ -3548,6 +3548,29 @@ input {
 
 .settings-compatibility button:disabled { color: var(--text-disabled); cursor: default; }
 
+.settings-key-readout p { margin: 0; }
+
+.settings-key-readout textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--control-face);
+  color: var(--text);
+  font: inherit;
+  resize: none;
+}
+
+.settings-key-readout-log {
+  margin: 0;
+  padding-left: 22px;
+  font-family: var(--tessera-font, monospace);
+  overflow-wrap: anywhere;
+}
+
+.settings-key-readout-log:empty { display: none; }
+
 .settings-compatibility-status {
   min-height: 16px;
   margin: 0;

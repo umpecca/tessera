@@ -317,7 +317,9 @@ func (s *ManagedSession) Write(p []byte) (int, error) {
 }
 
 // WriteMouse forwards a browser-generated mouse report only while the PTY's
-// latest output says a DEC mouse tracking mode is enabled. Browser mouse input
+// latest output says a DEC mouse tracking mode asking for it is enabled: any
+// mode for presses, releases and the wheel, 1002 or 1003 for drags, and 1003
+// for movement with no button. Browser mouse input
 // is tagged separately so ordinary keyboard input and pasted escape sequences
 // are never filtered by this race guard.
 func (s *ManagedSession) WriteMouse(p []byte) (int, error) {
@@ -329,7 +331,7 @@ func (s *ManagedSession) WriteMouse(p []byte) (int, error) {
 	if s.isClosed() || s.session == nil {
 		return 0, io.ErrClosedPipe
 	}
-	if !s.mouseModes.enabled() {
+	if !s.mouseModes.allows(p) {
 		return len(p), nil
 	}
 	return s.session.Write(p)

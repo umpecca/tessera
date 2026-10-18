@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Fewer stray mouse reports at the shell prompt after quitting a mouse-aware
+  program (text like `32;5;5M0;5;5m`). A drag is now reported once per
+  cell, as in xterm, rather than on every pointer movement, and the server
+  passes drags only to programs that asked for them (mouse modes 1002 or
+  1003), not to ones that want only clicks.
+
+- `apple/build-ipa.sh` builds an unsigned `Tessera.ipa` that SideStore or
+  AltStore can sign and install on an iPad, for installing away from the Mac
+  (Xcode can't reach an iPad over Tailscale).
+
+- Start a native iPad and Mac app in `apple/`: a SwiftUI window around the
+  Tessera web client from a server you choose. It asks for the address on
+  first launch, shows the page's confirmations as native dialogs, saves
+  downloads to Downloads (Mac) or the Files app (iPad), opens other sites in
+  the system browser, and allows plain HTTP. Built from Xcode; not part of
+  releases yet. Settings → Diagnostics names it `Tessera app`.
+
+- On macOS and iPadOS, `Cmd+Left` and `Cmd+Right` in a terminal send Home
+  and End, for keyboards without those keys such as the iPad Magic
+  Keyboard. Ctrl and Option arrows are unchanged. zsh needs Home and End
+  bound to use them at the prompt; see the README.
+
+- Add a key test to Settings → Diagnostics. Press keys in its field to see
+  what the browser reports for each one (key, code, modifiers, and the edit
+  a delete would make); **Copy key log** copies the list. It shows which
+  combinations reach Tessera on keyboards without Home, End or forward
+  Delete, such as the iPad Magic Keyboard.
+
 - Typing prediction is quieter. Predicted characters now look like ordinary
   text, since a quick echo replaces them within a frame or two; they are
   underlined only while echoes take over 80 ms, or after a wrong or slow

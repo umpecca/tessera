@@ -85,6 +85,42 @@ func (t *mouseModeTracker) enabled() bool {
 	return t.modes[1000] || t.modes[1002] || t.modes[1003]
 }
 
+// allows reports whether the current modes ask for an SGR mouse report. Mode
+// 1000 reports only presses and releases, 1002 adds drags, and 1003 adds
+// movement with no button held; a drag sent to a program in mode 1000 is
+// input it never asked for. A report that is not SGR is judged by enabled.
+func (t *mouseModeTracker) allows(report []byte) bool {
+	if !t.enabled() {
+		return false
+	}
+	code, ok := sgrMouseButtonCode(report)
+	if !ok || code&64 != 0 || code&32 == 0 {
+		return true
+	}
+	if code&3 == 3 {
+		return t.modes[1003]
+	}
+	return t.modes[1002] || t.modes[1003]
+}
+
+// sgrMouseButtonCode reads the button code of an `ESC [ < code ; col ; row M`
+// report.
+func sgrMouseButtonCode(report []byte) (int, bool) {
+	const prefix = "\x1b[<"
+	if len(report) <= len(prefix) || string(report[:len(prefix)]) != prefix {
+		return 0, false
+	}
+	end := len(prefix)
+	for end < len(report) && report[end] >= '0' && report[end] <= '9' {
+		end++
+	}
+	if end == len(prefix) || end == len(report) || report[end] != ';' {
+		return 0, false
+	}
+	code, err := strconv.Atoi(string(report[len(prefix):end]))
+	return code, err == nil
+}
+
 func (t *mouseModeTracker) reset() {
 	t.state = mouseParserGround
 	t.params = t.params[:0]
