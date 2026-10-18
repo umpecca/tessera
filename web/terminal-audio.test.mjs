@@ -67,6 +67,11 @@ test("clips mix with targeted stop, replacement, per-terminal and page eviction"
   f.player.dispose(); assert.equal(f.player.playing.length, 0); assert.equal(f.player.decodedBytes, 0);
 });
 
+test("clips never count as a playing stream", async () => {
+  const f = fixture(); await f.player.enable(); f.player.receive("a", play("one")); await flush();
+  assert.equal(f.nodes[0]?.started, true); assert.equal(f.player.streaming("a"), false); f.player.dispose();
+});
+
 test("stop, mute, replacement, reset, disconnect and dispose cancel pending decoding", async () => {
   for (const cancel of [f => f.player.receive("a", control("stop", "x")), f => f.player.setMuted("a", true),
     f => f.player.receive("a", control("reset")), f => f.player.disconnect("a"), f => f.player.detach("a"), f => f.player.disable(), f => f.player.dispose()]) {

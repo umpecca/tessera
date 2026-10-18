@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Music streamed into a terminal (Trinity, for example) no longer stops
+  briefly when you bring that terminal back into view after another window
+  covered it, it was minimized, or its browser tab was hidden. A terminal
+  playing a stream keeps receiving output while hidden, like an audible
+  browser tab, instead of reconnecting when shown.
+
+- The terminal audio docs explain where stream quality comes from: the
+  producer's Opus bitrate, which `tessera-audio stream` lets you raise to
+  256 kbps for local use.
+
+- Add a **Screensaver** to the command palette: a full-screen mosaic of
+  slowly shifting tiles with a tile clock that drifts around the screen.
+  Mirrored katakana rain falls through the tiles and paints the screen in
+  when it opens. It falls lightly in most palettes and heavily in a green
+  phosphor one, where the clock turns pale green. Now and then a band of
+  tiles glitches. Any key, click, tap or mouse movement returns to the
+  workspace. It doesn't lock anything.
+
+- `Ctrl+Backspace` / `Cmd+Backspace` no longer destroys the active window,
+  which was easy to do by accident. Use **Destroy Window** in the command
+  palette (`Ctrl+K`/`Cmd+K`, then `DD` or `close`).
+
 - Fewer stray mouse reports at the shell prompt after quitting a mouse-aware
   program (text like `32;5;5M0;5;5m`). A drag is now reported once per
   cell, as in xterm, rather than on every pointer movement, and the server

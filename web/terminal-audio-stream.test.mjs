@@ -61,6 +61,18 @@ test("new subscribers join at an arbitrary live sequence and old generations are
   f.player.receive("a",data(0,5,{token:"new"})); await flush(); assert.equal(f.nodes.length,2); f.player.dispose();
 });
 
+test("a terminal is streaming only while one of its streams plays aloud here",async()=>{
+  const f=fixture(); f.player.receive("a",start({bufferMs:100})); f.player.receive("a",data(0));
+  assert.equal(f.player.streaming("a"),false,"disabled");
+  await f.player.enable(); assert.equal(f.player.streaming("a"),false,"setup alone");
+  f.player.receive("a",data(1)); assert.equal(f.player.streaming("a"),true,"buffering counts");
+  await flush(); assert.equal(f.player.streaming("a"),true);
+  f.player.setMuted("a",true); assert.equal(f.player.streaming("a"),false,"muted");
+  f.player.setMuted("a",false); f.player.receive("a",data(2)); await flush(); assert.equal(f.player.streaming("a"),true);
+  f.player.receive("a",end(3)); await flush(); for(const node of f.nodes) node.onended?.();
+  assert.equal(f.player.streaming("a"),false,"ended"); assert.equal(f.player.streaming("missing"),false); f.player.dispose();
+});
+
 test("stop/mute/reset/disconnect/disposal prevent late stream decoding",async()=>{
   for(const cancel of [p=>p.stop("a"),p=>p.setMuted("a",true),p=>p.receive("a",{type:"terminal-audio",epoch:"shell",action:"reset"}),p=>p.disconnect("a"),p=>p.dispose()]) {
     const f=fixture({deferred:true}); await f.player.enable(); f.player.receive("a",start({bufferMs:100})); f.player.receive("a",data(0)); await flush();

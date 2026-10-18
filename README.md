@@ -534,6 +534,10 @@ Workspace behavior includes:
   Backspace goes back, Escape closes, and **Search all commands**
   opens the existing palette. Clicking or typing a group keeps it selected.
   Dark radial wedges surround a context hub, with next keys in an outer arc.
+- Run **Screensaver** from the command palette to fill the screen with a
+  slowly shifting mosaic, Matrix-style digital rain and a tile clock. Any
+  key, click, tap or mouse movement returns to the workspace. It doesn't
+  lock anything.
 - Cycle active panes with `Ctrl+]` and `Ctrl+[`.
 - Move the active window earlier/later with `Ctrl+Shift+Up`/`Ctrl+Shift+Down`
   (`Cmd+Shift+Up/Down` on macOS). Open **Window List** with `Ctrl+L`/`Cmd+L`

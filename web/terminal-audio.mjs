@@ -102,6 +102,14 @@ export class TerminalAudioPlayer {
     terminal.onStatus(null);
   }
 
+  // Whether this browser is playing one of the terminal's streams aloud. Clips
+  // don't count: they are too short to be worth keeping a hidden pane live.
+  streaming(key) {
+    const terminal = this.terminals.get(key);
+    if (!terminal || !this.enabled || terminal.muted) return false;
+    return [...terminal.clips.values()].some(clip => clip.stream && !clip.cancelled);
+  }
+
   receive(key, event) {
     const terminal = this.terminals.get(key);
     if (!terminal || event?.type !== "terminal-audio" || typeof event.epoch !== "string" || !event.epoch) return;

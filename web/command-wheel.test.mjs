@@ -150,6 +150,7 @@ const codesEnd = source.indexOf("\n};", codesStart) + 3;
 const paletteShortcutCodes = vm.runInNewContext(source.slice(codesStart, codesEnd) + "\npaletteShortcutCodes");
 function appFunction(name, globals) {
   globals.shortcutsUI ||= { element: { hidden: true } };
+  globals.screensaver ||= { element: { hidden: true } };
   const start = source.indexOf("function " + name + "(");
   const end = source.indexOf("\n}\n", start) + 2;
   return vm.runInNewContext("(" + source.slice(start, end) + ")", globals);

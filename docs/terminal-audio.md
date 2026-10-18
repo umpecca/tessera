@@ -12,6 +12,13 @@ requests only.
 Every enabled attached client listens independently. Minimized and covered
 terminals can produce sound even while their text delivery is paused. A hidden
 browser tab can continue playing when its browser/OS permits background audio.
+Text delivery pauses only for terminals nobody is perceiving. A terminal that
+is playing a stream aloud in this browser (enabled and unmuted) when it is
+minimized, covered or its tab is hidden keeps receiving text, so revealing it
+doesn't reconnect and restart the stream. It still doesn't draw while hidden.
+This is decided once, at hiding: a track change while hidden doesn't pause it,
+and a stream started after the terminal paused waits for the terminal to be
+shown, with one brief gap. Clips don't keep a terminal live.
 Disconnecting stops local playback; reconnecting and restoring terminal history
 never replay old sound; running streams resume from future packets. Clips need
 no encoder. Streaming producers must supply Opus packets as specified below.
@@ -38,6 +45,16 @@ FFmpeg/libopus, and pace file playback in real time. Opus encoding is lossy;
 original-format/lossless passthrough is not included. The protocol carries a
 100–2000 ms startup/rebuffer target. Smaller targets reduce buffering but tolerate
 less jitter; encoder, network, and browser delays add to the target.
+
+### Stream quality
+
+The producer sets stream quality; Tessera relays packets unchanged and
+browsers always decode at 48 kHz in the stream's channel count. Opus at
+`tessera-audio stream`'s default of 128 kbps suits remote links. On a local
+machine or LAN, choose its highest bitrate, 256 kbps, for near-transparent
+quality. Run `tessera-audio stream --help` for the option's name. The extra
+bandwidth (about 32 KB/s per stream, per listening browser) rarely matters
+locally.
 
 The v1 stop commands stop client playback for streams as well as clips. They
 do not terminate the external producer; the producer must handle its own

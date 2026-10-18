@@ -24,25 +24,26 @@ test("background polling replaces its timer and restores the foreground cadence"
 
 function appFunction(name, globals) {
   globals.shortcutsUI ||= { element: { hidden: true } };
+  globals.screensaver ||= { element: { hidden: true } };
   const start = source.indexOf(`function ${name}(`);
   const end = source.indexOf("\n}\n", start) + 2;
   const prefix = source.slice(start - 6, start) === "async " ? "async " : "";
   return vm.runInNewContext(`(${prefix}${source.slice(start, end)})`, globals);
 }
 
-test("dialogs block destructive shortcuts from both the document and iframe resolver", () => {
+test("dialogs block window shortcuts from both the document and iframe resolver", () => {
   const names = ["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal", "sessionActionModal",
     "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
     "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"];
   const globals = Object.fromEntries(names.map((name) => [name, { hidden: true }]));
-  let destroyed = 0;
-  globals.destroyActivePane = () => destroyed++;
+  let moved = 0;
+  globals.focusAdjacentPane = () => moved++;
   globals.toggleWindowList = () => {};
   globals.toggleCommandPalette = () => {};
   const resolve = appFunction("paneShortcutAction", globals);
-  const keys = { ctrlKey: true, key: "Backspace" };
+  const keys = { ctrlKey: true, key: "]" };
   resolve(keys).run();
-  assert.equal(destroyed, 1);
+  assert.equal(moved, 1);
   for (const name of names) {
     globals[name].hidden = false;
     assert.equal(resolve(keys), null, name);
@@ -51,6 +52,15 @@ test("dialogs block destructive shortcuts from both the document and iframe reso
   }
   globals.commandPalette.hidden = false;
   assert.ok(resolve({ ctrlKey: true, key: "k" }), "palette toggle remains available");
+});
+
+test("Ctrl/Cmd+Backspace no longer destroys the active window", () => {
+  const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
+    "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
+    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
+  const resolve = appFunction("paneShortcutAction", globals);
+  assert.equal(resolve({ ctrlKey: true, key: "Backspace", code: "Backspace" }), null);
+  assert.equal(resolve({ metaKey: true, key: "Backspace", code: "Backspace" }), null);
 });
 
 test("Ctrl+T opens the rename modal for the active pane", () => {

@@ -9,6 +9,7 @@ import { TerminalAudioPlayer, terminalAudioMuteKey } from "./terminal-audio.mjs"
 import { TerminalFiles } from "./terminal-files.mjs";
 import { ShortcutsModal } from "./shortcuts.mjs";
 import { WindowWobble } from "./window-wobble.mjs";
+import { MosaicScreensaver } from "./screensaver.mjs";
 import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
 import { normalizePredictionMode } from "./terminal-prediction.mjs";
@@ -263,6 +264,10 @@ const windowWobble = new WindowWobble({
   enabled: () => themeID === "operator" && windowWobbleEnabled && !olderMacMode && !reducedWindowMotion.matches,
 });
 reducedWindowMotion.addEventListener("change", () => windowWobble.stop());
+const screensaver = new MosaicScreensaver({
+  reducedMotion: () => reducedWindowMotion.matches,
+  onClose: () => restorePaneFocusAfterOverlayDismiss(screensaver.element),
+});
 document.addEventListener("visibilitychange", () => { if (document.hidden) windowWobble.stop(); });
 
 function setWindowWobbleEnabled(enabled) {
@@ -2876,7 +2881,16 @@ function updateTerminalRenderState(rect) {
   if (!paused && wasPaused) {
     term.requestFullRedraw?.();
   }
-  setTerminalOutputPaused(rect, paused);
+  // Output pauses only for terminals nobody is perceiving. One playing a
+  // stream is still being listened to, and resuming would replace its socket
+  // and restart the stream. Decide once, on hiding, so a track change while
+  // hidden can't pause it.
+  const terminalState = rect.terminal;
+  if (!paused) terminalState.liveWhileHidden = false;
+  else if (!terminalState.outputPaused && !terminalState.liveWhileHidden) {
+    terminalState.liveWhileHidden = terminalAudioPlayer.streaming(terminalState.audioKey);
+  }
+  setTerminalOutputPaused(rect, paused && !terminalState.liveWhileHidden);
 }
 
 function setTerminalOutputPaused(rect, paused) {
@@ -6507,12 +6521,12 @@ function renderHelpModal() {
     ["Move an OLED window", "Right-click a pane border to arm Move mode, then left-drag the pane."],
     ["Move a standard window", "Drag its title tab."],
     ["Change the active title", "Run Set Window Title... from the command palette."],
+    ["Destroy the active window", "Run Destroy Window from the command palette (code DD)."],
   ]));
   content.appendChild(renderHelpSection("Keyboard shortcuts", [
     ["Command palette", "Ctrl/Cmd+K — search or type a code, ↑/↓ to select, Enter to run"],
     ["Command wheel", "Ctrl/Cmd+; — S opens Settings; other commands use two keys, Backspace to go back"],
     ["Window list", "Ctrl/Cmd+L"],
-    ["Destroy active window", "Ctrl/Cmd+Backspace"],
     ["Next / previous window", "Ctrl/Cmd+] / Ctrl/Cmd+["],
     ["Move window earlier / later", "Ctrl/Cmd+Shift+↑ / Ctrl/Cmd+Shift+↓"],
     ["Reorder highlighted window in Window List", "Ctrl/Cmd+↑ / Ctrl/Cmd+↓"],
@@ -7104,7 +7118,7 @@ function restorePaneFocusAfterOverlayDismiss(overlay) {
     // List from the command palette). The overlay that is still open owns
     // keyboard focus, so returning it to the pane would swallow its arrow keys.
     if ([commandPalette, commandWheel, windowList, settingsModal, localHTTPSModal,
-      renameWindowModal, sessionsModal, sessionActionModal, helpModal, shortcutsUI.element].some(modal => !modal.hidden)) {
+      renameWindowModal, sessionsModal, sessionActionModal, helpModal, shortcutsUI.element, screensaver.element].some(modal => !modal.hidden)) {
       return;
     }
     const focused = document.activeElement;
@@ -7870,6 +7884,7 @@ function buildPaletteCommands() {
     openBrowserPortHelp(active?.kind === browserPaneKind ? active : null);
   } });
   commands.push({ id: "window-list", label: "Window List", hint: "Ctrl+L", run: () => openWindowList() });
+  commands.push({ id: "screensaver", label: "Screensaver", aliases: ["screen saver", "mosaic"], hint: "any key returns", run: () => screensaver.open() });
   commands.push({
     id: "deskbar-button-toggle",
     label: deskbarButtonEnabled ? "Hide Deskbar Button" : "Show Deskbar Button",
@@ -7969,7 +7984,7 @@ function buildPaletteCommands() {
         run: () => applyDockAction(action, dockTarget),
       });
     }
-    commands.push({ id: "destroy-window", label: "Destroy Window", aliases: ["close", "close window"], hint: "Ctrl+Backspace", run: () => destroyActivePane() });
+    commands.push({ id: "destroy-window", label: "Destroy Window", aliases: ["close", "close window"], hint: dockTarget.title, run: () => destroyActivePane() });
   }
   commands.push({ id: "local-https", label: "Local HTTPS...", hint: "server and iPad certificates", run: () => void openLocalHTTPSModal() });
   commands.push({ id: "update-server", label: "Update Server", hint: "server", run: () => void runServerUpdate() });
@@ -8974,7 +8989,7 @@ function paneShortcutAction(keys) {
   // Dialogs and pickers own keyboard input, including relayed iframe keys.
   if ([settingsModal, localHTTPSModal, renameWindowModal, sessionsModal, sessionActionModal,
     serverUpdateModal, serverConnectionModal, workspaceConflictModal, helpModal,
-    directoryBrowser, userSelect, shortcutsUI.element].some((overlay) => !overlay.hidden)) {
+    directoryBrowser, userSelect, shortcutsUI.element, screensaver.element].some((overlay) => !overlay.hidden)) {
     return null;
   }
   const primary = (keys.ctrlKey || keys.metaKey) && !keys.altKey && !keys.shiftKey;
@@ -8999,9 +9014,6 @@ function paneShortcutAction(keys) {
   if ((keys.ctrlKey || keys.metaKey) && keys.shiftKey && !keys.altKey
     && (keys.key === "ArrowUp" || keys.key === "ArrowDown")) {
     return { run: () => moveWindowInOrder(getActivePane(), keys.key === "ArrowUp" ? -1 : 1, { showSwitcher: true }) };
-  }
-  if (primary && (keys.key === "Backspace" || keys.code === "Backspace")) {
-    return { run: destroyActivePane };
   }
   if (primary && (keys.key === "]" || keys.code === "BracketRight")) {
     return { run: () => focusAdjacentPane(1, { showSwitcher: true }) };

@@ -19,7 +19,7 @@ function frame(kind, sequence, offset, payload = new Uint8Array()) {
 }
 
 function fixture() {
-  const sockets = [], calls = [], timers = new Map(), retired = [], audio = [];
+  const sockets = [], calls = [], timers = new Map(), retired = [], audio = [], streaming = new Set();
   let timerID = 0;
   class Socket {
     static CONNECTING = 0; static OPEN = 1; static CLOSED = 3;
@@ -60,7 +60,8 @@ function fixture() {
     ghosttyModulePromise: null, terminalOutputCoalescing: false, authMode: "off", signInEndedCloseCode: 4401, terminalColorMode: "dark", serverConnectionModal: { hidden: true },
     window: { location: { protocol: "http:", host: "localhost:7331" }, setTimeout: schedule, clearTimeout: cancel },
     attachTerminalMouseBridge: () => ({ dispose() {} }), setPaneCwd() {}, sendTerminalGridSize() {}, browserInUse: () => true,
-    terminalAudioPlayer: { receive: (key, event) => audio.push([key, event]), disconnect: key => audio.push([key, "disconnect"]) },
+    terminalAudioPlayer: { receive: (key, event) => audio.push([key, event]), disconnect: key => audio.push([key, "disconnect"]),
+      streaming: key => streaming.has(key) },
     clearTerminalStatus: target => { target.terminalStatus = null; },
     setTerminalStatus: (target, status) => { target.terminalStatus = status; },
     completeTerminalWakeRecovery: target => retired.push(target),
@@ -88,7 +89,7 @@ function fixture() {
     }
   }
   function start() { context.connectTerminalSocket(rect); sockets.at(-1).open(); attach(sockets.at(-1)); drain(); calls.length = 0; }
-  return { context, rect, state, sockets, calls, audio, timers, retired, document, drain, attach, start };
+  return { context, rect, state, sockets, calls, audio, streaming, timers, retired, document, drain, attach, start };
 }
 
 test("pane selection transfers parsing priority and selecting a worksheet clears it", () => {
@@ -141,6 +142,39 @@ test("live audio bypasses hidden text pauses, while stale socket audio is ignore
   assert.equal(f.audio.length, 1);
   f.sockets[1].end(1006);
   assert.deepEqual(f.audio.at(-1), ["audio-key", "disconnect"]);
+});
+
+test("a pane playing a stream stays live while hidden and resumes on the same socket", () => {
+  const cover = { kind: "worksheet", x: 0, y: 0, width: 150, height: 150, zIndex: 2 };
+  for (const [hide, reveal] of [
+    [f => { f.rect.minimized = true; }, f => { f.rect.minimized = false; }],
+    [f => { f.context.rectangles.push(cover); }, f => { f.context.rectangles.pop(); }],
+    [f => { f.document.hidden = true; }, f => { f.document.hidden = false; }],
+  ]) {
+    const f = fixture(); f.start(); f.streaming.add("audio-key");
+    hide(f); f.context.updateTerminalDocumentVisibility();
+    assert.equal(f.state.outputPaused, false);
+    assert.equal(f.state.term.renderPaused, true, "drawing still pauses");
+    const sent = () => f.sockets[0].sent.filter(message => typeof message === "string").map(message => JSON.parse(message).type);
+    assert.ok(!sent().includes("pause-output"));
+    reveal(f); f.context.updateTerminalDocumentVisibility();
+    assert.equal(f.state.term.renderPaused, false);
+    assert.equal(f.sockets.length, 1, "no replacement socket restarts the stream");
+    assert.equal(f.state.liveWhileHidden, false);
+  }
+});
+
+test("whether a hidden pane stays live is decided once, when it is hidden", () => {
+  const f = fixture(); f.start(); f.streaming.add("audio-key");
+  f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);
+  f.streaming.clear(); f.context.updateTerminalRenderState(f.rect);
+  assert.equal(f.state.outputPaused, false, "the gap between tracks doesn't pause it");
+  f.rect.minimized = false; f.context.updateTerminalRenderState(f.rect);
+  f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);
+  assert.equal(f.state.outputPaused, true, "a silent pane pauses as before");
+  f.streaming.add("audio-key"); f.context.updateTerminalRenderState(f.rect);
+  assert.equal(f.state.outputPaused, true, "a stream started while hidden waits for reveal");
+  assert.equal(f.sockets.length, 1);
 });
 
 test("active priority follows minimized, covered, and background-tab visibility", () => {
