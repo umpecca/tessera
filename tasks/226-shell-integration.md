@@ -87,5 +87,11 @@ finished notices (task 227) work without pasting hooks into `~/.zshrc`.
   pane's directory followed `cd /tmp`, Copy Command Output found the last
   output.
 - Full JavaScript suite and `go test ./...` pass (see task 227).
+- First tagged run: the Windows job failed two of the package's tests,
+  which assumed Unix (a 0644 mode check, and paths compared with `/` where
+  `filepath.Join` gives `\`). The tests now skip the mode on Windows and
+  build expected paths with `filepath.Join`, and the cache test points
+  `LocalAppData` at its temporary folder too. The integration itself only
+  runs on Unix.
 - Not yet run on Linux (CI will run the bash test with bash 5) or on the
   iPad.

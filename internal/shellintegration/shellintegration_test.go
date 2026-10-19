@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -18,8 +19,12 @@ func TestInstallWritesTheScriptsOnceByContent(t *testing.T) {
 	}
 	for _, name := range []string{"zsh/.zshenv", "zsh/tessera-integration.zsh", "bash/tessera.bash"} {
 		info, err := os.Stat(filepath.Join(root, name))
-		if err != nil || info.Mode().Perm() != 0o644 {
-			t.Fatalf("%s: %v %v", name, info, err)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		// Windows has no Unix permissions (and starts no zsh or bash).
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o644 {
+			t.Fatalf("%s: mode %v", name, info.Mode())
 		}
 	}
 	// A file changed on disk is put back; the same contents give the same folder.
@@ -42,21 +47,23 @@ func TestInstallWritesTheScriptsOnceByContent(t *testing.T) {
 }
 
 func TestConfigurePointsZshAndBashAtTheScripts(t *testing.T) {
-	root := "/cache/integration"
+	// Paths in the host's own form, as filepath.Join makes them.
+	root := filepath.Join("cache", "integration")
+	zdotdir := "ZDOTDIR=" + filepath.Join(root, "zsh")
 	env := []string{"HOME=/home/me", "ZDOTDIR=/home/me/.config/zsh", "TESSERA_ZSH_ZDOTDIR=stale"}
 	args, got := Configure("/bin/zsh", nil, env, root)
-	if args != nil || !reflect.DeepEqual(got, []string{"HOME=/home/me", "TESSERA_ZSH_ZDOTDIR=/home/me/.config/zsh", "ZDOTDIR=/cache/integration/zsh"}) {
+	if args != nil || !reflect.DeepEqual(got, []string{"HOME=/home/me", "TESSERA_ZSH_ZDOTDIR=/home/me/.config/zsh", zdotdir}) {
 		t.Fatalf("zsh = %v %v", args, got)
 	}
 	if env[1] != "ZDOTDIR=/home/me/.config/zsh" {
 		t.Fatal("env modified")
 	}
 	_, got = Configure("-zsh", nil, []string{"HOME=/home/me"}, root)
-	if !reflect.DeepEqual(got, []string{"HOME=/home/me", "ZDOTDIR=/cache/integration/zsh"}) {
+	if !reflect.DeepEqual(got, []string{"HOME=/home/me", zdotdir}) {
 		t.Fatalf("zsh without ZDOTDIR = %v", got)
 	}
 	args, got = Configure("/usr/local/bin/bash", []string{"-i"}, env, root)
-	if !reflect.DeepEqual(args, []string{"--rcfile", "/cache/integration/bash/tessera.bash", "-i"}) || !reflect.DeepEqual(got, env) {
+	if !reflect.DeepEqual(args, []string{"--rcfile", filepath.Join(root, "bash", "tessera.bash"), "-i"}) || !reflect.DeepEqual(got, env) {
 		t.Fatalf("bash = %v %v", args, got)
 	}
 	for _, shell := range []string{"/usr/bin/fish", "/bin/sh", "/bin/dash"} {
@@ -68,8 +75,12 @@ func TestConfigurePointsZshAndBashAtTheScripts(t *testing.T) {
 }
 
 func TestRootPutsBackScriptsRemovedWhileRunning(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	// The user cache folder: under HOME on macOS and Linux, LocalAppData on
+	// Windows.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("LocalAppData", home)
 	root, err := Root()
 	if err != nil {
 		t.Fatal(err)

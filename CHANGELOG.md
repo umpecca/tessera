@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Fixed: the release build's generated-files check failed on Zig's cache
-  folder (`.zig-cache/`), which is now ignored.
+  folder (`.zig-cache/`), which is now ignored, and two shell integration
+  tests assumed Unix paths and permissions, failing on Windows.
 
 - Shell integration: Tessera starts zsh and bash (4.4 or later) set up to
   mark prompts and commands (OSC 133) and report their directory (OSC 7), so
