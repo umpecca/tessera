@@ -119,7 +119,7 @@ export class TerminalReplica {
         continue;
       }
       if (this.pending || sequence !== this.queuedSequence + 1) throw new Error("Terminal event sequence has a gap");
-      if (![1, 2, 3, 5, 6, 7].includes(kind) || (kind === 2 && length !== 16) || (kind === 5 && (length !== 1 || payload[0] > 1)) || (kind === 7 && length !== 0)) throw new Error("Unknown terminal event");
+      if (![1, 2, 3, 5, 6, 7, 8].includes(kind) || (kind === 2 && length !== 16) || (kind === 5 && (length !== 1 || payload[0] > 1)) || ((kind === 7 || kind === 8) && length !== 0)) throw new Error("Unknown terminal event");
       if (kind === 6 && (length !== 5 || ![16, 32, 64].includes(new DataView(payload.buffer, payload.byteOffset, length).getUint32(0, true)) || payload[4] > 1)) throw new Error("Invalid image settings event");
       if (kind === 1 && this.queuedOutputBytes + length > this.maximumBacklogBytes) {
         this.recoverBacklog();
@@ -140,6 +140,7 @@ export class TerminalReplica {
         if (kind === 5) this.term.applyConfiguration(payload[0] === 1);
         if (kind === 6) this.term.applyImageSettings(new DataView(payload.buffer, payload.byteOffset, length).getUint32(0, true), payload[4] === 1);
         if (kind === 7) this.term.clearImages();
+        if (kind === 8) this.term.endSynchronizedOutput();
         this.cursor = { ...this.cursor, sequence, offset: streamOffset };
       }, kind === 1 ? length : 0);
     }

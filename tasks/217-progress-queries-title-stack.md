@@ -39,7 +39,8 @@ XTVERSION, and Vim's title going away when you quit it (CSI 22/23 t).
 - `internal/terminalcore/source/report_api.zig`,
   `scripts/patch-terminal-core.mjs`:
   - DECRQM: 1 set, 2 reset, 0 unknown, and 0 for modes 1005, 1015, 1016,
-    2026 and 2048 (2048 is answered from the mode table since task 220). `stream.zig` patched so ANSI mode queries reach it.
+    2026 and 2048 (answered from the mode table since tasks 220 and 221).
+    `stream.zig` patched so ANSI mode queries reach it.
   - XTVERSION: `DCS > | Tessera <version> ST`; `tessera_set_version`.
   - CSI 22/23 t: a ten-title stack; a full reset empties it.
   - OSC 9;4: `tessera_progress_revision`, `tessera_progress`.

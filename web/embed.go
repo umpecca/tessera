@@ -11,7 +11,7 @@ import "embed"
 //go:embed command-wheel.mjs shortcuts.mjs
 //go:embed window-wobble.mjs screensaver.mjs
 //go:embed terminal-audio.mjs terminal-files.mjs
-//go:embed terminal-audio-stream.mjs terminal-working-directory.mjs terminal-attention.mjs terminal-progress.mjs terminal-kitty-keyboard.mjs
+//go:embed terminal-audio-stream.mjs terminal-working-directory.mjs terminal-attention.mjs terminal-progress.mjs terminal-kitty-keyboard.mjs terminal-find.mjs
 //go:embed startup.js
 //go:embed sign-in.mjs terminal-prediction.mjs key-readout.mjs
 var Files embed.FS

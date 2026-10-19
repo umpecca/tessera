@@ -6,9 +6,10 @@ import (
 	"tessera/internal/terminalcore"
 )
 
-// Alert is a bell or desktop notification from the program in a pane, sent
-// to every browser showing it, including ones whose output is paused: those
-// are the panes nobody is looking at, which is when an alert matters.
+// Alert is a bell, a desktop notification or a long command finishing in a
+// pane, sent to every browser showing it, including ones whose output is
+// paused: those are the panes nobody is looking at, which is when an alert
+// matters.
 type Alert struct {
 	Type  string `json:"type"`
 	Epoch string `json:"epoch"`
@@ -16,6 +17,10 @@ type Alert struct {
 	Kind  string `json:"kind"`
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
+	// A finished command: its exit status, if the shell gave one, and how
+	// long it ran. Title is its command line, if the shell sent one.
+	Status  *int `json:"status,omitempty"`
+	Seconds int  `json:"seconds,omitempty"`
 }
 
 const maximumPendingAlerts = 8
@@ -84,8 +89,8 @@ func (s *ManagedSession) publishAlertLocked(alert Alert) {
 	alert.Epoch = s.epoch
 	alert.ID = s.alertSequence
 	// The latest alert waits for a browser to show the pane, so one that
-	// attaches later still hears of it. A bell never hides a notification.
-	if s.unseenAlert == nil || alert.Kind == "notification" || s.unseenAlert.Kind == "bell" {
+	// attaches later still hears of it. A bell never hides anything else.
+	if s.unseenAlert == nil || alert.Kind != "bell" || s.unseenAlert.Kind == "bell" {
 		unseen := alert
 		s.unseenAlert = &unseen
 	}

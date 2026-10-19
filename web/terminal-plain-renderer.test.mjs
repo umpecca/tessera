@@ -185,3 +185,13 @@ for (const key of ["currentSelectionCoords", "hoveredLinkRange"]) {
     assert.equal(calls[0][0], "fallback");
   });
 }
+
+test("rows with search matches retain normal rendering, other rows stay fast", () => {
+  const {renderer, cell, calls} = fixture();
+  renderer.tesseraSearchRows = new Map([[3, [[0, 0, true]]]]);
+  renderer.renderLine([cell], 3, 1);
+  assert.equal(calls[0][0], "fallback");
+  calls.length = 0;
+  renderer.renderLine([cell], 2, 1);
+  assert.ok(!calls.some(call => call[0] === "fallback"));
+});

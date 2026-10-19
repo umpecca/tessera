@@ -11,7 +11,7 @@ function frame(kind, sequence, offset, data = new Uint8Array()) {
 }
 function fixture(options = {}, coordinator = null) {
   let queue = [], calls = [], errors = [];
-  const term = Object.fromEntries(["write", "restoreSnapshot", "applyGeometry", "applyConfiguration", "applyImageSettings", "clearImages"].map(name => [name, (...args) => calls.push([name, ...args])]));
+  const term = Object.fromEntries(["write", "restoreSnapshot", "applyGeometry", "applyConfiguration", "applyImageSettings", "clearImages", "endSynchronizedOutput"].map(name => [name, (...args) => calls.push([name, ...args])]));
   const scheduler = coordinator ? new TerminalWriteScheduler(() => {}, { coordinator })
     : { enqueueTask(task) { queue.push(task); }, reset() { queue = []; } };
   const replica = new TerminalReplica(term, scheduler, "core", text => calls.push(["clipboard", text]), error => errors.push(error), options);
@@ -116,6 +116,18 @@ test("one replica's backlog recovery cancels only its own parsing work", () => {
   assert.deepEqual(a.calls.map(call => call[0]), ["restoreSnapshot"]);
   assert.equal(b.replica.cursor.sequence, 4);
   assert.deepEqual(b.calls.map(call => call[0]), ["restoreSnapshot", "write"]);
+});
+
+test("the host's end of an unended redraw applies in order, after the output before it", () => {
+  const f = fixture(); f.replica.attach(attach);
+  f.replica.receive(frame(4, 3, 12, new Uint8Array(4))); f.drain();
+  f.replica.receive(frame(1, 4, 12, new Uint8Array([65])));
+  f.replica.receive(frame(8, 5, 13));
+  f.replica.receive(frame(1, 6, 13, new Uint8Array([66])));
+  f.drain();
+  assert.deepEqual(f.calls.slice(-3).map(call => call[0]), ["write", "endSynchronizedOutput", "write"]);
+  assert.equal(f.replica.cursor.sequence, 6);
+  assert.throws(() => f.replica.receive(frame(8, 7, 14, new Uint8Array([1]))), /Unknown terminal event/, "it carries no payload");
 });
 
 test("image controls apply in order and advance the watermark only after application", () => {

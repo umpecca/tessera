@@ -60,7 +60,7 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		TerminalWheelSensitivity: 0.5,
 		OLEDWindowBorderSize:     16, TerminalTERM: "xterm-ghostty", TerminalFont: "fira-code",
 		TerminalColorMode: "light", OlderMacMode: true,
-		TerminalRowSpacing: "comfortable",
+		TerminalRowSpacing: "comfortable", TerminalShellIntegrationOff: true,
 	}
 	if err := st.SaveUserSettings(ctx, settings); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -70,8 +70,21 @@ func TestSessionCRUDAndUserSettings(t *testing.T) {
 		t.Fatalf("load settings: %v", err)
 	}
 	if loaded.DefaultPaneFontSize != 18 || loaded.DefaultTheme != "studio" || loaded.ThemeID != "hacker" || loaded.DeskbarButtonEnabled ||
-		loaded.TerminalWheelSensitivity != 0.5 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalRowSpacing != "comfortable" || loaded.TerminalColorMode != "light" || !loaded.OlderMacMode {
+		loaded.TerminalWheelSensitivity != 0.5 || loaded.OLEDWindowBorderSize != 16 || loaded.TerminalTERM != "xterm-ghostty" || loaded.TerminalFont != "fira-code" || loaded.TerminalRowSpacing != "comfortable" || loaded.TerminalColorMode != "light" || !loaded.OlderMacMode || !loaded.TerminalShellIntegrationOff {
 		t.Fatalf("loaded settings = %+v", loaded)
+	}
+}
+
+func TestShellIntegrationIsOnUntilTurnedOff(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "integration.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	settings, err := st.LoadUserSettings(ctx, "bob")
+	if err != nil || settings.TerminalShellIntegrationOff {
+		t.Fatalf("new settings = %+v, %v", settings, err)
 	}
 }
 

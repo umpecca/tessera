@@ -167,6 +167,9 @@ type ManagedSession struct {
 	focused                           bool
 	progress                          Progress
 	progressRevision                  uint32
+	synchronizedOutputStarts          uint32
+	command                           *runningCommand
+	synchronizedOutputTimer           *time.Timer
 }
 
 const outputTimingSlots = 512
@@ -187,7 +190,7 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, rows int, cursor Cursor) (*ManagedSession, *Attachment, error) {
+func (m *Manager) Attach(workspaceID, paneID, cwd string, launch Launch, cols, rows int, cursor Cursor) (*ManagedSession, *Attachment, error) {
 	if m == nil {
 		return nil, nil, errors.New("terminal manager is not available")
 	}
@@ -214,15 +217,15 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 	if err != nil {
 		return nil, nil, err
 	}
-	session, err := Start(cwd, terminalTerm, cols, rows)
+	session, err := Start(cwd, launch, cols, rows)
 	if err != nil {
 		core.Close()
 		return nil, nil, err
 	}
-	if terminalTerm == "" {
-		terminalTerm = defaultTerminalTERM
+	if launch.TERM == "" {
+		launch.TERM = defaultTerminalTERM
 	}
-	_ = core.SetTermName(terminalTerm)
+	_ = core.SetTermName(launch.TERM)
 	managed := &ManagedSession{
 		manager:     m,
 		workspaceID: workspaceID,
@@ -398,6 +401,9 @@ func (s *ManagedSession) Close() {
 		s.terminated.Store(true)
 		s.mu.Lock()
 		session := s.session
+		if s.synchronizedOutputTimer != nil {
+			s.synchronizedOutputTimer.Stop()
+		}
 		s.mu.Unlock()
 		if session != nil {
 			_ = session.Close()
@@ -676,6 +682,7 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 	var fileCommands []terminalfile.Command
 	var notifications []terminalcore.Notification
 	var rang bool
+	var commandAlerts []Alert
 	var progress Progress
 	var progressChanged bool
 	var clean []byte
@@ -741,6 +748,14 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 		}
 		notifications = append(notifications, coreNotifications...)
 		rang = rang || coreRang
+		finished, commandErr := s.readCommandsLocked(readAt)
+		if commandErr != nil {
+			s.mu.Unlock()
+			s.markExited(commandErr)
+			s.Close()
+			return
+		}
+		commandAlerts = append(commandAlerts, finished...)
 		coreProgress, changed, progressErr := s.readProgressLocked()
 		if progressErr != nil {
 			s.mu.Unlock()
@@ -780,7 +795,9 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 		event.Epoch = s.epoch
 		s.publishAudioLocked(event)
 	}
+	s.watchSynchronizedOutputLocked()
 	s.publishAlertsLocked(notifications, rang, readAt)
+	s.publishCommandAlertsLocked(commandAlerts, readAt)
 	if progressChanged {
 		s.publishProgressLocked(progress, readAt)
 	}

@@ -34,6 +34,7 @@ import {
   terminalPasteSource,
   terminalShouldSwallowCommandKey,
 } from "./terminal-keyboard.mjs";
+import { TerminalFindBar, terminalFindShortcut } from "./terminal-find.mjs";
 import {
   TerminalContextMenuFallback,
   TerminalMouseHover,
@@ -93,6 +94,7 @@ import {
   mergeTerminalAttention,
   showSystemNotification,
   terminalAttentionLabel,
+  terminalCommandFailed,
   terminalNoticeText,
   TerminalNotices,
 } from "./terminal-attention.mjs";
@@ -164,6 +166,14 @@ let currentSessionID = "";
 let terminalHostName = "";
 const systemNotificationsStorageKey = "tessera.system-notifications.v1";
 let systemNotificationsEnabled = false;
+// Notices when a long command finishes in a window you aren't looking at.
+const commandNoticesStorageKey = "tessera.command-notices.v1";
+let commandNoticesEnabled = true;
+try {
+  commandNoticesEnabled = window.localStorage.getItem(commandNoticesStorageKey) !== "false";
+} catch {
+  // Browser storage is unavailable; notices stay on.
+}
 try {
   systemNotificationsEnabled = window.localStorage.getItem(systemNotificationsStorageKey) === "true";
 } catch {
@@ -221,6 +231,8 @@ let deskbarButtonEnabled = true;
 let terminalWheelSensitivity = defaultWheelSensitivity;
 let oledWindowBorderSize = defaultOLEDBorderSize;
 let terminalTerm = defaultTerminalTERM;
+// Starting zsh and bash set up to mark prompts and report their directory.
+let terminalShellIntegration = true;
 let terminalFont = defaultTerminalFont;
 let terminalRowSpacing = defaultTerminalRowSpacing;
 let terminalColorMode = defaultTerminalColorMode;
@@ -336,6 +348,16 @@ function setOLEDWindowBorderSize(value, { save = true } = {}) {
   if (save) {
     scheduleUserSettingsSave();
   }
+}
+
+function setTerminalShellIntegration(enabled) {
+  terminalShellIntegration = enabled === true;
+  scheduleUserSettingsSave();
+}
+
+function setCommandNoticesEnabled(enabled) {
+  commandNoticesEnabled = enabled === true;
+  saveBrowserSetting(commandNoticesStorageKey, commandNoticesEnabled);
 }
 
 function setTerminalTERM(value) {
@@ -755,6 +777,7 @@ function applyUserSettings(settings) {
   deskbarButtonEnabled = settings.deskbarButtonEnabled !== false;
   terminalWheelSensitivity = normalizeWheelSensitivity(settings.terminalWheelSensitivity);
   terminalTerm = normalizeTerminalTERM(settings.terminalTerm);
+  terminalShellIntegration = settings.terminalShellIntegrationOff !== true;
   terminalFont = normalizeTerminalFont(settings.terminalFont);
   terminalRowSpacing = normalizeTerminalRowSpacing(settings.terminalRowSpacing);
   terminalColorMode = normalizeTerminalColorMode(settings.terminalColorMode);
@@ -3414,6 +3437,7 @@ function userSettingsPayload() {
       terminalWheelSensitivity,
       oledWindowBorderSize,
       terminalTerm,
+      terminalShellIntegrationOff: !terminalShellIntegration,
       terminalFont,
       terminalRowSpacing,
       terminalColorMode,
@@ -4166,13 +4190,13 @@ function handleTerminalAlert(rect, message) {
   rect.terminalAlertsSeen ??= { epoch: "", id: 0 };
   const alert = acceptTerminalAlert(rect.terminalAlertsSeen, message);
   if (!alert) return;
-  if (terminalPaneFocused(rect)) {
+  if (terminalPaneFocused(rect) || (alert.kind === "command" && !commandNoticesEnabled)) {
     sendTerminalAlertSeen(rect, alert);
     return;
   }
   rect.terminalAttention = mergeTerminalAttention(rect.terminalAttention, alert);
   renderTerminalAttention(rect);
-  if (alert.kind !== "notification") return;
+  if (alert.kind === "bell") return;
   const text = terminalNoticeText(alert, rect.title);
   terminalNotices.show(rect.id, text);
   if (systemNotificationsEnabled && (document.hidden || !document.hasFocus())) {
@@ -4202,7 +4226,8 @@ function renderTerminalAttention(rect) {
   else delete rect.element.dataset.attention;
   if (rect.attentionMark) {
     rect.attentionMark.hidden = !kind;
-    rect.attentionMark.title = kind === "notification" ? "Notification" : kind === "bell" ? "Bell" : "";
+    rect.attentionMark.title = kind === "notification" ? "Notification" : kind === "bell" ? "Bell"
+      : kind === "command" ? (terminalCommandFailed(rect.terminalAttention) ? "Command failed" : "Command finished") : "";
   }
   updatePaneTitleLabels(rect);
   updateDeskbar();
@@ -4242,7 +4267,7 @@ function renderSettingsSystemNotificationsRow() {
   const name = document.createElement("strong");
   name.textContent = "System notifications";
   const detail = document.createElement("span");
-  detail.textContent = "Show notifications from terminal programs (OSC 9 and OSC 777) as system notifications while Tessera is in the background. They always appear in the corner of the page. Saved in this browser.";
+  detail.textContent = "Show notifications from terminal programs (OSC 9 and OSC 777) and command finished notices as system notifications while Tessera is in the background. They always appear in the corner of the page. Saved in this browser.";
   label.append(name, detail);
   const button = document.createElement("button");
   button.type = "button";
@@ -5034,6 +5059,21 @@ function requestTerminalGridSize(terminalState) {
   terminalFits.requestGridSize(terminalState);
 }
 
+// Find in the terminal's scrollback. A one-line selection becomes the text
+// to find.
+function openTerminalFind(rect) {
+  const term = rect?.terminal?.term;
+  if (!term?.search || !rect.body) return;
+  rect.findBar ??= new TerminalFindBar({ term, container: rect.body, onClose: () => term.focus() });
+  const selection = term.getSelection?.() || "";
+  rect.findBar.open(selection && !selection.includes("\n") && selection.length <= 200 ? selection : "");
+}
+
+function moveTerminalFind(rect, older) {
+  if (!rect?.findBar?.isOpen) openTerminalFind(rect);
+  else rect.findBar.select(older);
+}
+
 function disposeTerminal(rect, options = {}) {
   if (!rect?.terminal) {
     if (options.closeServer && rect?.kind === "terminal") {
@@ -5042,6 +5082,8 @@ function disposeTerminal(rect, options = {}) {
     return;
   }
   const terminalState = rect.terminal;
+  rect.findBar?.dispose();
+  rect.findBar = null;
   completeTerminalWakeRecovery(terminalState);
   terminalAudioPlayer.detach(terminalState.audioKey);
   terminalState.files?.dispose();
@@ -6259,6 +6301,8 @@ function renderSettingsModal() {
     renderSettingsTerminalRowSpacingRow(),
     renderSettingsTerminalColorModeRow(),
     renderSettingsTerminalPredictionRow(),
+    renderSettingsToggleRow("Shell integration", "Starts zsh and bash set up to mark their prompts and commands and report their directory, for prompt jumps, Copy Command Output, the window's directory and command finished notices. Applies to new terminals.", terminalShellIntegration, setTerminalShellIntegration),
+    renderSettingsToggleRow("Command finished notices", "A notice when a command that ran for 5 seconds or more finishes in a window you aren't looking at. Needs the shell's prompt marks (Shell integration). Saved in this browser.", commandNoticesEnabled, setCommandNoticesEnabled),
     ...("Notification" in window ? [renderSettingsSystemNotificationsRow()] : []),
   ]));
   content.appendChild(renderSettingsSection("Scroll wheel", [
@@ -6858,6 +6902,7 @@ function renderHelpModal() {
     ["Command palette", "Ctrl/Cmd+K — search or type a code, ↑/↓ to select, Enter to run"],
     ["Command wheel", "Ctrl/Cmd+; — S opens Settings; other commands use two keys, Backspace to go back"],
     ["Window list", "Ctrl/Cmd+L"],
+    ["Find in terminal", "Cmd+F (Ctrl+Shift+F off an Apple keyboard) — Enter / Shift+Enter or Cmd+G / Cmd+Shift+G (F3 / Shift+F3) for older / newer, Escape to close"],
     ["Next / previous window", "Ctrl/Cmd+] / Ctrl/Cmd+["],
     ["Move window earlier / later", "Ctrl/Cmd+Shift+↑ / Ctrl/Cmd+Shift+↓"],
     ["Reorder highlighted window in Window List", "Ctrl/Cmd+↑ / Ctrl/Cmd+↓"],
@@ -8282,6 +8327,13 @@ function buildPaletteCommands() {
   if (dockTarget) {
     if (dockTarget.kind === "terminal" && dockTarget.terminal?.term) {
       commands.push({
+        id: "find-in-terminal",
+        label: "Find in Terminal",
+        aliases: ["search", "find", "search scrollback"],
+        hint: appleKeyboardLayout ? "⌘F" : "Ctrl+Shift+F",
+        run: () => openTerminalFind(dockTarget),
+      });
+      commands.push({
         id: "copy-last-output",
         label: "Copy Last Command Output",
         aliases: ["copy output", "select output"],
@@ -8680,6 +8732,7 @@ function renderTerminalMenu(rect) {
     ["copy", "Copy"],
     ["copy-output", "Copy Command Output"],
     ["paste", "Paste"],
+    ["find", "Find…"],
   ];
   const term = rect?.terminal?.term;
   const hasSelection = Boolean(term?.hasSelection?.() || term?.getSelection?.());
@@ -9107,6 +9160,11 @@ async function applyTerminalMenuAction(action, rect, { row = null } = {}) {
     return;
   }
 
+  if (action === "find") {
+    openTerminalFind(rect);
+    return;
+  }
+
   if (action === "copy-output") {
     // Selecting it shows what was copied. No row means the last command.
     const output = term.commandOutputAt?.(row);
@@ -9122,7 +9180,7 @@ async function applyTerminalMenuAction(action, rect, { row = null } = {}) {
       await writeClipboardText(text);
     } else {
       setWorkspaceStatus("error", "No command output",
-        "Tessera finds a command's output from the prompt marks the shell sends (OSC 133). See the README to turn them on in zsh.",
+        "Tessera finds a command's output from the prompt marks the shell sends (OSC 133). Shell integration (Settings → Terminal) sends them from zsh and bash in new terminals.",
         { autoHideMs: emptyCopyStatusHideMs });
     }
     term.focus();
@@ -9408,6 +9466,11 @@ function paneShortcutAction(keys) {
   }
   if (!commandPalette.hidden || !commandWheel.hidden || !windowList.hidden) {
     return null;
+  }
+  const find = terminalFindShortcut(keys, { appleKeyboard: appleKeyboardLayout });
+  const findPane = find ? getActivePane() : null;
+  if (findPane?.kind === "terminal" && findPane.terminal?.term) {
+    return { run: () => (find === "open" ? openTerminalFind(findPane) : moveTerminalFind(findPane, find === "older")) };
   }
   if ((keys.ctrlKey || keys.metaKey) && keys.shiftKey && !keys.altKey
     && (keys.key === "ArrowUp" || keys.key === "ArrowDown")) {

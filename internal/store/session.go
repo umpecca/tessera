@@ -42,6 +42,9 @@ type UserSettings struct {
 	TerminalRowSpacing       string  `json:"terminalRowSpacing"`
 	TerminalColorMode        string  `json:"terminalColorMode"`
 	OlderMacMode             bool    `json:"olderMacMode"`
+	// Off rather than on, so a save from a page that predates the setting
+	// leaves it on.
+	TerminalShellIntegrationOff bool `json:"terminalShellIntegrationOff"`
 }
 
 const defaultWheelSensitivity = 1.5
@@ -325,7 +328,8 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 	err := s.db.QueryRowContext(ctx, `
 SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled,
        terminal_wheel_sensitivity, oled_window_border_size,
-       terminal_term, terminal_font, terminal_row_spacing, terminal_color_mode, older_mac_mode, revision
+       terminal_term, terminal_font, terminal_row_spacing, terminal_color_mode, older_mac_mode,
+       terminal_shell_integration_off, revision
 FROM user_settings
 WHERE user_id = ?`, userID).Scan(
 		&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme,
@@ -333,7 +337,7 @@ WHERE user_id = ?`, userID).Scan(
 		&settings.TerminalWheelSensitivity,
 		&settings.OLEDWindowBorderSize, &settings.TerminalTERM, &settings.TerminalFont,
 		&settings.TerminalRowSpacing,
-		&settings.TerminalColorMode, &settings.OlderMacMode, &settings.Revision)
+		&settings.TerminalColorMode, &settings.OlderMacMode, &settings.TerminalShellIntegrationOff, &settings.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		now := nowText()
 		if _, err := s.db.ExecContext(ctx, `
@@ -396,9 +400,10 @@ INSERT INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
   oled_window_border_size, terminal_term, terminal_font,
-  terminal_row_spacing, terminal_color_mode, older_mac_mode, created_at, updated_at, revision
+  terminal_row_spacing, terminal_color_mode, older_mac_mode, terminal_shell_integration_off,
+  created_at, updated_at, revision
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
   default_theme = excluded.default_theme,
@@ -411,6 +416,7 @@ ON CONFLICT(user_id) DO UPDATE SET
   terminal_row_spacing = excluded.terminal_row_spacing,
   terminal_color_mode = excluded.terminal_color_mode,
   older_mac_mode = excluded.older_mac_mode,
+  terminal_shell_integration_off = excluded.terminal_shell_integration_off,
   updated_at = excluded.updated_at,
   revision = excluded.revision
 WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? <> '')`, settings.UserID, settings.DefaultPaneFontSize,
@@ -418,7 +424,7 @@ WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? 
 		settings.TerminalWheelSensitivity,
 		settings.OLEDWindowBorderSize, settings.TerminalTERM, settings.TerminalFont,
 		settings.TerminalRowSpacing,
-		settings.TerminalColorMode, settings.OlderMacMode, now, now, nextRevision,
+		settings.TerminalColorMode, settings.OlderMacMode, settings.TerminalShellIntegrationOff, now, now, nextRevision,
 		settings.Revision, settings.Revision, settings.AlternateRevision, settings.AlternateRevision)
 	if err != nil {
 		return fmt.Errorf("save user settings: %w", err)

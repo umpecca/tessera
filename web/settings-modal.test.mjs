@@ -87,6 +87,7 @@ function fixture() {
     commandPalette: { hidden: true }, commandWheel: { hidden: true }, windowList: { hidden: true },
     compatibilityUpdateTimer: null, settingsReturnFocus: null,
     defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,
+    terminalShellIntegration: true, commandNoticesEnabled: true, setTerminalShellIntegration() {}, setCommandNoticesEnabled() {},
     setWindowWobbleEnabled() {},
     terminalWheelSensitivity: 1, editorWheelSensitivity: 1,
     terminalPaintCoalescing: true, terminalOutputCoalescing: false,
@@ -174,6 +175,8 @@ test("Settings leads with everyday preferences and hides technical controls by d
   const labels = f.context.settingsFocusControls().map(control => control.getAttribute("aria-label"));
   assert.ok(labels.includes("Terminal font"));
   assert.ok(labels.includes("Terminal row spacing"));
+  assert.ok(labels.includes("Shell integration"));
+  assert.ok(labels.includes("Command finished notices"));
   for (const label of ["Terminal renderer", "Paint coalescing", "Server output coalescing", "Terminal output backlog", "Terminal TERM value"]) {
     assert.ok(!labels.includes(label), label);
     assert.ok(advanced.querySelectorAll("select, input").some(control => control.getAttribute("aria-label") === label));

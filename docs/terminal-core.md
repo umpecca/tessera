@@ -38,7 +38,10 @@ upstream WASM patch, then applies `scripts/patch-terminal-core.mjs` and the
 tracked Zig extensions in `internal/terminalcore/source/`. Each build gets a
 fresh checkout under `.cache/terminal-core`; existing checkouts are untouched.
 The verification command compares the rebuilt bytes with the bundled artifact.
-CI runs this comparison, regenerates the JavaScript bundle, and runs tests.
+On a release tag, CI builds the core and every other generated file (the
+browser bundles and the clipboard extension package) from source, fails if
+any committed copy differs, runs the tests, and builds each platform's
+binary from the files it built.
 
 On macOS 27 and later, Zig 0.15.2 cannot link the native build runner: the
 SDKs' `libSystem.tbd` stubs list `arm64e-macos` but not `arm64-macos`, so every
@@ -105,8 +108,8 @@ Queries, title stack and progress: the upstream API drops DECRQM, XTVERSION,
 CSI 22/23 t and OSC 9;4. Tessera answers DECRQM from the mode table as
 Ghostty does (1 set, 2 reset, 0 unknown), but answers 0 for modes the core
 tracks and Tessera does not act on: mouse formats 1005, 1015 and 1016 (the
-browser always sends SGR reports) and synchronized output (2026). Upstream's parser read only DEC mode queries; its ANSI
-branch (one `$` intermediate) was unreachable and is patched in. XTVERSION
+browser always sends SGR reports). Upstream's parser read only DEC mode
+queries; its ANSI branch (one `$` intermediate) was unreachable and is patched in. XTVERSION
 answers `DCS > | Tessera <version> ST`, the version set by the host with
 `tessera_set_version` (at most 64 printable characters, no spaces; the Go
 core passes `internal/version` without a leading `v`). CSI 22 and 23 with
@@ -134,9 +137,7 @@ DCS string to its hook, which Tessera gave to the Sixel decoder. DCS strings
 that aren't Sixel now go to Ghostty's own DCS parser (`dcs.zig`, limited to
 4 KiB), and its commands are answered as Ghostty's app answers them.
 XTGETTCAP (`DCS + q names ST`) answers each name in order from Ghostty's
-terminfo, built at compile time without `Su`, `Smulx`, `Setulc` and `Sync`
-(the renderer draws one plain underline, and 2026 is reported
-unrecognised). `TN` is the TERM set by the host with
+terminfo, built at compile time. `TN` is the TERM set by the host with
 `tessera_set_term_name` (the Go host passes the configured TERM; same rules
 as the version). Unlike Ghostty, which says nothing, an unknown name gets
 xterm's `DCS 0 + r name ST`. DECRQSS (`DCS $ q setting ST`) reports SGR,
@@ -145,6 +146,80 @@ DECSCUSR, DECSTBM and DECSLRM, and `DCS 0 $ r ST` for anything else. Mode
 from `tessera_sixel_geometry`, which the host calls after every resize, when
 the size differs from the last report. The Go host writes the replies to the
 PTY after resizing it.
+
+Synchronized output (mode 2026): the core tracks the mode, snapshots carry
+it, and DECRQM and XTGETTCAP (`Sync`) report it. The browser's render frame
+paints nothing while its own core has the mode on, so a redraw split across
+output messages and write chunks is shown once, whole; the write that turns
+it off asks for the paint. As in Ghostty, a redraw left open for a second
+is ended: `tessera_synchronized_output_starts` counts the program turning
+the mode on, the host restarts a one-second timer at each new start, and
+when it fires with the mode still on, `tessera_end_synchronized_output`
+turns it off in the host's core and a `StateSynchronizedOutputEnd` event
+(kind 8, no payload) does the same in each browser's core at that point in
+the output, so snapshots and DECRQM agree. The frames only see the mode
+between writes, and the host's timer restarts with every redraw, so redraws
+arriving back to back could find it on at every frame: the browser also
+limits a hold to a second, after which painting goes on as usual until a
+frame finds the mode off. `ghostty_terminal_resize` turns the mode off when
+the size changes, as Ghostty's resize does, in both cores at the same point
+in the output.
+
+Underline styles and colours: the core keeps each cell's underline style
+(SGR 4:0-4:5 and 21) and colour (SGR 58/59), but the upstream cell reads
+pass only an underline flag. Tessera's cell reads (the viewport, one row,
+and a history line) put the style, Ghostty's SGR enum (1 single, 2 double,
+3 curly, 4 dotted, 5 dashed), in bits 0-2 of the cell's spare last byte, and
+set bit 3 when the underline has its own colour. That colour, palette
+entries resolved, is written as `0xRRGGBB` at the cell's index in the read
+to a buffer `tessera_underline_colors(handle)` points to, valid until the
+next read. `scripts/ghostty-web-underlines.mjs` makes ghostty-web's two
+cell decoders read the byte (`cell.underline`) and, only when bit 3 is set,
+the colour (`cell.underline_color`); it fails the build if the pinned
+decoders change. `web/terminal-underlines.mjs` draws the style in place of
+ghostty-web's plain line, in the underline's colour or the text's, inside
+the cell; a plain underline in the text colour is still ghostty-web's own.
+XTGETTCAP reports `Su`, `Smulx` and `Setulc`.
+
+Scrollback search: Ghostty's own searcher (`search/screen.zig`): ASCII
+case-insensitive, matches across soft-wrapped rows, results tracked with
+pins so they survive new output and history trimming. Tessera keeps one
+search per terminal in the stream handler: `tessera_search_start(handle,
+needle, len)` (1 to 1024 bytes; selects the newest match; returns the
+count), `tessera_search_update` (re-searches the active area and any new
+history; restarts on the shown screen if a program switched screens),
+`tessera_search_select(handle, older)` (no wrapping),
+`tessera_search_selected` (index, newest first, or -1),
+`tessera_search_matches(handle, out, capacity)` (start row, start column,
+end row, end column per match, rows from the top of the history, newest
+first; `0xFFFFFFFF` for a match no longer on the screen) and
+`tessera_search_end`. The search holds tracked pins on its screen, so a full
+reset (which frees the alternate screen) ends it, and the handler ends it
+before the terminal is freed; a snapshot import is a new terminal, so the
+browser starts its search again. Ghostty's formatter, which the searcher
+reads page text through, counts bytes in a `u64` used as a `usize`; the
+patch casts it so it compiles for wasm32. Only the browser's core searches;
+the find bar, the highlighting (a renderer patch drawing match cells, which
+the plain renderer leaves to the per-cell path) and scrolling to the
+selected match are in `web/terminal-find.mjs`,
+`web/terminal-search-highlight.mjs` and `web/terminal-entry.js`.
+
+Command events: Ghostty's parser reads the command line from OSC 133;C
+(`cmdline=`, printf `%q` form, or `cmdline_url=`, percent-encoded) and the
+exit status from OSC 133;D, but the stream dropped the command line and the
+WASM handler both. The patch hands the command line to the handler
+(`commandLine`, cut to 512 bytes on a UTF-8 boundary, used by the next C
+only), and the handler queues events (at most 64 KiB):
+`tessera_command_read(handle, out, capacity)` drains them, each a u32
+length, a kind (1 started, with the command line; 2 finished with a status;
+3 finished without one) and the status. The Go host times a command from
+its start to its end at the times it read them; a second start before an
+end (two sets of prompt hooks) is the same command, and an end with no start
+(a prompt cancelled at the keyboard) is ignored. One that ran at least 5
+seconds and ended while no browser had the pane focused becomes a `command`
+alert (`title` the command line, `status`, `seconds`), sent and kept like
+notifications. The shell scripts that send these marks are in
+`internal/shellintegration`.
 
 OSC 7 and OSC 22: the upstream API parses both. It drops the working
 directory report and keeps the pointer shape with no way to read it.

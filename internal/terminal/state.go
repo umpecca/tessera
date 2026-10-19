@@ -16,6 +16,7 @@ const StateSnapshot byte = 4
 const StateConfiguration byte = 5
 const StateImageSettings byte = 6
 const StateClearImages byte = 7
+const StateSynchronizedOutputEnd byte = 8
 
 // Bound both copying and parser visits when a paused browser catches up. Tiny
 // progress/control writes must not fit an arbitrarily long replay by byte size.

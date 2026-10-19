@@ -23,6 +23,8 @@ import { TerminalLinkHover } from "./terminal-link-hover.mjs";
 import { defaultTerminalPointerShape, terminalPointerShape } from "./terminal-pointer-shape.mjs";
 import { adjacentPrompt, commandOutput, lastCommandOutput, promptStarts } from "./terminal-prompts.mjs";
 import { terminalThemeWithProgramColors } from "./terminal-colors.mjs";
+import { installTerminalUnderlines } from "./terminal-underlines.mjs";
+import { installTerminalSearchHighlights } from "./terminal-search-highlight.mjs";
 import { HyperlinkProvider, RoutedLinkProvider, replaceLinkProvider } from "./terminal-links.mjs";
 import {
   installPlainRenderer,
@@ -31,7 +33,17 @@ import {
 } from "./terminal-plain-renderer.mjs";
 
 const renderScheduler = new TerminalRenderScheduler();
+// A program that never ends synchronized output is painted after this long,
+// as in Ghostty.
+export const synchronizedOutputTimeoutMs = 1000;
+// Output arriving during a search is searched this long after it stops, at
+// most this often while it keeps coming.
+export const searchUpdateDelayMs = 150;
+// Matches read for highlighting; the count covers all of them.
+export const searchMatchLimit = 10000;
 installTerminalFontMetrics(CanvasRenderer);
+installTerminalUnderlines(CanvasRenderer);
+installTerminalSearchHighlights(CanvasRenderer);
 installSixelRenderer(CanvasRenderer);
 installTerminalScrollRenderer(CanvasRenderer);
 installTerminalPixelGrid(CanvasRenderer);
@@ -117,6 +129,46 @@ class Terminal extends GhosttyTerminal {
     this.predictionOverlayDirty = false;
     this.predictionTimer = null;
     this.predictionAlternateScreen = false;
+    this.synchronizedOutputTimer = null;
+    this.synchronizedOutputTimedOut = false;
+    this.searchNeedle = "";
+    this.searchCount = 0;
+    this.searchResults = null;
+    this.searchTimer = null;
+    this.searchRevision = 0;
+    this.searchRowsCache = null;
+    this.searchListeners = new Set();
+  }
+
+  // The host ended a redraw the program left open for a second, at this
+  // point in the output, as Ghostty does.
+  endSynchronizedOutput() {
+    const b = this.wasmTerm;
+    b?.exports?.tessera_end_synchronized_output?.(b.handle);
+    this.requestRender();
+  }
+
+  // Synchronized output (mode 2026): a program brackets a redraw so it is
+  // shown whole, not half drawn across output chunks. Painting waits while the
+  // mode is on; the write that ends it asks for the paint. A redraw the
+  // program never ends is ended by the host after a second. Frames only see
+  // the mode between writes, so redraws arriving back to back can find it on
+  // every time: after synchronizedOutputTimeoutMs of that, painting goes on
+  // as usual until a frame finds the mode off.
+  holdingSynchronizedOutput() {
+    if (!this.wasmTerm?.getMode?.(2026, false)) {
+      globalThis.clearTimeout(this.synchronizedOutputTimer);
+      this.synchronizedOutputTimer = null;
+      this.synchronizedOutputTimedOut = false;
+      return false;
+    }
+    if (this.synchronizedOutputTimedOut) return false;
+    this.synchronizedOutputTimer ??= globalThis.setTimeout(() => {
+      this.synchronizedOutputTimer = null;
+      this.synchronizedOutputTimedOut = true;
+      this.requestRender();
+    }, synchronizedOutputTimeoutMs);
+    return true;
   }
 
   // predictInput sees keyboard input before it is sent. A printable
@@ -297,6 +349,7 @@ class Terminal extends GhosttyTerminal {
       this.fullRedrawPending = true;
       return;
     }
+    if (this.holdingSynchronizedOutput()) return;
     const nativePixelRatio = globalThis.devicePixelRatio || 1;
     const pixelRatio = this.renderPixelRatioCap > 0
       ? Math.min(nativePixelRatio, this.renderPixelRatioCap) : nativePixelRatio;
@@ -315,6 +368,7 @@ class Terminal extends GhosttyTerminal {
     finally { this.advancingScroll = false; }
     const fadingScrollbar = this.advanceScrollbar();
     const forceFullRedraw = resolutionChanged || this.fullRedrawPending;
+    this.renderer.tesseraSearchRows = this.searchRowsInView();
     try {
       this.renderer.render(
         this.wasmTerm,
@@ -371,6 +425,7 @@ class Terminal extends GhosttyTerminal {
       }
     }
     this.sixelRenderer.prune(this.wasmTerm);
+    this.scheduleSearchUpdate();
     this.checkPredictions();
     this.linkHover.recheck();
     renderScheduler.noteOutput(this);
@@ -390,6 +445,7 @@ class Terminal extends GhosttyTerminal {
     this.syncPointerShape();
     this.colorRevision = null;
     this.syncColors();
+    this.restartSearch();
     this.requestRender();
   }
 
@@ -507,6 +563,120 @@ class Terminal extends GhosttyTerminal {
     if (row === null) return false;
     this.smoothScrollTo(Math.max(0, scrollback - row));
     return true;
+  }
+
+  // Scrollback search, with the core's searcher: ASCII case-insensitive,
+  // matches across wrapped rows, kept up to date as output arrives. Starts a
+  // search for needle ("" ends it), selects the newest match and scrolls to
+  // it. onSearchChange fires with searchResults after every change.
+  search(needle, { reveal = true } = {}) {
+    const b = this.wasmTerm, e = b?.exports;
+    if (!e?.tessera_search_start) return null;
+    globalThis.clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    this.searchNeedle = needle || "";
+    if (!this.searchNeedle) {
+      e.tessera_search_end(b.handle);
+      this.searchCount = 0;
+      this.readSearch(false);
+      return null;
+    }
+    const bytes = new TextEncoder().encode(this.searchNeedle), size = Math.max(1, bytes.length);
+    const ptr = e.ghostty_wasm_alloc_u8_array(size);
+    try {
+      new Uint8Array(e.memory.buffer).set(bytes, ptr);
+      this.searchCount = e.tessera_search_start(b.handle, ptr, bytes.length);
+    } finally { e.ghostty_wasm_free_u8_array(ptr, size); }
+    this.readSearch(reveal);
+    return this.searchResults;
+  }
+
+  onSearchChange(listener) {
+    this.searchListeners.add(listener);
+    return { dispose: () => this.searchListeners.delete(listener) };
+  }
+
+  // Selects the next older match (older) or newer one and scrolls to it.
+  // Returns whether there was one; it doesn't wrap.
+  searchSelect(older) {
+    const b = this.wasmTerm, e = b?.exports;
+    if (!this.searchNeedle || !e?.tessera_search_select) return false;
+    const moved = e.tessera_search_select(b.handle, older ? 1 : 0) !== 0;
+    this.readSearch(moved);
+    return moved;
+  }
+
+  // Output during a search: search it once it stops arriving.
+  scheduleSearchUpdate() {
+    if (!this.searchNeedle || this.searchTimer !== null) return;
+    this.searchTimer = globalThis.setTimeout(() => {
+      this.searchTimer = null;
+      const b = this.wasmTerm, e = b?.exports;
+      if (!this.searchNeedle || !e?.tessera_search_update || this.isDisposed) return;
+      this.searchCount = e.tessera_search_update(b.handle);
+      this.readSearch(false);
+    }, searchUpdateDelayMs);
+  }
+
+  // A new core (a snapshot or a reset) has no search; start it again.
+  restartSearch() {
+    if (this.searchNeedle) this.search(this.searchNeedle, { reveal: false });
+  }
+
+  readSearch(reveal) {
+    const b = this.wasmTerm, e = b?.exports;
+    let matches = [], selected = -1;
+    if (this.searchNeedle && e?.tessera_search_matches) {
+      const capacity = Math.min(this.searchCount, searchMatchLimit);
+      if (capacity > 0) {
+        const ptr = e.ghostty_wasm_alloc_u8_array(capacity * 16);
+        try {
+          const count = e.tessera_search_matches(b.handle, ptr, capacity);
+          const data = new Uint32Array(e.memory.buffer, ptr, count * 4);
+          for (let i = 0; i < count; i++) matches.push([data[i * 4], data[i * 4 + 1], data[i * 4 + 2], data[i * 4 + 3]]);
+        } finally { e.ghostty_wasm_free_u8_array(ptr, capacity * 16); }
+      }
+      selected = e.tessera_search_selected(b.handle);
+    }
+    this.searchResults = this.searchNeedle ? { needle: this.searchNeedle, count: this.searchCount, selected, matches } : null;
+    this.searchRevision++;
+    if (reveal) this.revealSearchMatch();
+    this.requestFullRedraw();
+    for (const listener of this.searchListeners) listener(this.searchResults);
+  }
+
+  // Scrolls the selected match into view, a third of the way down, unless
+  // it already shows.
+  revealSearchMatch() {
+    const match = this.searchResults?.matches[this.searchResults.selected];
+    if (!match || match[0] === 0xffffffff) return;
+    const scrollback = this.getScrollbackLength();
+    const top = scrollback - Math.round(this.smoothScroll.target ?? this.viewportY);
+    if (match[0] >= top && match[2] < top + this.rows) return;
+    const wanted = Math.min(scrollback, Math.max(0, match[0] - Math.floor(this.rows / 3)));
+    this.smoothScrollTo(scrollback - wanted);
+  }
+
+  // The matches showing, by viewport row: [first column, last column,
+  // selected], for the renderer to highlight.
+  searchRowsInView() {
+    const results = this.searchResults;
+    if (!results?.matches.length) return null;
+    const top = this.getScrollbackLength() - Math.floor(this.viewportY);
+    const key = `${this.searchRevision}:${top}:${this.rows}:${this.cols}`;
+    if (this.searchRowsCache?.key === key) return this.searchRowsCache.rows;
+    let rows = new Map();
+    results.matches.forEach(([y0, x0, y1, x1], index) => {
+      if (y0 === 0xffffffff || y1 < top || y0 >= top + this.rows) return;
+      for (let y = Math.max(y0, top); y <= Math.min(y1, top + this.rows - 1); y++) {
+        const ranges = rows.get(y - top) || [];
+        ranges.push([y === y0 ? x0 : 0, y === y1 ? x1 : this.cols - 1, index === results.selected]);
+        rows.set(y - top, ranges);
+      }
+    });
+    if (!rows.size) rows = null;
+    this.searchRowsCache = { key, rows };
+    return rows;
   }
 
   // The rows of output of the command entered at the prompt at or above
@@ -718,6 +888,7 @@ class Terminal extends GhosttyTerminal {
     this.linkDetector?.invalidateCache();
     this.renderer.resize(this.cols, this.rows);
     this.fullRedrawPending = true;
+    this.restartSearch();
     this.requestRender();
   }
 
@@ -888,6 +1059,8 @@ class Terminal extends GhosttyTerminal {
 
   dispose() {
     globalThis.clearTimeout(this.predictionTimer);
+    globalThis.clearTimeout(this.searchTimer);
+    globalThis.clearTimeout(this.synchronizedOutputTimer);
     this.predictionOverlay?.dispose();
     this.smoothScroll.cancel();
     this.scrollbarFade = null;

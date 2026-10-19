@@ -36,6 +36,9 @@ func TestRetireAudioMigrationPreservesWorkspaceContentAndInvalidatesStaleSaves(t
 	if _, err := db.ExecContext(ctx, `ALTER TABLE panes ADD COLUMN terminal_color_mode TEXT NOT NULL DEFAULT ''`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE user_settings ADD COLUMN terminal_shell_integration_off INTEGER NOT NULL DEFAULT 0`); err != nil {
+		t.Fatal(err)
+	}
 	for _, ws := range []*Workspace{
 		{ID: "mixed", Name: "Project", BackgroundMode: "fit", ThemeID: "operator", ActivePaneID: "shell", Panes: []Pane{
 			{ID: "shell", Kind: "terminal", Title: "Build", Cwd: "C:/project"},
@@ -77,6 +80,9 @@ UPDATE audio_station SET source_kind = 'file', source_value = '/music.mp3';`); e
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE panes DROP COLUMN terminal_color_mode`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE user_settings DROP COLUMN terminal_shell_integration_off`); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.migrate(ctx); err != nil {

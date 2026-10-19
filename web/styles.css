@@ -778,6 +778,81 @@ input {
   cursor: pointer;
 }
 
+/* Find in a terminal's scrollback: a bar in the window's top-right corner. */
+.terminal-find {
+  position: absolute;
+  top: 6px;
+  right: 14px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 28px);
+  padding: 3px;
+  border: 1px solid var(--border-strong);
+  background: var(--chrome-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo),
+    0 2px 8px rgb(0 0 0 / 25%);
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 12px;
+  cursor: default;
+}
+
+.terminal-find[hidden] {
+  display: none;
+}
+
+.terminal-find-input {
+  width: 180px;
+  min-width: 60px;
+  flex: 1 1 auto;
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  padding: 0 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  /* 16px stops iPadOS zooming into the field when it takes focus. */
+  font-size: 16px;
+}
+
+.terminal-find.is-empty .terminal-find-input {
+  border-color: #c0392b;
+}
+
+.terminal-find-status {
+  flex: none;
+  min-width: 72px;
+  padding: 0 6px;
+  color: var(--text-muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.terminal-find-button {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.terminal-find-button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.terminal-find-button:not(:disabled):hover {
+  background: var(--bevel-lo);
+}
+
 /* A window whose program rang the bell or sent a notification while it was
    not being looked at: a dot on its icon, until it is shown. */
 .window-attention {

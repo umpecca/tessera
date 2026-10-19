@@ -12,6 +12,8 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
+
+	"tessera/internal/shellintegration"
 )
 
 type unixPty struct {
@@ -19,7 +21,7 @@ type unixPty struct {
 	cmd  *exec.Cmd
 }
 
-func startPlatformPty(cwd, terminalTerm string, cols, rows int) (platformPty, error) {
+func startPlatformPty(cwd string, launch Launch, cols, rows int) (platformPty, error) {
 	shell := os.Getenv("TESSERA_TERMINAL_SHELL")
 	if shell == "" {
 		shell = os.Getenv("SHELL")
@@ -29,7 +31,15 @@ func startPlatformPty(cwd, terminalTerm string, cols, rows int) (platformPty, er
 	}
 	cmd := exec.Command(shell)
 	cmd.Dir = cwd
-	cmd.Env = terminalEnvironment(os.Environ(), terminalTerm)
+	cmd.Env = terminalEnvironment(os.Environ(), launch.TERM)
+	if launch.ShellIntegration {
+		// Without the scripts the shell still starts, just without them.
+		if root, err := shellintegration.Root(); err == nil {
+			var args []string
+			args, cmd.Env = shellintegration.Configure(shell, nil, cmd.Env, root)
+			cmd.Args = append([]string{shell}, args...)
+		}
+	}
 
 	file, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: uint16(cols),

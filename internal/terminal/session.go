@@ -25,7 +25,16 @@ type platformPty interface {
 	Wait() error
 }
 
-func Start(cwd, terminalTerm string, cols, rows int) (*Session, error) {
+// Launch says how a new terminal's shell starts.
+type Launch struct {
+	// TERM is the terminal type programs see; empty is xterm-256color.
+	TERM string
+	// ShellIntegration starts zsh and bash set up to mark prompts and
+	// commands and report their directory (internal/shellintegration).
+	ShellIntegration bool
+}
+
+func Start(cwd string, launch Launch, cols, rows int) (*Session, error) {
 	if cols < 2 {
 		cols = defaultCols
 	}
@@ -37,11 +46,11 @@ func Start(cwd, terminalTerm string, cols, rows int) (*Session, error) {
 	if info, err := os.Stat(cwd); cwd == "" || err != nil || !info.IsDir() {
 		cwd, _ = os.Getwd()
 	}
-	if terminalTerm == "" {
-		terminalTerm = defaultTerminalTERM
+	if launch.TERM == "" {
+		launch.TERM = defaultTerminalTERM
 	}
 
-	pty, err := startPlatformPty(cwd, terminalTerm, cols, rows)
+	pty, err := startPlatformPty(cwd, launch, cols, rows)
 	if err != nil {
 		return nil, err
 	}

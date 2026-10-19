@@ -34,7 +34,7 @@ func TestUnixTerminalExitReportsProcessStatus(t *testing.T) {
 		t.Run(fmt.Sprintf("exit-%d", code), func(t *testing.T) {
 			manager := NewManager()
 			t.Cleanup(manager.Close)
-			managed, attachment, err := manager.Attach("default", "exit-test", t.TempDir(), "xterm-256color", 80, 24,
+			managed, attachment, err := manager.Attach("default", "exit-test", t.TempDir(), Launch{TERM: "xterm-256color"}, 80, 24,
 				Cursor{OutputPaused: true})
 			if err != nil {
 				t.Fatal(err)
@@ -79,7 +79,7 @@ func TestStartFallsBackWhenTheDirectoryIsGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cwd := range []string{filepath.Join(t.TempDir(), "removed"), "/dev/null"} {
-		session, err := Start(cwd, "xterm-256color", 80, 24)
+		session, err := Start(cwd, Launch{TERM: "xterm-256color"}, 80, 24)
 		if err != nil {
 			t.Fatalf("Start(%q): %v", cwd, err)
 		}

@@ -166,6 +166,20 @@ func (c *Core) Progress() (revision uint32, state int, percent int, err error) {
 	return uint32(value), int(report & 255), percent, nil
 }
 
+// SynchronizedOutputStarts counts the program turning synchronized output
+// (mode 2026) on, wrapping.
+func (c *Core) SynchronizedOutputStarts() (uint32, error) {
+	value, err := c.call("tessera_synchronized_output_starts", c.handle)
+	return uint32(value), err
+}
+
+// EndSynchronizedOutput turns synchronized output off and reports whether
+// it was on.
+func (c *Core) EndSynchronizedOutput() (bool, error) {
+	value, err := c.call("tessera_end_synchronized_output", c.handle)
+	return value != 0, err
+}
+
 // BellCount counts the bells the program has rung, wrapping.
 func (c *Core) BellCount() (uint32, error) {
 	value, err := c.call("tessera_bell_count", c.handle)
@@ -203,6 +217,45 @@ func (c *Core) Notifications() ([]Notification, error) {
 		return nil, errors.New("invalid terminal notification framing")
 	}
 	return notifications, nil
+}
+
+// CommandEvent is a command starting (OSC 133;C, with the command line if
+// the shell sent one) or finishing (OSC 133;D, with its status, or -1).
+type CommandEvent struct {
+	Started bool
+	Line    string
+	Status  int
+}
+
+// Commands drains the command starts and ends since the last call.
+func (c *Core) Commands() ([]CommandEvent, error) {
+	data, err := c.drain("tessera_command_read")
+	if err != nil {
+		return nil, err
+	}
+	var events []CommandEvent
+	for len(data) >= 4 {
+		n := int(binary.LittleEndian.Uint32(data))
+		data = data[4:]
+		if n < 2 || n > len(data) {
+			return nil, errors.New("invalid terminal command event")
+		}
+		switch kind, code := data[0], data[1]; kind {
+		case 1:
+			events = append(events, CommandEvent{Started: true, Line: string(data[2:n]), Status: -1})
+		case 2:
+			events = append(events, CommandEvent{Status: int(code)})
+		case 3:
+			events = append(events, CommandEvent{Status: -1})
+		default:
+			return nil, errors.New("invalid terminal command event")
+		}
+		data = data[n:]
+	}
+	if len(data) != 0 {
+		return nil, errors.New("invalid terminal command event framing")
+	}
+	return events, nil
 }
 
 func (c *Core) ImageSettings() (memoryMiB int, placeholders bool, err error) {

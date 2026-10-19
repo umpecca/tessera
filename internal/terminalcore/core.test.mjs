@@ -326,8 +326,8 @@ test("DECRQM answers from the mode table, except modes Tessera does not act on",
     assert.equal(replies(t), "\x1b[?2004;2$y\x1b[?2004;1$y\x1b[?7;1$y\x1b[4;2$y\x1b[?1004;2$y");
     t.write("\x1b[?1006h\x1b[?1006$p\x1b[?2031$p\x1b[?2027$p");
     assert.equal(replies(t), "\x1b[?1006;1$y\x1b[?2031;2$y\x1b[?2027;1$y", "grapheme clustering is on");
-    t.write("\x1b[?2026h\x1b[?2026$p\x1b[?1015$p\x1b[?1016$p\x1b[?1005$p");
-    assert.equal(replies(t), "\x1b[?2026;0$y\x1b[?1015;0$y\x1b[?1016;0$y\x1b[?1005;0$y", "not acted on");
+    t.write("\x1b[?1015$p\x1b[?1016$p\x1b[?1005$p");
+    assert.equal(replies(t), "\x1b[?1015;0$y\x1b[?1016;0$y\x1b[?1005;0$y", "not acted on");
     t.write("\x1b[?9999$p\x1b[77$p");
     assert.equal(replies(t), "\x1b[?9999;0$y\x1b[77;0$y", "unknown");
   } finally { t.dispose(); }
@@ -381,7 +381,11 @@ test("XTGETTCAP answers from Ghostty's terminfo, with TERM as the name", async (
     assert.equal(query(hex("kbs").toLowerCase()), `\x1bP1+r${hex("kbs")}=7F\x1b\\`, "lower-case hex, and keys as escapes");
     assert.equal(query(hex("Ms")), `\x1bP1+r${hex("Ms")}=${hex("\\E]52;%p1%s;%p2%s\\007")}\x1b\\`, "OSC 52 copying");
     assert.equal(query(hex("fullkbd")), `\x1bP1+r${hex("fullkbd")}\x1b\\`, "the Kitty keyboard protocol");
-    for (const name of ["Smulx", "Setulc", "Su", "Sync", "nosuchcap"]) {
+    assert.equal(query(hex("Sync")), `\x1bP1+r${hex("Sync")}=${hex("\\E[?2026%?%p1%{1}%-%tl%eh%;")}\x1b\\`, "synchronized output");
+    assert.equal(query(hex("Smulx")), `\x1bP1+r${hex("Smulx")}=${hex("\\E[4:%p1%dm")}\x1b\\`, "styled underlines");
+    assert.match(query(hex("Setulc")), /^\x1bP1\+r536574756C63=/, "coloured underlines");
+    assert.equal(query(hex("Su")), `\x1bP1+r${hex("Su")}\x1b\\`);
+    for (const name of ["nosuchcap"]) {
       assert.equal(query(hex(name)), `\x1bP0+r${hex(name)}\x1b\\`, name);
     }
     t.write(`\x1bP+q${"41".repeat(2100)}\x1b\\ok`);
@@ -413,6 +417,41 @@ test("DECRQSS reports SGR, the cursor style and margins, as Ghostty does", async
     t.write("\x1b[?69h\x1b[2;5s");
     assert.equal(query("s"), "\x1bP1$r2;5s\x1b\\");
     assert.equal(query("\"p"), "\x1bP0$r\x1b\\", "an unknown setting");
+  } finally { t.dispose(); }
+});
+
+test("synchronized output (mode 2026) is reported, kept by snapshots and ended by a resize", async () => {
+  const t = await terminal(20, 4);
+  try {
+    const query = () => { t.write("\x1b[?2026$p"); return replies(t); };
+    assert.equal(query(), "\x1b[?2026;2$y");
+    t.write("\x1b[?2026h");
+    assert.equal(query(), "\x1b[?2026;1$y");
+    t.restore(t.snapshot());
+    assert.equal(query(), "\x1b[?2026;1$y", "a snapshot keeps it");
+    t.e.ghostty_terminal_resize(t.handle, 20, 4);
+    assert.equal(query(), "\x1b[?2026;1$y", "the same size is not a resize");
+    t.e.ghostty_terminal_resize(t.handle, 30, 4);
+    assert.equal(query(), "\x1b[?2026;2$y", "a resize ends it");
+    t.write("\x1b[?2026h\x1b[?2026l");
+    assert.equal(query(), "\x1b[?2026;2$y");
+  } finally { t.dispose(); }
+});
+
+test("the host counts redraw starts and can end one the program left open", async () => {
+  const t = await terminal(20, 4);
+  try {
+    const starts = () => t.e.tessera_synchronized_output_starts(t.handle);
+    assert.equal(starts(), 0);
+    t.write("\x1b[?2026h\x1b[?2026l\x1b[?2026h\x1b[?2026h");
+    assert.equal(starts(), 3, "every start, including one while already on");
+    t.write("\x1b[?2026l");
+    assert.equal(starts(), 3, "not ends");
+    assert.equal(t.e.tessera_end_synchronized_output(t.handle), 0, "nothing open");
+    t.write("\x1b[?2026hhalf");
+    assert.equal(t.e.tessera_end_synchronized_output(t.handle), 1);
+    t.write("\x1b[?2026$p");
+    assert.equal(replies(t), "\x1b[?2026;2$y", "ended");
   } finally { t.dispose(); }
 });
 
@@ -682,6 +721,159 @@ test("image-free row updates preserve attachments, then mutations reclaim them b
       assert.equal(t.e.tessera_sixel_image_pixels(t.handle, 1), 0);
     } finally { t.dispose(); }
   }
+});
+
+test("cell reads carry the underline style and its own colour", async () => {
+  const t = await terminal(10, 3);
+  const p = t.e.ghostty_wasm_alloc_u8_array(10 * 16);
+  try {
+    const colours = () => {
+      const at = t.e.tessera_underline_colors(t.handle);
+      return (index) => new Uint32Array(t.e.memory.buffer, at, index + 1)[index];
+    };
+    t.write("\x1b[4:3;58:2::255:0:0mA\x1b[4:4mB\x1b[59mC\x1b[0;4mD\x1b[21mE\x1b[4:5;58:5:2mF\x1b[0mG\x1b[24m");
+    const full = t.cells();
+    const colour = colours();
+    const style = (col, row = 0) => full[(row * 10 + col) * 16 + 15];
+    assert.deepEqual([0, 1, 2, 3, 4, 5, 6].map(col => style(col)), [3 | 8, 4 | 8, 4, 1, 2, 5 | 8, 0],
+      "curly red, dotted red, dotted, single, double, dashed green, none");
+    assert.equal(full[0 * 16 + 10] & 4, 4, "the underline flag is still set");
+    assert.equal(colour(0), 0xff0000);
+    assert.equal(colour(1), 0xff0000);
+    assert.notEqual(colour(5), 0, "a palette colour is resolved");
+    t.write("\x1b[3;1H\x1b[32mg\x1b[0m");
+    const palette = t.cells();
+    assert.equal(colour(5), (palette[20 * 16 + 4] << 16) | (palette[20 * 16 + 5] << 8) | palette[20 * 16 + 6], "to the same green as SGR 32");
+    t.write("\x1b[2;1H\x1b[4:3;58:2::1:2:3mx");
+    assert.equal(t.e.tessera_sixel_viewport_row(t.handle, 1, p, 10), 10);
+    const row = new Uint8Array(t.e.memory.buffer, p, 160).slice();
+    assert.equal(row[15], 3 | 8);
+    assert.equal(colours()(0), 0x010203, "a one-row read indexes from its first cell");
+    t.write("\x1b[0m\r\n\r\n\r\n\r\n");
+    assert.equal(t.e.ghostty_terminal_get_scrollback_line(t.handle, 0, p, 10), 10);
+    const history = new Uint8Array(t.e.memory.buffer, p, 160).slice();
+    assert.equal(history[15], 3 | 8, "history lines too");
+    assert.equal(colours()(0), 0xff0000);
+  } finally { t.e.ghostty_wasm_free_u8_array(p, 10 * 16); t.dispose(); }
+});
+
+function searchFor(t, needle) {
+  const bytes = new TextEncoder().encode(needle);
+  const p = t.e.ghostty_wasm_alloc_u8_array(Math.max(1, bytes.length));
+  new Uint8Array(t.e.memory.buffer).set(bytes, p);
+  const count = t.e.tessera_search_start(t.handle, p, bytes.length);
+  t.e.ghostty_wasm_free_u8_array(p, Math.max(1, bytes.length));
+  return count;
+}
+function searchMatches(t, capacity = 64) {
+  const p = t.e.ghostty_wasm_alloc_u8_array(capacity * 16);
+  try {
+    const count = t.e.tessera_search_matches(t.handle, p, capacity);
+    const data = new Uint32Array(t.e.memory.buffer, p, count * 4).slice();
+    return Array.from({ length: count }, (_, i) => [...data.slice(i * 4, i * 4 + 4)]);
+  } finally { t.e.ghostty_wasm_free_u8_array(p, capacity * 16); }
+}
+
+test("scrollback search finds matches newest first, ignoring ASCII case, across wrapped rows", async () => {
+  const t = await terminal(10, 4);
+  try {
+    t.write("alpha\r\nneedle one\r\nfiller\r\nfiller\r\nNEEDLE two\r\nfiller\r\nxxxxxxneedle\r\n");
+    assert.equal(searchFor(t, "needle"), 3);
+    // Rows count from the top of the history; the last match wraps from
+    // column 6 of one row to column 1 of the next.
+    assert.deepEqual(searchMatches(t), [[6, 6, 7, 1], [4, 0, 4, 5], [1, 0, 1, 5]]);
+    assert.equal(t.e.tessera_search_selected(t.handle), 0, "the newest is selected");
+    assert.equal(t.e.tessera_search_select(t.handle, 1), 1);
+    assert.equal(t.e.tessera_search_select(t.handle, 1), 1);
+    assert.equal(t.e.tessera_search_selected(t.handle), 2);
+    assert.equal(t.e.tessera_search_select(t.handle, 1), 0, "no wrapping past the oldest");
+    assert.equal(t.e.tessera_search_select(t.handle, 0), 1);
+    assert.equal(t.e.tessera_search_selected(t.handle), 1);
+    assert.equal(searchMatches(t, 2).length, 2, "capacity is respected");
+
+    t.write("one more needle\r\n");
+    assert.equal(t.e.tessera_search_update(t.handle), 4, "new output is searched");
+    assert.deepEqual(searchMatches(t)[0], [8, 9, 9, 4]);
+    assert.equal(t.e.tessera_search_selected(t.handle), 2, "the selection stays on the same match");
+
+    assert.equal(searchFor(t, "nothing here"), 0);
+    assert.equal(t.e.tessera_search_selected(t.handle), -1);
+    assert.equal(searchFor(t, ""), 0, "an empty needle ends the search");
+    assert.equal(t.e.tessera_search_update(t.handle), 0);
+    assert.equal(searchFor(t, "x".repeat(1025)), 0);
+    assert.equal(searchFor(t, "ALPHA"), 1);
+    t.e.tessera_search_end(t.handle);
+    assert.equal(t.e.tessera_search_selected(t.handle), -1);
+    assert.equal(searchMatches(t).length, 0);
+  } finally { t.dispose(); }
+});
+
+test("scrollback search follows the shown screen and ends with a full reset", async () => {
+  const t = await terminal(20, 4);
+  try {
+    t.write("shell needle\r\n");
+    assert.equal(searchFor(t, "needle"), 1);
+    t.write("\x1b[?1049h\x1b[Heditor needle needle");
+    assert.equal(t.e.tessera_search_update(t.handle), 2, "the alternate screen once a program shows it");
+    t.write("\x1b[?1049l");
+    assert.equal(t.e.tessera_search_update(t.handle), 1, "and the shell's again after");
+    t.write("\x1b[?1049h");
+    assert.equal(t.e.tessera_search_update(t.handle), 0);
+    t.write("\x1bc");
+    assert.equal(t.e.tessera_search_selected(t.handle), -1, "a full reset ends it");
+    assert.equal(t.e.tessera_search_update(t.handle), 0);
+    t.write("needle\r\n");
+    assert.equal(searchFor(t, "needle"), 1, "and a new one works after");
+  } finally { t.dispose(); }
+});
+
+test("scrollback search survives history being trimmed and the terminal being freed", async () => {
+  const t = await terminal(20, 4);
+  try {
+    for (let i = 0; i < 200; i++) t.write(`line ${i} needle\r\n`);
+    assert.equal(searchFor(t, "needle"), 200);
+    for (let i = 0; i < 2000; i++) t.write(`more output ${i} with a few words to fill pages\r\n`);
+    const count = t.e.tessera_search_update(t.handle);
+    assert.ok(count <= 200);
+    for (const match of searchMatches(t, 256)) assert.ok(match[0] === 0xffffffff || match[0] < 3000, String(match));
+    t.e.ghostty_terminal_resize(t.handle, 30, 6);
+    assert.ok(t.e.tessera_search_update(t.handle) >= 0, "a resize starts it again");
+  } finally { t.dispose(); }
+});
+
+function commandEvents(t) {
+  const e = t.e, ptr = e.ghostty_wasm_alloc_u8_array(4096), chunks = [];
+  try {
+    for (let count; (count = e.tessera_command_read(t.handle, ptr, 4096));) chunks.push(Buffer.from(new Uint8Array(e.memory.buffer, ptr, count)));
+  } finally { e.ghostty_wasm_free_u8_array(ptr, 4096); }
+  const data = Buffer.concat(chunks), events = [];
+  for (let offset = 0; offset < data.length;) {
+    const length = data.readUInt32LE(offset); offset += 4;
+    events.push([data[offset], data[offset + 1], data.subarray(offset + 2, offset + length).toString()]);
+    offset += length;
+  }
+  return events;
+}
+
+test("prompt marks queue command starts, with the command line, and ends, with the status", async () => {
+  const t = await terminal(40, 6);
+  try {
+    t.write("\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\make all\r\n\x1b]133;C;cmdline_url=make%20all\x1b\\building\r\n\x1b]133;D;2\x1b\\");
+    assert.deepEqual(commandEvents(t), [[1, 0, "make all"], [2, 2, ""]]);
+    assert.deepEqual(commandEvents(t), [], "drained");
+    t.write("\x1b]133;C\x1b\\\x1b]133;D\x1b\\");
+    assert.deepEqual(commandEvents(t), [[1, 0, ""], [3, 0, ""]], "no command line, no status");
+    t.write("\x1b]133;C;cmdline=echo\\ hi\x1b\\\x1b]133;D;0\x1b\\");
+    assert.deepEqual(commandEvents(t), [[1, 0, "echo hi"], [2, 0, ""]], "the printf %q form too");
+    t.write(`\x1b]133;C;cmdline_url=${"%C3%A9".repeat(300)}\x1b\\`);
+    const [[, , long]] = commandEvents(t);
+    assert.equal(Buffer.byteLength(long), 512, "cut to 512 bytes");
+    assert.equal(long, "é".repeat(256), "on a character boundary");
+    t.write("\x1b]133;C;cmdline_url=first\x1b\\\x1b]133;C\x1b\\");
+    assert.deepEqual(commandEvents(t), [[1, 0, "first"], [1, 0, ""]], "a command line is used once");
+    for (let i = 0; i < 20000; i++) t.write("\x1b]133;D;1\x1b\\");
+    assert.ok(commandEvents(t).length <= 64 * 1024 / 6, "the queue is bounded");
+  } finally { t.dispose(); }
 });
 
 test("single native row reads match full viewport bytes and reject out-of-range requests", async () => {

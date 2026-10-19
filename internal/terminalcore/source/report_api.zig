@@ -35,3 +35,19 @@ pub fn kitty_keyboard_flags(ptr: ?*anyopaque) callconv(.c) u32 {
     const w: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
     return w.terminal.screens.active.kitty_keyboard.current().int();
 }
+
+/// Counts the program turning synchronized output (mode 2026) on, wrapping,
+/// so the host can time each redraw from its start.
+pub fn synchronized_output_starts(ptr: ?*anyopaque) callconv(.c) u32 {
+    const w: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
+    return w.stream.handler.synchronized_output_starts;
+}
+
+/// Turns synchronized output off, as Ghostty does a second after a program
+/// started a redraw it never ended. Returns whether it was on.
+pub fn end_synchronized_output(ptr: ?*anyopaque) callconv(.c) bool {
+    const w: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
+    const was_on = w.terminal.modes.get(.synchronized_output);
+    w.terminal.modes.set(.synchronized_output, false);
+    return was_on;
+}

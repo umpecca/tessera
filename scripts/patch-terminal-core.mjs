@@ -3,7 +3,7 @@ import path from "node:path";
 
 // Applied only to the pinned source checkout, after ghostty-web's WASM patch.
 const root = path.resolve(process.argv[2] || ".cache/sixel/ghostty-web/ghostty");
-const awaitExtension = await fs.readFile("internal/terminalcore/source/sixel_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/snapshot_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/audio_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/file_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/hyperlink_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pwd_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pointer_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/semantic_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/color_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/attention_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/report_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/query_api.zig", "utf8");
+const awaitExtension = await fs.readFile("internal/terminalcore/source/sixel_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/snapshot_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/audio_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/file_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/hyperlink_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pwd_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pointer_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/semantic_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/color_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/attention_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/report_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/query_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/underline_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/search_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/command_api.zig", "utf8");
 async function edit(file, transform) {
   const target = path.join(root, file);
   const source = await fs.readFile(target, "utf8");
@@ -206,8 +206,8 @@ await edit("src/lib_vt.zig", (source) => {
   const marker = '@export(&c.terminal_write, .{ .name = "ghostty_terminal_write" });';
   source = source.replace(/^\s*@export\(&c\.terminal\.sixel_[^\n]+\n/gm, "");
   const exports = ["version", "configure", "geometry", "image_count", "image_info", "image_pixels", "image_settings", "image_settings_read", "clear_images", "tiles", "viewport_row", "snapshot_export", "snapshot_release", "snapshot_data", "snapshot_import", "clipboard_read", "title_revision", "title_length", "title_data"];
-  source = source.replace(/^\s*@export\(&c\.terminal\.(audio_read|file_read|hyperlink_uri|pwd_[a-z]+|mouse_shape|semantic_rows|color_revision|dynamic_colors|focus|bell_count|notification_read|set_version|progress_revision|progress|kitty_keyboard_flags|set_term_name)[^\n]+\n/gm, "");
-  return replace(source, marker, marker + "\n" + exports.map((name) => `        @export(&c.terminal.sixel_${name}, .{ .name = "tessera_sixel_${name}" });`).join("\n") + '\n        @export(&c.terminal.audio_read, .{ .name = "tessera_audio_read" });\n        @export(&c.terminal.file_read, .{ .name = "tessera_file_read" });\n        @export(&c.terminal.hyperlink_uri, .{ .name = "tessera_hyperlink_uri" });' + ["revision", "length", "data"].map((name) => `\n        @export(&c.terminal.pwd_${name}, .{ .name = "tessera_pwd_${name}" });`).join("") + '\n        @export(&c.terminal.mouse_shape, .{ .name = "tessera_mouse_shape" });\n        @export(&c.terminal.semantic_rows, .{ .name = "tessera_semantic_rows" });\n        @export(&c.terminal.color_revision, .{ .name = "tessera_color_revision" });\n        @export(&c.terminal.dynamic_colors, .{ .name = "tessera_dynamic_colors" });\n        @export(&c.terminal.focus, .{ .name = "tessera_focus" });\n        @export(&c.terminal.bell_count, .{ .name = "tessera_bell_count" });\n        @export(&c.terminal.notification_read, .{ .name = "tessera_notification_read" });\n        @export(&c.terminal.set_version, .{ .name = "tessera_set_version" });\n        @export(&c.terminal.progress_revision, .{ .name = "tessera_progress_revision" });\n        @export(&c.terminal.progress, .{ .name = "tessera_progress" });\n        @export(&c.terminal.kitty_keyboard_flags, .{ .name = "tessera_kitty_keyboard_flags" });\n        @export(&c.terminal.set_term_name, .{ .name = "tessera_set_term_name" });');
+  source = source.replace(/^\s*@export\(&c\.terminal\.(audio_read|file_read|hyperlink_uri|pwd_[a-z]+|mouse_shape|semantic_rows|color_revision|dynamic_colors|focus|bell_count|notification_read|set_version|progress_revision|progress|kitty_keyboard_flags|set_term_name|synchronized_output_starts|end_synchronized_output|underline_colors|search_[a-z]+|command_read)[^\n]+\n/gm, "");
+  return replace(source, marker, marker + "\n" + exports.map((name) => `        @export(&c.terminal.sixel_${name}, .{ .name = "tessera_sixel_${name}" });`).join("\n") + '\n        @export(&c.terminal.audio_read, .{ .name = "tessera_audio_read" });\n        @export(&c.terminal.file_read, .{ .name = "tessera_file_read" });\n        @export(&c.terminal.hyperlink_uri, .{ .name = "tessera_hyperlink_uri" });' + ["revision", "length", "data"].map((name) => `\n        @export(&c.terminal.pwd_${name}, .{ .name = "tessera_pwd_${name}" });`).join("") + '\n        @export(&c.terminal.mouse_shape, .{ .name = "tessera_mouse_shape" });\n        @export(&c.terminal.semantic_rows, .{ .name = "tessera_semantic_rows" });\n        @export(&c.terminal.color_revision, .{ .name = "tessera_color_revision" });\n        @export(&c.terminal.dynamic_colors, .{ .name = "tessera_dynamic_colors" });\n        @export(&c.terminal.focus, .{ .name = "tessera_focus" });\n        @export(&c.terminal.bell_count, .{ .name = "tessera_bell_count" });\n        @export(&c.terminal.notification_read, .{ .name = "tessera_notification_read" });\n        @export(&c.terminal.set_version, .{ .name = "tessera_set_version" });\n        @export(&c.terminal.progress_revision, .{ .name = "tessera_progress_revision" });\n        @export(&c.terminal.progress, .{ .name = "tessera_progress" });\n        @export(&c.terminal.kitty_keyboard_flags, .{ .name = "tessera_kitty_keyboard_flags" });\n        @export(&c.terminal.set_term_name, .{ .name = "tessera_set_term_name" });\n        @export(&c.terminal.synchronized_output_starts, .{ .name = "tessera_synchronized_output_starts" });\n        @export(&c.terminal.end_synchronized_output, .{ .name = "tessera_end_synchronized_output" });\n        @export(&c.terminal.underline_colors, .{ .name = "tessera_underline_colors" });' + ["start", "update", "select", "selected", "matches", "end"].map((name) => `\n        @export(&c.terminal.search_${name}, .{ .name = "tessera_search_${name}" });`).join("") + '\n        @export(&c.terminal.command_read, .{ .name = "tessera_command_read" });');
 });
 for (const file of ["props_uucode.zig", "symbols_uucode.zig"]) {
   await edit(`src/unicode/${file}`, (source) => source.replace("try stdout.end();", "try stdout.interface.flush();"));
@@ -517,12 +517,12 @@ await edit("src/terminal/c/terminal.zig", (source) => {
   source = replace(source, "self.title.clearRetainingCapacity(); self.title_revision +%= 1;", "self.title.clearRetainingCapacity(); self.title_revision +%= 1; self.clearTitleStack();");
   source = replace(source, "    fn kittyColorOperation", `    // DECRPM, as Ghostty answers it, except that modes the core tracks but
     // Tessera does not act on are reported as unrecognised: mouse report
-    // formats other than SGR (Tessera always sends SGR) and synchronized
-    // output. A program told one is supported would rely on it.
+    // formats other than SGR (Tessera always sends SGR). A program told one
+    // is supported would rely on it.
     fn reportMode(self: *ResponseHandler, mode: modespkg.Mode) !void {
         const tag: modespkg.ModeTag = @bitCast(@intFromEnum(mode));
         const state: u8 = switch (mode) {
-            .mouse_format_utf8, .mouse_format_urxvt, .mouse_format_sgr_pixels, .synchronized_output => 0,
+            .mouse_format_utf8, .mouse_format_urxvt, .mouse_format_sgr_pixels => 0,
             else => if (self.terminal.modes.get(mode)) 1 else 2,
         };
         try self.reportModeState(tag.value, tag.ansi, state);
@@ -706,24 +706,118 @@ const DcsCommand = @import("../dcs.zig").Command;`);
     fn kittyColorOperation`);
   source = replace(source, "const ResponseStream = stream.Stream(ResponseHandler);", `const ResponseStream = stream.Stream(ResponseHandler);
 
-// Ghostty's terminfo for XTGETTCAP, without what Tessera doesn't do: styled
-// and coloured underlines (the renderer draws one plain underline) and
-// synchronized output (2026 is reported unrecognised).
+// Ghostty's terminfo for XTGETTCAP.
 const capabilities = blk: {
     @setEvalBranchQuota(1_000_000);
-    const Source = @import("../../terminfo/Source.zig");
-    const ghostty = @import("../../terminfo/main.zig").ghostty;
-    var kept: [ghostty.capabilities.len]Source.Capability = undefined;
-    var count: usize = 0;
-    for (ghostty.capabilities) |cap| {
-        if (std.mem.eql(u8, cap.name, "Su") or std.mem.eql(u8, cap.name, "Smulx") or
-            std.mem.eql(u8, cap.name, "Setulc") or std.mem.eql(u8, cap.name, "Sync")) continue;
-        kept[count] = cap;
-        count += 1;
-    }
-    const final = kept[0..count].*;
-    const source: Source = .{ .names = ghostty.names, .capabilities = &final };
-    break :blk source.xtgettcapMap();
+    break :blk @import("../../terminfo/main.zig").ghostty.xtgettcapMap();
 };`);
+  return source;
+});
+
+// Synchronized output (mode 2026): the browser holds painting while it is on
+// (terminal-entry.js). A resize turns it off, as in Ghostty, so a program
+// redrawing for the new size is shown at once; both the host's core and the
+// browser's resize at the same point in the output.
+await edit("src/terminal/c/terminal.zig", (source) => source.includes("// Tessera: a resize ends synchronized output") ? source : replace(source,
+  "    wrapper.terminal.resize(wrapper.alloc, @intCast(cols), @intCast(rows)) catch return;\n",
+  `    // Tessera: a resize ends synchronized output, as in Ghostty.
+    if (cols != wrapper.terminal.cols or rows != wrapper.terminal.rows) wrapper.terminal.modes.set(.synchronized_output, false);
+    wrapper.terminal.resize(wrapper.alloc, @intCast(cols), @intCast(rows)) catch return;
+`));
+
+// The host ends a redraw a program never ended, a second after it started
+// (see report_api.zig), so it counts each start.
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("synchronized_output_starts: u32")) return source;
+  source = replace(source, "    clipboard: std.ArrayList(u8) = .{},", "    clipboard: std.ArrayList(u8) = .{},\n    synchronized_output_starts: u32 = 0,");
+  return replace(source, "        switch (mode) {", `        if (mode == .synchronized_output and enabled) self.synchronized_output_starts +%= 1;
+        switch (mode) {`);
+});
+
+// Underline styles and colours in cell reads. See underline_api.zig.
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("underline_colors: std.ArrayList(u32)")) return source;
+  source = replace(source, "    sixel: SixelStore = .{},", "    sixel: SixelStore = .{},\n    underline_colors: std.ArrayList(u32) = .{},");
+  source = replace(source, "    wrapper.sixel = .{};", "    wrapper.sixel = .{};\n    wrapper.underline_colors = .{};");
+  source = replace(source, "    wrapper.sixel.deinit(alloc);", "    wrapper.sixel.deinit(alloc);\n    wrapper.underline_colors.deinit(alloc);");
+  source = replace(source, "                .grapheme_len = grapheme_len,\n            };\n            idx += 1;",
+    "                .grapheme_len = grapheme_len,\n                ._pad = tesseraUnderline(wrapper, rs, sty, idx),\n            };\n            idx += 1;");
+  source = replace(source, "            .grapheme_len = grapheme_len,\n        };\n    }\n    return @intCast(cols);",
+    "            .grapheme_len = grapheme_len,\n            ._pad = tesseraUnderline(wrapper, rs, sty, x),\n        };\n    }\n    return @intCast(cols);");
+  return source;
+});
+
+// Scrollback search. See search_api.zig. The search tracks pins on its
+// screen, so a full reset (which frees the alternate screen) and freeing the
+// terminal end it first.
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("search: ?@import(\"../search.zig\").Screen")) return source;
+  source = replace(source, "    clipboard: std.ArrayList(u8) = .{},", "    clipboard: std.ArrayList(u8) = .{},\n    search: ?@import(\"../search.zig\").Screen = null,");
+  source = replace(source, "        self.clipboard.deinit(self.alloc);", "        self.endSearch();\n        self.clipboard.deinit(self.alloc);");
+  source = replace(source, "            .full_reset => { const cw", "            .full_reset => { self.endSearch(); const cw");
+  source = replace(source, "    fn kittyColorOperation", `    pub fn endSearch(self: *ResponseHandler) void {
+        if (self.search) |*s| s.deinit();
+        self.search = null;
+    }
+
+    fn kittyColorOperation`);
+  return source;
+});
+
+// The searcher reads page text through Ghostty's formatter, which counts
+// written bytes in a u64 and uses the count as a usize: fine on 64-bit
+// hosts, a compile error on wasm32.
+await edit("src/terminal/formatter.zig", (source) => {
+  if (source.includes("@as(usize, @intCast(discarding.count))")) return source;
+  if (source.split("discarding.count").length !== 7) throw new Error("Pinned Ghostty source changed: formatter discarding.count");
+  return source.replaceAll("discarding.count", "@as(usize, @intCast(discarding.count))");
+});
+
+// Command events for the host (command_api.zig). Ghostty's parser reads the
+// command line from OSC 133;C but the stream drops it; hand it to the
+// handler first.
+await edit("src/terminal/stream.zig", (source) => source.includes('"commandLine"') ? source : replace(source,
+  "                .end_of_input => try self.handler.vt(.end_of_input, {}),",
+  `                .end_of_input => |v| {
+                    if (@hasDecl(Handler, "commandLine")) self.handler.commandLine(v.cmdline);
+                    try self.handler.vt(.end_of_input, {});
+                },`));
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("commands: std.ArrayList(u8)")) return source;
+  source = replace(source, "    clipboard: std.ArrayList(u8) = .{},", "    clipboard: std.ArrayList(u8) = .{},\n    commands: std.ArrayList(u8) = .{},\n    command_line: [512]u8 = undefined,\n    command_line_len: u16 = 0,");
+  source = replace(source, "        self.clipboard.deinit(self.alloc);", "        self.clipboard.deinit(self.alloc);\n        self.commands.deinit(self.alloc);");
+  source = replace(source, "            .end_of_input => self.terminal.markSemanticPrompt(.command),", `            .end_of_input => {
+                self.terminal.markSemanticPrompt(.command);
+                const line = self.command_line[0..self.command_line_len];
+                self.command_line_len = 0;
+                try self.queueCommand(1, 0, line);
+            },`);
+  source = replace(source, "            .end_of_command => self.terminal.screens.active.cursor.page_row.semantic_prompt = .input,", `            .end_of_command => {
+                self.terminal.screens.active.cursor.page_row.semantic_prompt = .input;
+                if (value.exit_code) |code| try self.queueCommand(2, code, "") else try self.queueCommand(3, 0, "");
+            },`);
+  source = replace(source, "    fn kittyColorOperation", `    // The command line from OSC 133;C, cut to 512 bytes on a UTF-8 boundary.
+    pub fn commandLine(self: *ResponseHandler, line: ?[:0]const u8) void {
+        const text = line orelse return;
+        var n: usize = @min(text.len, self.command_line.len);
+        while (n > 0 and n < text.len and (text[n] & 0xC0) == 0x80) n -= 1;
+        @memcpy(self.command_line[0..n], text[0..n]);
+        self.command_line_len = @intCast(n);
+    }
+
+    // A bounded queue: a program printing marks in a loop must not grow
+    // the host's memory.
+    fn queueCommand(self: *ResponseHandler, kind: u8, code: u8, line: []const u8) !void {
+        if (self.commands.items.len + 6 + line.len > 64 * 1024) return;
+        var length: [4]u8 = undefined;
+        std.mem.writeInt(u32, &length, @intCast(2 + line.len), .little);
+        try self.commands.appendSlice(self.alloc, &length);
+        try self.commands.appendSlice(self.alloc, &.{ kind, code });
+        try self.commands.appendSlice(self.alloc, line);
+    }
+
+    fn kittyColorOperation`);
+  source = replace(source, "    pub fn cancelDcs(self: *ImageResponseHandler) void { self.base.cancelDcs(); }",
+    "    pub fn cancelDcs(self: *ImageResponseHandler) void { self.base.cancelDcs(); }\n    pub fn commandLine(self: *ImageResponseHandler, line: ?[:0]const u8) void { self.base.commandLine(line); }");
   return source;
 });

@@ -3,12 +3,15 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { moveWindowPane } from "./window-switcher.mjs";
+import { terminalFindShortcut } from "./terminal-find.mjs";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 function appFunction(name, globals) {
   globals.shortcutsUI ||= { element: { hidden: true } };
   globals.screensaver ||= { element: { hidden: true } };
   globals.windowListDrag ??= null;
+  globals.terminalFindShortcut ||= terminalFindShortcut;
+  globals.appleKeyboardLayout ??= false;
   const start = source.indexOf(`function ${name}(`);
   const end = source.indexOf("\n}\n", start) + 2;
   return vm.runInNewContext(`(${source.slice(start, end)})`, globals);

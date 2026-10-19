@@ -1,5 +1,5 @@
-// Bells and desktop notifications (OSC 9 and OSC 777) from the programs in
-// terminal panes. The host sends each as a "terminal-alert" message to every
+// Bells, desktop notifications (OSC 9 and OSC 777) and long commands
+// finishing (from the shell's prompt marks, OSC 133) in terminal panes. The host sends each as a "terminal-alert" message to every
 // browser showing the pane, paused or not, and repeats the latest one nobody
 // has seen to each browser that connects.
 
@@ -19,26 +19,49 @@ export function cleanTerminalAlertText(value, limit) {
 // holds the newest alert the pane has had, and is updated.
 export function acceptTerminalAlert(seen, message) {
   if (message?.type !== "terminal-alert" || typeof message.epoch !== "string" || !Number.isSafeInteger(message.id) || message.id < 1) return null;
-  if (message.kind !== "bell" && message.kind !== "notification") return null;
+  if (message.kind !== "bell" && message.kind !== "notification" && message.kind !== "command") return null;
   if (seen.epoch === message.epoch && message.id <= seen.id) return null;
   seen.epoch = message.epoch;
   seen.id = message.id;
   if (message.kind === "bell") return { epoch: message.epoch, id: message.id, kind: "bell" };
+  if (message.kind === "command") {
+    return {
+      epoch: message.epoch, id: message.id, kind: "command",
+      title: cleanTerminalAlertText(message.title, maximumTitleLength),
+      status: Number.isSafeInteger(message.status) && message.status >= 0 && message.status <= 255 ? message.status : null,
+      seconds: Number.isSafeInteger(message.seconds) && message.seconds > 0 ? message.seconds : 0,
+    };
+  }
   const title = cleanTerminalAlertText(message.title, maximumTitleLength);
   const body = cleanTerminalAlertText(message.body, maximumBodyLength);
   return title || body ? { epoch: message.epoch, id: message.id, kind: "notification", title, body } : null;
 }
 
 // What a pane waiting to be looked at holds: the newest alert, except that a
-// bell does not replace a notification. The id is always the newest, which
+// bell does not replace anything else. The id is always the newest, which
 // is what showing the pane marks as seen.
 export function mergeTerminalAttention(current, alert) {
-  if (current?.kind === "notification" && alert.kind === "bell") return { ...current, epoch: alert.epoch, id: alert.id };
+  if (current && current.kind !== "bell" && alert.kind === "bell") return { ...current, epoch: alert.epoch, id: alert.id };
   return alert;
+}
+
+// Whether a finished command failed: a status other than 0.
+export function terminalCommandFailed(alert) {
+  return alert?.kind === "command" && alert.status !== null && alert.status !== 0;
+}
+
+// "12 s", "4 min 12 s", "2 h 5 min".
+export function terminalDuration(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600), minutes = Math.floor(total / 60) % 60, rest = total % 60;
+  if (hours) return minutes ? `${hours} h ${minutes} min` : `${hours} h`;
+  if (minutes) return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
+  return `${rest} s`;
 }
 
 // The suffix on a pane's name in window lists.
 export function terminalAttentionLabel(attention) {
+  if (attention?.kind === "command") return terminalCommandFailed(attention) ? " [failed]" : " [finished]";
   if (attention?.kind === "notification") return " [notification]";
   if (attention?.kind === "bell") return " [bell]";
   return "";
@@ -49,6 +72,12 @@ export function terminalAttentionLabel(attention) {
 export function terminalNoticeText(alert, windowTitle) {
   const name = (typeof windowTitle === "string" && windowTitle.trim()) || "Terminal";
   if (alert.kind === "bell") return { title: name, body: "Bell", source: "" };
+  if (alert.kind === "command") {
+    const after = alert.seconds ? ` after ${terminalDuration(alert.seconds)}` : "";
+    const body = terminalCommandFailed(alert) ? `Failed with exit status ${alert.status}${after}`
+      : `Finished${after}`;
+    return alert.title ? { title: alert.title, body, source: name } : { title: name, body: `Command ${body.toLowerCase()}`, source: "" };
+  }
   if (alert.title) return { title: alert.title, body: alert.body, source: name };
   return { title: name, body: alert.body, source: "" };
 }

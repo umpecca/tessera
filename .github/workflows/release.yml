@@ -9,7 +9,11 @@ permissions:
   contents: read
 
 jobs:
-  terminal-core:
+  # Builds every generated file from source: the terminal core, the browser
+  # bundles and the clipboard extension package. The release binaries embed
+  # these, not the committed copies, and the committed copies must match, so
+  # a checkout always builds what was released.
+  assets:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,13 +31,29 @@ jobs:
           version: "0.15.2"
 
       - run: npm ci
-      - run: npm run verify:terminal-core
+      - run: npm run build:terminal-core
       - run: npm run build:web
-      - run: git diff --exit-code -- web/vendor/terminal.js web/vendor/terminal-opus.js
-      - run: node --test internal/terminalcore/core.test.mjs web/*.test.mjs scripts/*.test.mjs extensions/firefox-clipboard/bridge.test.mjs
+
+      - name: Committed generated files match the build
+        run: |
+          git status --porcelain
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+
+      - name: JavaScript tests
+        run: node --test $(find . -name "*.test.mjs" -not -path "*/node_modules/*" -not -path "./.cache/*")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generated-assets
+          path: |
+            internal/terminalcore/ghostty-vt.wasm
+            web/vendor/
+            web/extensions/
+          if-no-files-found: error
 
   build:
-    needs: terminal-core
+    needs: assets
     strategy:
       fail-fast: false
       matrix:
@@ -81,6 +101,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The files the assets job built, over the checkout's copies.
+      - uses: actions/download-artifact@v4
+        with:
+          name: generated-assets
+          path: .
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -105,7 +131,7 @@ jobs:
           if-no-files-found: error
 
   installer-test:
-    needs: terminal-core
+    needs: assets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +156,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          pattern: tessera-*
           path: dist
           merge-multiple: true
 

@@ -5,6 +5,7 @@ import { build } from "esbuild";
 
 import { guardGhosttyWebCodepoints } from "./ghostty-web-unicode-guard.mjs";
 import { alignGhosttyWebCanvasSizing } from "./ghostty-web-canvas-sizing.mjs";
+import { decodeGhosttyWebUnderlines } from "./ghostty-web-underlines.mjs";
 const core = await fs.readFile("internal/terminalcore/ghostty-vt.wasm");
 const coreID = createHash("sha256").update(core).digest("hex");
 
@@ -23,7 +24,7 @@ const ghosttyWebUnicodeGuard = {
         const pattern = /data:application\/wasm;base64,[A-Za-z0-9+/=]+/g;
         if ([...source.matchAll(pattern)].length !== 1) throw new Error("Pinned ghostty-web WASM bundle changed");
         return {
-          contents: alignGhosttyWebCanvasSizing(guardGhosttyWebCodepoints(source.replace(pattern, `data:application/wasm;base64,${core.toString("base64")}`))),
+          contents: decodeGhosttyWebUnderlines(alignGhosttyWebCanvasSizing(guardGhosttyWebCodepoints(source.replace(pattern, `data:application/wasm;base64,${core.toString("base64")}`)))),
           loader: "js",
         };
       },

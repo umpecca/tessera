@@ -19,7 +19,8 @@ export function installPlainRenderer(Renderer) {
   if (!proto || proto[patch] || typeof proto.renderLine !== "function") return;
   const original = proto.renderLine;
   proto[experimentalRenderLine] = function(cells, row, cols) {
-    if (!cells.length || this.currentSelectionCoords || this.hoveredLinkRange) {
+    // Selections, hovered links and search matches are drawn per cell.
+    if (!cells.length || this.currentSelectionCoords || this.hoveredLinkRange || this.tesseraSearchRows?.has(row)) {
       recordRow(this, "originalRows");
       return original.call(this, cells, row, cols);
     }

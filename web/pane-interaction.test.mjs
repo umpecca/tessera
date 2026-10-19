@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { terminalFindShortcut } from "./terminal-find.mjs";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 test("background polling replaces its timer and restores the foreground cadence", () => {
@@ -25,6 +26,8 @@ test("background polling replaces its timer and restores the foreground cadence"
 function appFunction(name, globals) {
   globals.shortcutsUI ||= { element: { hidden: true } };
   globals.screensaver ||= { element: { hidden: true } };
+  globals.terminalFindShortcut ||= terminalFindShortcut;
+  globals.appleKeyboardLayout ??= false;
   const start = source.indexOf(`function ${name}(`);
   const end = source.indexOf("\n}\n", start) + 2;
   const prefix = source.slice(start - 6, start) === "async " ? "async " : "";
@@ -105,6 +108,35 @@ test("adjustActivePaneFontSize resizes the active pane via setPaneFontSize", () 
   });
   adjust(1);
   assert.deepEqual(call, [rect, 15]);
+});
+
+test("find shortcuts open and move find in a terminal window only", () => {
+  const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
+    "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
+    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
+  const calls = [];
+  let pane = { kind: "terminal", terminal: { term: {} } };
+  globals.getActivePane = () => pane;
+  globals.openTerminalFind = (rect) => calls.push(["open", rect]);
+  globals.moveTerminalFind = (rect, older) => calls.push([older ? "older" : "newer", rect]);
+  globals.appleKeyboardLayout = true;
+  let resolve = appFunction("paneShortcutAction", globals);
+  resolve({ metaKey: true, key: "f" }).run();
+  resolve({ metaKey: true, key: "g" }).run();
+  resolve({ metaKey: true, shiftKey: true, key: "G" }).run();
+  assert.deepEqual(calls.map(call => call[0]), ["open", "older", "newer"]);
+  assert.equal(resolve({ ctrlKey: true, key: "f" }), null, "Ctrl+F stays the shell's on an Apple keyboard");
+  globals.appleKeyboardLayout = false;
+  resolve = appFunction("paneShortcutAction", globals);
+  resolve({ ctrlKey: true, shiftKey: true, key: "F" }).run();
+  resolve({ key: "F3" }).run();
+  assert.deepEqual(calls.slice(-2).map(call => call[0]), ["open", "older"]);
+  assert.equal(resolve({ ctrlKey: true, key: "f" }), null, "and elsewhere");
+  pane = { kind: "browser" };
+  assert.equal(resolve({ ctrlKey: true, shiftKey: true, key: "F" }), null, "a browser window keeps its own find");
+  pane = { kind: "terminal", terminal: { term: {} } };
+  globals.settingsModal.hidden = false;
+  assert.equal(resolve({ ctrlKey: true, shiftKey: true, key: "F" }), null, "dialogs block it");
 });
 
 test("Ctrl+0 resets the active pane's font to the default size", () => {

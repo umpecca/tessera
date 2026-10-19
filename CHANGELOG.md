@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Shell integration: Tessera starts zsh and bash (4.4 or later) set up to
+  mark prompts and commands (OSC 133) and report their directory (OSC 7), so
+  prompt jumps, Copy Command Output and the window's directory work without
+  editing `~/.zshrc`. Your own startup files still run. Settings → Terminal →
+  Shell integration turns it off.
+
+- Command finished notices: a command that ran for 5 seconds or more and
+  finishes in a window you aren't looking at marks the window and shows a
+  notice with the command, whether it failed, and how long it took.
+
+- Find in a terminal's scrollback: `Cmd+F` (`Ctrl+Shift+F` off an Apple
+  keyboard) opens a find bar that searches as you type, highlights every
+  match, and moves between them with Enter and Shift+Enter, keeping up with
+  new output.
+
+- Releases build every generated file (terminal core, browser bundles,
+  clipboard extension package) from source and build each platform's binary
+  from them; a tag whose committed copies differ from the build fails.
+
+- Underlines are drawn in their style (double, curly, dotted, dashed) and
+  their own colour, such as Neovim's red curly underlines for errors and
+  spelling, instead of all as one plain line in the text colour.
+
+- Synchronized output (mode 2026): a program's redraw is painted whole
+  instead of half drawn when it arrives in pieces, as over a slow
+  connection. A redraw the program never ends is ended after a second, as
+  in Ghostty.
+
 - Capability and setting queries (XTGETTCAP and DECRQSS) are answered, so
   programs such as Neovim can find true colour and OSC 52 copying without
   guessing. Programs that enable in-band size reports (mode 2048) are told

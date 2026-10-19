@@ -33,14 +33,16 @@ size reports (mode 2048) when a pane resizes.
 - `scripts/patch-terminal-core.mjs`: DCS strings that aren't Sixel go to
   Ghostty's DCS parser (at most 4 KiB; reset at each new string and on
   CAN/SUB). XTGETTCAP answers each name in order from Ghostty's terminfo,
-  without `Su`, `Smulx`, `Setulc` and `Sync`, with `TN` the host's TERM and
+  without `Su`, `Smulx`, `Setulc` and `Sync` (`Sync` is answered since task
+  221, the underline ones since task 223), with `TN` the host's TERM and
   `DCS 0 + r` for unknown names. DECRQSS as Ghostty answers it. Enabling
   2048 sends a report. DECRQM reports 2048 from the mode table.
 - `internal/terminalcore/source/query_api.zig`: `tessera_set_term_name`.
 - `internal/terminalcore/source/sixel_api.zig`: `sixel_geometry` sends a
   report while 2048 is on, if the size differs from the last one sent.
 - `internal/terminalcore/ghostty-vt.wasm` rebuilt (core
-  `0b04713109b0518e98401915cc1c5580ade2d7cbf04282efc1a419daca429374`);
+  `0b04713109b0518e98401915cc1c5580ade2d7cbf04282efc1a419daca429374`; rebuilt
+  again in task 221);
   `web/vendor/terminal.js` rebuilt with it.
 - `internal/terminalcore/core.go`: `SetTermName`; `setVersion` shares its
   string helper.

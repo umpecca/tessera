@@ -119,3 +119,31 @@ test("notices: one per pane, a limit, timeouts, open and dismiss", () => {
   assert.equal(container.children.length, 0, "times out");
   assert.equal(timers.size, 0);
 });
+
+test("finished commands: accepted, worded by outcome and duration, labelled, and kept over bells", async () => {
+  const { acceptTerminalAlert, mergeTerminalAttention, terminalAttentionLabel, terminalNoticeText, terminalCommandFailed, terminalDuration } = await import("./terminal-attention.mjs");
+  const seen = { epoch: "", id: 0 };
+  const failed = acceptTerminalAlert(seen, { type: "terminal-alert", epoch: "e", id: 1, kind: "command", title: "make\tall", status: 2, seconds: 252 });
+  assert.deepEqual({ ...failed }, { epoch: "e", id: 1, kind: "command", title: "make all", status: 2, seconds: 252 });
+  assert.equal(terminalCommandFailed(failed), true);
+  assert.deepEqual(terminalNoticeText(failed, "Build"), { title: "make all", body: "Failed with exit status 2 after 4 min 12 s", source: "Build" });
+  assert.equal(terminalAttentionLabel(failed), " [failed]");
+
+  const quiet = acceptTerminalAlert(seen, { type: "terminal-alert", epoch: "e", id: 2, kind: "command", status: 0, seconds: 7 });
+  assert.equal(terminalCommandFailed(quiet), false);
+  assert.deepEqual(terminalNoticeText(quiet, "Build"), { title: "Build", body: "Command finished after 7 s", source: "" }, "no command line: the window's name");
+  assert.equal(terminalAttentionLabel(quiet), " [finished]");
+
+  const unknown = acceptTerminalAlert(seen, { type: "terminal-alert", epoch: "e", id: 3, kind: "command", status: -1, seconds: "x" });
+  assert.equal(unknown.status, null, "no status from the shell");
+  assert.equal(unknown.seconds, 0);
+  assert.equal(terminalCommandFailed(unknown), false, "an unknown status isn't a failure");
+  assert.deepEqual(terminalNoticeText(unknown, ""), { title: "Terminal", body: "Command finished", source: "" });
+  assert.equal(acceptTerminalAlert(seen, { type: "terminal-alert", epoch: "e", id: 3, kind: "command" }), null, "seen already");
+
+  const bell = { epoch: "e", id: 4, kind: "bell" };
+  assert.deepEqual(mergeTerminalAttention(failed, bell), { ...failed, id: 4 }, "a bell keeps the command");
+  assert.deepEqual(mergeTerminalAttention(bell, failed), failed);
+  assert.deepEqual([terminalDuration(0), terminalDuration(59), terminalDuration(60), terminalDuration(3600), terminalDuration(3725)],
+    ["0 s", "59 s", "1 min", "1 h", "1 h 2 min"]);
+});

@@ -170,7 +170,8 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	cursor := terminalResumeCursor(r)
 	session, attachment, err := a.Terminals.Attach(
-		workspaceID, paneID, r.URL.Query().Get("cwd"), settings.TerminalTERM, cols, rows,
+		workspaceID, paneID, r.URL.Query().Get("cwd"),
+		terminal.Launch{TERM: settings.TerminalTERM, ShellIntegration: !settings.TerminalShellIntegrationOff}, cols, rows,
 		cursor,
 	)
 	if err != nil {

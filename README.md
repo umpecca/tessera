@@ -54,47 +54,50 @@ terminals opened from that pane start there, and a shell restarted after the
 host restarts starts there; a directory that no longer exists falls back to
 the host default. Only reports naming the Tessera host (or `localhost`) count,
 so a shell inside `ssh` does not move the pane to a path on another machine.
-zsh and bash on macOS send OSC 7 only in Terminal.app; for zsh, add to
-`~/.zshrc`:
+Tessera's shell integration (below) has zsh and bash report it; other shells
+need to send it themselves.
 
-```zsh
-_report_cwd() {
-  emulate -L zsh
-  local LC_ALL=C path_url= ch i
-  for (( i = 1; i <= ${#PWD}; i++ )); do
-    ch=${PWD[i]}
-    if [[ $ch == [A-Za-z0-9/._~-] ]]; then path_url+=$ch
-    else path_url+=$(printf '%%%02X' "'$ch"); fi
-  done
-  printf '\e]7;file://%s%s\e\\' "$HOST" "$path_url"
-}
-autoload -Uz add-zsh-hook
-add-zsh-hook chpwd _report_cwd
-_report_cwd
-```
+**Find in a terminal's scrollback** with `Cmd+F` (`Ctrl+Shift+F` off an Apple
+keyboard, so `Ctrl+F` still reaches the shell), **Find…** in the terminal's
+context menu, or **Find in Terminal** in the command palette. A bar opens in
+the window's top-right corner and searches as you type, ignoring case for
+ASCII letters and finding text that wraps across rows; a one-line selection
+becomes the text to find. Matches are highlighted yellow and the selected one
+orange. The newest is selected first; `Enter` (or `Cmd+G`, `F3`) moves to the
+next older one and `Shift+Enter` (`Cmd+Shift+G`, `Shift+F3`) to the next
+newer, scrolling it into view, and the count reads "3 of 12" from the oldest.
+Output that arrives while the bar is open is searched too, and the selected
+match stays put. A full-screen program's screen (Vim, less) is searched while
+it shows. `Escape` closes the bar and puts the keyboard back in the terminal.
 
 Shells that mark their prompts with OSC 133 get two more things. `Cmd+Up` and
 `Cmd+Down` (`Ctrl+Shift+Page Up`/`Page Down` off an Apple keyboard) scroll the
 previous or next prompt to the top of the pane. **Copy Command Output** in the
 terminal's context menu selects and copies what the command under the pointer
 printed, and **Copy Last Command Output** in the command palette does the same
-for the latest command. zsh needs hooks to send the marks; add to `~/.zshrc`
-(after `autoload -Uz add-zsh-hook`):
+for the latest command.
 
-```zsh
-_mark_prompt_precmd() {
-  local exit_status=$?
-  [[ -n $_mark_prompt_ran ]] && printf '\e]133;D;%s\e\\' "$exit_status"
-  unset _mark_prompt_ran
-  [[ $PS1 == *133\;A* ]] || PS1=$'%{\e]133;A\e\\%}'"$PS1"$'%{\e]133;B\e\\%}'
-}
-_mark_prompt_preexec() {
-  _mark_prompt_ran=1
-  printf '\e]133;C\e\\'
-}
-add-zsh-hook precmd _mark_prompt_precmd
-add-zsh-hook preexec _mark_prompt_preexec
-```
+**Shell integration.** Tessera starts zsh, and bash 4.4 or later, set up to
+send these prompt marks and the OSC 7 directory reports, so the features above
+and command finished notices (below) work without editing any startup file.
+zsh starts with `ZDOTDIR` pointing at a Tessera `.zshenv`, which puts
+`ZDOTDIR` back, reads yours, and adds the hooks, so the rest of startup and
+any zsh you start later use your own files as usual; bash starts with
+`--rcfile` pointing at a file that reads `~/.bashrc` first. The scripts are
+written to Tessera's folder in your user cache folder. A command started with
+a space, when the shell keeps such commands out of history, isn't named in
+notices. Turn it off with **Settings → Terminal → Shell integration**
+(new terminals), or set `TESSERA_SHELL_INTEGRATION=0` in your shell's
+startup file. If you added the hooks from earlier versions of this README to
+`~/.zshrc`, they are no longer needed, though leaving them does no harm.
+Other shells (fish, the macOS `/bin/bash` 3.2) start as before, and can send
+the marks themselves.
+
+Underlines can be double (`ESC [ 21 m` or `ESC [ 4:2 m`), curly (`4:3`),
+dotted (`4:4`) or dashed (`4:5`), and have their own colour (`ESC [ 58 m`,
+as `58:2::r:g:b` or `58:5:n`; `59` goes back to the text colour). Neovim uses
+red curly underlines for errors and spelling, and some prompts and editors
+use the others.
 
 Programs can recolour a terminal while it runs, as base16-shell, vim and fzf
 themes do: OSC 4 sets entries of the 256-colour palette and OSC 104 resets
@@ -118,16 +121,22 @@ jumps) keep their keys.
 
 Programs can ask which modes are on (DECRQM, `CSI ? mode $ p`) and which
 terminal this is (XTVERSION, `CSI > q`, answered `Tessera` and the version).
-Modes Tessera tracks but doesn't act on, such as synchronized output (2026),
-are answered as unrecognised so programs don't rely on them. Programs can
-also ask for terminfo capabilities directly (XTGETTCAP, `DCS + q`), as
-Neovim does to find true colour and OSC 52 copying; the answers are
-Ghostty's, less styled and coloured underlines and synchronized output, with
-the name (`TN`) being the configured `TERM`. Settings queries (DECRQSS,
+Modes Tessera tracks but doesn't act on, such as the mouse report formats
+other than SGR, are answered as unrecognised so programs don't rely on them.
+Programs can also ask for terminfo capabilities directly (XTGETTCAP,
+`DCS + q`), as Neovim does to find true colour and OSC 52 copying; the
+answers are Ghostty's, with the name (`TN`) being the configured `TERM`. Settings queries (DECRQSS,
 `DCS $ q`) report the current colours and attributes, cursor style and
 margins. Programs that enable in-band size reports (mode 2048) are told the
 pane's size in cells and pixels (`CSI 48 ; rows ; cols ; height ; width t`)
 when they turn it on and after each resize.
+
+Programs that bracket a redraw with synchronized output (mode 2026), as
+Neovim and tmux can, have it shown whole: the browser doesn't paint
+while the mode is on, however the redraw is split on its way over the
+network, and paints once the program ends it. As in Ghostty, a redraw the
+program never ends (if it crashes mid-redraw, say) is ended after a second,
+and a resize ends it.
 
 Programs that follow light and dark themes can ask which the pane uses
 (`CSI ? 996 n`) and, with mode 2031 on, are told when it changes, which
@@ -146,7 +155,13 @@ notifications** also shows them as system notifications while Tessera is in
 the background, where the browser allows it (Safari on iPad only for a Home
 Screen web app). A notification sent while no browser was connected is shown
 on the next one to connect. Bells in the window you are using do nothing.
-For a long command, `make; printf '\e]9;make finished\a'`.
+
+A command that runs for 5 seconds or more and finishes in a window you aren't
+looking at gets a notice too, as in Ghostty: "`make all` · Failed with exit
+status 2 after 4 min 12 s", with `[finished]` or `[failed]` in window lists.
+It needs the shell's prompt marks, which shell integration provides; turn it
+off with **Settings → Terminal → Command finished notices**. System
+notifications include these.
 
 Programs can set the mouse pointer's shape over the terminal with OSC 22, by
 CSS cursor name (`pointer`, `crosshair`, `grab`, ...) or X cursor name
@@ -976,8 +991,12 @@ immutable; append a new migration instead of editing an existing one.
 The **CI and Release** workflow runs only when a `v*` tag is pushed; branch
 pushes, pull requests, and manual dispatch trigger nothing (the daily artifact
 cleanup still runs on its schedule). On a tag, the **CI and Release** workflow
-rebuilds/verifies the terminal core, runs JavaScript and Go tests, and publishes
-a GitHub release:
+builds every generated file from source in one job: the terminal core (Zig),
+the browser bundles (`web/vendor/`) and the clipboard extension package
+(`web/extensions/`). It fails if any committed copy differs from what it built,
+so a checkout always builds what was released, and runs every JavaScript test.
+Each platform job then runs the Go tests and builds its binary over those
+built files, not the committed copies, and the release publishes:
 
 - `tessera-linux-amd64`
 - `tessera-linux-arm64`

@@ -48,6 +48,9 @@ function loadTerminalClass(overrides = {}) {
     TextDecoder,
     setTimeout,
     clearTimeout,
+    synchronizedOutputTimeoutMs: 1000,
+    searchUpdateDelayMs: 150,
+    searchMatchLimit: 10000,
     __TESSERA_CORE_ID__: "test",
     SixelRenderer: class { prune() {} clear() {} },
     ...overrides,
@@ -848,6 +851,177 @@ test("the predicted cursor blinks with the real one and typing keeps both solid"
   assert.equal(drawn.at(-1), "cursor");
   term.resetPredictions();
   term.cursorBlink.dispose();
+});
+
+test("real WASM synchronized output holds painting until the redraw ends, at most a second", async () => {
+  const bytes = readFileSync(new URL("../internal/terminalcore/ghostty-vt.wasm", import.meta.url));
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports;
+  const handle = e.ghostty_terminal_new(20, 4);
+  const timers = new Map();
+  let nextTimer = 0, requests = 0;
+  const Terminal = loadTerminalClass({
+    GhosttyTerminal: class {},
+    setTimeout: (callback, ms) => { timers.set(++nextTimer, { callback, ms }); return nextTimer; },
+    clearTimeout: (id) => timers.delete(id),
+  });
+  const term = Object.create(Terminal.prototype);
+  Object.assign(term, { synchronizedOutputTimer: null, synchronizedOutputTimedOut: false, requestRender() { requests++; } });
+  term.wasmTerm = { getMode: (mode, ansi) => e.ghostty_terminal_get_mode(handle, mode, ansi) !== 0 };
+  const write = (text) => {
+    const data = new TextEncoder().encode(text), ptr = e.ghostty_wasm_alloc_u8_array(data.length);
+    new Uint8Array(e.memory.buffer).set(data, ptr);
+    e.ghostty_terminal_write(handle, ptr, data.length);
+    e.ghostty_wasm_free_u8_array(ptr, data.length);
+  };
+  const fire = () => { const [id, timer] = [...timers][0]; timers.delete(id); timer.callback(); };
+  try {
+    assert.equal(term.holdingSynchronizedOutput(), false, "painting as usual");
+    write("\x1b[?2026h\x1b[2Jhalf a redraw");
+    assert.equal(term.holdingSynchronizedOutput(), true, "held mid-redraw");
+    assert.equal(term.holdingSynchronizedOutput(), true);
+    assert.equal(timers.size, 1, "one timer however many frames are held");
+    assert.equal([...timers.values()][0].ms, 1000);
+    write(" and the rest\x1b[?2026l");
+    assert.equal(term.holdingSynchronizedOutput(), false, "the end of the redraw paints it");
+    assert.equal(timers.size, 0);
+
+    write("\x1b[?2026h");
+    assert.equal(term.holdingSynchronizedOutput(), true);
+    fire();
+    assert.equal(requests, 1, "the timeout asks for a paint");
+    assert.equal(term.holdingSynchronizedOutput(), false, "a program that never ends it is painted after a second");
+    write("more output");
+    assert.equal(term.holdingSynchronizedOutput(), false, "and stays painted while the mode stays on");
+    write("\x1b[?2026l\x1b[?2026h");
+    assert.equal(term.holdingSynchronizedOutput(), false, "not held again until a paint finds the mode off");
+    write("\x1b[?2026l");
+    assert.equal(term.holdingSynchronizedOutput(), false);
+    write("\x1b[?2026h");
+    assert.equal(term.holdingSynchronizedOutput(), true, "then the next redraw is held");
+    write("\x1b[?2026l\x1b[?2026h");
+    assert.equal(term.holdingSynchronizedOutput(), true, "one redraw ending and the next starting in one write");
+    assert.equal(timers.size, 1, "keeps the first one's timer, so a stream of redraws is still painted each second");
+
+    e.ghostty_terminal_resize(handle, 30, 4);
+    assert.equal(term.holdingSynchronizedOutput(), false, "a resize ends it");
+    assert.equal(timers.size, 0);
+
+    term.wasmTerm.exports = e; term.wasmTerm.handle = handle;
+    write("\x1b[?2026hleft open");
+    assert.equal(term.holdingSynchronizedOutput(), true);
+    const before = requests;
+    term.endSynchronizedOutput();
+    assert.equal(requests, before + 1, "the host's end asks for a paint");
+    assert.equal(term.holdingSynchronizedOutput(), false, "and ends the hold");
+    assert.equal(e.ghostty_terminal_get_mode(handle, 2026, false), 0, "in the browser's core too");
+  } finally { e.ghostty_terminal_free(handle); }
+});
+
+test("a held synchronized-output frame paints nothing and the next frame paints it", () => {
+  const paints = [];
+  let holding = true, painted = 0;
+  class GhosttyTerminal {
+    constructor() {
+      this.cols = 80; this.rows = 24; this.viewportY = 0; this.scrollbarOpacity = 0; this.lastCursorY = 0;
+      this.cursorMoveEmitter = { fire() {} };
+      this.wasmTerm = { getCursor: () => ({ y: 0 }), getMode: (mode) => mode === 2026 && holding };
+    }
+    onScroll() {}
+    open() {
+      this.isOpen = true;
+      this.renderer = { canvas: new EventTarget(), ctx: {}, devicePixelRatio: 1, resize() {}, render(_buffer, force) { paints.push(force); } };
+    }
+    write() {}
+    dispose() { this.isDisposed = true; }
+  }
+  const Terminal = loadTerminalClass({ GhosttyTerminal, installTerminalSelection: () => null,
+    renderScheduler: { request() {}, noteOutput() {}, unregister() {} } });
+  const term = new Terminal({ cursorBlinkEnabled: false });
+  term.open({}); term.outputTiming = { painted() { painted++; } };
+  term.fullRedrawPending = true;
+  term.renderScheduledFrame();
+  assert.deepEqual(paints, [], "nothing is drawn mid-redraw");
+  assert.equal(painted, 0, "and the output is not counted as shown");
+  holding = false;
+  term.renderScheduledFrame();
+  assert.deepEqual(paints, [true], "a full redraw asked for meanwhile still happens");
+  assert.equal(painted, 1);
+  term.dispose();
+});
+
+test("real WASM scrollback search: matches, selection, scrolling, highlights and live output", async () => {
+  const bytes = readFileSync(new URL("../internal/terminalcore/ghostty-vt.wasm", import.meta.url));
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports;
+  const handle = e.ghostty_terminal_new(20, 5);
+  const timers = new Map();
+  let nextTimer = 0, redraws = 0;
+  const Terminal = loadTerminalClass({
+    GhosttyTerminal: class {}, TextEncoder,
+    setTimeout: (callback, ms) => { timers.set(++nextTimer, { callback, ms }); return nextTimer; },
+    clearTimeout: (id) => timers.delete(id),
+  });
+  const term = Object.create(Terminal.prototype);
+  Object.assign(term, {
+    searchNeedle: "", searchCount: 0, searchResults: null, searchTimer: null, searchRevision: 0, searchRowsCache: null,
+    searchListeners: new Set(), cols: 20, rows: 5, viewportY: 0, smoothScroll: { target: null }, scrolledTo: [],
+    wasmTerm: { exports: e, handle },
+    getScrollbackLength: () => e.ghostty_terminal_get_scrollback_length(handle),
+    smoothScrollTo(y) { this.scrolledTo.push(y); this.viewportY = y; },
+    requestFullRedraw() { redraws++; },
+  });
+  const write = (text) => {
+    const data = new TextEncoder().encode(text), ptr = e.ghostty_wasm_alloc_u8_array(data.length);
+    new Uint8Array(e.memory.buffer).set(data, ptr);
+    e.ghostty_terminal_write(handle, ptr, data.length);
+    e.ghostty_wasm_free_u8_array(ptr, data.length);
+  };
+  // Values made in the sandbox compare by content only once copied.
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  const heard = [];
+  const subscription = term.onSearchChange(results => heard.push(results && { count: results.count, selected: results.selected }));
+  try {
+    write("old needle\r\n");
+    for (let i = 0; i < 20; i++) write(`line ${i}\r\n`);
+    write("new needle");
+    const results = term.search("Needle");
+    assert.equal(results.count, 2);
+    assert.equal(results.selected, 0);
+    assert.deepEqual(plain(results.matches), [[21, 4, 21, 9], [0, 4, 0, 9]], "newest first, rows from the top of history");
+    assert.deepEqual(plain(term.scrolledTo), [], "the newest already shows");
+    assert.equal(redraws, 1);
+    assert.deepEqual(plain([...term.searchRowsInView()]), [[4, [[4, 9, true]]]], "highlighted on the last row, selected");
+
+    assert.equal(term.searchSelect(true), true);
+    assert.deepEqual(plain(term.scrolledTo), [17], "the older match is scrolled into view, at the top of history");
+    assert.deepEqual(plain([...term.searchRowsInView()]), [[0, [[4, 9, true]]]]);
+    assert.equal(term.searchSelect(true), false, "no older one");
+    assert.equal(term.searchSelect(false), true);
+
+    write("\r\nneedle again\r\n");
+    term.scheduleSearchUpdate();
+    term.scheduleSearchUpdate();
+    assert.equal(timers.size, 1, "one update for a burst of output");
+    const [[id, timer]] = timers; timers.delete(id);
+    assert.equal(timer.ms, 150);
+    timer.callback();
+    assert.equal(term.searchResults.count, 3, "new output is searched");
+    assert.deepEqual(heard.at(-1), { count: 3, selected: 1 }, "the selection stays on its match");
+
+    term.search("");
+    assert.equal(term.searchResults, null);
+    assert.equal(term.searchRowsInView(), null);
+    assert.deepEqual(heard.at(-1), null);
+    term.scheduleSearchUpdate();
+    assert.equal(timers.size, 0, "no updates without a search");
+
+    term.search("needle");
+    term.searchNeedle = "needle";
+    e.tessera_search_end(handle);
+    term.restartSearch();
+    assert.equal(term.searchResults.count, 3, "a new core searches again");
+  } finally { subscription.dispose(); e.ghostty_terminal_free(handle); }
 });
 
 test("real WASM Kitty keyboard encoding, from browser key events", async () => {

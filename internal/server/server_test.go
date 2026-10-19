@@ -116,7 +116,7 @@ func TestReloadLocalHTTPSPreservesTerminalManager(t *testing.T) {
 	defer srv.Shutdown(context.Background())
 
 	terminalManager := srv.terminals
-	session, attachment, err := terminalManager.Attach("workspace", "pane", "", "", 80, 24, terminal.Cursor{})
+	session, attachment, err := terminalManager.Attach("workspace", "pane", "", terminal.Launch{}, 80, 24, terminal.Cursor{})
 	if err != nil {
 		t.Fatalf("start terminal before listener reload: %v", err)
 	}
