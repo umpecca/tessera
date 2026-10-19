@@ -1,6 +1,6 @@
 # Task 224: One pipeline builds everything for every platform
 
-Status: complete (first tagged run pending)
+Status: complete (fixed after its first tagged run)
 
 ## Request
 
@@ -47,6 +47,11 @@ Apple silicon, Windows amd64) and to keep running only on tags (task 183).
   files.
 - The full JavaScript suite (the same `find`) passes: 739. `go test ./...`
   passes.
-- Not yet run on GitHub: the first `v*` tag after this commit is its first
+- First tagged run: `git diff --exit-code` passed (the core and bundles
+  built on Ubuntu matched the committed ones), but the untracked-file check
+  failed on `.zig-cache/`, where `mlugg/setup-zig` puts Zig's caches
+  (`ZIG_GLOBAL_CACHE_DIR`, `ZIG_LOCAL_CACHE_DIR`) inside the checkout.
+  `.gitignore` now ignores `.zig-cache/`, Zig's usual cache folder.
+- Before that run, the first `v*` tag after this change was to be its first
   run. The core build there is on Ubuntu, here on macOS; earlier tagged
   runs compared the two successfully.

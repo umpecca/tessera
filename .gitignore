@@ -1,5 +1,7 @@
 /bin/
 /.cache/
+# Zig's build cache (CI's setup-zig puts its global cache here too).
+.zig-cache/
 node_modules/
 *.log
 *.sqlite3

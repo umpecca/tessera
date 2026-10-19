@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed: the release build's generated-files check failed on Zig's cache
+  folder (`.zig-cache/`), which is now ignored.
+
 - Shell integration: Tessera starts zsh and bash (4.4 or later) set up to
   mark prompts and commands (OSC 133) and report their directory (OSC 7), so
   prompt jumps, Copy Command Output and the window's directory work without
