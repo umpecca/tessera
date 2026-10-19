@@ -37,6 +37,121 @@ appears in the window tab and window lists and recovers when a terminal view
 reconnects. Apps that do not send titles keep the current name. Manual renaming
 remains available; the next application title can replace it. Title updates
 pause while that window's title editor is open. Empty titles are ignored.
+Programs can save the title and restore it later (`CSI 22 ; 0 t` and
+`CSI 23 ; 0 t`, as Vim does with `set title`); when that restores no title,
+or `reset` clears it, the window gets back the name it had before programs
+titled it, if this page saw that name.
+
+A progress report (OSC 9;4, `ESC ] 9 ; 4 ; state ; percent BEL`) shows as a
+thin bar along the window's title bar: state 1 with a percentage, 2 error
+(red), 3 busy without a percentage (a moving segment), 4 paused (amber), 0 to
+remove it. It updates while the window is minimized or covered, and goes 15
+seconds after the last report, as in Ghostty.
+
+A terminal's working directory follows its shell when the shell reports it
+with OSC 7 (`file://host/path`). The pane's directory field shows it, new
+terminals opened from that pane start there, and a shell restarted after the
+host restarts starts there; a directory that no longer exists falls back to
+the host default. Only reports naming the Tessera host (or `localhost`) count,
+so a shell inside `ssh` does not move the pane to a path on another machine.
+zsh and bash on macOS send OSC 7 only in Terminal.app; for zsh, add to
+`~/.zshrc`:
+
+```zsh
+_report_cwd() {
+  emulate -L zsh
+  local LC_ALL=C path_url= ch i
+  for (( i = 1; i <= ${#PWD}; i++ )); do
+    ch=${PWD[i]}
+    if [[ $ch == [A-Za-z0-9/._~-] ]]; then path_url+=$ch
+    else path_url+=$(printf '%%%02X' "'$ch"); fi
+  done
+  printf '\e]7;file://%s%s\e\\' "$HOST" "$path_url"
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook chpwd _report_cwd
+_report_cwd
+```
+
+Shells that mark their prompts with OSC 133 get two more things. `Cmd+Up` and
+`Cmd+Down` (`Ctrl+Shift+Page Up`/`Page Down` off an Apple keyboard) scroll the
+previous or next prompt to the top of the pane. **Copy Command Output** in the
+terminal's context menu selects and copies what the command under the pointer
+printed, and **Copy Last Command Output** in the command palette does the same
+for the latest command. zsh needs hooks to send the marks; add to `~/.zshrc`
+(after `autoload -Uz add-zsh-hook`):
+
+```zsh
+_mark_prompt_precmd() {
+  local exit_status=$?
+  [[ -n $_mark_prompt_ran ]] && printf '\e]133;D;%s\e\\' "$exit_status"
+  unset _mark_prompt_ran
+  [[ $PS1 == *133\;A* ]] || PS1=$'%{\e]133;A\e\\%}'"$PS1"$'%{\e]133;B\e\\%}'
+}
+_mark_prompt_preexec() {
+  _mark_prompt_ran=1
+  printf '\e]133;C\e\\'
+}
+add-zsh-hook precmd _mark_prompt_precmd
+add-zsh-hook preexec _mark_prompt_preexec
+```
+
+Programs can recolour a terminal while it runs, as base16-shell, vim and fzf
+themes do: OSC 4 sets entries of the 256-colour palette and OSC 104 resets
+them; OSC 10, 11 and 12 set the default foreground, background and cursor,
+and OSC 17 and 19 the selection's background and text; OSC 110–119 reset
+those. A `?` in place of a colour asks for the current one, answered in
+xterm's `rgb:rrrr/gggg/bbbb` form. Colours a program sets stay through
+reconnects and switching the pane between light and dark; a reset, OSC 110
+and the like, or `reset` give back the pane's own.
+
+Programs that turn on the Kitty keyboard protocol (`CSI > flags u`), such as
+Neovim, Helix and fish, get keys that ordinary encoding can't
+tell apart: Escape from Alt+key, Tab from Ctrl+I, Enter and Backspace with
+Shift or Ctrl, and, if they ask, key releases and repeats. Tessera answers
+the protocol's query (`CSI ? u`) and encodes keys with Ghostty's encoder while
+it is on, and as before once the program turns it off. On an Apple keyboard,
+Command still never reaches the program, except that Command+Left and
+Command+Right are Home and End, and Option is Alt, as without the protocol.
+Tessera's own shortcuts (window switching, the palette, copy and paste, prompt
+jumps) keep their keys.
+
+Programs can ask which modes are on (DECRQM, `CSI ? mode $ p`) and which
+terminal this is (XTVERSION, `CSI > q`, answered `Tessera` and the version).
+Modes Tessera tracks but doesn't act on, such as synchronized output (2026),
+are answered as unrecognised so programs don't rely on them. Programs can
+also ask for terminfo capabilities directly (XTGETTCAP, `DCS + q`), as
+Neovim does to find true colour and OSC 52 copying; the answers are
+Ghostty's, less styled and coloured underlines and synchronized output, with
+the name (`TN`) being the configured `TERM`. Settings queries (DECRQSS,
+`DCS $ q`) report the current colours and attributes, cursor style and
+margins. Programs that enable in-band size reports (mode 2048) are told the
+pane's size in cells and pixels (`CSI 48 ; rows ; cols ; height ; width t`)
+when they turn it on and after each resize.
+
+Programs that follow light and dark themes can ask which the pane uses
+(`CSI ? 996 n`) and, with mode 2031 on, are told when it changes, which
+recent Neovim uses to set its background. Programs that enable focus reports
+(mode 1004), as Vim, Neovim and tmux can (for example to reload changed
+files), are told when the pane gains and loses focus: it is focused while it is the
+active window and the page has the keyboard, in any browser showing it.
+
+A terminal's bell (BEL), and notifications programs send with OSC 9 (`ESC ]
+9 ; text BEL`) or OSC 777 (`ESC ] 777 ; notify ; title ; text BEL`), mark a
+window you aren't looking at with a dot on its icon and `[bell]` or
+`[notification]` in window lists until you show it; this works whether or
+not the window's output is paused. Notifications also appear in the page's
+corner, and clicking one opens the window. **Settings → Terminal → System
+notifications** also shows them as system notifications while Tessera is in
+the background, where the browser allows it (Safari on iPad only for a Home
+Screen web app). A notification sent while no browser was connected is shown
+on the next one to connect. Bells in the window you are using do nothing.
+For a long command, `make; printf '\e]9;make finished\a'`.
+
+Programs can set the mouse pointer's shape over the terminal with OSC 22, by
+CSS cursor name (`pointer`, `crosshair`, `grab`, ...) or X cursor name
+(`hand`, `xterm`, ...). A link under the pointer still shows the hand; a full
+reset (`reset`) puts back the text pointer.
 
 Terminal apps can also send short WAV/MP3 clips directly to enabled browsers,
 or stream files/stdin incrementally as Opus using FFmpeg, with selectable
@@ -476,6 +591,12 @@ nothing selected reports "Nothing to copy" in the workspace status rather than
 doing nothing silently.
 
 Open terminal hyperlinks with `Cmd`-click on macOS or `Ctrl`-click elsewhere.
+This covers both addresses in the text and OSC 8 hyperlinks (`ls --hyperlink`,
+for example), but only `http` and `https` ones open. A link to `localhost` or
+`127.0.0.1`, printed or OSC 8, opens in a Browser window, which reaches the
+host's ports, rather than a new tab. An address wrapped onto the next row opens
+whole from either row. Hover over an OSC 8 link to see its address along the
+bottom of the pane, since its text can say anything.
 On macOS, `Ctrl`-click opens the terminal context menu and preserves selected
 text for Copy. Interrupted selection drags stop when focus is lost or the
 mouse is released, and selection changes redraw even while output is idle.

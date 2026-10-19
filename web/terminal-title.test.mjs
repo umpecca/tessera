@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { windowSwitcherEntries } from "./window-switcher.mjs";
+import { terminalAttentionLabel } from "./terminal-attention.mjs";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 function fixture() {
@@ -14,7 +15,7 @@ function fixture() {
     windowSwitcherList: { children: [{ dataset: { paneId: rect.id }, querySelector: () => name }] },
     deskbarPanel: { hidden: true }, windowList: { hidden: true },
     updateDeskbar() { context.updates++; }, scheduleWorkspaceSave() { context.saves++; },
-    updates: 0, saves: 0,
+    updates: 0, saves: 0, terminalAttentionLabel,
   };
   const start = source.indexOf("function applyTerminalWindowTitle(");
   const labelsStart = source.indexOf("function updatePaneTitleLabels(");
@@ -86,4 +87,32 @@ test("application titles relabel open Deskbar and window list rows in place", ()
   assert.equal(listName["aria-label"], listName.textContent);
   assert.deepEqual(moves.map(move => move["aria-label"]), ["Move lazygit [terminal] up", "Move lazygit [terminal] down"]);
   assert.equal(f.context.updates, 0);
+});
+
+test("when a program's title goes away the pane gets back its own name", () => {
+  const f = fixture();
+  f.apply("");
+  assert.equal(f.rect.title, "Terminal", "no program title yet: nothing to undo");
+  f.apply("vim file.txt");
+  f.apply("vim other.txt");
+  assert.equal(f.rect.title, "vim other.txt");
+  f.apply("");
+  assert.equal(f.rect.title, "Terminal");
+  assert.equal(f.rect.titleInput.value, "Terminal");
+  assert.equal(f.name.textContent, "Terminal");
+  f.apply("");
+  assert.equal(f.rect.title, "Terminal");
+
+  f.apply("htop");
+  f.rect.title = "Build box"; f.rect.ownTitle = undefined; // renamed by hand
+  f.apply("");
+  assert.equal(f.rect.title, "Build box", "a name typed since is kept");
+
+  f.apply("ssh prod");
+  f.rect.titleInput.readOnly = false;
+  f.apply("");
+  assert.equal(f.rect.title, "ssh prod", "not while the name is being edited");
+  f.rect.titleInput.readOnly = true;
+  f.apply("");
+  assert.equal(f.rect.title, "Build box");
 });

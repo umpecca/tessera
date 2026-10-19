@@ -74,14 +74,31 @@ test("Operator docking is flush and maximization resets a scrolled desktop", () 
   assert.equal(inset(), 24);
   context.themeID = "oled-terminal";
   assert.equal(inset(), 0);
-  const board = { scrollLeft: 498, scrollTop: 120, getBoundingClientRect: () => ({ width: 390, height: 844 }) };
-  let geometry;
-  appFunction("applyFullGeometry", {
-    themeID: "operator", board, setRectangle: (_, box) => geometry = { ...box },
-  })({});
-  assert.deepEqual(geometry, { x: 0, y: 0, width: 390, height: 844 });
-  assert.equal(board.scrollLeft, 0);
-  assert.equal(board.scrollTop, 0);
+  for (const themeID of ["operator", "studio"]) {
+    const board = { scrollLeft: 498, scrollTop: 120, getBoundingClientRect: () => ({ width: 390, height: 844 }) };
+    const window = { scrollX: 0, scrollY: 0, scrollTo() { assert.fail("the page was not scrolled"); } };
+    const context = { themeID, board, window, setRectangle: (_, box) => geometry = { ...box } };
+    context.pinWorkspaceScroll = appFunction("pinWorkspaceScroll", context);
+    let geometry;
+    appFunction("applyFullGeometry", context)({});
+    assert.deepEqual(geometry, { x: 0, y: 0, width: 390, height: 844 });
+    assert.equal(board.scrollLeft, 0, themeID);
+    assert.equal(board.scrollTop, 0, themeID);
+  }
+});
+
+test("a page or board scrolled by focus is put back", () => {
+  const scrolls = [];
+  const window = { scrollX: 0, scrollY: 54, scrollTo: (x, y) => scrolls.push([x, y]) };
+  const board = { scrollLeft: 0, scrollTop: 0 };
+  const pin = appFunction("pinWorkspaceScroll", { window, board });
+  pin();
+  assert.deepEqual(scrolls, [[0, 0]], "iPadOS scrolled the page for the shortcut bar");
+  window.scrollY = 0; board.scrollTop = 30;
+  pin();
+  assert.deepEqual([scrolls.length, board.scrollTop], [1, 0], "the board, without touching the page");
+  pin();
+  assert.equal(scrolls.length, 1, "nothing to do");
 });
 
 test("Cascade Arrange includes Operator title bars while retaining the other themes' inset", () => {

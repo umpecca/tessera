@@ -3,10 +3,12 @@ import test from "node:test";
 
 import {
   TerminalContextMenuFallback,
+  TerminalMouseHover,
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
   emptyTerminalCopyGuidance,
   isTerminalContextMenuGesture,
+  terminalHoverButtonCode,
   terminalMouseMessage,
   terminalPasteText,
 } from "./terminal-input.mjs";
@@ -62,6 +64,17 @@ test("terminal mouse press returns one matching release", () => {
     position: { col: 13, row: 6 },
   });
   assert.equal(press.finish(7), null);
+});
+
+test("terminal mouse hover reports motion once per cell, and again after a reset", () => {
+  const hover = new TerminalMouseHover();
+  assert.equal(hover.move({ col: 3, row: 2 }), true);
+  assert.equal(hover.move({ col: 3, row: 2 }), false);
+  assert.equal(hover.move({ col: 4, row: 2 }), true);
+  assert.equal(hover.move({ col: 4, row: 3 }), true);
+  hover.reset();
+  assert.equal(hover.move({ col: 4, row: 3 }), true, "re-entering the pane reports the cell");
+  assert.equal(terminalHoverButtonCode, 35);
 });
 
 test("terminal mouse press reports a drag once per cell", () => {

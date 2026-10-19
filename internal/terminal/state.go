@@ -66,14 +66,16 @@ func (s *ManagedSession) ClearImages() error {
 
 func (s *ManagedSession) Configure(light bool) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.core == nil {
+		s.mu.Unlock()
 		return errors.New("terminal state is unavailable")
 	}
 	if s.light == light {
+		s.mu.Unlock()
 		return nil
 	}
 	if err := s.core.Configure(light); err != nil {
+		s.mu.Unlock()
 		return err
 	}
 	s.light = light
@@ -82,7 +84,13 @@ func (s *ManagedSession) Configure(light bool) error {
 		value = 1
 	}
 	s.publishStateLocked(StateConfiguration, []byte{value})
-	return nil
+	// A program that enabled mode 2031 is told the scheme changed.
+	replies, err := s.core.Replies()
+	s.mu.Unlock()
+	if len(replies) > 0 {
+		_, _ = s.Write(replies)
+	}
+	return err
 }
 
 type stateEvent struct {
@@ -216,21 +224,33 @@ func (s *ManagedSession) ResizeWithMetrics(cols, rows, cellWidth, cellHeight int
 	if cols < 2 || cols > 4096 || rows < 1 || rows > 4096 || cellWidth < 1 || cellWidth > 4096 || cellHeight < 1 || cellHeight > 4096 {
 		return errors.New("invalid terminal geometry")
 	}
+	replies, err := s.resizeLocked(cols, rows, cellWidth, cellHeight)
+	// A program that enabled in-band size reports (mode 2048) is told the
+	// new size, after the PTY's own.
+	if len(replies) > 0 {
+		_, _ = s.Write(replies)
+	}
+	return err
+}
+
+func (s *ManagedSession) resizeLocked(cols, rows, cellWidth, cellHeight int) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.isClosed() || s.session == nil {
-		return errors.New("terminal is closed")
+		return nil, errors.New("terminal is closed")
 	}
 	if s.cols == cols && s.rows == rows && s.cellWidth == cellWidth && s.cellHeight == cellHeight {
-		return nil
+		return nil, nil
 	}
 	if err := s.session.Resize(cols, rows); err != nil {
-		return err
+		return nil, err
 	}
+	var replies []byte
 	if s.core != nil {
 		if err := s.core.Resize(cols, rows, cellWidth, cellHeight); err != nil {
-			return err
+			return nil, err
 		}
+		replies, _ = s.core.Replies()
 	}
 	s.cols, s.rows, s.cellWidth, s.cellHeight = cols, rows, cellWidth, cellHeight
 	payload := make([]byte, 16)
@@ -238,5 +258,5 @@ func (s *ManagedSession) ResizeWithMetrics(cols, rows, cellWidth, cellHeight int
 		binary.LittleEndian.PutUint32(payload[i*4:], uint32(n))
 	}
 	s.publishStateLocked(StateGeometry, payload)
-	return nil
+	return replies, nil
 }

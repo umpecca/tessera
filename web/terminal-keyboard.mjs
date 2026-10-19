@@ -168,6 +168,23 @@ export function terminalCommandArrowSequence(event, options = {}) {
       : null;
 }
 
+// Jump to the previous or next shell prompt (OSC 133): Command+Up and
+// Command+Down on an Apple keyboard, as in Terminal.app and Ghostty, and
+// Ctrl+Shift+Page Up/Page Down elsewhere (Ctrl+Shift+arrows move windows).
+// Returns -1, 1, or 0 for any other key.
+export function terminalPromptJumpDirection(event, options = {}) {
+  if (!event || event.altKey) {
+    return 0;
+  }
+  if (options.appleKeyboard && event.metaKey && !event.ctrlKey && !event.shiftKey) {
+    return event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
+  }
+  if (event.ctrlKey && event.shiftKey && !event.metaKey) {
+    return event.key === "PageUp" ? -1 : event.key === "PageDown" ? 1 : 0;
+  }
+  return 0;
+}
+
 export function isTerminalCopyShortcut(event) {
   if (!event || event.altKey) {
     return false;
@@ -180,30 +197,46 @@ export function isTerminalCopyShortcut(event) {
 }
 
 // ghostty-web maps KeyboardEvent.code, which identifies the physical key. Use
-// the browser's logical key only when a physical numpad key needs translation.
+// the browser's logical key where the two differ:
+//
+//   - a physical numpad key, which is Home, End or an arrow with Num Lock off;
+//   - on an Apple keyboard, an arrow that reports Home, End, PageUp or
+//     PageDown. That is Globe+arrow on an iPad keyboard, which WebKit also
+//     marks with Command, so ghostty-web sent Globe+Left as Command+Left,
+//     `ESC [ 1 ; 9 D`, and zsh printed the unbound tail as `9D`.
+//
+// On an Apple keyboard Command is left out of the modifier. It never reaches
+// the application, and the Home key itself sends the plain `ESC [ H`.
 export function terminalNavigationSequence(event, modes = {}) {
-  if (!event || !event.code?.startsWith("Numpad")) {
+  if (!event) {
     return null;
   }
+  const numpad = event.code?.startsWith("Numpad");
+  const relabeledArrow = modes.appleKeyboard && event.code?.startsWith("Arrow");
+  if (!numpad && !relabeledArrow) {
+    return null;
+  }
+  const keys = modes.appleKeyboard ? { ...event, metaKey: false } : event;
 
-  if (modes.applicationKeypad) {
-    return hasModifier(event) ? null : applicationKeypadSequences[event.code] || null;
+  if (numpad && modes.applicationKeypad) {
+    return hasModifier(keys) ? null : applicationKeypadSequences[event.code] || null;
   }
 
   const navigation = navigationKeys[event.key];
-  const normalCursorSequence = normalCursorSequences[event.key];
+  // An arrow reporting itself is the ordinary case, left to ghostty-web.
+  const normalCursorSequence = numpad ? normalCursorSequences[event.key] : null;
   if (!navigation && !normalCursorSequence) {
     return null;
   }
 
-  if (!hasModifier(event)) {
+  if (!hasModifier(keys)) {
     if (normalCursorSequence) {
       return modes.applicationCursorKeys ? applicationCursorSequences[event.key] : normalCursorSequence;
     }
     return navigation.sequence;
   }
 
-  const modifier = xtermModifier(event);
+  const modifier = xtermModifier(keys);
   if (normalCursorSequence) {
     return `\x1B[1;${modifier}${cursorFinals[event.key]}`;
   }

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 
 import {
   browseLocalPortHelpCommand,
@@ -41,4 +43,44 @@ test("local-port help examples are valid and expose the command-palette route", 
     assert.ok(example.command);
     assert.ok(normalizeBrowserAddress(example.address), `${example.address} should be a valid Browser address`);
   }
+});
+
+function openTerminalLinkWith(rectangles) {
+  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const start = source.indexOf("function openTerminalLink(");
+  const end = source.indexOf("\n}\n", start) + 2;
+  const calls = { tabs: [], created: [], navigated: [], raised: [] };
+  const open = vm.runInNewContext(`(${source.slice(start, end)})`, {
+    normalizeBrowserAddress, rectangles, browserPaneKind: "browser",
+    window: { open: (url) => calls.tabs.push(url) },
+    paneSpawnPoint: () => ({ x: 48, y: 80 }),
+    createBrowserPane: (x, y) => { const pane = { x, y }; calls.created.push(pane); return pane; },
+    navigateBrowserPane: async (pane, url) => { calls.navigated.push([pane, url]); },
+    setActivePane: (rect) => calls.raised.push(rect),
+  });
+  return { open, calls };
+}
+
+test("a terminal link to the host's loopback opens in a Browser window", () => {
+  const { open, calls } = openTerminalLinkWith([]);
+  open("http://localhost:5173/app");
+  open("http://127.0.0.1:8000/");
+  assert.deepEqual(calls.navigated.map(([, url]) => url), ["http://localhost:5173/app", "http://127.0.0.1:8000/"]);
+  assert.equal(calls.created.length, 2);
+  assert.deepEqual(calls.tabs, []);
+});
+
+test("a terminal link already showing in a Browser window brings that window forward", () => {
+  const showing = { kind: "browser", browser: {}, browserUrl: "http://localhost:5173/" };
+  const { open, calls } = openTerminalLinkWith([{ kind: "terminal" }, showing]);
+  open("http://localhost:5173/");
+  assert.deepEqual(calls.raised, [showing]);
+  assert.equal(calls.created.length, 0);
+});
+
+test("other terminal links open in a new tab", () => {
+  const { open, calls } = openTerminalLinkWith([]);
+  for (const url of ["https://example.com/", "http://192.168.1.5:3000/", "http://user:pw@localhost:5000/"]) open(url);
+  assert.deepEqual(calls.tabs, ["https://example.com/", "http://192.168.1.5:3000/", "http://user:pw@localhost:5000/"]);
+  assert.equal(calls.created.length, 0);
 });

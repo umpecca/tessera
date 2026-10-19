@@ -6,6 +6,8 @@ import { TerminalReplica } from "./terminal-replica.mjs";
 import { TerminalWriteCoordinator, TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
 import { terminalIsCovered } from "./terminal-visibility.mjs";
 import { terminalBacklogCloseCode, terminalCloseOutcome, terminalConnectingStatus, terminalShouldRetry } from "./terminal-reconnect.mjs";
+import { acceptTerminalAlert, mergeTerminalAttention, terminalNoticeText } from "./terminal-attention.mjs";
+import { terminalProgressDescription, terminalProgressFromMessage, terminalProgressLifetimeMs, terminalProgressWidth } from "./terminal-progress.mjs";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const attachment = { type: "attach", protocol: 2, core: "core", epoch: "shell", sequence: 3, offset: 12, snapshotBytes: 4, reset: true };
@@ -17,6 +19,9 @@ function frame(kind, sequence, offset, payload = new Uint8Array()) {
   result.set(payload, 21);
   return result;
 }
+
+// What a socket sent besides focus reports, which have tests of their own.
+const control = socket => socket.sent.filter(data => typeof data !== "string" || JSON.parse(data).type !== "focus");
 
 function fixture() {
   const sockets = [], calls = [], timers = new Map(), retired = [], audio = [], streaming = new Set();
@@ -51,7 +56,8 @@ function fixture() {
   const rect = { id: "pane", kind: "terminal", terminal: state,
     element: { contains: () => false, dataset: {}, classList: { add() {}, remove() {} } },
     x: 20, y: 20, width: 100, height: 100, zIndex: 1 };
-  const document = { hidden: false, body: {} };
+  const document = { hidden: false, body: {}, focused: true, hasFocus() { return this.focused; } };
+  const notices = [], systemNotifications = [];
   document.activeElement = document.body;
   const context = vm.createContext({
     WebSocket: Socket, Uint8Array, URLSearchParams, document, rectangles: [rect], activeRect: rect, workspaceID: "workspace",
@@ -68,10 +74,17 @@ function fixture() {
     destroyRectangle: target => { target.terminal = null; },
     sendTerminalInput: (socket, data) => socket.send(new TextEncoder().encode(data)),
     sendTerminalKeys: (target, data) => target.terminal.socket.send(new TextEncoder().encode(data)),
+    acceptTerminalAlert, mergeTerminalAttention, terminalNoticeText, updatePaneTitleLabels() {},
+    terminalProgressDescription, terminalProgressFromMessage, terminalProgressLifetimeMs, terminalProgressWidth,
+    terminalNotices: { show: (key, text) => notices.push(["show", key, text]), dismiss: key => notices.push(["dismiss", key]) },
+    systemNotificationsEnabled: false,
+    showSystemNotification: (_, text) => systemNotifications.push(text),
   });
   for (const name of ["setActivePane", "clearActivePane", "clearActivePaneClass", "setTerminalCursorBlink",
     "updateTerminalRenderState", "setTerminalOutputPaused", "updateTerminalDocumentVisibility", "connectTerminalSocket",
-    "applyTerminalTextMessage", "handleTerminalAudioMessage", "handleTerminalSocketClose", "retryTerminalNow", "resumeTerminalConnections", "terminalWebSocketURL"]) {
+    "applyTerminalTextMessage", "handleTerminalAudioMessage", "handleTerminalSocketClose", "retryTerminalNow", "resumeTerminalConnections", "terminalWebSocketURL",
+    "terminalPaneFocused", "updateTerminalFocus", "handleTerminalAlert", "sendTerminalAlertSeen", "clearTerminalAttention", "renderTerminalAttention",
+    "applyTerminalProgress"]) {
     const start = source.indexOf(`function ${name}(`), end = source.indexOf("\n}\n", start) + 2;
     assert.ok(start >= 0 && end > start, name);
     vm.runInContext(source.slice(start, end), context);
@@ -89,7 +102,7 @@ function fixture() {
     }
   }
   function start() { context.connectTerminalSocket(rect); sockets.at(-1).open(); attach(sockets.at(-1)); drain(); calls.length = 0; }
-  return { context, rect, state, sockets, calls, audio, streaming, timers, retired, document, drain, attach, start };
+  return { context, rect, state, sockets, calls, audio, streaming, timers, retired, document, drain, attach, start, notices, systemNotifications };
 }
 
 test("pane selection transfers parsing priority and selecting a worksheet clears it", () => {
@@ -255,7 +268,7 @@ test("an idle hide and reveal resumes without replacing the terminal contents or
   const f = fixture(); f.start();
   f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);
   assert.equal(f.state.replica.needsSnapshot, false);
-  assert.deepEqual(JSON.parse(f.sockets[0].sent.at(-1)), { type: "pause-output" });
+  assert.deepEqual(JSON.parse(control(f.sockets[0]).at(-1)), { type: "pause-output" });
   f.sockets[0].text({ type: "output-paused" });
   assert.equal(f.state.replica.needsSnapshot, false, "pause acknowledgement is not missed state");
   f.rect.minimized = false; f.context.updateTerminalRenderState(f.rect);
@@ -401,12 +414,12 @@ test("a terminal created while hidden starts its shell and startup command once 
   assert.equal(new URL(f.sockets[0].url).searchParams.get("outputPaused"), "1");
   f.sockets[0].open(); f.sockets[0].text({ type: "output-paused" }); f.drain();
   assert.deepEqual(f.calls, []);
-  assert.deepEqual(JSON.parse(f.sockets[0].sent[0]), { type: "audio-events", enabled: true });
-  assert.deepEqual(JSON.parse(f.sockets[0].sent[1]), { type: "pause-output" });
-  assert.equal(new TextDecoder().decode(f.sockets[0].sent[2]), "build\r");
+  assert.deepEqual(JSON.parse(control(f.sockets[0])[0]), { type: "audio-events", enabled: true });
+  assert.deepEqual(JSON.parse(control(f.sockets[0])[1]), { type: "pause-output" });
+  assert.equal(new TextDecoder().decode(control(f.sockets[0])[2]), "build\r");
   f.rect.minimized = false; f.context.updateTerminalRenderState(f.rect);
   f.sockets[1].open(); f.attach(f.sockets[1]); f.drain();
-  assert.equal(f.sockets[1].sent.length, 1, "restore subscribes to audio without rerunning the startup command");
+  assert.equal(control(f.sockets[1]).length, 1, "restore subscribes to audio without rerunning the startup command");
   assert.equal(f.state.replica.cursor.epoch, "shell");
 });
 
@@ -416,10 +429,10 @@ test("hiding an opening connection pauses delivery when it opens and duplicate v
   f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);
   assert.equal(f.sockets[0].sent.length, 0);
   f.sockets[0].open();
-  assert.deepEqual(JSON.parse(f.sockets[0].sent[1]), { type: "pause-output" });
+  assert.deepEqual(JSON.parse(control(f.sockets[0])[1]), { type: "pause-output" });
   f.context.updateTerminalRenderState(f.rect);
   f.sockets[0].text({ type: "output-paused" });
-  assert.equal(f.sockets[0].sent.length, 2);
+  assert.equal(control(f.sockets[0]).length, 2);
   assert.equal(f.state.replica.needsSnapshot, false);
   assert.deepEqual(f.calls, []);
 });
@@ -626,4 +639,53 @@ test("small hidden replay continues real Sixel, UTF-8, alternate-screen, and OSC
     assert.equal(f.state.replica.queuedOutputBytes, 0);
     assert.equal(f.state.replica.needsSnapshot, false);
   } finally { for (const core of cores) core.dispose(); }
+});
+
+const focusReports = socket => socket.sent.filter(data => typeof data === "string" && JSON.parse(data).type === "focus").map(data => JSON.parse(data).focused);
+const sentOfType = (socket, type) => socket.sent.filter(data => typeof data === "string" && JSON.parse(data).type === type).map(data => JSON.parse(data));
+
+test("focus reports follow the active window, minimizing, and the page's focus and visibility", () => {
+  const f = fixture(); f.start();
+  const socket = f.sockets[0];
+  assert.deepEqual(focusReports(socket), [true], "a new connection says where focus is");
+  f.context.updateTerminalFocus();
+  assert.deepEqual(focusReports(socket), [true], "only changes are sent");
+  f.document.focused = false; f.context.updateTerminalFocus();
+  f.document.focused = true; f.context.updateTerminalFocus();
+  f.context.clearActivePane();
+  f.context.setActivePane(f.rect);
+  f.rect.minimized = true; f.context.updateTerminalRenderState(f.rect);
+  assert.deepEqual(focusReports(socket), [true, false, true, false, true, false]);
+  f.rect.minimized = false; f.context.updateTerminalRenderState(f.rect);
+  f.sockets[1].open();
+  assert.deepEqual(focusReports(f.sockets[1]), [true], "the replacement connection starts over");
+});
+
+test("alerts mark a pane nobody is looking at until it is shown, once each", () => {
+  const f = fixture(); f.start();
+  const socket = f.sockets[0];
+  const alert = { type: "terminal-alert", epoch: "shell", id: 1, kind: "notification", title: "Build", body: "Done" };
+  socket.text(alert);
+  assert.equal(f.rect.terminalAttention, undefined, "the pane being looked at has seen it");
+  assert.deepEqual(sentOfType(socket, "alert-seen"), [{ type: "alert-seen", epoch: "shell", alert: 1 }]);
+  assert.deepEqual(f.notices, []);
+
+  f.document.focused = false; f.context.updateTerminalFocus();
+  socket.text({ ...alert, id: 2 });
+  socket.text({ ...alert, id: 2 });
+  socket.text({ type: "terminal-alert", epoch: "shell", id: 3, kind: "bell" });
+  assert.deepEqual(f.rect.terminalAttention, { epoch: "shell", id: 3, kind: "notification", title: "Build", body: "Done" });
+  assert.equal(f.rect.element.dataset.attention, "notification");
+  assert.deepEqual(f.notices, [["show", "pane", { title: "Build", body: "Done", source: "Terminal" }]], "one notice; a bell shows none");
+  assert.deepEqual(f.systemNotifications, [], "system notifications are off unless turned on");
+
+  f.context.systemNotificationsEnabled = true;
+  socket.text({ ...alert, id: 4, title: "", body: "Tests passed" });
+  assert.deepEqual(f.systemNotifications.map(text => ({ ...text })), [{ title: "Terminal", body: "Tests passed", source: "", tag: "tessera-pane" }]);
+
+  f.document.focused = true; f.context.updateTerminalFocus();
+  assert.equal(f.rect.terminalAttention, null);
+  assert.equal(f.rect.element.dataset.attention, undefined);
+  assert.deepEqual(sentOfType(socket, "alert-seen").at(-1), { type: "alert-seen", epoch: "shell", alert: 4 });
+  assert.deepEqual(f.notices.at(-1), ["dismiss", "pane"]);
 });

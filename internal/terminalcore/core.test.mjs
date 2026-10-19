@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
 
+import { terminalPointerShapes } from "../../web/terminal-pointer-shape.mjs";
+
 const bytes = await fs.readFile(new URL("./ghostty-vt.wasm", import.meta.url));
 
 function audioEffects(t) {
@@ -90,8 +92,455 @@ async function terminal(cols = 20, rows = 6, sharedExports) {
 
 function windowTitle(t) {
   const length = t.e.tessera_sixel_title_length(t.handle);
+  if (!length) return "";
   return new TextDecoder().decode(new Uint8Array(t.e.memory.buffer, t.e.tessera_sixel_title_data(t.handle), length));
 }
+
+function workingDirectory(t) {
+  const length = t.e.tessera_pwd_length(t.handle);
+  return new TextDecoder().decode(new Uint8Array(t.e.memory.buffer, t.e.tessera_pwd_data(t.handle), length));
+}
+
+test("OSC 7 keeps the last working directory report, split anywhere", async () => {
+  const sequence = "\x1b]7;file://host.local/Users/me/My%20Project\x1b\\";
+  for (let split = 0; split <= sequence.length; split++) {
+    const t = await terminal();
+    try {
+      assert.equal(t.e.tessera_pwd_revision(t.handle), 0);
+      t.write(sequence.slice(0, split));
+      t.write(sequence.slice(split));
+      assert.equal(workingDirectory(t), "file://host.local/Users/me/My%20Project");
+    } finally { t.dispose(); }
+  }
+  const t = await terminal();
+  try {
+    t.write("\x1b]7;file:///tmp\x07");
+    const revision = t.e.tessera_pwd_revision(t.handle);
+    for (const ignored of ["\x1b]7;\x07", `\x1b]7;file://${"x".repeat(8193)}\x07`]) {
+      t.write(ignored);
+      assert.equal(workingDirectory(t), "file:///tmp");
+      assert.equal(t.e.tessera_pwd_revision(t.handle), revision);
+    }
+    t.write("\x1b]7;file:///tmp\x07");
+    assert.notEqual(t.e.tessera_pwd_revision(t.handle), revision, "a repeated report still counts");
+    t.write("\x1b]2;Title\x07plain text");
+    assert.equal(workingDirectory(t), "file:///tmp");
+  } finally { t.dispose(); }
+});
+
+function semanticRows(t, row, count) {
+  const e = t.e, ptr = e.ghostty_wasm_alloc_u8_array(count);
+  try {
+    const n = e.tessera_semantic_rows(t.handle, row, count, ptr);
+    return [...new Uint8Array(e.memory.buffer, ptr, n)];
+  } finally { e.ghostty_wasm_free_u8_array(ptr, count); }
+}
+
+test("OSC 133 marks are read per row, through scrollback and snapshots", async () => {
+  const t = await terminal(20, 4);
+  try {
+    const command = (name, output) => `\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\${name}\r\n\x1b]133;C\x1b\\${output}\x1b]133;D;0\x1b\\`;
+    t.write(command("ls", "a\r\nb\r\n") + command("true", "") + command("pwd", "/tmp\r\n") + "\x1b]133;A\x07$ \x1b]133;B\x07");
+    // Each prompt row keeps its prompt mark through OSC 133;B, including the
+    // one after a command that printed nothing.
+    const expected = [1, 4, 0, 1, 1, 4, 1];
+    assert.deepEqual(semanticRows(t, 0, 10), expected, "three rows in scrollback, four on screen");
+    assert.deepEqual(semanticRows(t, 4, 2), [1, 4]);
+    assert.deepEqual(semanticRows(t, 7, 2), [], "past the last row");
+    t.write("\r\n> \x1b]133;B\x07");
+    assert.deepEqual(semanticRows(t, 7, 1), [3], "B on a row without a prompt mark marks input");
+    t.write("x".repeat(25));
+    assert.deepEqual(semanticRows(t, 7, 2), [3, 8 | 3], "a soft-wrapped row is flagged and keeps the input mark");
+    t.restore(t.snapshot());
+    assert.deepEqual(semanticRows(t, 0, 10), [...expected, 3, 8 | 3], "a snapshot keeps the marks");
+    t.write("\x1b[?1049h");
+    assert.deepEqual(semanticRows(t, 0, 4), [0, 0, 0, 0], "the alternate screen has none");
+  } finally { t.dispose(); }
+});
+
+function replies(t) {
+  const e = t.e, ptr = e.ghostty_wasm_alloc_u8_array(4096);
+  try {
+    let text = "";
+    for (let n; (n = e.ghostty_terminal_read_response(t.handle, ptr, 4096)) > 0;) text += Buffer.from(new Uint8Array(e.memory.buffer, ptr, n)).toString();
+    return text;
+  } finally { e.ghostty_wasm_free_u8_array(ptr, 4096); }
+}
+function dynamicColors(t) {
+  const e = t.e, ptr = e.ghostty_wasm_alloc_u8_array(20);
+  try {
+    e.tessera_dynamic_colors(t.handle, ptr);
+    const view = new DataView(e.memory.buffer, ptr, 20);
+    return [0, 1, 2, 3, 4].map((index) => view.getUint32(index * 4, true));
+  } finally { e.ghostty_wasm_free_u8_array(ptr, 20); }
+}
+// The first cell's foreground and background as rendered.
+function firstCell(t) {
+  const cells = t.cells();
+  return { fg: [...cells.slice(4, 7)], bg: [...cells.slice(7, 10)] };
+}
+
+test("OSC 4/104 set, query and reset the palette, and cells use it", async () => {
+  const t = await terminal(20, 4);
+  try {
+    t.e.tessera_sixel_configure(t.handle, 0);
+    replies(t);
+    const revision = t.e.tessera_color_revision(t.handle);
+    t.write("\x1b]4;1;#102030;200;rgb:ff/80/00\x1b\\\x1b[31;48;5;200mX");
+    assert.deepEqual(firstCell(t), { fg: [0x10, 0x20, 0x30], bg: [0xff, 0x80, 0x00] });
+    assert.notEqual(t.e.tessera_color_revision(t.handle), revision);
+    t.write("\x1b]4;1;?;7;?\x07");
+    assert.equal(replies(t), "\x1b]4;1;rgb:1010/2020/3030\x07\x1b]4;7;rgb:e5e5/e5e5/e5e5\x07", "BEL in, BEL out");
+    const queried = t.e.tessera_color_revision(t.handle);
+    t.write("\x1b]4;1;?\x1b\\");
+    assert.equal(replies(t), "\x1b]4;1;rgb:1010/2020/3030\x1b\\");
+    assert.equal(t.e.tessera_color_revision(t.handle), queried, "a query changes nothing");
+    t.write("\x1b]104;1\x07\r");
+    t.write("\x1b[31;48;5;200mX");
+    assert.deepEqual(firstCell(t), { fg: [0xcd, 0, 0], bg: [0xff, 0x80, 0x00] }, "one entry reset");
+    t.write("\x1b]104\x07\r\x1b[31;48;5;200mX");
+    assert.deepEqual(firstCell(t).bg, [0xff, 0x00, 0xd7], "the whole palette reset");
+  } finally { t.dispose(); }
+});
+
+test("OSC 10-19 and 110-119 set, query and reset the dynamic colours", async () => {
+  const t = await terminal(20, 4);
+  try {
+    t.e.tessera_sixel_configure(t.handle, 0);
+    replies(t);
+    assert.deepEqual(dynamicColors(t), [0, 0, 0, 0, 0]);
+    t.write("\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07\x1b]17;?\x07\x1b]19;?\x07");
+    assert.equal(replies(t), ["10;rgb:e5e5/e5e5/e5e5", "11;rgb:0000/0000/0000", "12;rgb:e5e5/e5e5/e5e5",
+      "17;rgb:e5e5/e5e5/e5e5", "19;rgb:0000/0000/0000"].map((r) => `\x1b]${r}\x07`).join(""), "the pane's own colours");
+    t.write("\x1b]10;#112233\x07\x1b]11;#445566;#778899\x07\x1b]17;#aabbcc\x07\x1b]19;#ddeeff\x07X");
+    assert.deepEqual(dynamicColors(t), [0x1112233, 0x1445566, 0x1778899, 0x1aabbcc, 0x1ddeeff], "11 then 12 from one request");
+    assert.deepEqual(firstCell(t), { fg: [0x11, 0x22, 0x33], bg: [0x44, 0x55, 0x66] });
+    t.write("\x1b]11;?\x1b\\");
+    assert.equal(replies(t), "\x1b]11;rgb:4444/5555/6666\x1b\\");
+    t.write("\x1b]13;#010101\x07\x1b]14;?\x07");
+    assert.equal(replies(t), "", "pointer colours are not supported");
+
+    t.restore(t.snapshot());
+    assert.deepEqual(dynamicColors(t), [0x1112233, 0x1445566, 0x1778899, 0x1aabbcc, 0x1ddeeff], "a snapshot keeps them");
+
+    t.e.tessera_sixel_configure(t.handle, 1);
+    assert.deepEqual(dynamicColors(t), [0x1112233, 0x1445566, 0x1778899, 0x1aabbcc, 0x1ddeeff], "light mode keeps a program's colours");
+    t.write("\x1b]110\x07\x1b]111\x07\x1b]117\x07");
+    assert.deepEqual(dynamicColors(t), [0, 0, 0x1778899, 0, 0x1ddeeff]);
+    t.write("\x1b]10;?\x07");
+    assert.equal(replies(t), "\x1b]10;rgb:0000/0000/0000\x07", "reset follows the pane's current mode");
+    t.write("\x1b]4;1;#123456\x07\x1bc");
+    assert.deepEqual(dynamicColors(t), [0, 0, 0, 0, 0], "a full reset clears them");
+    t.write("\x1b]4;1;?\x07");
+    assert.equal(replies(t), "\x1b]4;1;rgb:cdcd/0000/0000\x07");
+  } finally { t.dispose(); }
+});
+
+test("colour scheme queries and mode 2031 follow the pane's light or dark setting", async () => {
+  const t = await terminal(20, 4);
+  try {
+    t.e.tessera_sixel_configure(t.handle, 0);
+    t.write("\x1b[?996n");
+    assert.equal(replies(t), "\x1b[?997;1n", "dark");
+    t.e.tessera_sixel_configure(t.handle, 1);
+    assert.equal(replies(t), "", "no report without mode 2031");
+    t.write("\x1b[?996n");
+    assert.equal(replies(t), "\x1b[?997;2n", "light");
+    t.write("\x1b[?2031h");
+    assert.equal(replies(t), "", "enabling the mode reports nothing by itself");
+    t.e.tessera_sixel_configure(t.handle, 1);
+    assert.equal(replies(t), "", "the same mode again is no change");
+    t.e.tessera_sixel_configure(t.handle, 0);
+    assert.equal(replies(t), "\x1b[?997;1n");
+    t.e.tessera_sixel_configure(t.handle, 1);
+    assert.equal(replies(t), "\x1b[?997;2n");
+    t.write("\x1b[?2031l");
+    t.e.tessera_sixel_configure(t.handle, 0);
+    assert.equal(replies(t), "", "off again");
+  } finally { t.dispose(); }
+});
+
+test("mode 1004 reports focus changes, and the current focus when enabled", async () => {
+  const t = await terminal(20, 4);
+  try {
+    t.e.tessera_focus(t.handle, 0);
+    t.e.tessera_focus(t.handle, 1);
+    assert.equal(replies(t), "", "nothing until a program asks");
+    t.write("\x1b[?1004h");
+    assert.equal(replies(t), "\x1b[I", "focused when enabled");
+    t.e.tessera_focus(t.handle, 1);
+    assert.equal(replies(t), "", "no change");
+    t.e.tessera_focus(t.handle, 0);
+    t.e.tessera_focus(t.handle, 1);
+    t.e.tessera_focus(t.handle, 0);
+    assert.equal(replies(t), "\x1b[O\x1b[I\x1b[O");
+    t.write("\x1b[?1004l\x1b[?1004h");
+    assert.equal(replies(t), "\x1b[O", "unfocused when enabled again");
+    t.write("\x1b[?1004l");
+    t.e.tessera_focus(t.handle, 1);
+    assert.equal(replies(t), "");
+  } finally { t.dispose(); }
+});
+
+function notifications(t) {
+  const e = t.e, ptr = e.ghostty_wasm_alloc_u8_array(4096), chunks = [];
+  try {
+    for (let count; (count = e.tessera_notification_read(t.handle, ptr, 4096));) chunks.push(Buffer.from(new Uint8Array(e.memory.buffer, ptr, count)));
+  } finally { e.ghostty_wasm_free_u8_array(ptr, 4096); }
+  const data = Buffer.concat(chunks), records = [];
+  for (let offset = 0; offset < data.length;) {
+    const length = data.readUInt32LE(offset); offset += 4;
+    const record = data.subarray(offset, offset + length); offset += length;
+    const split = record.indexOf(0);
+    records.push([record.subarray(0, split).toString(), record.subarray(split + 1).toString()]);
+  }
+  return records;
+}
+
+test("bells are counted and OSC 9 and 777 notifications queued, bounded", async () => {
+  const t = await terminal(20, 4);
+  try {
+    assert.equal(t.e.tessera_bell_count(t.handle), 0);
+    t.write("a\x07b\x07\x1b]0;title\x07");
+    assert.equal(t.e.tessera_bell_count(t.handle), 2, "a BEL ending an OSC is not a bell");
+    t.write("\x1b]9;Build done\x1b\\\x1b]777;notify;Tests;All 12 passed\x07\x1b]777;notify;Café;ünï\x07");
+    assert.deepEqual(notifications(t), [["", "Build done"], ["Tests", "All 12 passed"], ["Café", "ünï"]]);
+    assert.deepEqual(notifications(t), [], "drained");
+    t.write("\x1b]9;4;1;50\x07\x1b]9;\x07");
+    assert.deepEqual(notifications(t), [], "progress reports and empty notifications are not notifications");
+    t.write(`\x1b]9;${"x".repeat(9000)}\x07`);
+    assert.deepEqual(notifications(t), [], "oversized (Ghostty's parser holds about 2 KiB)");
+    for (let i = 0; i < 60; i += 1) t.write(`\x1b]9;${String(i).padEnd(1500, ".")}\x07`);
+    const queued = notifications(t);
+    assert.equal(queued.length, 43, "the queue holds 64 KiB");
+    assert.equal(queued[0][1].slice(0, 2), "0.");
+    t.write("\x07\x1bc\x07");
+    assert.equal(t.e.tessera_bell_count(t.handle), 4, "reset keeps counting");
+  } finally { t.dispose(); }
+});
+
+test("DECRQM answers from the mode table, except modes Tessera does not act on", async () => {
+  const t = await terminal(20, 4);
+  try {
+    t.write("\x1b[?2004$p\x1b[?2004h\x1b[?2004$p\x1b[?7$p\x1b[4$p\x1b[?1004$p");
+    assert.equal(replies(t), "\x1b[?2004;2$y\x1b[?2004;1$y\x1b[?7;1$y\x1b[4;2$y\x1b[?1004;2$y");
+    t.write("\x1b[?1006h\x1b[?1006$p\x1b[?2031$p\x1b[?2027$p");
+    assert.equal(replies(t), "\x1b[?1006;1$y\x1b[?2031;2$y\x1b[?2027;1$y", "grapheme clustering is on");
+    t.write("\x1b[?2026h\x1b[?2026$p\x1b[?1015$p\x1b[?1016$p\x1b[?1005$p");
+    assert.equal(replies(t), "\x1b[?2026;0$y\x1b[?1015;0$y\x1b[?1016;0$y\x1b[?1005;0$y", "not acted on");
+    t.write("\x1b[?9999$p\x1b[77$p");
+    assert.equal(replies(t), "\x1b[?9999;0$y\x1b[77;0$y", "unknown");
+  } finally { t.dispose(); }
+});
+
+function setVersion(t, text) {
+  const bytes = new TextEncoder().encode(text);
+  const p = t.e.ghostty_wasm_alloc_u8_array(Math.max(1, bytes.length));
+  new Uint8Array(t.e.memory.buffer).set(bytes, p);
+  t.e.tessera_set_version(t.handle, p, bytes.length);
+  t.e.ghostty_wasm_free_u8_array(p, Math.max(1, bytes.length));
+}
+
+test("XTVERSION names Tessera and the version the host set", async () => {
+  const t = await terminal(20, 4);
+  try {
+    t.write("\x1b[>q");
+    assert.equal(replies(t), "\x1bP>|Tessera\x1b\\");
+    setVersion(t, "1.9.1");
+    t.write("\x1b[>0q");
+    assert.equal(replies(t), "\x1bP>|Tessera 1.9.1\x1b\\");
+    for (const bad of ["1.9 beta", "1.9\x1b\\", "x".repeat(65)]) {
+      setVersion(t, bad);
+      t.write("\x1b[>q");
+      assert.equal(replies(t), "\x1bP>|Tessera\x1b\\", JSON.stringify(bad));
+    }
+  } finally { t.dispose(); }
+});
+
+const hex = (text) => Buffer.from(text).toString("hex").toUpperCase();
+function setTermName(t, text) {
+  const bytes = new TextEncoder().encode(text);
+  const p = t.e.ghostty_wasm_alloc_u8_array(Math.max(1, bytes.length));
+  new Uint8Array(t.e.memory.buffer).set(bytes, p);
+  t.e.tessera_set_term_name(t.handle, p, bytes.length);
+  t.e.ghostty_wasm_free_u8_array(p, Math.max(1, bytes.length));
+}
+
+test("XTGETTCAP answers from Ghostty's terminfo, with TERM as the name", async () => {
+  const t = await terminal(20, 4);
+  try {
+    const query = (...names) => { t.write(`\x1bP+q${names.join(";")}\x1b\\`); return replies(t); };
+    assert.equal(query(hex("TN")), `\x1bP0+r${hex("TN")}\x1b\\`, "no name until the host gives one");
+    setTermName(t, "xterm-256color");
+    assert.equal(query(hex("TN")), `\x1bP1+r${hex("TN")}=${hex("xterm-256color")}\x1b\\`);
+    setTermName(t, "bad name");
+    assert.equal(query(hex("TN")), `\x1bP0+r${hex("TN")}\x1b\\`, "a name with a space is refused");
+    assert.equal(query(hex("Tc"), hex("RGB"), hex("Co"), hex("colors")),
+      `\x1bP1+r${hex("Tc")}\x1b\\\x1bP1+r${hex("RGB")}=${hex("8")}\x1b\\\x1bP1+r${hex("Co")}=${hex("256")}\x1b\\\x1bP1+r${hex("colors")}=${hex("256")}\x1b\\`,
+      "true colour, in the order asked");
+    assert.equal(query(hex("kbs").toLowerCase()), `\x1bP1+r${hex("kbs")}=7F\x1b\\`, "lower-case hex, and keys as escapes");
+    assert.equal(query(hex("Ms")), `\x1bP1+r${hex("Ms")}=${hex("\\E]52;%p1%s;%p2%s\\007")}\x1b\\`, "OSC 52 copying");
+    assert.equal(query(hex("fullkbd")), `\x1bP1+r${hex("fullkbd")}\x1b\\`, "the Kitty keyboard protocol");
+    for (const name of ["Smulx", "Setulc", "Su", "Sync", "nosuchcap"]) {
+      assert.equal(query(hex(name)), `\x1bP0+r${hex(name)}\x1b\\`, name);
+    }
+    t.write(`\x1bP+q${"41".repeat(2100)}\x1b\\ok`);
+    assert.equal(replies(t), "", "an oversized query is dropped");
+    t.write(`\x1bP+q${hex("Tc")}\x18`);
+    assert.equal(replies(t), "", "a cancelled query is not answered");
+    t.write(`\x1bP+q${hex("Tc")}\x1b\\\x1bPq#0;2;100;0;0#0~~\x1b\\`);
+    assert.equal(replies(t), `\x1bP1+r${hex("Tc")}\x1b\\`);
+    assert.equal(t.e.tessera_sixel_image_count(t.handle), 1, "Sixel still draws after a query");
+  } finally { t.dispose(); }
+});
+
+test("DECRQSS reports SGR, the cursor style and margins, as Ghostty does", async () => {
+  const t = await terminal(20, 4);
+  try {
+    const query = (setting) => { t.write(`\x1bP$q${setting}\x1b\\`); return replies(t); };
+    assert.equal(query("m"), "\x1bP1$r0m\x1b\\");
+    t.write("\x1b[1;3;31m");
+    assert.equal(query("m"), "\x1bP1$r0;1;3;31m\x1b\\");
+    t.write("\x1b[0;38;2;1;2;3m");
+    assert.equal(query("m"), "\x1bP1$r0;38:2::1:2:3m\x1b\\", "true colour comes back as set");
+    t.write("\x1b[0m");
+    assert.equal(query("r"), "\x1bP1$r1;4r\x1b\\");
+    t.write("\x1b[2;3r");
+    assert.equal(query("r"), "\x1bP1$r2;3r\x1b\\");
+    t.write("\x1b[5 q");
+    assert.equal(query(" q"), "\x1bP1$r5 q\x1b\\");
+    assert.equal(query("s"), "\x1bP0$r\x1b\\", "no left and right margins while DECLRMM is off");
+    t.write("\x1b[?69h\x1b[2;5s");
+    assert.equal(query("s"), "\x1bP1$r2;5s\x1b\\");
+    assert.equal(query("\"p"), "\x1bP0$r\x1b\\", "an unknown setting");
+  } finally { t.dispose(); }
+});
+
+test("in-band size reports (mode 2048) on enabling and after each resize", async () => {
+  const t = await terminal(20, 4);
+  try {
+    const resize = (cols, rows, width, height) => {
+      t.e.ghostty_terminal_resize(t.handle, cols, rows);
+      t.e.tessera_sixel_geometry(t.handle, width, height);
+    };
+    t.write("\x1b[?2048$p");
+    assert.equal(replies(t), "\x1b[?2048;2$y");
+    resize(30, 5, 2, 6);
+    assert.equal(replies(t), "", "not until a program asks");
+    t.write("\x1b[?2048h\x1b[?2048$p");
+    assert.equal(replies(t), "\x1b[48;5;30;30;60t\x1b[?2048;1$y", "rows, columns, then pixel height and width");
+    resize(40, 6, 2, 6);
+    assert.equal(replies(t), "\x1b[48;6;40;36;80t");
+    resize(40, 6, 2, 6);
+    assert.equal(replies(t), "", "an unchanged size is not reported again");
+    resize(40, 6, 3, 7);
+    assert.equal(replies(t), "\x1b[48;6;40;42;120t", "a new cell size is");
+    t.restore(t.snapshot());
+    resize(20, 4, 3, 7);
+    assert.equal(replies(t), "\x1b[48;4;20;28;60t", "a snapshot keeps the mode");
+    t.write("\x1b[?2048l");
+    resize(30, 5, 3, 7);
+    assert.equal(replies(t), "");
+  } finally { t.dispose(); }
+});
+
+test("OSC 9;4 progress reports are kept with a revision", async () => {
+  const t = await terminal(20, 4);
+  try {
+    assert.deepEqual([t.e.tessera_progress_revision(t.handle), t.e.tessera_progress(t.handle)], [0, 0]);
+    t.write("\x1b]9;4;1;42\x07");
+    assert.deepEqual([t.e.tessera_progress_revision(t.handle), t.e.tessera_progress(t.handle)], [1, 1 | (42 << 8)]);
+    t.write("\x1b]9;4;3\x07");
+    assert.equal(t.e.tessera_progress(t.handle), 3 | (255 << 8), "indeterminate, no percentage");
+    t.write("\x1b]9;4;2;250\x1b\\");
+    assert.equal(t.e.tessera_progress(t.handle), 2 | (100 << 8), "error, clamped");
+    t.write("\x1b]9;4;4;10\x07\x1b]9;4;0\x07");
+    assert.deepEqual([t.e.tessera_progress_revision(t.handle), t.e.tessera_progress(t.handle) & 255], [5, 0]);
+    t.write("\x1b]9;4;1;50\x07");
+    assert.equal(t.e.tessera_progress_revision(t.handle), 6);
+  } finally { t.dispose(); }
+});
+
+test("CSI 22/23 t push and pop the window title, through snapshots and reset", async () => {
+  const t = await terminal(20, 4);
+  try {
+    const revision = () => t.e.tessera_sixel_title_revision(t.handle);
+    t.write("\x1b[22;0t\x1b]2;vim file.txt\x07");
+    assert.equal(windowTitle(t), "vim file.txt");
+    const before = revision();
+    t.write("\x1b[23;0t");
+    assert.equal(windowTitle(t), "", "back to no title");
+    assert.notEqual(revision(), before);
+    t.write("\x1b[23;0t");
+    assert.equal(revision(), before + 1, "nothing to pop");
+
+    t.write("\x1b]2;~/src\x07\x1b[22;2t\x1b]2;nested\x07\x1b[22;0t\x1b]2;inner\x07");
+    t.restore(t.snapshot());
+    assert.equal(windowTitle(t), "inner");
+    t.write("\x1b[23;2t");
+    assert.equal(windowTitle(t), "nested", "a restored snapshot keeps the stack");
+    t.write("\x1b[23;0t");
+    assert.equal(windowTitle(t), "~/src");
+    t.write("\x1b[22t\x1b]2;bare\x07\x1b[23;0t");
+    assert.equal(windowTitle(t), "bare", "CSI 22 t without a target is ignored, as in Ghostty");
+    t.write("\x1b[22;1t\x1b]2;icon only\x07\x1b[23;1t");
+    assert.equal(windowTitle(t), "icon only", "icon titles are not stacked");
+
+    for (let i = 0; i < 12; i += 1) t.write(`\x1b]2;title ${i}\x07\x1b[22;0t`);
+    t.write("\x1b]2;top\x07");
+    const popped = [];
+    for (let i = 0; i < 11; i += 1) { t.write("\x1b[23;0t"); popped.push(windowTitle(t)); }
+    assert.deepEqual(popped, ["title 11", "title 10", "title 9", "title 8", "title 7", "title 6", "title 5", "title 4", "title 3", "title 2", "title 2"], "ten kept");
+
+    t.write("\x1b[22;0t\x1b[22;0t\x1bc\x1b[23;0t");
+    assert.equal(windowTitle(t), "", "a full reset empties the stack");
+  } finally { t.dispose(); }
+});
+
+test("Kitty keyboard flags are answered to CSI ? u and readable, per screen", async () => {
+  const t = await terminal(20, 4);
+  try {
+    const flags = () => t.e.tessera_kitty_keyboard_flags(t.handle);
+    t.write("\x1b[?u");
+    assert.equal(replies(t), "\x1b[?0u");
+    t.write("\x1b[>1u");
+    assert.equal(flags(), 1, "pushed");
+    t.write("\x1b[>11u\x1b[?u");
+    assert.equal(replies(t), "\x1b[?11u");
+    t.write("\x1b[=2;2u");
+    assert.equal(flags(), 11 | 2, "or-ed in");
+    t.write("\x1b[<u");
+    assert.equal(flags(), 1, "popped");
+    t.write("\x1b[?1049h");
+    assert.equal(flags(), 0, "the alternate screen has its own");
+    t.write("\x1b[>31u");
+    t.restore(t.snapshot());
+    assert.equal(flags(), 31, "a snapshot keeps them");
+    t.write("\x1b[?1049l");
+    assert.equal(flags(), 1);
+    t.write("\x1bc");
+    assert.equal(flags(), 0, "a full reset clears them");
+  } finally { t.dispose(); }
+});
+
+test("OSC 22 pointer shapes match the CSS names, survive snapshots and reset", async () => {
+  const t = await terminal();
+  try {
+    assert.equal(terminalPointerShapes[t.e.tessera_mouse_shape(t.handle)], "text");
+    terminalPointerShapes.forEach((name, value) => {
+      t.write(`\x1b]22;${name}\x1b\\`);
+      assert.equal(t.e.tessera_mouse_shape(t.handle), value, name);
+    });
+    t.write("\x1b]22;crosshair\x07\x1b]22;no-such-shape\x07");
+    assert.equal(terminalPointerShapes[t.e.tessera_mouse_shape(t.handle)], "crosshair", "an unknown name changes nothing");
+    t.write("\x1b]22;hand\x07");
+    assert.equal(terminalPointerShapes[t.e.tessera_mouse_shape(t.handle)], "pointer", "X cursor names are understood");
+    t.restore(t.snapshot());
+    assert.equal(terminalPointerShapes[t.e.tessera_mouse_shape(t.handle)], "pointer");
+    t.write("\x1bc");
+    assert.equal(terminalPointerShapes[t.e.tessera_mouse_shape(t.handle)], "text");
+  } finally { t.dispose(); }
+});
 
 test("OSC window titles survive every byte split and snapshot, including Unicode and split ST", async () => {
   const t = await terminal();

@@ -54,6 +54,26 @@ export function terminalColorTheme(value) {
   };
 }
 
+function programColor(value) {
+  return value ? `#${(value & 0xffffff).toString(16).padStart(6, "0")}` : null;
+}
+
+// OSC 10-19: the colours a program set, as the core reports them (foreground,
+// background, cursor, selection background, selection foreground; 0x1RRGGBB
+// each, 0 for none), over the pane's theme. Colours the program left alone
+// follow the ones it changed as the pane's own do: the cursor and selection
+// are the foreground, text on them the background.
+export function terminalThemeWithProgramColors(base, values = []) {
+  const [foreground, background, cursor, selectionBackground, selectionForeground] = values.map(programColor);
+  const theme = { ...base };
+  if (foreground) Object.assign(theme, { foreground, cursor: foreground, selectionBackground: foreground });
+  if (background) Object.assign(theme, { background, cursorAccent: background, selectionForeground: background });
+  if (cursor) theme.cursor = cursor;
+  if (selectionBackground) theme.selectionBackground = selectionBackground;
+  if (selectionForeground) theme.selectionForeground = selectionForeground;
+  return theme;
+}
+
 export async function recreateOpenTerminalViews(rectangles, disposeTerminal, startTerminal) {
   const openTerminals = rectangles.filter((rect) => rect.kind === "terminal" && rect.terminal);
   for (const rect of openTerminals) {

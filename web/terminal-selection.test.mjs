@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { installTerminalSelection } from "./terminal-selection.mjs";
 import { TerminalRenderScheduler } from "./terminal-render-scheduler.mjs";
 import {
-  TerminalContextMenuFallback, TerminalMousePress,
+  TerminalContextMenuFallback, TerminalMouseHover, TerminalMousePress, terminalHoverButtonCode,
   clearTerminalSelectionStartedDuringGesture, isTerminalContextMenuGesture,
 } from "./terminal-input.mjs";
 
@@ -301,7 +301,9 @@ function attachBridge(f, appleKeyboardLayout) {
   const bridge = appFunction("attachTerminalMouseBridge", {
     appleKeyboardLayout, isTerminalContextMenuGesture,
     TerminalContextMenuFallback, TerminalMousePress, clearTerminalSelectionStartedDuringGesture,
+    TerminalMouseHover, terminalHoverButtonCode,
     terminalShouldReportMouse: appFunction("terminalShouldReportMouse"),
+    terminalReportsMotion: appFunction("terminalReportsMotion"),
     terminalMouseButtonCode: appFunction("terminalMouseButtonCode"),
     terminalMousePosition: () => ({ col: 1, row: 1 }),
     terminalMouseEventCode: appFunction("terminalMouseEventCode"),
@@ -352,4 +354,27 @@ test("unmodified TUI clicks still report a press and release without starting lo
   assert.deepEqual(b.sent.map(item => item.final), ["M", "m"]);
   b.bridge.dispose();
   assert.equal(f.emit("click", { ctrlKey: true }).propagationStopped, false);
+});
+
+test("pointer motion with no button reports code 35 once per cell, only in mode 1003", () => {
+  const f = fixture();
+  let anyEvent = false;
+  f.term.getMode = (mode) => mode === 1003 && anyEvent;
+  const b = attachBridge(f, true);
+  f.emit("pointermove", { buttons: 0 });
+  assert.deepEqual(b.sent, [], "no report without any-event tracking");
+
+  anyEvent = true;
+  f.emit("pointermove", { buttons: 0 });
+  f.emit("pointermove", { buttons: 0 });
+  assert.deepEqual(b.sent, [{ code: 35, position: { col: 1, row: 1 }, final: "M" }], "once per cell");
+
+  f.emit("pointermove", { buttons: 0, shiftKey: true });
+  f.emit("pointermove", { buttons: 0, altKey: true });
+  assert.deepEqual(b.sent.map(item => item.code), [35, 43], "Shift keeps the pointer; Option adds 8");
+
+  f.emit("pointerleave");
+  f.emit("pointermove", { buttons: 0 });
+  assert.deepEqual(b.sent.map(item => item.code), [35, 43, 35], "re-entering reports again");
+  b.bridge.dispose();
 });

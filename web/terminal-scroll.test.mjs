@@ -146,7 +146,7 @@ function wheelBridge(speed = 1.5) {
     renderer: { getMetrics: () => ({ height: 20 }) }, scrollWheelLines(value) { movements.push(value); },
     input(value) { inputs.push(value); }, attachCustomWheelEventHandler(handler) { wheel = handler; } };
   const bridge = vm.runInNewContext(`(${source.slice(start, end)})`, {
-    TerminalMousePress: class {}, TerminalContextMenuFallback: class {},
+    TerminalMousePress: class {}, TerminalMouseHover: class {}, TerminalContextMenuFallback: class {},
     terminalWheelSensitivity: speed, wheelDeltaUnits,
     terminalShouldReportMouse: () => reporting, terminalMousePosition: () => ({ col: 1, row: 1 }),
     terminalMouseEventCode: code => code, sendTerminalMouseSequence(_socket, code) { reports.push(code); },

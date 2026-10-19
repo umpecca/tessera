@@ -3,6 +3,7 @@
 package terminalcore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -11,10 +12,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"tessera/internal/terminalaudio"
 	"tessera/internal/terminalfile"
+	"tessera/internal/version"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -77,6 +80,17 @@ func New(cols, rows int) (*Core, error) {
 		c.Close()
 		return nil, err
 	}
+	// Ghostty starts focused; the host's core is focused only while a browser
+	// says so.
+	if err := c.SetFocus(false); err != nil {
+		c.Close()
+		return nil, err
+	}
+	// XTVERSION names the build, without the release tag's "v".
+	if err := c.setVersion(strings.TrimPrefix(version.Version, "v")); err != nil {
+		c.Close()
+		return nil, err
+	}
 	if err := c.Resize(cols, rows, 8, 16); err != nil {
 		c.Close()
 		return nil, err
@@ -91,6 +105,104 @@ func (c *Core) Configure(light bool) error {
 	}
 	_, err := c.call("tessera_sixel_configure", c.handle, value)
 	return err
+}
+
+// SetFocus says whether a browser has the pane focused. A program that
+// enabled focus reports (mode 1004) is told of a change through Replies.
+func (c *Core) SetFocus(focused bool) error {
+	var value uint64
+	if focused {
+		value = 1
+	}
+	_, err := c.call("tessera_focus", c.handle, value)
+	return err
+}
+
+func (c *Core) setVersion(text string) error {
+	return c.setText("tessera_set_version", text)
+}
+
+// SetTermName gives the TERM programs run with, which capability queries
+// (XTGETTCAP) report as the terminal's name.
+func (c *Core) SetTermName(name string) error {
+	return c.setText("tessera_set_term_name", name)
+}
+
+func (c *Core) setText(function, text string) error {
+	if text == "" {
+		return nil
+	}
+	p, err := c.call("ghostty_wasm_alloc_u8_array", uint64(len(text)))
+	if err != nil {
+		return err
+	}
+	if p == 0 {
+		return errors.New("terminal text allocation failed")
+	}
+	defer c.call("ghostty_wasm_free_u8_array", p, uint64(len(text)))
+	if !c.module.Memory().Write(uint32(p), []byte(text)) {
+		return errors.New("terminal text exceeds memory")
+	}
+	_, err = c.call(function, c.handle, p, uint64(len(text)))
+	return err
+}
+
+// Progress is the program's last OSC 9;4 report. Revision counts reports,
+// wrapping. State is 0 remove, 1 set, 2 error, 3 indeterminate or 4 pause;
+// Percent is 0-100, or -1 when the report gave none.
+func (c *Core) Progress() (revision uint32, state int, percent int, err error) {
+	value, err := c.call("tessera_progress_revision", c.handle)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	report, err := c.call("tessera_progress", c.handle)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	percent = int(report>>8) & 255
+	if percent == 255 {
+		percent = -1
+	}
+	return uint32(value), int(report & 255), percent, nil
+}
+
+// BellCount counts the bells the program has rung, wrapping.
+func (c *Core) BellCount() (uint32, error) {
+	value, err := c.call("tessera_bell_count", c.handle)
+	return uint32(value), err
+}
+
+// Notification is one OSC 9 or OSC 777 desktop notification. OSC 9 has no
+// title.
+type Notification struct {
+	Title string
+	Body  string
+}
+
+// Notifications drains the queued desktop notifications.
+func (c *Core) Notifications() ([]Notification, error) {
+	data, err := c.drain("tessera_notification_read")
+	if err != nil {
+		return nil, err
+	}
+	var notifications []Notification
+	for len(data) >= 4 {
+		n := int(binary.LittleEndian.Uint32(data))
+		data = data[4:]
+		if n > len(data) {
+			return nil, errors.New("invalid terminal notification")
+		}
+		title, body, ok := bytes.Cut(data[:n], []byte{0})
+		if !ok {
+			return nil, errors.New("invalid terminal notification")
+		}
+		notifications = append(notifications, Notification{Title: string(title), Body: string(body)})
+		data = data[n:]
+	}
+	if len(data) != 0 {
+		return nil, errors.New("invalid terminal notification framing")
+	}
+	return notifications, nil
 }
 
 func (c *Core) ImageSettings() (memoryMiB int, placeholders bool, err error) {

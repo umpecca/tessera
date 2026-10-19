@@ -44,6 +44,11 @@ pub fn sixel_configure(ptr: ?*anyopaque, light: u32) callconv(.c) void {
     for (ansi, 0..) |rgb, i| palette[i] = .{ .r = @truncate(rgb >> 16), .g = @truncate(rgb >> 8), .b = @truncate(rgb) };
     w.terminal.colors.palette.changeDefault(palette);
     w.terminal.flags.dirty.clear = true;
+    // Mode 2031 asks to be told when the scheme changes, as CSI ? 996 n
+    // would answer.
+    const was_light = w.stream.handler.light;
+    w.stream.handler.light = light != 0;
+    if (was_light != w.stream.handler.light and w.terminal.modes.get(.report_color_scheme)) w.stream.handler.reportColorScheme() catch {};
 }
 
 fn trimHistory(w: *TerminalWrapper) void {
@@ -72,6 +77,12 @@ pub fn sixel_geometry(ptr: ?*anyopaque, width: u32, height: u32) callconv(.c) vo
     w.sixel.cell_height = height;
     w.terminal.width_px = @as(u32, w.terminal.cols) * width;
     w.terminal.height_px = @as(u32, w.terminal.rows) * height;
+    // A program that enabled in-band size reports (mode 2048) is told the
+    // new size; the host calls this after every resize.
+    if (w.terminal.modes.get(.in_band_size_reports)) {
+        const size = [4]u32{ w.terminal.rows, w.terminal.cols, w.terminal.height_px, w.terminal.width_px };
+        if (!std.mem.eql(u32, &size, &w.stream.handler.size_reported)) w.stream.handler.reportSize() catch {};
+    }
     trimHistory(w);
     w.sixel.collection_pending = true;
     w.sixel.collect(w.alloc, &w.terminal) catch {};

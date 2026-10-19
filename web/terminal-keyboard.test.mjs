@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isTerminalCopyShortcut,
+  terminalPromptJumpDirection,
   shouldIsolateMacTerminalPasteKeydown,
   terminalCommandArrowSequence,
   terminalControlSequence,
@@ -200,4 +201,63 @@ test("leaves other arrows, modifiers and keyboards to the encoder", () => {
     assert.equal(terminalCommandArrowSequence({ key: "ArrowRight", metaKey: true, ...extra }, apple), null);
   }
   assert.equal(terminalCommandArrowSequence(null, apple), null);
+});
+
+test("encodes Globe+arrow by the logical key it reports, without Command", () => {
+  const apple = { appleKeyboard: true };
+  const cases = [
+    ["Home", "ArrowLeft", "\x1B[H"],
+    ["End", "ArrowRight", "\x1B[F"],
+    ["PageUp", "ArrowUp", "\x1B[5~"],
+    ["PageDown", "ArrowDown", "\x1B[6~"],
+  ];
+  for (const [key, code, sequence] of cases) {
+    assert.equal(terminalNavigationSequence({ key, code, metaKey: true }, apple), sequence);
+    assert.equal(terminalNavigationSequence({ key, code }, apple), sequence);
+  }
+  assert.equal(
+    terminalNavigationSequence({ key: "Home", code: "ArrowLeft", metaKey: true, shiftKey: true }, apple),
+    "\x1B[1;2H",
+  );
+  assert.equal(
+    terminalNavigationSequence({ key: "PageDown", code: "ArrowDown", metaKey: true, ctrlKey: true }, apple),
+    "\x1B[6;5~",
+  );
+});
+
+test("leaves real arrows and real Home keys to the encoder, and Globe+arrow off Apple keyboards", () => {
+  const apple = { appleKeyboard: true };
+  assert.equal(terminalNavigationSequence({ key: "ArrowLeft", code: "ArrowLeft", metaKey: true }, apple), null);
+  assert.equal(terminalNavigationSequence({ key: "Home", code: "Home" }, apple), null);
+  assert.equal(terminalNavigationSequence({ key: "Home", code: "ArrowLeft", metaKey: true }, {}), null);
+  assert.equal(terminalNavigationSequence(null, apple), null);
+});
+
+test("leaves Command out of numpad navigation on an Apple keyboard", () => {
+  const apple = { appleKeyboard: true };
+  assert.equal(terminalNavigationSequence({ key: "Home", code: "Numpad7", metaKey: true }, apple), "\x1B[H");
+  assert.equal(terminalNavigationSequence({ key: "ArrowLeft", code: "Numpad4", metaKey: true }, apple), "\x1B[D");
+  assert.equal(
+    terminalNavigationSequence({ key: "PageUp", code: "Numpad9", metaKey: true, altKey: true }, apple),
+    "\x1B[5;3~",
+  );
+  assert.equal(
+    terminalNavigationSequence({ key: "Numpad7", code: "Numpad7", metaKey: true }, { ...apple, applicationKeypad: true }),
+    "\x1BOw",
+  );
+});
+
+test("prompt jumps use Cmd+Up/Down on Apple keyboards and Ctrl+Shift+Page Up/Down elsewhere", () => {
+  const apple = { appleKeyboard: true };
+  assert.equal(terminalPromptJumpDirection({ key: "ArrowUp", metaKey: true }, apple), -1);
+  assert.equal(terminalPromptJumpDirection({ key: "ArrowDown", metaKey: true }, apple), 1);
+  assert.equal(terminalPromptJumpDirection({ key: "ArrowUp", metaKey: true, shiftKey: true }, apple), 0, "Cmd+Shift+Up moves windows");
+  assert.equal(terminalPromptJumpDirection({ key: "ArrowUp", metaKey: true }, {}), 0, "Meta+Up off an Apple keyboard");
+  assert.equal(terminalPromptJumpDirection({ key: "ArrowUp" }, apple), 0);
+  for (const options of [{}, apple]) {
+    assert.equal(terminalPromptJumpDirection({ key: "PageUp", ctrlKey: true, shiftKey: true }, options), -1);
+    assert.equal(terminalPromptJumpDirection({ key: "PageDown", ctrlKey: true, shiftKey: true }, options), 1);
+  }
+  assert.equal(terminalPromptJumpDirection({ key: "PageUp", ctrlKey: true }, {}), 0);
+  assert.equal(terminalPromptJumpDirection({ key: "PageUp", ctrlKey: true, shiftKey: true, altKey: true }, {}), 0);
 });

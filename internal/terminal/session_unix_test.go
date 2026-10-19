@@ -5,8 +5,12 @@ package terminal
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,5 +66,31 @@ func TestUnixTerminalExitReportsProcessStatus(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStartFallsBackWhenTheDirectoryIsGone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses a real local PTY")
+	}
+	t.Setenv("TESSERA_TERMINAL_SHELL", "/bin/sh")
+	want, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cwd := range []string{filepath.Join(t.TempDir(), "removed"), "/dev/null"} {
+		session, err := Start(cwd, "xterm-256color", 80, 24)
+		if err != nil {
+			t.Fatalf("Start(%q): %v", cwd, err)
+		}
+		if _, err := session.Write([]byte("pwd -P; exit\r")); err != nil {
+			t.Fatal(err)
+		}
+		output, _ := io.ReadAll(session)
+		session.Close()
+		resolved, _ := filepath.EvalSymlinks(want)
+		if !strings.Contains(string(output), resolved) {
+			t.Fatalf("Start(%q) shell printed %q, want it in %q", cwd, output, resolved)
+		}
 	}
 }

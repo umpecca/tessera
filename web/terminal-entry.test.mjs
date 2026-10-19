@@ -11,6 +11,11 @@ import { TerminalScroll, terminalScrollMouseEvent } from "./terminal-scroll.mjs"
 import { defaultTerminalRowSpacing, normalizeTerminalRowSpacing } from "./terminal-settings.mjs";
 import { TerminalPrediction } from "./terminal-prediction.mjs";
 import { TerminalPredictionOverlay } from "./terminal-prediction-overlay.mjs";
+import { TerminalLinkHover } from "./terminal-link-hover.mjs";
+import { defaultTerminalPointerShape, terminalPointerShape } from "./terminal-pointer-shape.mjs";
+import { adjacentPrompt, commandOutput, lastCommandOutput, promptStarts } from "./terminal-prompts.mjs";
+import { terminalColorTheme, terminalThemeWithProgramColors } from "./terminal-colors.mjs";
+import { terminalKittyKeyEvent } from "./terminal-kitty-keyboard.mjs";
 
 function loadTerminalClass(overrides = {}) {
   const source = readFileSync(new URL("./terminal-entry.js", import.meta.url), "utf8");
@@ -27,6 +32,19 @@ function loadTerminalClass(overrides = {}) {
     normalizeTerminalRowSpacing,
     TerminalPrediction,
     TerminalPredictionOverlay,
+    TerminalLinkHover,
+    defaultTerminalPointerShape,
+    terminalPointerShape,
+    adjacentPrompt,
+    commandOutput,
+    lastCommandOutput,
+    promptStarts,
+    terminalThemeWithProgramColors,
+    OSC8LinkProvider: class {},
+    UrlRegexProvider: class {},
+    HyperlinkProvider: class {},
+    RoutedLinkProvider: class {},
+    replaceLinkProvider() {},
     TextDecoder,
     setTimeout,
     clearTimeout,
@@ -484,8 +502,192 @@ test("real WASM titles reach the browser callback from bytes, snapshots, and rep
     assert.equal(titles.at(-1), "vim — 界");
     assert.equal(titles.length, 4, "a later identical request can replace a manual pane title");
     term.reset();
+    assert.deepEqual(titles.slice(4), [""], "a reset says the program's title is gone, once");
+    term.write("\x1bc");
+    assert.equal(titles.length, 5);
     term.write(data);
-    assert.equal(titles.length, 5, "titles resume after a full reset");
+    assert.equal(titles.length, 6, "titles resume after a full reset");
+    term.write("\x1b[22;0t\x1b]2;nested\x07");
+    term.write("\x1b[23;0t");
+    assert.deepEqual(titles.slice(6), ["nested", "vim — 界"], "a popped title comes back");
+    term.write("\x1b]2;x\x07");
+    term.write("\x1bc");
+    term.write("\x1bc");
+    assert.deepEqual(titles.slice(8), ["x", ""], "a title cleared by RIS, once");
+  } finally { term.dispose(); }
+});
+
+test("real WASM working directory and pointer shape reports reach the pane", async () => {
+  const bytes = readFileSync(new URL("../internal/terminalcore/ghostty-vt.wasm", import.meta.url));
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports;
+  class GhosttyTerminal {
+    constructor(options) { this.options = options; this.titleChangeEmitter = { fire() {} }; }
+    onScroll() {}
+    clearSelection() {}
+    write(data) {
+      const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+      const ptr = e.ghostty_wasm_alloc_u8_array(bytes.length);
+      try {
+        new Uint8Array(e.memory.buffer).set(bytes, ptr);
+        e.ghostty_terminal_write(this.wasmTerm.handle, ptr, bytes.length);
+      } finally { e.ghostty_wasm_free_u8_array(ptr, bytes.length); }
+    }
+    reset() { this.write("\x1bc"); }
+    dispose() { if (!this.isDisposed) { this.wasmTerm.free(); this.isDisposed = true; } }
+  }
+  const Terminal = loadTerminalClass({ GhosttyTerminal,
+    renderScheduler: { noteOutput() {}, request() {}, unregister() {} } });
+  const term = new Terminal({ cursorBlinkEnabled: false });
+  term.wasmTerm = { handle: e.ghostty_terminal_new(20, 6), exports: e, initCellPool() {}, free() { e.ghostty_terminal_free(this.handle); } };
+  term.renderer = { resize() {} };
+  term.element = { style: { cursor: "text" } };
+  const reports = [];
+  const listener = term.onWorkingDirectoryChange(report => reports.push(report));
+  try {
+    term.write("\x1b]7;file://studio/Users/me\x1b\\");
+    term.write("plain output");
+    term.write("\x1b]7;file://studio/Users/me\x07\x1b]7;file://studio/tmp\x07");
+    assert.deepEqual(reports, ["file://studio/Users/me", "file://studio/tmp"],
+      "one report per write, the last one, even when it repeats the directory");
+
+    term.write("\x1b]22;crosshair\x07");
+    assert.equal(term.element.style.cursor, "crosshair");
+    term.currentHoveredLink = {};
+    term.element.style.cursor = "pointer"; // ghostty-web over a link
+    term.write("\x1b]22;grab\x07");
+    assert.equal(term.element.style.cursor, "pointer", "a link under the pointer keeps the hand");
+    term.currentHoveredLink = undefined;
+    term.element.style.cursor = "text"; // ghostty-web leaving the link
+    term.applyPointerShape();
+    assert.equal(term.element.style.cursor, "grab");
+
+    const length = e.tessera_sixel_snapshot_export(term.wasmTerm.handle);
+    const snapshot = new Uint8Array(e.memory.buffer, e.tessera_sixel_snapshot_data(term.wasmTerm.handle), length).slice();
+    term.write("\x1b]22;default\x07");
+    term.restoreSnapshot(snapshot, { cols: 20, rows: 6 });
+    assert.equal(term.element.style.cursor, "grab", "the shape comes back with the snapshot");
+    term.write("output");
+    assert.equal(reports.length, 2, "a restored snapshot reports no directory of its own");
+
+    term.reset();
+    assert.equal(term.element.style.cursor, "text");
+    listener.dispose();
+    term.write("\x1b]7;file://studio/var\x07");
+    assert.equal(reports.length, 2);
+  } finally { term.dispose(); }
+});
+
+test("real WASM prompt marks drive prompt jumps and command output selection", async () => {
+  const bytes = readFileSync(new URL("../internal/terminalcore/ghostty-vt.wasm", import.meta.url));
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports;
+  const rowText = [];
+  class GhosttyTerminal {
+    constructor(options) { this.options = options; this.titleChangeEmitter = { fire() {} }; this.viewportY = 0; this.cols = 20; this.rows = 4; }
+    onScroll() {}
+    write(data) {
+      const bytes = new TextEncoder().encode(data);
+      const ptr = e.ghostty_wasm_alloc_u8_array(bytes.length);
+      try {
+        new Uint8Array(e.memory.buffer).set(bytes, ptr);
+        e.ghostty_terminal_write(this.wasmTerm.handle, ptr, bytes.length);
+      } finally { e.ghostty_wasm_free_u8_array(ptr, bytes.length); }
+    }
+    getScrollbackLength() { return e.ghostty_terminal_get_scrollback_length(this.wasmTerm.handle); }
+    getSelection() {
+      const { selectionStart: start, selectionEnd: end } = this.selectionManager;
+      return rowText.slice(start.absoluteRow, end.absoluteRow + 1).join("\n");
+    }
+    dispose() { if (!this.isDisposed) { this.wasmTerm.free(); this.isDisposed = true; } }
+  }
+  const Terminal = loadTerminalClass({ GhosttyTerminal,
+    renderScheduler: { noteOutput() {}, request() {}, unregister() {} } });
+  const term = new Terminal({ cursorBlinkEnabled: false });
+  term.wasmTerm = { handle: e.ghostty_terminal_new(20, 4), exports: e, free() { e.ghostty_terminal_free(this.handle); } };
+  term.renderer = { resize() {} };
+  const scrolls = [];
+  term.smoothScrollTo = (position) => scrolls.push(position);
+  const events = [];
+  term.selectionManager = {
+    clearSelection() { events.push("clear"); },
+    markCurrentSelectionDirty() { events.push("dirty"); },
+    selectionChangedEmitter: { fire() { events.push("changed"); } },
+  };
+  term.buffer = { active: {
+    get length() { return term.getScrollbackLength() + 4; },
+    getLine: (row) => ({ translateToString: () => rowText[row] ?? "" }),
+  } };
+  try {
+    const command = (name, output) => `\x1b]133;A\x07$ \x1b]133;B\x07${name}\r\n\x1b]133;C\x07${output}\x1b]133;D;0\x07`;
+    term.write(command("ls", "a\r\nb\r\n") + command("pwd", "/tmp\r\n") + "\x1b]133;A\x07$ \x1b]133;B\x07");
+    rowText.push("$ ls", "a", "b", "$ pwd", "/tmp", "$ ");
+    assert.deepEqual([...term.semanticMarks()], [1, 4, 0, 1, 4, 1]);
+
+    // Two rows are in scrollback; the view is at the bottom (top row 2).
+    assert.equal(term.scrollToPrompt(-1), true);
+    assert.deepEqual(scrolls, [2], "the first prompt at the top");
+    term.viewportY = 2;
+    assert.equal(term.scrollToPrompt(-1), false, "nothing above the first prompt");
+    assert.equal(term.scrollToPrompt(1), true);
+    assert.deepEqual(scrolls, [2, 0], "the next prompt is on screen, so back to the bottom");
+
+    assert.equal(term.selectCommandOutput(), "/tmp");
+    assert.deepEqual({ ...term.selectionManager.selectionStart }, { col: 0, absoluteRow: 4 });
+    assert.deepEqual({ ...term.selectionManager.selectionEnd }, { col: 19, absoluteRow: 4 });
+    assert.deepEqual(events, ["clear", "dirty", "changed"]);
+    assert.equal(term.selectCommandOutput(2), "a\nb", "the command at or above a row");
+    assert.equal(term.selectCommandOutput(5), "", "the waiting prompt has no output yet");
+  } finally { term.dispose(); }
+});
+
+test("real WASM colour changes recolour the renderer theme and padding", async () => {
+  const bytes = readFileSync(new URL("../internal/terminalcore/ghostty-vt.wasm", import.meta.url));
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports;
+  class GhosttyTerminal {
+    constructor(options) { this.options = options; this.titleChangeEmitter = { fire() {} }; }
+    onScroll() {}
+    clearSelection() {}
+    write(data) {
+      const bytes = new TextEncoder().encode(data);
+      const ptr = e.ghostty_wasm_alloc_u8_array(bytes.length);
+      try {
+        new Uint8Array(e.memory.buffer).set(bytes, ptr);
+        e.ghostty_terminal_write(this.wasmTerm.handle, ptr, bytes.length);
+      } finally { e.ghostty_wasm_free_u8_array(ptr, bytes.length); }
+    }
+    reset() { this.write("\x1bc"); }
+    dispose() { if (!this.isDisposed) { this.wasmTerm.free(); this.isDisposed = true; } }
+  }
+  let frames = 0;
+  const Terminal = loadTerminalClass({ GhosttyTerminal,
+    renderScheduler: { noteOutput() {}, request() { frames++; }, unregister() {} } });
+  const term = new Terminal({ cursorBlinkEnabled: false });
+  term.wasmTerm = { handle: e.ghostty_terminal_new(20, 4), exports: e, initCellPool() {}, free() { e.ghostty_terminal_free(this.handle); } };
+  e.tessera_sixel_configure(term.wasmTerm.handle, 0);
+  const base = terminalColorTheme("dark");
+  term.renderer = { resize() {}, theme: { ...base } };
+  term.element = { style: { background: base.background } };
+  try {
+    term.write("plain output");
+    assert.deepEqual({ ...term.renderer.theme }, base, "nothing set, nothing changed");
+    term.write("\x1b]11;#202428\x07\x1b]12;#ff8800\x07");
+    assert.equal(term.renderer.theme.background, "#202428");
+    assert.equal(term.renderer.theme.cursor, "#ff8800");
+    assert.equal(term.renderer.theme.selectionForeground, "#202428");
+    assert.equal(term.element.style.background, "#202428", "the padding around the grid too");
+    assert.equal(term.fullRedrawPending, true);
+
+    const length = e.tessera_sixel_snapshot_export(term.wasmTerm.handle);
+    const snapshot = new Uint8Array(e.memory.buffer, e.tessera_sixel_snapshot_data(term.wasmTerm.handle), length).slice();
+    term.write("\x1b]111\x07\x1b]112\x07");
+    assert.deepEqual({ ...term.renderer.theme }, base, "reset gives back the pane's colours");
+    term.restoreSnapshot(snapshot, { cols: 20, rows: 4 });
+    assert.equal(term.renderer.theme.background, "#202428", "a restored snapshot brings them back");
+    term.reset();
+    assert.deepEqual({ ...term.renderer.theme }, base);
+    assert.ok(frames > 0);
   } finally { term.dispose(); }
 });
 
@@ -646,4 +848,77 @@ test("the predicted cursor blinks with the real one and typing keeps both solid"
   assert.equal(drawn.at(-1), "cursor");
   term.resetPredictions();
   term.cursorBlink.dispose();
+});
+
+test("real WASM Kitty keyboard encoding, from browser key events", async () => {
+  const bytes = readFileSync(new URL("../internal/terminalcore/ghostty-vt.wasm", import.meta.url));
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports;
+  const Terminal = loadTerminalClass({ GhosttyTerminal: class {}, TextEncoder });
+  const handle = e.ghostty_terminal_new(20, 4);
+  const term = Object.create(Terminal.prototype);
+  term.wasmTerm = { exports: e, handle };
+  term.getMode = (mode) => mode === 1036;
+  const write = (text) => {
+    const data = new TextEncoder().encode(text), ptr = e.ghostty_wasm_alloc_u8_array(data.length);
+    new Uint8Array(e.memory.buffer).set(data, ptr);
+    e.ghostty_terminal_write(handle, ptr, data.length);
+    e.ghostty_wasm_free_u8_array(ptr, data.length);
+  };
+  const k = (fields) => ({ key: "", code: "", shiftKey: false, ctrlKey: false, altKey: false, metaKey: false, ...fields });
+  const send = (event, { apple = false, action = "press" } = {}) => {
+    const fields = terminalKittyKeyEvent(event, { appleKeyboard: apple, action });
+    return fields && term.encodeKeyEvent(fields, term.kittyKeyboardFlags());
+  };
+  try {
+    assert.equal(term.kittyKeyboardFlags(), 0);
+    write("\x1b[>1u");
+    assert.equal(term.kittyKeyboardFlags(), 1, "read from the core");
+    const disambiguate = [
+      [k({ key: "a", code: "KeyA" }), "a"],
+      [k({ key: "A", code: "KeyA", shiftKey: true }), "A"],
+      [k({ key: "!", code: "Digit1", shiftKey: true }), "!"],
+      [k({ key: "Escape", code: "Escape" }), "\x1b[27u"],
+      [k({ key: "i", code: "KeyI", ctrlKey: true }), "\x1b[105;5u"],
+      [k({ key: "Tab", code: "Tab" }), "\t"],
+      [k({ key: "Tab", code: "Tab", shiftKey: true }), "\x1b[9;2u"],
+      [k({ key: "Enter", code: "Enter" }), "\r"],
+      [k({ key: "Enter", code: "Enter", shiftKey: true }), "\x1b[13;2u"],
+      [k({ key: "Backspace", code: "Backspace" }), "\x7f"],
+      [k({ key: "Backspace", code: "Backspace", ctrlKey: true }), "\x1b[127;5u"],
+      [k({ key: "a", code: "KeyA", altKey: true }), "\x1b[97;3u"],
+      [k({ key: "c", code: "KeyC", ctrlKey: true }), "\x1b[99;5u"],
+      [k({ key: "ArrowUp", code: "ArrowUp" }), "\x1b[A"],
+      [k({ key: "F5", code: "F5" }), "\x1b[15~"],
+      [k({ key: "Home", code: "Numpad7" }), "\x1b[57423u"],
+      [k({ key: "é", code: "" }), "é"],
+    ];
+    for (const [event, expected] of disambiguate) assert.equal(send(event), expected, JSON.stringify(event));
+    assert.equal(send(k({ key: "ArrowLeft", code: "ArrowLeft", metaKey: true }), { apple: true }), "\x1b[H", "Command+Left is Home");
+    assert.equal(send(k({ key: "s", code: "KeyS", metaKey: true }), { apple: true }), null, "Command+S is not sent");
+    assert.equal(send(k({ key: "Dead", code: "KeyE", altKey: true }), { apple: true }), "", "a dead key waits for its composition");
+    assert.equal(send(k({ key: "a", code: "KeyA" }), { action: "release" }), "", "no releases without flag 2");
+
+    write("\x1b[=3u");
+    assert.equal(send(k({ key: "a", code: "KeyA" }), { action: "release" }), "\x1b[97;1:3u");
+    assert.equal(send(k({ key: "a", code: "KeyA" }), { action: "repeat" }), "a");
+    assert.equal(send(k({ key: "Escape", code: "Escape" }), { action: "release" }), "\x1b[27;1:3u");
+    assert.equal(send(k({ key: "Enter", code: "Enter" }), { action: "release" }), "", "Enter's release only with flag 8");
+
+    write("\x1b[=9u");
+    assert.equal(send(k({ key: "a", code: "KeyA" })), "\x1b[97u");
+    assert.equal(send(k({ key: "A", code: "KeyA", shiftKey: true })), "\x1b[97;2u");
+    assert.equal(send(k({ key: "Enter", code: "Enter" })), "\x1b[13u");
+    assert.equal(send(k({ key: "Shift", code: "ShiftLeft", shiftKey: true })), "\x1b[57441;2u");
+    write("\x1b[=13u");
+    assert.equal(send(k({ key: "A", code: "KeyA", shiftKey: true })), "\x1b[97:65;2u", "the shifted key as an alternate");
+    write("\x1b[=25u");
+    assert.equal(send(k({ key: "a", code: "KeyA" })), "\x1b[97;;97u", "with its text");
+
+    write("\x1b[<u");
+    assert.equal(term.kittyKeyboardFlags(), 0, "popped back to ordinary encoding");
+  } finally {
+    term.keyEncoder && e.ghostty_key_encoder_free(term.keyEncoder.handle);
+    e.ghostty_terminal_free(handle);
+  }
 });

@@ -87,6 +87,12 @@ fn saveState(w: *TerminalWrapper, out: *snapshot.Writer) !void {
     try out.value(w.stream.utf8decoder);
     try out.value(@as([]const u8, w.stream.handler.osc_raw.items));
     try out.value(@as([]const u8, w.stream.handler.title.items));
+    try out.value(w.stream.handler.highlight_background);
+    try out.value(w.stream.handler.highlight_foreground);
+    // Titles saved with CSI 22 t, so a browser restored from a snapshot
+    // gives back the right one when the program pops it.
+    try out.value(w.stream.handler.title_stack_len);
+    for (w.stream.handler.title_stack[0..w.stream.handler.title_stack_len]) |entry| try out.value(@as([]const u8, entry.items));
     try out.fields(w.sixel, store_fields);
     try out.value(w.sixel.decoder);
     try out.value(@as(u32, @intCast(w.sixel.images.count())));
@@ -159,6 +165,17 @@ fn loadState(input: *snapshot.Reader) !*anyopaque {
     const title = try input.value([]u8);
     w.stream.handler.title = .fromOwnedSlice(title);
     if (title.len > 4096 or !std.unicode.utf8ValidateSlice(title)) return error.InvalidSnapshot;
+    w.stream.handler.highlight_background = try input.value(u32);
+    w.stream.handler.highlight_foreground = try input.value(u32);
+    if (w.stream.handler.highlight_background > 0x1ffffff or w.stream.handler.highlight_foreground > 0x1ffffff) return error.InvalidSnapshot;
+    const saved_titles = try input.value(u8);
+    if (saved_titles > w.stream.handler.title_stack.len) return error.InvalidSnapshot;
+    for (0..saved_titles) |i| {
+        const saved = try input.value([]u8);
+        w.stream.handler.title_stack[i] = .fromOwnedSlice(saved);
+        w.stream.handler.title_stack_len = @intCast(i + 1);
+        if (saved.len > 4096 or !std.unicode.utf8ValidateSlice(saved)) return error.InvalidSnapshot;
+    }
     try input.fields(&w.sixel, store_fields);
     if (w.sixel.memory_limit != 16 * 1024 * 1024 and w.sixel.memory_limit != 32 * 1024 * 1024 and w.sixel.memory_limit != 64 * 1024 * 1024) return error.InvalidSnapshot;
     w.sixel.decoder = try input.value(@TypeOf(w.sixel.decoder));

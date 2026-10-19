@@ -1,0 +1,131 @@
+// Bells and desktop notifications (OSC 9 and OSC 777) from the programs in
+// terminal panes. The host sends each as a "terminal-alert" message to every
+// browser showing the pane, paused or not, and repeats the latest one nobody
+// has seen to each browser that connects.
+
+const maximumTitleLength = 200;
+const maximumBodyLength = 1000;
+
+// Programs write these, so control characters and runs of space become one
+// space, and long text is cut short.
+export function cleanTerminalAlertText(value, limit) {
+  if (typeof value !== "string") return "";
+  const text = value.replace(/[\u0000-\u001f\u007f-\u009f\s]+/gu, " ").trim();
+  const characters = [...text];
+  return characters.length > limit ? `${characters.slice(0, limit - 1).join("")}…` : text;
+}
+
+// The alert in a host message if it is new to this pane, or null. `seen`
+// holds the newest alert the pane has had, and is updated.
+export function acceptTerminalAlert(seen, message) {
+  if (message?.type !== "terminal-alert" || typeof message.epoch !== "string" || !Number.isSafeInteger(message.id) || message.id < 1) return null;
+  if (message.kind !== "bell" && message.kind !== "notification") return null;
+  if (seen.epoch === message.epoch && message.id <= seen.id) return null;
+  seen.epoch = message.epoch;
+  seen.id = message.id;
+  if (message.kind === "bell") return { epoch: message.epoch, id: message.id, kind: "bell" };
+  const title = cleanTerminalAlertText(message.title, maximumTitleLength);
+  const body = cleanTerminalAlertText(message.body, maximumBodyLength);
+  return title || body ? { epoch: message.epoch, id: message.id, kind: "notification", title, body } : null;
+}
+
+// What a pane waiting to be looked at holds: the newest alert, except that a
+// bell does not replace a notification. The id is always the newest, which
+// is what showing the pane marks as seen.
+export function mergeTerminalAttention(current, alert) {
+  if (current?.kind === "notification" && alert.kind === "bell") return { ...current, epoch: alert.epoch, id: alert.id };
+  return alert;
+}
+
+// The suffix on a pane's name in window lists.
+export function terminalAttentionLabel(attention) {
+  if (attention?.kind === "notification") return " [notification]";
+  if (attention?.kind === "bell") return " [bell]";
+  return "";
+}
+
+// A notice's heading, text and source line. OSC 9 carries no title, so the
+// window's name heads it instead.
+export function terminalNoticeText(alert, windowTitle) {
+  const name = (typeof windowTitle === "string" && windowTitle.trim()) || "Terminal";
+  if (alert.kind === "bell") return { title: name, body: "Bell", source: "" };
+  if (alert.title) return { title: alert.title, body: alert.body, source: name };
+  return { title: name, body: alert.body, source: "" };
+}
+
+// Shows the operating system's notification when the browser allows it, or
+// returns null. Some browsers throw without a service worker.
+export function showSystemNotification(NotificationClass, { title, body, tag }, onClick) {
+  if (typeof NotificationClass !== "function" || NotificationClass.permission !== "granted") return null;
+  try {
+    const notification = new NotificationClass(title, { body, tag });
+    notification.onclick = () => {
+      notification.close();
+      onClick();
+    };
+    return notification;
+  } catch {
+    return null;
+  }
+}
+
+// Notices in the page's corner, one per pane: a newer one from the same pane
+// replaces it. Clicking one opens the pane.
+export class TerminalNotices {
+  constructor(container, { onOpen, timeoutMs = 8000, limit = 3, setTimer = globalThis.setTimeout.bind(globalThis), clearTimer = globalThis.clearTimeout.bind(globalThis) } = {}) {
+    this.container = container;
+    this.onOpen = onOpen;
+    this.timeoutMs = timeoutMs;
+    this.limit = limit;
+    this.setTimer = setTimer;
+    this.clearTimer = clearTimer;
+    this.notices = new Map();
+  }
+
+  show(key, { title, body, source }) {
+    this.dismiss(key);
+    const document = this.container.ownerDocument;
+    const notice = document.createElement("div");
+    notice.className = "terminal-notice";
+    notice.setAttribute("role", "status");
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "terminal-notice-open";
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+    open.appendChild(heading);
+    for (const [text, className] of [[body, "terminal-notice-body"], [source, "terminal-notice-source"]]) {
+      if (!text) continue;
+      const line = document.createElement("span");
+      line.className = className;
+      line.textContent = text;
+      open.appendChild(line);
+    }
+    open.addEventListener("click", () => {
+      this.dismiss(key);
+      this.onOpen?.(key);
+    });
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "terminal-notice-close";
+    close.textContent = "×";
+    close.title = "Dismiss";
+    close.setAttribute("aria-label", "Dismiss notification");
+    close.addEventListener("click", () => this.dismiss(key));
+    notice.append(open, close);
+    this.container.appendChild(notice);
+    const timer = this.setTimer(() => this.dismiss(key), this.timeoutMs);
+    this.notices.set(key, { notice, timer });
+    while (this.notices.size > this.limit) this.dismiss(this.notices.keys().next().value);
+    this.container.hidden = false;
+  }
+
+  dismiss(key) {
+    const entry = this.notices.get(key);
+    if (!entry) return;
+    this.clearTimer(entry.timer);
+    entry.notice.remove();
+    this.notices.delete(key);
+    if (this.notices.size === 0) this.container.hidden = true;
+  }
+}

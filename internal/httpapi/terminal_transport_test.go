@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -133,6 +134,9 @@ func TestTerminalAttachmentColorChoiceKeepsShellAndConfiguresRetainedState(t *te
 	for _, mode := range []string{"light", "dark", "light", "unknown"} {
 		conn, events := terminalTestSocket(t, server.URL, query+"&colorMode="+mode)
 		attachment := readTerminalAttachment(t, events)
+		if host, _ := os.Hostname(); attachment.Host != host {
+			t.Fatalf("attach host = %q, want %q for OSC 7 reports", attachment.Host, host)
+		}
 		if epoch != "" && attachment.Epoch != epoch {
 			t.Fatal("color change replaced the managed shell")
 		}
@@ -277,6 +281,71 @@ func TestHiddenTerminalWebSocketStopsOutputAndKeepsExitLive(t *testing.T) {
 	}
 	visible.Close()
 	revealed.Close()
+}
+
+func nextTerminalAlert(t *testing.T, events <-chan terminalSocketEvent) terminal.Alert {
+	t.Helper()
+	for {
+		event := nextTerminalSocketEvent(t, events)
+		if event.err != nil {
+			t.Fatal(event.err)
+		}
+		var alert terminal.Alert
+		if event.kind == websocket.TextMessage && json.Unmarshal(event.data, &alert) == nil && alert.Type == "terminal-alert" {
+			return alert
+		}
+	}
+}
+
+func TestTerminalAlertsReachPausedSocketsAndWaitUntilSeen(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses a real local PTY and WebSocket")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("uses printf in a POSIX shell")
+	}
+	t.Setenv("TESSERA_TERMINAL_SHELL", "/bin/sh")
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "alerts.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	manager := terminal.NewManager()
+	t.Cleanup(manager.Close)
+	api := &API{Store: st, Terminals: manager}
+	server := httptest.NewServer(http.HandlerFunc(api.terminalSession))
+	t.Cleanup(server.Close)
+	query := "workspaceId=default&paneId=alerts&cols=80&rows=24&protocol=2&core=" + terminalcore.Compatibility
+	hidden, hiddenEvents := terminalTestSocket(t, server.URL, query+"&outputPaused=1")
+	if err := hidden.WriteJSON(terminalClientMessage{Type: "pause-output"}); err != nil {
+		t.Fatal(err)
+	}
+	requireTerminalPauseAck(t, hiddenEvents)
+	if err := hidden.WriteMessage(websocket.BinaryMessage, []byte("printf '\\033]777;notify;Build;Done\\007'\r")); err != nil {
+		t.Fatal(err)
+	}
+	alert := nextTerminalAlert(t, hiddenEvents)
+	if alert.Kind != "notification" || alert.Title != "Build" || alert.Body != "Done" || alert.Epoch == "" || alert.ID == 0 {
+		t.Fatalf("paused socket alert = %+v", alert)
+	}
+	later, laterEvents := terminalTestSocket(t, server.URL, query)
+	if unseen := nextTerminalAlert(t, laterEvents); unseen != alert {
+		t.Fatalf("a later socket was told %+v, want %+v", unseen, alert)
+	}
+	if err := later.WriteJSON(terminalClientMessage{Type: "alert-seen", Epoch: alert.Epoch, Alert: alert.ID}); err != nil {
+		t.Fatal(err)
+	}
+	// The seen message is handled before the reply to this input is printed.
+	if err := later.WriteMessage(websocket.BinaryMessage, []byte("printf '\\007'\r")); err != nil {
+		t.Fatal(err)
+	}
+	if bell := nextTerminalAlert(t, hiddenEvents); bell.Kind != "bell" || bell.ID != alert.ID+1 {
+		t.Fatalf("bell = %+v", bell)
+	}
+	_, lastEvents := terminalTestSocket(t, server.URL, query)
+	if unseen := nextTerminalAlert(t, lastEvents); unseen.Kind != "bell" {
+		t.Fatalf("the seen notification came back: %+v", unseen)
+	}
 }
 
 func TestSmallHiddenGapReplaysOverRealTerminalWebSocket(t *testing.T) {

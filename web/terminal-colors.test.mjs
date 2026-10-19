@@ -9,6 +9,7 @@ import {
   recreateOpenTerminalViews,
   terminalColorTheme,
   terminalColorModes,
+  terminalThemeWithProgramColors,
   xtermPalette,
 } from "./terminal-colors.mjs";
 
@@ -192,4 +193,23 @@ test("recreates browser terminal views without requesting PTY closure", async ()
 
   assert.deepEqual(disposed, [{ rect: terminal, options: undefined }]);
   assert.deepEqual(started, [terminal]);
+});
+
+test("a program's colours replace the pane's, and the rest follow them", () => {
+  const base = terminalColorTheme("dark");
+  assert.deepEqual(terminalThemeWithProgramColors(base, [0, 0, 0, 0, 0]), base);
+  assert.deepEqual(terminalThemeWithProgramColors(base, []), base);
+  const themed = terminalThemeWithProgramColors(base, [0x1112233, 0x1445566, 0, 0, 0]);
+  assert.equal(themed.foreground, "#112233");
+  assert.equal(themed.background, "#445566");
+  assert.equal(themed.cursor, "#112233", "the cursor follows a new foreground");
+  assert.equal(themed.cursorAccent, "#445566");
+  assert.equal(themed.selectionBackground, "#112233", "selection swaps them, as the pane's own does");
+  assert.equal(themed.selectionForeground, "#445566");
+  assert.equal(themed.red, base.red, "the palette is drawn by the core");
+  const explicit = terminalThemeWithProgramColors(base, [0x1112233, 0, 0x1000001, 0x1aabbcc, 0x1ddeeff]);
+  assert.equal(explicit.cursor, "#000001");
+  assert.equal(explicit.selectionBackground, "#aabbcc");
+  assert.equal(explicit.selectionForeground, "#ddeeff");
+  assert.equal(explicit.background, base.background);
 });

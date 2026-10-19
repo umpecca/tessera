@@ -55,6 +55,10 @@ type Attachment struct {
 	AudioWake                         <-chan struct{}
 	ReadAudio                         func() (terminalaudio.Event, bool)
 	EnableAudio                       func(bool)
+	AlertWake                         <-chan struct{}
+	ReadAlert                         func() (Alert, bool)
+	ReadProgress                      func() (Progress, bool)
+	SetFocus                          func(bool)
 	Protocol                          int
 	Sequence                          uint64
 	Core                              string
@@ -93,27 +97,31 @@ type Manager struct {
 // Hidden clients explicitly pause their delivery and restore changed state
 // from a snapshot when revealed; their lifecycle channel remains connected.
 type subscriber struct {
-	fileWake       chan struct{}
-	filePending    []terminalfile.Event
-	fileBytes      int
-	fileClient     string
-	fileGeneration string
-	fileHandoff    bool
-	protocol       int
-	events         chan []byte
-	wake           chan struct{}
-	quit           chan struct{}
-	pause          chan struct{}
-	pending        [][]byte
-	bytes          int
-	limit          int
-	overrun        bool
-	done           bool
-	paused         bool
-	audioEnabled   bool
-	audioWake      chan struct{}
-	audioPending   []terminalaudio.Event
-	audioBytes     int
+	fileWake        chan struct{}
+	filePending     []terminalfile.Event
+	fileBytes       int
+	fileClient      string
+	fileGeneration  string
+	fileHandoff     bool
+	protocol        int
+	events          chan []byte
+	wake            chan struct{}
+	quit            chan struct{}
+	pause           chan struct{}
+	pending         [][]byte
+	bytes           int
+	limit           int
+	overrun         bool
+	done            bool
+	paused          bool
+	audioEnabled    bool
+	audioWake       chan struct{}
+	audioPending    []terminalaudio.Event
+	audioBytes      int
+	alertWake       chan struct{}
+	alertPending    []Alert
+	progressPending *Progress
+	focused         bool
 }
 
 type ManagedSession struct {
@@ -152,6 +160,13 @@ type ManagedSession struct {
 	streamFilter                      terminalaudio.StreamFilter
 	audioStreams                      map[string]liveAudioStream
 	audioStreamOrder                  uint64
+	bellCount                         uint32
+	alertSequence                     uint64
+	unseenAlert                       *Alert
+	alertLimiter                      alertLimiter
+	focused                           bool
+	progress                          Progress
+	progressRevision                  uint32
 }
 
 const outputTimingSlots = 512
@@ -204,6 +219,10 @@ func (m *Manager) Attach(workspaceID, paneID, cwd, terminalTerm string, cols, ro
 		core.Close()
 		return nil, nil, err
 	}
+	if terminalTerm == "" {
+		terminalTerm = defaultTerminalTERM
+	}
+	_ = core.SetTermName(terminalTerm)
 	managed := &ManagedSession{
 		manager:     m,
 		workspaceID: workspaceID,
@@ -473,6 +492,7 @@ func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 		limit:          s.scrollback.limit,
 		paused:         cursor.OutputPaused,
 		audioWake:      make(chan struct{}, 1),
+		alertWake:      make(chan struct{}, 1),
 		fileWake:       make(chan struct{}, 1),
 		fileGeneration: newEpoch(),
 	}
@@ -496,6 +516,14 @@ func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 		Unsubscribe:  func() {},
 		PauseOutput:  func() {},
 		AudioWake:    sub.audioWake,
+		AlertWake:    sub.alertWake,
+		ReadAlert:    func() (Alert, bool) { return s.readAlert(sub) },
+		ReadProgress: func() (Progress, bool) { return s.readProgress(sub) },
+		SetFocus: func(focused bool) {
+			if replies := s.setFocus(sub, focused); len(replies) > 0 {
+				_, _ = s.Write(replies)
+			}
+		},
 		FileWake:     sub.fileWake,
 		ReadFile:     func() (terminalfile.Event, bool) { return s.readFile(sub) },
 		EnableFiles:  func(client string) { s.enableFiles(sub, client) },
@@ -549,10 +577,14 @@ func (s *ManagedSession) subscribe(cursor Cursor) *Attachment {
 	attachment.Unsubscribe = func() {
 		once.Do(func() {
 			s.mu.Lock()
+			wasFocused := sub.focused
 			s.releaseLocked(sub)
 			s.mu.Unlock()
 			// The pump may be parked on a send nobody is reading any more.
 			close(sub.quit)
+			if wasFocused {
+				s.focusLeft()
+			}
 		})
 	}
 	// Pausing is permanent for this attachment; visibility resumes through a
@@ -642,6 +674,10 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 	var clipboard [][]byte
 	var audioEvents []terminalaudio.Event
 	var fileCommands []terminalfile.Command
+	var notifications []terminalcore.Notification
+	var rang bool
+	var progress Progress
+	var progressChanged bool
 	var clean []byte
 	for _, part := range s.streamFilter.Feed(chunk) {
 		if part.Audio != nil {
@@ -696,6 +732,25 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 			return
 		}
 		fileCommands = append(fileCommands, commands...)
+		coreNotifications, coreRang, alertErr := s.readAlertsLocked()
+		if alertErr != nil {
+			s.mu.Unlock()
+			s.markExited(alertErr)
+			s.Close()
+			return
+		}
+		notifications = append(notifications, coreNotifications...)
+		rang = rang || coreRang
+		coreProgress, changed, progressErr := s.readProgressLocked()
+		if progressErr != nil {
+			s.mu.Unlock()
+			s.markExited(progressErr)
+			s.Close()
+			return
+		}
+		if changed {
+			progress, progressChanged = coreProgress, true
+		}
 	}
 	chunk = clean
 	if len(chunk) > 0 {
@@ -724,6 +779,10 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 	for _, event := range audioEvents {
 		event.Epoch = s.epoch
 		s.publishAudioLocked(event)
+	}
+	s.publishAlertsLocked(notifications, rang, readAt)
+	if progressChanged {
+		s.publishProgressLocked(progress, readAt)
 	}
 	s.mu.Unlock()
 	for _, command := range fileCommands {
@@ -778,6 +837,9 @@ func (s *ManagedSession) releaseLocked(sub *subscriber) {
 	sub.audioPending = nil
 	sub.audioBytes = 0
 	sub.audioEnabled = false
+	sub.alertPending = nil
+	sub.progressPending = nil
+	sub.focused = false
 	if sub.overrun {
 		// Nothing queued is worth delivering to a client that is going to
 		// reattach and be resynchronised anyway.

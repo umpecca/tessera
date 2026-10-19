@@ -67,13 +67,15 @@ export class WrappedHTTPLinkProvider {
       return;
     }
 
+    // isWrapped marks a row that continues the one above it, as in xterm.js
+    // (the core's wrap_continuation).
     let startRow = y;
-    while (startRow > 0 && buffer.getLine(startRow - 1)?.isWrapped) {
+    while (startRow > 0 && buffer.getLine(startRow)?.isWrapped) {
       startRow -= 1;
     }
 
     let endRow = y;
-    while (endRow + 1 < buffer.length && buffer.getLine(endRow)?.isWrapped) {
+    while (endRow + 1 < buffer.length && buffer.getLine(endRow + 1)?.isWrapped) {
       endRow += 1;
     }
 
@@ -128,4 +130,138 @@ export class WrappedHTTPLinkProvider {
   }
 
   dispose() {}
+}
+
+// The extent of an OSC 8 link: the cells around (x, y) with the same id,
+// following it across row ends in both directions.
+function hyperlinkRange(buffer, id, y, x) {
+  const lines = new Map();
+  const line = (row) => {
+    if (!lines.has(row)) lines.set(row, row >= 0 && row < buffer.length ? buffer.getLine(row) : undefined);
+    return lines.get(row);
+  };
+  const linked = (row, col) => line(row)?.getCell(col)?.getHyperlinkId?.() === id;
+
+  const start = { x, y };
+  for (;;) {
+    if (start.x > 0) {
+      if (!linked(start.y, start.x - 1)) break;
+      start.x -= 1;
+      continue;
+    }
+    const last = (line(start.y - 1)?.length ?? 0) - 1;
+    if (last < 0 || !linked(start.y - 1, last)) break;
+    start.y -= 1;
+    start.x = last;
+  }
+
+  const end = { x, y };
+  for (;;) {
+    const last = line(end.y).length - 1;
+    if (end.x < last) {
+      if (!linked(end.y, end.x + 1)) break;
+      end.x += 1;
+      continue;
+    }
+    if (!linked(end.y + 1, 0)) break;
+    end.y += 1;
+    end.x = 0;
+  }
+  return { start, end };
+}
+
+// OSC 8 hyperlinks. The core gives each link's cells an id of their own and
+// resolves a cell to its URI (terminal.hyperlinkUriAt). This replaces
+// ghostty-web's provider, which asks for the URI by id alone and would open
+// whatever scheme it got, javascript: included. Only http and https open,
+// as for detected URLs; any URI is reported to onHover, which shows it.
+export class HyperlinkProvider {
+  constructor(terminal, { onHover = () => {}, openURL = (url) => window.open(url, "_blank", "noopener,noreferrer") } = {}) {
+    this.terminal = terminal;
+    this.onHover = onHover;
+    this.openURL = openURL;
+  }
+
+  provideLinks(y, callback) {
+    const buffer = this.terminal.buffer.active;
+    const line = buffer.getLine(y);
+    if (!line) {
+      callback(undefined);
+      return;
+    }
+    const links = [];
+    const seen = new Set();
+    for (let x = 0; x < line.length; x += 1) {
+      const id = line.getCell(x)?.getHyperlinkId?.() ?? 0;
+      if (!id || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      const uri = this.terminal.hyperlinkUriAt?.(y, x) ?? "";
+      if (!uri) {
+        continue;
+      }
+      const url = safeHTTPURL(uri);
+      links.push({
+        text: uri,
+        range: hyperlinkRange(buffer, id, y, x),
+        activate: (event) => {
+          if (url && (event.ctrlKey || event.metaKey)) {
+            this.openURL(url);
+          }
+        },
+        hover: (hovered) => this.onHover(hovered ? uri : ""),
+      });
+    }
+    callback(links.length > 0 ? links : undefined);
+  }
+
+  dispose() {}
+}
+
+// ghostty-web's address detector opens what it finds with window.open. This
+// hands its http and https links to openURL instead, as Tessera's providers
+// do, so the embedder decides where they open (a loopback address opens in a
+// Browser window). Other schemes it detects (mailto:, ssh:) keep its handling.
+export class RoutedLinkProvider {
+  constructor(provider, openURL) {
+    this.provider = provider;
+    this.openURL = openURL;
+  }
+
+  provideLinks(y, callback) {
+    this.provider.provideLinks(y, (links) => callback(links?.map((link) => {
+      const url = safeHTTPURL(link.text);
+      if (!url) {
+        return link;
+      }
+      return {
+        ...link,
+        activate: (event) => {
+          if (event.ctrlKey || event.metaKey) {
+            this.openURL(url);
+          }
+        },
+      };
+    })));
+  }
+
+  dispose() {
+    this.provider.dispose?.();
+  }
+}
+
+// Puts replace(builtIn) in place of one of ghostty-web's own providers,
+// keeping its place in the order (OSC 8 ahead of the URL detectors). Returns
+// false, changing nothing, when the pinned ghostty-web no longer has it where
+// expected.
+export function replaceLinkProvider(detector, isBuiltIn, replace) {
+  const providers = Array.isArray(detector?.providers) ? detector.providers : null;
+  const index = providers?.findIndex(isBuiltIn) ?? -1;
+  if (index < 0) {
+    return false;
+  }
+  providers[index] = replace(providers[index]);
+  detector.invalidateCache?.();
+  return true;
 }

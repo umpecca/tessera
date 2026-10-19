@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -51,6 +52,8 @@ type terminalClientMessage struct {
 	MemoryMiB        *int   `json:"memoryMiB"`
 	ShowPlaceholders *bool  `json:"showPlaceholders"`
 	Enabled          bool   `json:"enabled"`
+	Focused          bool   `json:"focused"`
+	Alert            uint64 `json:"alert"`
 }
 
 // terminalTimingMessage follows an output frame while a client is capturing
@@ -79,6 +82,9 @@ type terminalAttachMessage struct {
 	Rows                int    `json:"rows"`
 	CellWidth           int    `json:"cellWidth"`
 	CellHeight          int    `json:"cellHeight"`
+	// Host is the machine's name, which a shell's OSC 7 working directory
+	// report must name for the pane to take the path as its own.
+	Host string `json:"host,omitempty"`
 }
 
 // terminalResumeCursor reads what the client says it already holds. A client
@@ -207,6 +213,7 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 				SnapshotBytes: len(attachment.Snapshot), Cols: attachment.Cols, Rows: attachment.Rows,
 				RetainedOutputBytes: attachment.RetainedOutputBytes,
 				CellWidth:           attachment.CellWidth, CellHeight: attachment.CellHeight,
+				Host: terminalHostName(),
 			})
 		}
 		writeMu.Unlock()
@@ -244,6 +251,25 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		// while an idle or hidden lifecycle connection remains open.
 		attachment.Snapshot = nil
 		attachment.Replay = nil
+		// An alert nobody has seen yet, perhaps rung while no browser was
+		// connected. It may also be queued for this connection; the browser
+		// knows it by its id.
+		if alert := session.UnseenAlert(); alert != nil {
+			writeMu.Lock()
+			err := conn.WriteJSON(alert)
+			writeMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+		if progress := session.CurrentProgress(); progress != nil {
+			writeMu.Lock()
+			err := conn.WriteJSON(progress)
+			writeMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
 		for open := true; open; {
 			var chunk []byte
 			select {
@@ -251,6 +277,23 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 				writeMu.Lock()
 				if event, ok := attachment.ReadFile(); ok {
 					if err := conn.WriteJSON(event); err != nil {
+						writeMu.Unlock()
+						return
+					}
+				}
+				writeMu.Unlock()
+				continue
+			case <-attachment.AlertWake:
+				// Alerts reach paused connections too: they are for the panes
+				// nobody is looking at.
+				writeMu.Lock()
+				if alert, ok := attachment.ReadAlert(); ok {
+					if err := conn.WriteJSON(alert); err != nil {
+						writeMu.Unlock()
+						return
+					}
+				} else if progress, ok := attachment.ReadProgress(); ok {
+					if err := conn.WriteJSON(progress); err != nil {
 						writeMu.Unlock()
 						return
 					}
@@ -320,6 +363,10 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 			}
 			if message.Type == "mouse" {
 				_, _ = session.WriteMouse([]byte(message.Data))
+			} else if message.Type == "focus" {
+				attachment.SetFocus(message.Focused)
+			} else if message.Type == "alert-seen" {
+				session.SeenAlert(message.Epoch, message.Alert)
 			} else if message.Type == "timing" {
 				timingEnabled.Store(message.Enabled)
 			} else if message.Type == "file-events" {
@@ -487,6 +534,13 @@ func (a *API) deleteTerminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	a.Terminals.Terminate(workspaceID, paneID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// terminalHostName is the name shells see as $HOST. Read on each attach, as
+// a machine can be renamed while Tessera runs.
+func terminalHostName() string {
+	name, _ := os.Hostname()
+	return name
 }
 
 func closeTerminalWithFailure(conn *websocket.Conn, err error) {

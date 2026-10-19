@@ -20,12 +20,13 @@ function workspace(bounds) {
   });
   const context = {
     themeID: "studio", isArrangingWindows: false, arrangeOutSnapshot: null, saves: 0, fits: 0,
-    board: { getBoundingClientRect: () => bounds },
+    board: { scrollLeft: 0, scrollTop: 0, getBoundingClientRect: () => bounds },
+    window: { scrollX: 0, scrollY: 0 },
     rectangles: [pane("full", true), pane("floating", false)],
     scheduleTerminalVisibilityUpdate() {}, requestTerminalFit: () => context.fits++,
     scheduleWorkspaceSave: () => context.saves++,
   };
-  return appFunctions(["setRectangle", "applyFullGeometry", "reapplyFullGeometryForViewport"], context);
+  return appFunctions(["setRectangle", "pinWorkspaceScroll", "applyFullGeometry", "reapplyFullGeometryForViewport"], context);
 }
 
 test("a viewport change refits maximized panes to this screen without saving", () => {

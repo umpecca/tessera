@@ -40,6 +40,14 @@ fresh checkout under `.cache/terminal-core`; existing checkouts are untouched.
 The verification command compares the rebuilt bytes with the bundled artifact.
 CI runs this comparison, regenerates the JavaScript bundle, and runs tests.
 
+On macOS 27 and later, Zig 0.15.2 cannot link the native build runner: the
+SDKs' `libSystem.tbd` stubs list `arm64e-macos` but not `arm64-macos`, so every
+libc symbol comes up undefined (`_abort`, `__availability_version_check`). Give
+Zig a copy of the SDK whose stubs also list `arm64-macos`, through an `xcrun`
+that reports it, and point `ZIG` at a wrapper that puts that `xcrun` first on
+`PATH`. Only `usr/lib` needs copying; link the rest of the SDK. Hiding the SDK
+altogether is not enough, because Ghostty's build asks for it.
+
 The pinned-source patch clears newly allocated, non-pooled terminal pages
 before initializing and copying their cells. On WASM, the page allocator can
 reuse freed memory rather than returning zeroed OS pages. This prevents stale
@@ -47,6 +55,105 @@ cell/grapheme metadata from corrupting sustained Unicode output when the
 grapheme capacity grows. Ordinary pooled pages retain their existing cleanup
 path. Sixel raster capacity grows each exhausted axis independently and still
 reserves the combined old/new raster bytes before allocating a growth copy.
+
+OSC 8 hyperlinks: the upstream API reports every hyperlinked cell as id 1 and
+cannot return a URI. Tessera's cell readers report a hash of the link's OSC 8
+id and URI instead, the same on every row and page the link spans, and
+`tessera_hyperlink_uri(handle, row, col, out, capacity)` copies the URI of the
+link on a cell, rows counted from the oldest scrollback line.
+
+OSC 133: Ghostty marks the cursor's row on each prompt mark. Upstream, OSC
+133;B turns a prompt row into an input row, which on a one-line prompt erases
+where the prompt began; Tessera keeps a row already marked as a prompt.
+`tessera_semantic_rows(handle, row, count, out)` copies one byte per row,
+counted from the oldest scrollback line: the row's mark (0 unknown, 1 prompt,
+2 continuation, 3 input, 4 first output row) plus 8 when the row continues
+the one above. Snapshots carry the marks with the pages.
+
+OSC 4/104 and 10–19/110–119: the upstream API parses colour operations and
+drops them. Tessera's handler applies them to the terminal's palette and
+foreground, background and cursor colours (which snapshots carry and cells
+are drawn with), keeps selection colours (17, 19) itself (snapshots carry
+those too), and answers queries in the request's terminator. A reset
+returns to the pane's light or dark default rather than pinning it, so the
+mode can still change. Pointer and Tektronix colours (13–16, 18) are
+ignored, as in Ghostty. A full reset also resets colours.
+`tessera_color_revision(handle)` counts changes and
+`tessera_dynamic_colors(handle, out)` writes the five colours a program set
+(foreground, background, cursor, selection background and foreground;
+0x1RRGGBB, or 0 where unset) for the browser to apply to its theme.
+
+Focus, colour scheme and alerts: the upstream API drops focus state, the
+colour scheme query, bells and desktop notifications. `tessera_focus(handle,
+focused)` sets the terminal's focus flag and, with mode 1004 on, queues CSI I
+or CSI O; enabling 1004 queues the current state, as Ghostty does. The host's
+core starts unfocused and is focused while any browser showing the pane says
+it is, with half a second's grace when a focused browser disconnects, so a
+reconnect or a view rebuilt for a light/dark change does not report a blur.
+`CSI ? 996 n` is answered `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light) from
+the mode `tessera_sixel_configure` last set, and with mode 2031 on, a change
+of mode queues the same report. `tessera_bell_count(handle)` counts bells,
+wrapping, and `tessera_notification_read(handle, out, capacity)` drains OSC
+9 and OSC 777 notifications (length-prefixed title, zero byte, body; at most
+8 KiB each and 64 KiB queued; Ghostty's parser already stops near 2 KiB).
+The host turns these into `terminal-alert` messages, at most one bell a
+second and notifications in bursts of five then one a second, sent to every
+connection including paused ones, and keeps the latest one no browser has
+shown for the next to connect (`alert-seen` clears it).
+
+Queries, title stack and progress: the upstream API drops DECRQM, XTVERSION,
+CSI 22/23 t and OSC 9;4. Tessera answers DECRQM from the mode table as
+Ghostty does (1 set, 2 reset, 0 unknown), but answers 0 for modes the core
+tracks and Tessera does not act on: mouse formats 1005, 1015 and 1016 (the
+browser always sends SGR reports) and synchronized output (2026). Upstream's parser read only DEC mode queries; its ANSI
+branch (one `$` intermediate) was unreachable and is patched in. XTVERSION
+answers `DCS > | Tessera <version> ST`, the version set by the host with
+`tessera_set_version` (at most 64 printable characters, no spaces; the Go
+core passes `internal/version` without a leading `v`). CSI 22 and 23 with
+target 0 or 2 push and pop the window title on a ten-entry stack (the
+oldest dropped), which snapshots carry and a full reset empties; Ghostty's
+parser ignores other targets and a missing one. `tessera_progress_revision`
+and `tessera_progress` give the last OSC 9;4 report (state, and percentage
+or 255 shifted left 8). The host sends each change as a `terminal-progress`
+message to every connection, paused or not, keeping only the latest per
+connection, and the current one, if under 15 seconds old, when a connection
+starts.
+
+Kitty keyboard protocol: the core already kept the protocol's flags per
+screen (pushed, popped and set by the program, carried by snapshots, cleared
+by a full reset) and ignored the query. Tessera answers `CSI ? u` with the
+active screen's flags, as Ghostty does, and `tessera_kitty_keyboard_flags`
+lets the browser read them. While they are non-zero, the browser encodes
+every key with the core's key encoder (`ghostty_key_encoder_*`) instead of
+ghostty-web's input handler, and reports releases (keyup) for keys whose
+press it sent. Key numbers come from Ghostty's header; ghostty-web's own
+table lacks `FN` and numbers the keys after it one lower.
+
+XTGETTCAP, DECRQSS and in-band size reports: the upstream API sends every
+DCS string to its hook, which Tessera gave to the Sixel decoder. DCS strings
+that aren't Sixel now go to Ghostty's own DCS parser (`dcs.zig`, limited to
+4 KiB), and its commands are answered as Ghostty's app answers them.
+XTGETTCAP (`DCS + q names ST`) answers each name in order from Ghostty's
+terminfo, built at compile time without `Su`, `Smulx`, `Setulc` and `Sync`
+(the renderer draws one plain underline, and 2026 is reported
+unrecognised). `TN` is the TERM set by the host with
+`tessera_set_term_name` (the Go host passes the configured TERM; same rules
+as the version). Unlike Ghostty, which says nothing, an unknown name gets
+xterm's `DCS 0 + r name ST`. DECRQSS (`DCS $ q setting ST`) reports SGR,
+DECSCUSR, DECSTBM and DECSLRM, and `DCS 0 $ r ST` for anything else. Mode
+2048 sends `CSI 48 ; rows ; cols ; height_px ; width_px t` when enabled and
+from `tessera_sixel_geometry`, which the host calls after every resize, when
+the size differs from the last report. The Go host writes the replies to the
+PTY after resizing it.
+
+OSC 7 and OSC 22: the upstream API parses both. It drops the working
+directory report and keeps the pointer shape with no way to read it.
+Tessera's handler keeps the last non-empty report of at most 8 KiB (the
+URL as sent, not decoded), read with `tessera_pwd_revision`,
+`tessera_pwd_length` and `tessera_pwd_data` like the title. It is not part
+of snapshots. `tessera_mouse_shape(handle)` returns the pointer shape as
+Ghostty's `MouseShape` value, which snapshots carry; a full reset sets it
+back to `text`.
 
 Upstream licenses are beside the WASM. Windows additionally embeds Microsoft's
 MIT-licensed ConPTY 1.24.260710001 for amd64, arm64, and 386. Older inbox ConPTY

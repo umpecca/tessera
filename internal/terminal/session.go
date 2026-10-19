@@ -32,7 +32,9 @@ func Start(cwd, terminalTerm string, cols, rows int) (*Session, error) {
 	if rows < 2 {
 		rows = defaultRows
 	}
-	if cwd == "" {
+	// A pane's directory may follow its shell (OSC 7) into a directory that
+	// is gone by the time the shell starts again; start in the default then.
+	if info, err := os.Stat(cwd); cwd == "" || err != nil || !info.IsDir() {
 		cwd, _ = os.Getwd()
 	}
 	if terminalTerm == "" {

@@ -30,15 +30,18 @@ import {
   terminalCommandArrowSequence,
   terminalControlSequence,
   terminalNavigationSequence,
+  terminalPromptJumpDirection,
   terminalPasteSource,
   terminalShouldSwallowCommandKey,
 } from "./terminal-keyboard.mjs";
 import {
   TerminalContextMenuFallback,
+  TerminalMouseHover,
   TerminalMousePress,
   clearTerminalSelectionStartedDuringGesture,
   emptyTerminalCopyGuidance,
   isTerminalContextMenuGesture,
+  terminalHoverButtonCode,
   terminalMouseMessage,
   terminalPasteText,
 } from "./terminal-input.mjs";
@@ -83,6 +86,22 @@ import { terminalIsCovered } from "./terminal-visibility.mjs";
 import { TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
 import { normalizeTerminalBacklogLimit, TerminalReplica } from "./terminal-replica.mjs";
 import { TerminalOutputTiming, formatOutputTiming } from "./terminal-output-timing.mjs";
+import { terminalWorkingDirectory } from "./terminal-working-directory.mjs";
+import { terminalKittyKeyEvent } from "./terminal-kitty-keyboard.mjs";
+import {
+  acceptTerminalAlert,
+  mergeTerminalAttention,
+  showSystemNotification,
+  terminalAttentionLabel,
+  terminalNoticeText,
+  TerminalNotices,
+} from "./terminal-attention.mjs";
+import {
+  terminalProgressDescription,
+  terminalProgressFromMessage,
+  terminalProgressLifetimeMs,
+  terminalProgressWidth,
+} from "./terminal-progress.mjs";
 import {
   defaultOLEDBorderSize,
   maximumOLEDBorderSize,
@@ -112,6 +131,8 @@ let isArrangingWindows = false;
 let nextZIndex = 1;
 let contextMenuRect = null;
 let terminalMenuRect = null;
+// The buffer row the terminal menu was opened over, for Copy Command Output.
+let terminalMenuRow = null;
 let workspaceMenuPoint = null;
 let windowTypeRect = null;
 let directoryBrowserRect = null;
@@ -138,6 +159,22 @@ let currentUser = null;
 let userSelectionRequestID = 0;
 let sessions = [];
 let currentSessionID = "";
+// The host's name, from the terminal attach message. A shell's OSC 7 report
+// must name it (or localhost) for the pane to follow the shell's directory.
+let terminalHostName = "";
+const systemNotificationsStorageKey = "tessera.system-notifications.v1";
+let systemNotificationsEnabled = false;
+try {
+  systemNotificationsEnabled = window.localStorage.getItem(systemNotificationsStorageKey) === "true";
+} catch {
+  // Browser storage is unavailable; notifications stay in the page.
+}
+const terminalNoticeList = document.createElement("div");
+terminalNoticeList.className = "terminal-notices";
+terminalNoticeList.hidden = true;
+terminalNoticeList.setAttribute("aria-live", "polite");
+document.body.appendChild(terminalNoticeList);
+const terminalNotices = new TerminalNotices(terminalNoticeList, { onOpen: openPaneFromNotice });
 let currentSessionName = "";
 let sessionSelection = 0;
 let sessionQuery = "";
@@ -161,6 +198,7 @@ const ipadHTTPGuidanceDismissedKey = "tessera.ipad-http-guidance-dismissed.v1";
 window.addEventListener("focus", () => {
   checkForBrowserWake();
   void refreshClipboardBridgeAndPrompt();
+  updateTerminalFocus();
 });
 
 let userSettingsSaveTimer = null;
@@ -1383,6 +1421,7 @@ window.addEventListener("pointermove", continueInteraction);
 window.addEventListener("pointerup", finishInteraction);
 window.addEventListener("pointercancel", finishInteraction);
 window.addEventListener("blur", hideWindowSwitcher);
+window.addEventListener("blur", () => updateTerminalFocus());
 window.addEventListener("blur", () => {
   if (interaction?.type === "draw" && interaction.button === 1) {
     finishInteraction({ pointerId: interaction.id, type: "pointercancel" });
@@ -1713,6 +1752,7 @@ function createRectangle(x, y, width, height, options = {}) {
   });
   title.addEventListener("input", () => {
     rect.title = title.value;
+    rect.ownTitle = undefined;
     updateDeskbar();
     scheduleWorkspaceSave();
   });
@@ -1867,6 +1907,20 @@ function createRectangle(x, y, width, height, options = {}) {
   body.addEventListener("focusin", () => setActivePane(rect, { raise: true }));
 
   tab.appendChild(grip);
+  const attention = document.createElement("span");
+  attention.className = "window-attention";
+  attention.hidden = true;
+  rect.attentionMark = attention;
+  tab.appendChild(attention);
+  const progress = document.createElement("div");
+  progress.className = "window-progress";
+  progress.hidden = true;
+  progress.setAttribute("role", "progressbar");
+  progress.setAttribute("aria-valuemin", "0");
+  progress.setAttribute("aria-valuemax", "100");
+  progress.appendChild(document.createElement("div")).className = "window-progress-bar";
+  rect.progressBar = progress;
+  tab.appendChild(progress);
   tab.appendChild(title);
   tab.appendChild(controls);
   updateWindowControls(rect);
@@ -2703,12 +2757,24 @@ function setActivePane(rect, options = {}) {
     scheduleWorkspaceSave();
   }
   updateDeskbar();
+  updateTerminalFocus();
 }
 
 function applyTerminalWindowTitle(rect, title) {
-  if (rect.kind !== "terminal" || !rectangles.includes(rect) || !title.trim() || title === rect.title) return;
+  if (rect.kind !== "terminal" || !rectangles.includes(rect)) return;
   // A program can keep reporting titles while the user types a custom name.
   if (!rect.titleInput.readOnly || (!renameWindowModal.hidden && renameWindowModal.dataset.paneId === rect.id)) return;
+  if (!title.trim()) {
+    // The program's title is gone: popped off the title stack (CSI 23 t) to
+    // none, as when Vim exits, or cleared by a reset. The pane gets back the
+    // name it had before programs titled it, if this page saw that name.
+    if (rect.ownTitle === undefined) return;
+    title = rect.ownTitle;
+    rect.ownTitle = undefined;
+  } else if (rect.ownTitle === undefined) {
+    rect.ownTitle = rect.title;
+  }
+  if (title === rect.title) return;
   rect.title = title;
   rect.titleInput.value = title;
   // Programs animate their titles (Claude Code spins one several times a
@@ -2722,7 +2788,7 @@ function applyTerminalWindowTitle(rect, title) {
 
 // Rewrites a pane's name wherever an open list already shows it.
 function updatePaneTitleLabels(rect) {
-  const suffix = rect.minimized ? " (minimized)" : "";
+  const suffix = `${rect.minimized ? " (minimized)" : ""}${terminalAttentionLabel(rect.terminalAttention)}`;
   if (!windowSwitcher.hidden) {
     for (const row of windowSwitcherList.children) {
       if (row.dataset.paneId === rect.id) {
@@ -2802,6 +2868,7 @@ function openRenameWindowModal(rect) {
       return;
     }
     rect.title = input.value;
+    rect.ownTitle = undefined;
     rect.titleInput.value = rect.title;
     updateDeskbar();
     scheduleWorkspaceSave();
@@ -2841,6 +2908,7 @@ function clearActivePane() {
   delete board.dataset.activePaneId;
   scheduleWorkspaceSave();
   updateDeskbar();
+  updateTerminalFocus();
 }
 
 function clearActivePaneClass() {
@@ -2891,6 +2959,7 @@ function updateTerminalRenderState(rect) {
     terminalState.liveWhileHidden = terminalAudioPlayer.streaming(terminalState.audioKey);
   }
   setTerminalOutputPaused(rect, paused && !terminalState.liveWhileHidden);
+  updateTerminalFocus();
 }
 
 function setTerminalOutputPaused(rect, paused) {
@@ -2938,6 +3007,7 @@ function scheduleTerminalVisibilityUpdate() {
 function handleDocumentVisibilityChange() {
   checkForBrowserWake();
   updateTerminalDocumentVisibility();
+  updateTerminalFocus();
   if (serverHealthMonitorTimer !== null) scheduleServerHealthPolling();
   if (document.hidden) {
     // A backgrounded tab may be discarded without ever running code again,
@@ -3757,6 +3827,7 @@ async function startTerminal(rect) {
     const terminalTheme = terminalColorTheme(rect.terminalColorMode || terminalColorMode);
     rect.terminalContainer.style.background = terminalTheme.background;
     const term = new Terminal({
+      openLink: openTerminalLink,
       cols: 80,
       rows: 24,
       fontSize: rect.fontSize,
@@ -3777,10 +3848,18 @@ async function startTerminal(rect) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     openTerminalWithoutFocus(term, rect.terminalContainer);
+    // Keys sent under the Kitty keyboard protocol and not yet released, by
+    // physical key, with the key each was sent as.
+    const kittyKeysDown = new Map();
     term.attachCustomKeyEventHandler((event) => {
       if (event.type === "keydown") claimTerminalSize(rect);
       if (isTerminalCopyShortcut(event)) {
         void applyTerminalMenuAction("copy", rect);
+        return true;
+      }
+      const promptJump = terminalPromptJumpDirection(event, { appleKeyboard: appleKeyboardLayout });
+      if (promptJump) {
+        term.scrollToPrompt?.(promptJump);
         return true;
       }
       // Returning true tells ghostty-web the key was handled, which also calls
@@ -3792,6 +3871,22 @@ async function startTerminal(rect) {
       }
       if (pasteSource === "clipboard") {
         void applyTerminalMenuAction("paste", rect);
+        return true;
+      }
+      // A program that turned on the Kitty keyboard protocol gets every key
+      // from Ghostty's encoder, which takes care of what follows for
+      // ordinary encoding (Command, Home and End, numpad keys).
+      const kittyFlags = term.kittyKeyboardFlags?.() || 0;
+      if (kittyFlags) {
+        const fields = terminalKittyKeyEvent(event, { appleKeyboard: appleKeyboardLayout, action: event.repeat ? "repeat" : "press" });
+        if (!fields) return true;
+        kittyKeysDown.set(event.code, fields.key);
+        const data = term.encodeKeyEvent(fields, kittyFlags);
+        if (data) {
+          term.scrollToBottom();
+          term.noteInteractiveInput?.();
+          sendTerminalKeys(rect, data);
+        }
         return true;
       }
       const controlSequence = terminalControlSequence(event, { appleKeyboard: appleKeyboardLayout });
@@ -3812,6 +3907,7 @@ async function startTerminal(rect) {
       const sequence = terminalNavigationSequence(event, {
         applicationCursorKeys: term.getMode?.(1, false),
         applicationKeypad: term.getMode?.(66, false),
+        appleKeyboard: appleKeyboardLayout,
       });
       if (!sequence) {
         return false;
@@ -3819,7 +3915,21 @@ async function startTerminal(rect) {
       sendTerminalKeys(rect, sequence);
       return true;
     });
-    term.registerLinkProvider(new WrappedHTTPLinkProvider(term));
+    // Releases are reported only for keys whose press was, and only when the
+    // program asked for them (flag 2).
+    rect.terminalContainer.addEventListener("keyup", (event) => {
+      const key = kittyKeysDown.get(event.code);
+      if (key === undefined) return;
+      kittyKeysDown.delete(event.code);
+      const kittyFlags = term.kittyKeyboardFlags?.() || 0;
+      if (!(kittyFlags & 2)) return;
+      const fields = terminalKittyKeyEvent(event, { appleKeyboard: appleKeyboardLayout, action: "release" });
+      if (!fields) return;
+      const data = term.encodeKeyEvent({ ...fields, key }, kittyFlags);
+      if (data) sendTerminalKeys(rect, data);
+    });
+    rect.terminalContainer.addEventListener("blur", () => kittyKeysDown.clear());
+    term.registerLinkProvider(new WrappedHTTPLinkProvider(term, openTerminalLink));
     fit.fit();
     fit.observeResize();
     const dataDisposable = term.onData((data) => {
@@ -3832,8 +3942,13 @@ async function startTerminal(rect) {
       requestTerminalGridSize(rect.terminal);
     });
     const titleDisposable = term.onTitleChange(title => applyTerminalWindowTitle(rect, title));
+    const linkHoverDisposable = term.onLinkHover(uri => showTerminalLinkHover(rect, uri));
+    const workingDirectoryDisposable = term.onWorkingDirectoryChange((report) => {
+      const path = terminalWorkingDirectory(report, terminalHostName);
+      if (path) setPaneCwd(rect, path);
+    });
     rect.terminal = {
-      term, fit, socket: null, dataDisposable, resizeDisposable, titleDisposable, mouseBridge: null,
+      term, fit, socket: null, dataDisposable, resizeDisposable, titleDisposable, linkHoverDisposable, workingDirectoryDisposable, mouseBridge: null,
       pasteBridge: attachTerminalPasteBridge(rect, term),
       output: new TerminalWriteScheduler((data) => term.write(data)),
       reconnectTimer: null, reconnectAttempts: 0, outputPaused: false, snapshotIfChanged: false,
@@ -3904,6 +4019,12 @@ function connectTerminalSocket(rect) {
     }
     terminalState.reconnectAttempts = 0;
     socket.send(JSON.stringify({ type: "audio-events", enabled: true }));
+    // A new connection is unfocused until it says otherwise. Alerts this
+    // pane has had and no longer shows were seen, whether or not the old
+    // connection got to say so.
+    terminalState.focusSent = null;
+    updateTerminalFocus();
+    if (!rect.terminalAttention && rect.terminalAlertsSeen?.id) sendTerminalAlertSeen(rect, rect.terminalAlertsSeen);
     terminalState.files?.subscribe(socket);
     clearTerminalStatus(rect);
     setPaneCwd(rect, rect.cwd, { silent: true });
@@ -3933,6 +4054,15 @@ function connectTerminalSocket(rect) {
       let message; try { message = JSON.parse(event.data); } catch {}
       if (terminalState.files?.receive(message)) return;
       if (handleTerminalAudioMessage(rect, event.data)) return;
+      if (message?.type === "terminal-alert") {
+        handleTerminalAlert(rect, message);
+        return;
+      }
+      const progress = terminalProgressFromMessage(message);
+      if (progress !== undefined) {
+        applyTerminalProgress(rect, progress);
+        return;
+      }
     }
     if (terminalState.outputPaused) {
       // Discarded output never advances the applied cursor. The next host
@@ -3977,6 +4107,9 @@ function applyTerminalTextMessage(rect, terminalState, data) {
   if (message?.type !== "attach") {
     return;
   }
+  if (typeof message.host === "string") {
+    terminalHostName = message.host;
+  }
   try {
     terminalState.replica.attach(message);
   } catch (error) {
@@ -4004,6 +4137,135 @@ function handleTerminalAudioMessage(rect, data) {
   if (message?.type !== "terminal-audio") return false;
   terminalAudioPlayer.receive(rect.terminal?.audioKey, message);
   return true;
+}
+
+// A pane is focused while it is the active window and this page has the
+// keyboard. Programs that ask (mode 1004) are told when that changes; the
+// host combines what every browser showing the pane says.
+function terminalPaneFocused(rect) {
+  return rect === activeRect && !rect.minimized && !document.hidden && document.hasFocus();
+}
+
+function updateTerminalFocus() {
+  for (const rect of rectangles) {
+    if (rect.kind !== "terminal" || !rect.terminal) continue;
+    const focused = terminalPaneFocused(rect);
+    if (focused) clearTerminalAttention(rect);
+    const terminalState = rect.terminal;
+    if (terminalState.focusSent === focused || terminalState.socket?.readyState !== WebSocket.OPEN) continue;
+    terminalState.focusSent = focused;
+    terminalState.socket.send(JSON.stringify({ type: "focus", focused }));
+  }
+}
+
+// A bell or notification from the pane's program. One in the pane being
+// looked at is seen already; any other marks the window until it is shown,
+// and a notification is also shown in the corner, or by the system while
+// this page is in the background, if allowed in Settings.
+function handleTerminalAlert(rect, message) {
+  rect.terminalAlertsSeen ??= { epoch: "", id: 0 };
+  const alert = acceptTerminalAlert(rect.terminalAlertsSeen, message);
+  if (!alert) return;
+  if (terminalPaneFocused(rect)) {
+    sendTerminalAlertSeen(rect, alert);
+    return;
+  }
+  rect.terminalAttention = mergeTerminalAttention(rect.terminalAttention, alert);
+  renderTerminalAttention(rect);
+  if (alert.kind !== "notification") return;
+  const text = terminalNoticeText(alert, rect.title);
+  terminalNotices.show(rect.id, text);
+  if (systemNotificationsEnabled && (document.hidden || !document.hasFocus())) {
+    showSystemNotification(window.Notification, { ...text, body: text.source ? `${text.body}\n${text.source}` : text.body, tag: `tessera-${rect.id}` }, () => {
+      window.focus();
+      openPaneFromNotice(rect.id);
+    });
+  }
+}
+
+function sendTerminalAlertSeen(rect, alert) {
+  const socket = rect.terminal?.socket;
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "alert-seen", epoch: alert.epoch, alert: alert.id }));
+}
+
+function clearTerminalAttention(rect) {
+  if (!rect.terminalAttention) return;
+  sendTerminalAlertSeen(rect, rect.terminalAttention);
+  rect.terminalAttention = null;
+  terminalNotices.dismiss(rect.id);
+  renderTerminalAttention(rect);
+}
+
+function renderTerminalAttention(rect) {
+  const kind = rect.terminalAttention?.kind || "";
+  if (kind) rect.element.dataset.attention = kind;
+  else delete rect.element.dataset.attention;
+  if (rect.attentionMark) {
+    rect.attentionMark.hidden = !kind;
+    rect.attentionMark.title = kind === "notification" ? "Notification" : kind === "bell" ? "Bell" : "";
+  }
+  updatePaneTitleLabels(rect);
+  updateDeskbar();
+}
+
+// A program's progress report (OSC 9;4), as a bar along the title bar. It
+// goes when the program removes it, or after a while without a report.
+function applyTerminalProgress(rect, progress) {
+  window.clearTimeout(rect.progressTimer);
+  rect.progressTimer = progress ? window.setTimeout(() => applyTerminalProgress(rect, null), terminalProgressLifetimeMs) : null;
+  const bar = rect.progressBar;
+  if (!bar) return;
+  bar.hidden = !progress;
+  if (!progress) return;
+  const width = terminalProgressWidth(progress);
+  bar.dataset.state = progress.state;
+  bar.classList.toggle("is-indeterminate", width === null);
+  bar.firstChild.style.width = width === null ? "" : `${width}%`;
+  if (progress.percent === null) bar.removeAttribute("aria-valuenow");
+  else bar.setAttribute("aria-valuenow", String(progress.percent));
+  bar.title = terminalProgressDescription(progress);
+  bar.setAttribute("aria-label", bar.title);
+}
+
+function openPaneFromNotice(paneID) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  if (!rect) return;
+  setMinimized(rect, false);
+  setActivePane(rect, { raise: true, focus: true });
+}
+
+function renderSettingsSystemNotificationsRow() {
+  const row = document.createElement("div");
+  row.className = "settings-row";
+  const label = document.createElement("span");
+  label.className = "settings-row-label";
+  const name = document.createElement("strong");
+  name.textContent = "System notifications";
+  const detail = document.createElement("span");
+  detail.textContent = "Show notifications from terminal programs (OSC 9 and OSC 777) as system notifications while Tessera is in the background. They always appear in the corner of the page. Saved in this browser.";
+  label.append(name, detail);
+  const button = document.createElement("button");
+  button.type = "button";
+  const update = () => {
+    const permission = window.Notification.permission;
+    button.disabled = permission === "denied";
+    button.textContent = permission === "denied" ? "Blocked by browser" : systemNotificationsEnabled && permission === "granted" ? "Turn off" : "Turn on";
+    button.title = permission === "denied" ? "Allow notifications for this site in the browser's settings" : "";
+  };
+  button.addEventListener("click", async () => {
+    if (systemNotificationsEnabled && window.Notification.permission === "granted") {
+      systemNotificationsEnabled = false;
+    } else {
+      // Asked inside the click: Safari allows the request only then.
+      const permission = window.Notification.permission === "granted" ? "granted" : await window.Notification.requestPermission();
+      systemNotificationsEnabled = permission === "granted";
+    }
+    saveBrowserSetting(systemNotificationsStorageKey, systemNotificationsEnabled);
+    update();
+  });
+  update();
+  row.append(label, button);
+  return row;
 }
 
 function renderTerminalAudioStatus(rect, status) {
@@ -4144,6 +4406,33 @@ function stopTerminalStatusCountdown(rect) {
   }
 }
 
+// Shows where the OSC 8 link under the pointer goes, along the bottom of the
+// pane like a browser's status bar. It moves to the right while the pointer
+// is low on the left, so it never covers the link being read.
+function showTerminalLinkHover(rect, uri) {
+  let label = rect.terminalLinkHover;
+  if (!uri) {
+    if (label) label.hidden = true;
+    return;
+  }
+  if (!rect.body) {
+    return;
+  }
+  if (label?.parentElement !== rect.body) {
+    label = document.createElement("div");
+    label.className = "terminal-link-hover";
+    rect.body.appendChild(label);
+    rect.terminalLinkHover = label;
+  }
+  label.textContent = uri;
+  const pointer = rect.terminal?.term?.linkHover?.pointer;
+  const bounds = rect.body.getBoundingClientRect();
+  label.classList.toggle("is-right", Boolean(pointer
+    && pointer.clientY > bounds.bottom - 36
+    && pointer.clientX < bounds.left + bounds.width / 2));
+  label.hidden = false;
+}
+
 // An outage used to be announced by writing a line into the terminal, which
 // then sat in the scrollback long after the session came back. The badge is
 // pane chrome instead: it hovers over the surface while the socket is down
@@ -4276,6 +4565,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   }
 
   const activePress = new TerminalMousePress();
+  const hover = new TerminalMouseHover();
   const contextMenuFallback = new TerminalContextMenuFallback();
   let selectionAtReportedPress = null;
   let wheelRemainder = 0;
@@ -4369,10 +4659,30 @@ function attachTerminalMouseBridge(rect, term, socket) {
     return true;
   };
 
-  const onPointerMove = (event) => {
-    if (!activePress.matches(event.pointerId)) {
+  // A program in mode 1003 hears about motion without a button too. Shift,
+  // Ctrl and Cmd keep the pointer for the terminal, as they do for clicks.
+  const reportHover = (event) => {
+    if (event.buttons !== 0 || !terminalShouldReportMouse(term, event) || !terminalReportsMotion(term)) {
+      hover.reset();
       return;
     }
+    const position = terminalMousePosition(term, container, event);
+    if (!position || !hover.move(position)) {
+      return;
+    }
+    sendTerminalMouseSequence(socket, terminalMouseEventCode(terminalHoverButtonCode, event), position, "M");
+  };
+
+  const onPointerLeave = () => {
+    hover.reset();
+  };
+
+  const onPointerMove = (event) => {
+    if (!activePress.matches(event.pointerId)) {
+      reportHover(event);
+      return;
+    }
+    hover.reset();
     if (event.buttons === 0) {
       finishTerminalPointer(event);
       return;
@@ -4482,6 +4792,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   container.addEventListener("pointerdown", onPointerDown, { capture: true });
   container.addEventListener("mousedown", onMouseDown, { capture: true });
   container.addEventListener("pointermove", onPointerMove, { capture: true });
+  container.addEventListener("pointerleave", onPointerLeave);
   container.addEventListener("pointerup", onPointerUp, { capture: true });
   container.addEventListener("pointercancel", onPointerCancel, { capture: true });
   container.addEventListener("lostpointercapture", onLostPointerCapture, { capture: true });
@@ -4494,6 +4805,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
       container.removeEventListener("pointerdown", onPointerDown, { capture: true });
       container.removeEventListener("mousedown", onMouseDown, { capture: true });
       container.removeEventListener("pointermove", onPointerMove, { capture: true });
+      container.removeEventListener("pointerleave", onPointerLeave);
       container.removeEventListener("pointerup", onPointerUp, { capture: true });
       container.removeEventListener("pointercancel", onPointerCancel, { capture: true });
       container.removeEventListener("lostpointercapture", onLostPointerCapture, { capture: true });
@@ -4510,6 +4822,15 @@ function terminalShouldReportMouse(term, event) {
   }
   try {
     return Boolean(term?.hasMouseTracking?.());
+  } catch {
+    return false;
+  }
+}
+
+// Any-event tracking: the program wants motion with no button held.
+function terminalReportsMotion(term) {
+  try {
+    return Boolean(term?.getMode?.(1003, false));
   } catch {
     return false;
   }
@@ -4739,6 +5060,9 @@ function disposeTerminal(rect, options = {}) {
   terminalState.dataDisposable?.dispose?.();
   terminalState.resizeDisposable?.dispose?.();
   terminalState.titleDisposable?.dispose?.();
+  terminalState.linkHoverDisposable?.dispose?.();
+  terminalState.workingDirectoryDisposable?.dispose?.();
+  showTerminalLinkHover(rect, "");
   terminalState.mouseBridge?.dispose?.();
   terminalState.pasteBridge?.dispose?.();
   terminalState.output?.dispose?.();
@@ -4812,6 +5136,11 @@ function openTerminalMenu(event, rect) {
   hideWorkspaceMenu();
   hideWindowTypeMenu();
   terminalMenuRect = rect;
+  const term = rect.terminal?.term;
+  const position = term && rect.terminalContainer ? terminalMousePosition(term, rect.terminalContainer, event) : null;
+  terminalMenuRow = position
+    ? term.getScrollbackLength() - Math.round(term.viewportY) + position.row - 1
+    : null;
   renderTerminalMenu(rect);
   showMenuAt(terminalMenu, event.clientX, event.clientY);
 }
@@ -5123,6 +5452,7 @@ function updateDeskbar() {
   const fileCount = rectangles.reduce((count, rect) => count + (rect.filePendingCount || 0), 0);
   deskbarButton.dataset.fileCount = String(fileCount);
   deskbarButton.title = fileCount ? `${fileCount} pending file transfer${fileCount === 1 ? "" : "s"}` : "Window list";
+  deskbarButton.dataset.attention = String(rectangles.some((rect) => rect.terminalAttention));
   deskbarButton.setAttribute("aria-label", minimizedCount === 1
     ? "Window list, 1 minimized window"
     : minimizedCount > 1
@@ -5929,6 +6259,7 @@ function renderSettingsModal() {
     renderSettingsTerminalRowSpacingRow(),
     renderSettingsTerminalColorModeRow(),
     renderSettingsTerminalPredictionRow(),
+    ...("Notification" in window ? [renderSettingsSystemNotificationsRow()] : []),
   ]));
   content.appendChild(renderSettingsSection("Scroll wheel", [
     renderSettingsWheelRow(
@@ -7151,7 +7482,7 @@ function showWindowSwitcher(options = {}) {
     order.textContent = String(entry.position);
     const name = document.createElement("span");
     name.className = "window-switcher-name";
-    name.textContent = `${entry.name}${entry.pane.minimized ? " (minimized)" : ""}`;
+    name.textContent = `${entry.name}${entry.pane.minimized ? " (minimized)" : ""}${terminalAttentionLabel(entry.pane.terminalAttention)}`;
     row.append(order, name);
     windowSwitcherList.appendChild(row);
   }
@@ -7951,6 +8282,13 @@ function buildPaletteCommands() {
   if (dockTarget) {
     if (dockTarget.kind === "terminal" && dockTarget.terminal?.term) {
       commands.push({
+        id: "copy-last-output",
+        label: "Copy Last Command Output",
+        aliases: ["copy output", "select output"],
+        hint: "OSC 133",
+        run: () => void applyTerminalMenuAction("copy-output", dockTarget),
+      });
+      commands.push({
         id: "repair-terminal-view",
         label: "Repair Terminal View",
         hint: "refit and repaint",
@@ -8245,7 +8583,7 @@ function workspaceMenuLabel(rect) {
       : rect.kind === vncPaneKind
         ? " [vnc]"
       : "";
-  return `${name}${kindSuffix}${rect.filePendingCount ? ` [${rect.filePendingCount} file transfer${rect.filePendingCount === 1 ? "" : "s"}]` : ""}`;
+  return `${name}${kindSuffix}${rect.filePendingCount ? ` [${rect.filePendingCount} file transfer${rect.filePendingCount === 1 ? "" : "s"}]` : ""}${terminalAttentionLabel(rect.terminalAttention)}`;
 }
 
 function createTerminalPane(x, y, options = {}) {
@@ -8262,6 +8600,25 @@ function createTerminalPane(x, y, options = {}) {
   return rect;
 }
 
+
+// A loopback address in a terminal names the Tessera host, not the device
+// looking at it, so a link to one (OSC 8 or detected in the text) opens in a
+// Browser window, which reaches the host's ports. A window already showing
+// it comes forward. Anything else opens in a new tab.
+function openTerminalLink(url) {
+  const local = normalizeBrowserAddress(url);
+  if (!local) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const open = rectangles.find(rect => rect.kind === browserPaneKind && rect.browser && rect.browserUrl === local);
+  if (open) {
+    setActivePane(open, { raise: true, focus: true });
+    return;
+  }
+  const point = paneSpawnPoint();
+  void navigateBrowserPane(createBrowserPane(point.x, point.y), local);
+}
 
 function createBrowserPane(x, y) {
   const rect = createRectangle(x, Math.max(y, tabHeight), 720, 480, {
@@ -8321,6 +8678,7 @@ function renderTerminalMenu(rect) {
   terminalMenu.replaceChildren();
   const actions = [
     ["copy", "Copy"],
+    ["copy-output", "Copy Command Output"],
     ["paste", "Paste"],
   ];
   const term = rect?.terminal?.term;
@@ -8335,13 +8693,18 @@ function renderTerminalMenu(rect) {
     button.dataset.action = action;
     if (action === "copy") {
       button.disabled = !hasSelection;
+    } else if (action === "copy-output") {
+      // The output of the command under the pointer, found from its shell's
+      // OSC 133 prompt marks.
+      button.disabled = !term?.commandOutputAt?.(terminalMenuRow);
     } else if (action === "paste") {
       button.disabled = !canPaste;
     }
     button.addEventListener("click", () => {
       const actionRect = terminalMenuRect;
+      const actionRow = terminalMenuRow;
       hideTerminalMenu();
-      void applyTerminalMenuAction(action, actionRect);
+      void applyTerminalMenuAction(action, actionRect, { row: actionRow });
     });
     terminalMenu.appendChild(button);
   }
@@ -8553,12 +8916,8 @@ function toggleFullRestore(rect) {
 // screen after the workspace reloads, or the browser window being resized
 // while a pane is maximized.
 function applyFullGeometry(rect, options = {}) {
-  if (themeID === "operator") {
-    // Focusing an offscreen control can scroll an overflow:hidden desktop.
-    // A maximized Operator window must start at the visible desktop origin.
-    board.scrollLeft = 0;
-    board.scrollTop = 0;
-  }
+  // A maximized window starts at the visible desktop origin.
+  pinWorkspaceScroll();
   const bounds = board.getBoundingClientRect();
   setRectangle(rect, { x: 0, y: 0, width: bounds.width, height: bounds.height }, options);
 }
@@ -8578,6 +8937,23 @@ function reapplyFullGeometryForViewport() {
   }
 }
 window.addEventListener("resize", reapplyFullGeometryForViewport);
+
+// The workspace never scrolls: windows move, the page and board stay put.
+// iPadOS scrolls the page anyway to keep a focused terminal's caret clear of
+// the keyboard or the hardware keyboard's shortcut bar, and focusing an
+// offscreen control can scroll the overflow-hidden board. Either shifts
+// every window up until something scrolls it back, so put it back at once.
+function pinWorkspaceScroll() {
+  if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+  if (board.scrollLeft || board.scrollTop) {
+    board.scrollLeft = 0;
+    board.scrollTop = 0;
+  }
+}
+window.addEventListener("scroll", pinWorkspaceScroll, { passive: true });
+board.addEventListener("scroll", pinWorkspaceScroll, { passive: true });
+window.visualViewport?.addEventListener("scroll", pinWorkspaceScroll);
+window.visualViewport?.addEventListener("resize", pinWorkspaceScroll);
 // The window "resize" event doesn't fire for every way the board's own box
 // can change size (browser chrome changes, OS-level display/zoom changes,
 // some devtools/embedded viewport changes) — a ResizeObserver on the board
@@ -8725,9 +9101,31 @@ function updateWindowControls(rect) {
   updateDeskbar();
 }
 
-async function applyTerminalMenuAction(action, rect) {
+async function applyTerminalMenuAction(action, rect, { row = null } = {}) {
   const term = rect?.terminal?.term;
   if (!term) {
+    return;
+  }
+
+  if (action === "copy-output") {
+    // Selecting it shows what was copied. No row means the last command.
+    const output = term.commandOutputAt?.(row);
+    const text = output ? term.selectCommandOutput(row) : "";
+    if (text) {
+      // ghostty-web clears the selection on any click outside the terminal,
+      // which includes the menu or palette click that got here. Copy now,
+      // while Safari still counts the click, and show the selection again
+      // once that click is done.
+      window.setTimeout(() => {
+        if (!term.hasSelection?.()) term.selectRows(output.start, output.end);
+      });
+      await writeClipboardText(text);
+    } else {
+      setWorkspaceStatus("error", "No command output",
+        "Tessera finds a command's output from the prompt marks the shell sends (OSC 133). See the README to turn them on in zsh.",
+        { autoHideMs: emptyCopyStatusHideMs });
+    }
+    term.focus();
     return;
   }
 

@@ -2,6 +2,103 @@
 
 ## Unreleased
 
+- Capability and setting queries (XTGETTCAP and DECRQSS) are answered, so
+  programs such as Neovim can find true colour and OSC 52 copying without
+  guessing. Programs that enable in-band size reports (mode 2048) are told
+  the pane's size after each resize.
+
+- Kitty keyboard protocol: programs that turn it on (such as Neovim,
+  Helix and fish) can tell Escape from Alt+key, Tab from Ctrl+I, and
+  Shift+Enter from Enter, and get key releases and repeats if they ask.
+
+- Fixed: on the iPad, switching between full-screen terminals could shift
+  every window up (Safari scrolling the page to clear the keyboard's shortcut
+  bar) until the bar was tapped. The workspace now stays put.
+
+- Programs' progress reports (OSC 9;4) show as a bar along the window's
+  title bar, red for an error and amber when paused, removed after 15
+  seconds without a report.
+
+- Programs can save and restore the window title (`CSI 22 t` / `CSI 23 t`),
+  so a window goes back to its name when Vim (with `set title`) exits,
+  instead of keeping "Thanks for flying Vim".
+
+- Mode queries (DECRQM, DEC and ANSI) and the terminal version query
+  (XTVERSION, answered `Tessera` and the version) are answered. Modes Tessera
+  doesn't act on are reported as unrecognised.
+
+- Fixed: binaries built since the screensaver was added left its module out,
+  so the page failed to start unless Tessera was run with `-web` pointing at
+  the source files.
+
+- A terminal's bell and OSC 9 / OSC 777 notifications mark a window you
+  aren't looking at, with a dot on its icon and `[bell]` or `[notification]`
+  in window lists, until you show it. Notifications also appear in the
+  page's corner (click to open the window), and as system notifications
+  while Tessera is in the background if turned on in Settings → Terminal.
+  Windows whose output is paused, and browsers that connect later, still
+  hear of them.
+
+- Programs that enable focus reports (mode 1004), such as Vim, Neovim and
+  tmux, are told when a terminal gains and loses focus.
+
+- Programs can ask whether a terminal is light or dark (`CSI ? 996 n`) and,
+  with mode 2031, are told when it changes, so editors such as Neovim can
+  follow the pane's light/dark setting.
+
+- Programs can recolour a terminal: OSC 4/104 set and reset palette entries,
+  OSC 10/11/12 the default foreground, background and cursor, OSC 17/19 the
+  selection colours, and OSC 110–119 reset them. Queries (`?`) are answered,
+  so themes like base16-shell, and vim and fzf checking the background, work.
+  The colours survive reconnects and light/dark switches, and `reset` clears
+  them.
+
+- With a shell that marks its prompts (OSC 133), `Cmd+Up` and `Cmd+Down`
+  jump between prompts in the scrollback (`Ctrl+Shift+Page Up`/`Page Down`
+  off an Apple keyboard), and **Copy Command Output** in a terminal's context
+  menu, or **Copy Last Command Output** in the palette, selects and copies
+  what a command printed. The README has the zsh hooks.
+
+- A terminal pane follows its shell's working directory when the shell
+  reports it with OSC 7. The pane's directory field shows it, new terminals
+  opened from the pane start there, and the shell starts there again after
+  the host restarts. Only reports naming the Tessera host count, so `ssh`
+  sessions don't move the pane. A pane whose directory has been deleted
+  starts its shell in the host default instead of failing to open. zsh on
+  macOS needs a `chpwd` hook to send OSC 7; the README has one.
+
+- Programs can set the mouse pointer's shape over a terminal with OSC 22,
+  such as a crosshair, a hand, or a resize arrow. Links still show the hand,
+  and `reset` puts back the text pointer.
+
+- A terminal link to `localhost` or `127.0.0.1` (or `::1`) opens in a Tessera
+  Browser window instead of a new browser tab, since the address means the
+  Tessera host and only a Browser window reaches it from another device. This
+  covers OSC 8 links and addresses printed as text, such as a dev server's
+  `http://localhost:5173/`. If a Browser window already shows that address,
+  it comes forward instead.
+
+- An address that wraps onto the next row opens whole from either row. Before,
+  `Cmd`-click on the first row opened only the part on that row, and the rest
+  was not a link.
+
+- Programs that track all mouse motion (mode 1003) now see the pointer move
+  when no button is held, so their hover effects work: underlining a button
+  under the pointer, for example. Motion is reported once per cell. Hold
+  `Shift` to keep the pointer for the terminal, as for clicks.
+
+- OSC 8 hyperlinks work. Hovering over one shows its address along the bottom
+  of the pane, since the link text can say anything, and `Cmd`-click or
+  `Ctrl`-click opens it if it is an `http` or `https` link. Before, they were
+  underlined but did nothing, and every link on screen was underlined as one.
+  Hovering over any link now underlines it straight away instead of at the
+  next output.
+
+- `Globe+Left` and `Globe+Right` on an iPad keyboard send Home and End,
+  and `Globe+Up`/`Globe+Down` send Page Up and Page Down. They had
+  reached the shell as `Command`+arrow, so zsh typed `9D` instead of moving
+  to the start of the line.
+
 - Music streamed into a terminal (Trinity, for example) no longer stops
   briefly when you bring that terminal back into view after another window
   covered it, it was minimized, or its browser tab was hidden. A terminal

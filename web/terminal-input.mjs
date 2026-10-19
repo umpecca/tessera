@@ -69,6 +69,33 @@ export class TerminalContextMenuFallback {
   }
 }
 
+// Pointer motion with no button held, for programs that turn on any-event
+// tracking (mode 1003) to draw hover effects. Reported once per cell, as
+// drags are, so a pointer resting or wobbling inside a cell sends nothing.
+export class TerminalMouseHover {
+  constructor() {
+    this.position = null;
+  }
+
+  // Returns whether the pointer entered another cell.
+  move(position) {
+    if (this.position?.col === position.col && this.position?.row === position.row) {
+      return false;
+    }
+    this.position = position;
+    return true;
+  }
+
+  // Forget the cell, so the next motion reports wherever it is: after the
+  // pointer leaves the pane, a press, or tracking turning off.
+  reset() {
+    this.position = null;
+  }
+}
+
+// SGR motion with no button: 32 (motion) + 3 (no button).
+export const terminalHoverButtonCode = 35;
+
 export class TerminalMousePress {
   constructor() {
     this.pointerID = null;

@@ -699,6 +699,163 @@ input {
   display: none;
 }
 
+/* Notifications from terminal programs (OSC 9, OSC 777), above the
+   window-list button. Clicking one opens its window. */
+.terminal-notices {
+  position: fixed;
+  right: calc(10px + env(safe-area-inset-right));
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  z-index: 90000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(320px, calc(100vw - 16px));
+}
+
+.terminal-notices[hidden] {
+  display: none;
+}
+
+.terminal-notice {
+  display: flex;
+  align-items: flex-start;
+  border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--attention, #f0a020);
+  background: var(--chrome-bg);
+  box-shadow:
+    inset 1px 1px 0 var(--bevel-hi),
+    inset -1px -1px 0 var(--bevel-lo),
+    0 2px 8px rgb(0 0 0 / 25%);
+  color: var(--text);
+  font-family: var(--tessera-font);
+  font-size: 12px;
+}
+
+.terminal-notice-open {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  border: 0;
+  padding: 6px 4px 6px 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.terminal-notice-open strong,
+.terminal-notice-body,
+.terminal-notice-source {
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.terminal-notice-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.terminal-notice-source {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.terminal-notice-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+/* A window whose program rang the bell or sent a notification while it was
+   not being looked at: a dot on its icon, until it is shown. */
+.window-attention {
+  position: absolute;
+  top: 3px;
+  left: 25px;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--chrome-bg);
+  border-radius: 50%;
+  background: var(--attention, #f0a020);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.window-attention[hidden] {
+  display: none;
+}
+
+:root[data-theme="operator"] .window-attention {
+  left: 36px;
+}
+
+/* A program's progress (OSC 9;4): a thin bar along the bottom of the title
+   bar. Without a percentage, a segment moves along it. */
+.window-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 7;
+}
+
+.window-progress[hidden] {
+  display: none;
+}
+
+.window-progress-bar {
+  width: 0;
+  height: 100%;
+  background: var(--progress, #3b82f6);
+  transition: width 0.2s linear;
+}
+
+.window-progress[data-state="error"] .window-progress-bar {
+  background: var(--progress-error, #d93636);
+}
+
+.window-progress[data-state="pause"] .window-progress-bar {
+  background: var(--attention, #f0a020);
+}
+
+.window-progress.is-indeterminate .window-progress-bar {
+  width: 30%;
+  animation: window-progress-sweep 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes window-progress-sweep {
+  from { transform: translateX(0); }
+  to { transform: translateX(233%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .window-progress.is-indeterminate .window-progress-bar {
+    width: 100%;
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+.deskbar-button[data-attention="true"] {
+  outline: 2px solid var(--attention, #f0a020);
+  outline-offset: 1px;
+}
+
 .workspace-status[data-state="saving"],
 .workspace-status[data-state="loading"] {
   color: var(--text);
@@ -1329,6 +1486,36 @@ input {
   font: inherit;
   cursor: pointer;
   z-index: 7;
+}
+
+/* Where the OSC 8 link under the pointer goes; see showTerminalLinkHover. */
+.terminal-link-hover {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  max-width: calc(100% - 24px);
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  padding: 1px 6px;
+  background: var(--chrome-bg);
+  color: var(--text-muted);
+  font-family: var(--tessera-font);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 7;
+}
+
+.terminal-link-hover.is-right {
+  left: auto;
+  right: 6px;
+}
+
+.terminal-link-hover[hidden] {
+  display: none;
 }
 
 /* Nothing left to bring forward, so the badge goes back to being a label. */
