@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -70,7 +71,10 @@ func TestBrowserProxyRewritesDevelopmentPageAndRedirect(t *testing.T) {
 	}
 	prefix := browserProxyPrefix + session.id
 	body := response.Body.String()
-	for _, fragment := range []string{`<base href="` + prefix + `/">`, `href="` + prefix + `/style.css"`, `src="` + prefix + `/app.js"`, "tessera-browser-location", "tessera-browser-draw"} {
+	if strings.Contains(body, "<base") {
+		t.Errorf("rewritten HTML has an injected <base>: %s", body)
+	}
+	for _, fragment := range []string{`href="` + prefix + `/style.css"`, `src="` + prefix + `/app.js"`, "tessera-browser-location", "tessera-browser-draw"} {
 		if !strings.Contains(body, fragment) {
 			t.Errorf("rewritten HTML does not contain %q: %s", fragment, body)
 		}
@@ -101,6 +105,110 @@ func TestBrowserProxyRewritesDevelopmentPageAndRedirect(t *testing.T) {
 	}
 	if got := response.Header().Get("Location"); got != prefix+"/next?q=1" {
 		t.Fatalf("rewritten redirect = %q", got)
+	}
+}
+
+func TestBrowserProxyResolvesRedirectsAgainstRequestedPath(t *testing.T) {
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a/b/index.html":
+			w.Header().Set("Location", "./?q=1")
+			w.WriteHeader(http.StatusMovedPermanently)
+		case "/a/b/fragment":
+			w.Header().Set("Location", "next#part")
+			w.WriteHeader(http.StatusFound)
+		case "/away":
+			w.Header().Set("Location", "http://192.0.2.10/")
+			w.WriteHeader(http.StatusFound)
+		}
+	}))
+	defer targetServer.Close()
+	target, _ := url.Parse(targetServer.URL)
+	session, err := newBrowserProxySession(target)
+	if err != nil {
+		t.Fatalf("new proxy session: %v", err)
+	}
+	api := &API{}
+	api.proxyManager().add(session)
+	prefix := browserProxyPrefix + session.id
+
+	for path, want := range map[string]string{
+		"/a/b/index.html": prefix + "/a/b/?q=1",
+		"/a/b/fragment":   prefix + "/a/b/next#part",
+	} {
+		response := httptest.NewRecorder()
+		api.browserProxyRequest(response, httptest.NewRequest(http.MethodGet, prefix+path, nil))
+		if got := response.Header().Get("Location"); got != want {
+			t.Errorf("redirect from %s = %q (status %d), want %q", path, got, response.Code, want)
+		}
+	}
+
+	response := httptest.NewRecorder()
+	api.browserProxyRequest(response, httptest.NewRequest(http.MethodGet, prefix+"/away", nil))
+	if response.Code != http.StatusBadGateway || response.Header().Get("Location") != "" {
+		t.Errorf("redirect to another origin was not refused: status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+}
+
+func TestBrowserProxyInjectsBootstrapAfterHeadOrDoctype(t *testing.T) {
+	target, _ := url.Parse("http://localhost:5000")
+	for name, tc := range map[string]struct{ page, before string }{
+		"plain head":      {`<!doctype html><html><head><title>x</title></head></html>`, `<!doctype html><html><head>`},
+		"head attributes": {`<!DOCTYPE html><html lang="en"><head lang="en"><title>x</title></head></html>`, `<!DOCTYPE html><html lang="en"><head lang="en">`},
+		"no head":         {"\ufeff<!-- built -->\n<!doctype html>\n<html lang=\"en\"><title>x</title><header>h</header>", "\ufeff<!-- built -->\n<!doctype html>\n<html lang=\"en\">"},
+		"no doctype":      {`<p>fragment</p>`, ``},
+	} {
+		body := string(rewriteBrowserHTML([]byte(tc.page), "/browser-proxy/id", target))
+		at := strings.Index(body, "<script>")
+		if at < 0 || body[:at] != tc.before {
+			t.Errorf("%s: bootstrap follows %q, want %q", name, body[:max(at, 0)], tc.before)
+		}
+		if strings.Count(body, "<script>") != 1 {
+			t.Errorf("%s: bootstrap injected %d times", name, strings.Count(body, "<script>"))
+		}
+	}
+}
+
+func TestBrowserProxyEscapePageReplacesBlankFrame(t *testing.T) {
+	handler := NewSecurityHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("app"))
+	}), nil, SecurityOptions{ConnectionLog: io.Discard})
+
+	escaped := func(path, site string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1"+path, nil)
+		request.Header.Set("Sec-Fetch-Dest", "iframe")
+		request.Header.Set("Sec-Fetch-Site", site)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	response := escaped("/games/<x>", "cross-site")
+	body := response.Body.String()
+	if response.Code != http.StatusForbidden || !strings.Contains(body, "outside the browser proxy") || !strings.Contains(body, "/games/&lt;x&gt;") {
+		t.Fatalf("escape page = %d %q", response.Code, body)
+	}
+	if response.Header().Get("X-Frame-Options") != "" {
+		t.Errorf("escape page kept X-Frame-Options: %q", response.Header().Get("X-Frame-Options"))
+	}
+	policy := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "frame-ancestors 'self'") || !strings.HasPrefix(policy, "sandbox allow-scripts;") {
+		t.Errorf("escape page policy = %q", policy)
+	}
+
+	for name, response := range map[string]*httptest.ResponseRecorder{
+		"same-origin frame": escaped("/api/terminal-files/frame", "same-origin"),
+		"proxy path":        escaped(browserProxyPrefix+"id/", "cross-site"),
+	} {
+		if response.Body.String() != "app" {
+			t.Errorf("%s was answered with the escape page", name)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Body.String() != "app" || response.Header().Get("X-Frame-Options") != "DENY" {
+		t.Errorf("unframed request changed: %q %v", response.Body.String(), response.Header())
 	}
 }
 

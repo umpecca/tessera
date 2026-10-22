@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -32,6 +34,12 @@ var (
 	htmlRootAttributePattern = regexp.MustCompile(`(?i)(\b(?:src|href|action|poster)\s*=\s*["'])/([^/])`)
 	cssRootURLPattern        = regexp.MustCompile(`(?i)(url\(\s*["']?)/([^/])`)
 	jsRootImportPattern      = regexp.MustCompile(`(?m)((?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)(["']))/([^/])`)
+	htmlHeadPattern          = regexp.MustCompile(`(?i)<head(?:\s[^>]*)?>`)
+	// htmlStartPattern spans whatever must stay ahead of an injected script in
+	// a document without a <head> tag: a byte-order mark, comments, the doctype
+	// and the <html> start tag. Anything before the doctype would put the page
+	// in quirks mode.
+	htmlStartPattern = regexp.MustCompile(`(?is)^\x{FEFF}?(?:\s|<!--.*?-->)*(?:<!doctype[^>]*>)?(?:\s|<!--.*?-->)*(?:<html(?:\s[^>]*)?>)?`)
 )
 
 type browserProxyManager struct {
@@ -268,11 +276,17 @@ func rewriteBrowserProxyResponse(response *http.Response, prefix string, target 
 	setBrowserProxyResponseHeaders(response.Header)
 	response.Header.Del("Set-Cookie")
 	if location := response.Header.Get("Location"); location != "" {
-		resolved, err := target.Parse(location)
+		// Relative redirects resolve against the requested URL, not the one the
+		// session started at: http.FileServer answers /a/index.html with ./
+		resolved, err := response.Request.URL.Parse(location)
 		if err != nil || !sameURLOrigin(resolved, target) {
 			return errors.New("browser proxy blocked a redirect outside its loopback origin")
 		}
-		response.Header.Set("Location", prefix+resolved.EscapedPath()+querySuffix(resolved.RawQuery))
+		rewritten := prefix + resolved.EscapedPath() + querySuffix(resolved.RawQuery)
+		if resolved.Fragment != "" {
+			rewritten += "#" + resolved.EscapedFragment()
+		}
+		response.Header.Set("Location", rewritten)
 	}
 
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
@@ -309,11 +323,15 @@ func rewriteBrowserHTML(body []byte, prefix string, target *url.URL) []byte {
 	body = cssRootURLPattern.ReplaceAll(body, []byte("$1"+prefix+"/$2"))
 	prefixJSON, _ := json.Marshal(prefix)
 	targetJSON, _ := json.Marshal(target.Scheme + "://" + target.Host)
-	bootstrap := []byte(`<base href="` + prefix + `/"><script>(function(){
+	// No <base> is injected: every proxied document's URL is already under
+	// prefix + "/", so relative URLs resolve correctly against it, and a base
+	// would break fragment links and override the page's own <base>.
+	bootstrap := []byte(`<script>(function(){
 const prefix=` + string(prefixJSON) + `, targetOrigin=` + string(targetJSON) + `;
 const proxyURL=(value)=>{const u=new URL(String(value),location.href);if(u.origin===targetOrigin||u.origin===location.origin&&!u.pathname.startsWith(prefix+"/")){u.protocol=location.protocol;u.host=location.host;u.pathname=prefix+(u.pathname.startsWith("/")?u.pathname:"/"+u.pathname);}return u.href;};
 const originalFetch=window.fetch;window.fetch=(input,init)=>originalFetch(input instanceof Request?new Request(proxyURL(input.url),input):proxyURL(input),init);
 const originalOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url){arguments[1]=proxyURL(url);return originalOpen.apply(this,arguments);};
+const originalWindowOpen=window.open;window.open=function(url){if(url!==undefined&&url!==null&&String(url)!=="")arguments[0]=proxyURL(url);return originalWindowOpen.apply(window,arguments);};
 for(const name of ["WebSocket","EventSource"]){const Original=window[name];if(!Original)continue;window[name]=function(url){arguments[0]=proxyURL(url);return Reflect.construct(Original,arguments,new.target||Original);};window[name].prototype=Original.prototype;}
 const logicalURL=()=>targetOrigin+location.pathname.slice(prefix.length)+location.search+location.hash;
 const report=()=>parent.postMessage({type:"tessera-browser-location",url:logicalURL()},"*");
@@ -331,15 +349,64 @@ for(const type of ["pointercancel","lostpointercapture"])addEventListener(type,e
 addEventListener("blur",cancelDraw);
 addEventListener("keydown",event=>{if(event.key==="Escape"&&drawPointer!==null){event.preventDefault();event.stopImmediatePropagation();cancelDraw();}},true);
 addEventListener("auxclick",event=>{if(event.button===1){event.preventDefault();event.stopImmediatePropagation();}},true);
-document.addEventListener("click",event=>{const link=event.target.closest&&event.target.closest("a[href]");if(!link||link.target&&link.target!=="_self")return;const next=proxyURL(link.href);if(next!==link.href){event.preventDefault();location.href=next;}},true);
+document.addEventListener("click",event=>{const link=event.target.closest&&event.target.closest("a[href]");if(!link)return;const next=proxyURL(link.href);if(next===link.href)return;if(link.target&&link.target!=="_self"){link.href=next;return;}event.preventDefault();location.href=next;},true);
 document.addEventListener("submit",event=>{const form=event.target;if(form&&form.action)form.action=proxyURL(form.action);},true);
 })();</script>`)
-	lower := bytes.ToLower(body)
-	if index := bytes.Index(lower, []byte("<head>")); index >= 0 {
-		at := index + len("<head>")
-		return append(append(append([]byte{}, body[:at]...), bootstrap...), body[at:]...)
+	at := 0
+	if head := htmlHeadPattern.FindIndex(body); head != nil {
+		at = head[1]
+	} else if start := htmlStartPattern.FindIndex(body); start != nil {
+		at = start[1]
 	}
-	return append(bootstrap, body...)
+	return append(append(append([]byte{}, body[:at]...), bootstrap...), body[at:]...)
+}
+
+// browserProxyEscapeScript reports the escaped path to the Tessera app, which
+// sends the frame back through the pane's proxy session, and lets the page go
+// back from its own link or the pane's Back button. Its hash is the only script
+// the page's policy allows.
+const browserProxyEscapeScript = `parent.postMessage({type:"tessera-browser-escape",path:location.pathname+location.search+location.hash},"*");document.getElementById("back").addEventListener("click",event=>{event.preventDefault();history.back();});addEventListener("message",event=>{if(event.source===parent&&event.data==="tessera-browser-back")history.back();});`
+
+var browserProxyEscapePolicy = func() string {
+	sum := sha256.Sum256([]byte(browserProxyEscapeScript))
+	return "sandbox allow-scripts; default-src 'none'; script-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+}()
+
+// escapedBrowserNavigation reports whether r looks like a proxied page that
+// navigated its frame to one of Tessera's own paths, for example with
+// location.replace("/"). The bootstrap can't catch that: location can't be
+// patched, and the Navigation API fires no events in an opaque-origin
+// document. Tessera's own frames (terminal file transfers) are same-origin; a
+// sandboxed proxied page has an opaque origin, so its navigations never are.
+func escapedBrowserNavigation(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "iframe" && dest != "frame" {
+		return false
+	}
+	return r.Header.Get("Sec-Fetch-Site") != "same-origin" && !strings.HasPrefix(r.URL.Path, browserProxyPrefix)
+}
+
+// writeBrowserProxyEscape answers an escaped navigation with a small static
+// page Tessera can frame, instead of the app behind X-Frame-Options: DENY,
+// which Safari shows as a blank white frame.
+func writeBrowserProxyEscape(w http.ResponseWriter, r *http.Request) {
+	header := w.Header()
+	header.Del("X-Frame-Options")
+	header.Set("Content-Security-Policy", browserProxyEscapePolicy)
+	header.Set("Content-Type", "text/html; charset=utf-8")
+	header.Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusForbidden)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Left the browser proxy</title>
+<style>body{font:14px/1.5 system-ui,sans-serif;margin:2em;color:#333;background:#fff}@media(prefers-color-scheme:dark){body{color:#ddd;background:#1e1e1e}a{color:#8ab4f8}}code{word-break:break-all}</style>
+<p>This page navigated outside the browser proxy, to Tessera's own <code>%s</code>, which Tessera does not show inside a Browser pane.</p>
+<p>Tessera normally sends it back through the proxy straight away. If this page stays, the page used a root-relative navigation from script, such as <code>location.href = "/"</code>, that couldn't be redirected. <a id="back" href="#">Go back</a></p>
+<script>%s</script>
+`, html.EscapeString(r.URL.Path), browserProxyEscapeScript)
 }
 
 func setBrowserProxyResponseHeaders(header http.Header) {

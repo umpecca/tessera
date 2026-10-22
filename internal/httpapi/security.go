@@ -146,6 +146,11 @@ func (h *securityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Strict-Transport-Security", "max-age=86400")
 	}
 	w.Header().Set("Content-Security-Policy", contentSecurityPolicy(info))
+	if escapedBrowserNavigation(r) {
+		writeBrowserProxyEscape(tracked, r)
+		h.audit(r, tracked.status, requestID, info.clientIP, started)
+		return
+	}
 	note := &auditNote{}
 	r = r.WithContext(context.WithValue(context.WithValue(r.Context(), requestSecurityKey{}, info), auditNoteKey{}, note))
 	h.logClientConnection(info.clientIP, r.UserAgent())

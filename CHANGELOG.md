@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fixed: Browser panes loaded relative scripts, images and fetches against
+  the site root on pages in a subfolder, sent relative redirects (such as Go's
+  `./`) to the site root, and put pages whose `<head>` has attributes, or that
+  have none, into quirks mode. A page that navigates from script to a
+  root-relative path (`location.href = "/"`) or opens one with `window.open`
+  now stays inside the proxy instead of showing a blank white pane. README →
+  Browser pane limits lists what a proxied page can't do.
+
 - Save Clipboard to File: a command palette dialog that saves the clipboard's
   text or images, or files pasted or dropped into it, to a folder on the
   host, with buttons for Home, Temp and the active terminal's folder. Delete

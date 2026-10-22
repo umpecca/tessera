@@ -84,3 +84,18 @@ test("other terminal links open in a new tab", () => {
   assert.deepEqual(calls.tabs, ["https://example.com/", "http://192.168.1.5:3000/", "http://user:pw@localhost:5000/"]);
   assert.equal(calls.created.length, 0);
 });
+
+test("an escaped frame navigation goes back through the pane's proxy session", () => {
+  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const start = source.indexOf("function handleBrowserPaneEscape(");
+  const ctx = vm.createContext({ browserPaneKind: "browser", rectangles: [] });
+  vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), ctx);
+  const replaced = [];
+  const frameWindow = { location: { replace: url => replaced.push(url) } };
+  ctx.rectangles.push({ kind: "browser", browser: { sessionID: "abc", frame: { contentWindow: frameWindow } } });
+
+  ctx.handleBrowserPaneEscape({ source: frameWindow, data: { type: "tessera-browser-escape", path: "/games/?p=1#top" } });
+  ctx.handleBrowserPaneEscape({ source: frameWindow, data: { type: "tessera-browser-escape", path: "https://example.com/" } });
+  ctx.handleBrowserPaneEscape({ source: { location: frameWindow.location }, data: { type: "tessera-browser-escape", path: "/other" } });
+  assert.deepEqual(replaced, ["/browser-proxy/abc/games/?p=1#top"]);
+});

@@ -2239,6 +2239,10 @@ function handleBrowserPaneMessage(event) {
     handleBrowserPaneShortcut(event);
     return;
   }
+  if (event.data?.type === "tessera-browser-escape") {
+    handleBrowserPaneEscape(event);
+    return;
+  }
   if (event.data?.type !== "tessera-browser-location" || typeof event.data.url !== "string") {
     return;
   }
@@ -2256,6 +2260,18 @@ function handleBrowserPaneMessage(event) {
     rect.browserStatusInput.value = normalized;
   }
   scheduleWorkspaceSave();
+}
+
+// A proxied page that navigates its frame to one of Tessera's own paths, such
+// as location.href = "/", lands on the server's escape page, which reports the
+// path so the frame can go back through the pane's proxy session instead.
+function handleBrowserPaneEscape(event) {
+  const path = event.data.path;
+  if (typeof path !== "string" || !path.startsWith("/")) return;
+  const rect = rectangles.find(candidate => candidate.kind === browserPaneKind && candidate.browser?.frame.contentWindow === event.source);
+  if (!rect?.browser.sessionID) return;
+  // Replace the escape page so Back returns to the page that navigated.
+  event.source.location.replace(`/browser-proxy/${encodeURIComponent(rect.browser.sessionID)}${path}`);
 }
 
 function handleBrowserPaneDraw(event) {
