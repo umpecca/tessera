@@ -315,7 +315,7 @@ function attachBridge(f, appleKeyboardLayout) {
   return { bridge, sent, menus: () => menus };
 }
 
-test("Safari Control-primary-click cannot start selection or activate a hyperlink", () => {
+test("Safari Control-primary-click reports a Ctrl right-click to a mouse-aware program", () => {
   for (const withPointerEvent of [true, false]) {
     const f = fixture();
     const b = attachBridge(f, true);
@@ -323,14 +323,40 @@ test("Safari Control-primary-click cannot start selection or activate a hyperlin
     if (withPointerEvent) assert.equal(f.emit("pointerdown", { ctrlKey: true }).defaultPrevented, true);
     assert.equal(f.emit("mousedown", { ctrlKey: true }).defaultPrevented, true);
     assert.equal(f.manager.isSelecting, false);
+    assert.equal(f.term.hasSelection(), true, "existing text is left alone");
+    assert.equal(f.emit("contextmenu", { ctrlKey: true }).defaultPrevented, true);
+    assert.equal(b.menus(), 0);
+    assert.equal(f.emit("click", { ctrlKey: true }).propagationStopped, true);
+    // Right button (2) plus Ctrl (16), pressed and released once.
+    assert.deepEqual(b.sent.map(item => [item.code, item.final]), [[18, "M"], [18, "m"]]);
+  }
+});
+
+test("Safari Control-primary-click opens no menu and starts no selection without mouse tracking", () => {
+  for (const withPointerEvent of [true, false]) {
+    const f = fixture();
+    f.term.hasMouseTracking = () => false;
+    const b = attachBridge(f, true);
+    f.manager.selectAll();
+    if (withPointerEvent) assert.equal(f.emit("pointerdown", { ctrlKey: true }).defaultPrevented, true);
+    assert.equal(f.emit("mousedown", { ctrlKey: true }).defaultPrevented, true);
+    assert.equal(f.manager.isSelecting, false);
     assert.equal(f.term.hasSelection(), true, "existing text remains available to Copy");
-    f.selectNative();
-    f.emit("contextmenu", { ctrlKey: true });
-    assert.equal(b.menus(), 1);
-    assert.equal(f.nativeSelected(), false);
+    assert.equal(f.emit("contextmenu", { ctrlKey: true }).defaultPrevented, true);
+    assert.equal(b.menus(), 0);
     assert.equal(f.emit("click", { ctrlKey: true }).propagationStopped, true);
     assert.deepEqual(b.sent, []);
   }
+});
+
+test("a real right-click without mouse tracking still opens the terminal menu", () => {
+  const f = fixture();
+  f.term.hasMouseTracking = () => false;
+  const b = attachBridge(f, true);
+  f.emit("pointerdown", { button: 2, buttons: 2 });
+  f.emit("contextmenu", { button: 2 });
+  assert.equal(b.menus(), 1);
+  assert.deepEqual(b.sent, []);
 });
 
 test("Command-click, other-platform Control-click and Shift-drag retain their local paths", () => {

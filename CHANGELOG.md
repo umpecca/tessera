@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Save Clipboard to File: a command palette dialog that saves the clipboard's
+  text or images, or files pasted or dropped into it, to a folder on the
+  host, with buttons for Home, Temp and the active terminal's folder. Delete
+  Last Clipboard Save removes what it wrote, refusing any file that changed
+  since.
+
+- Image paste: pasting an image into a terminal (`Cmd+V`, or Paste in the
+  terminal menu) puts it on the host's clipboard and sends the program
+  `Ctrl+V`, so opencode and similar tools attach it, even from an iPad. It
+  works on macOS, Windows and Linux desktops when Tessera runs in your
+  desktop session; Settings → Diagnostics → Enhanced copy/paste says whether
+  it is working, and detects a background service or a host with no display.
+
 - Fixed: the release build's generated-files check failed on Zig's cache
   folder (`.zig-cache/`), which is now ignored, and two shell integration
   tests assumed Unix paths and permissions, failing on Windows.

@@ -625,6 +625,33 @@ what lets a TUI editor undo a paste in a single step. `Ctrl+Shift+V` and
 when that happens Tessera pastes its own last copy and says so in the workspace
 status rather than pasting silently.
 
+Pasting an image — a screenshot copied on an iPad, say — works too, with the
+same paste key. A terminal can only carry text, and programs such as opencode
+paste images by reading the host's clipboard when they receive `Ctrl+V`. So
+Tessera sends the image to the server, which puts it on the clipboard of the
+desktop session it runs in, then sends the program `Ctrl+V` (encoded with the
+Kitty keyboard protocol when the program asked for it). The image never
+touches the disk. A paste that has text as well pastes the text. The server
+writes the macOS pasteboard or the Windows clipboard directly, and on Linux
+uses `wl-copy` (Wayland) or `xclip` (X11). It needs Tessera running in your
+logged-in desktop session, such as from the menu bar or tray app: a background
+service, a process started over SSH, or a host with no display has no
+clipboard for programs to read. Settings → Diagnostics → Enhanced copy/paste
+says whether it is working, and why not when it isn't.
+
+**Save Clipboard to File...** in the command palette saves what is on the
+clipboard to a folder on the host: text as `clipboard.txt`, an image as
+`clipboard.png`, each name editable. The browser's clipboard API offers only
+text and images, so files copied in Finder or the Files app are added by
+pressing the paste key inside the dialog, or by dropping them on it. Buttons
+jump to Home, Temp (the host account's temporary folder), Current (the active
+terminal's folder, as shell integration reports it) and the usual Desktop,
+Documents and Downloads; the list below moves through folders. A name that
+exists already is replaced only after you agree. **Delete Last Clipboard
+Save...** then removes the files that save wrote, after asking. It deletes
+only files Tessera saved this way and that are unchanged since, and the
+server forgets them when it restarts.
+
 A full-screen terminal program has no browser selection to copy, so it reaches
 the clipboard with OSC 52 (`ESC ] 52 ; c ; <base64> BEL`). Tessera takes those
 sequences out of the terminal stream and writes the text to the system

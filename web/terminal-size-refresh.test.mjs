@@ -49,10 +49,24 @@ test("the palette offers Refresh Terminal Size only while a terminal is on scree
     deskbarButtonEnabled: true, currentSessionName: "Main", currentSessionID: "main", sessions: [],
     rectangles, getActivePane: () => null, arrangeOutSnapshot: null, workspaceMenuLabel: (pane) => pane.title,
     window: {}, multiUser: false, authMode: "off", openShortcuts() {}, shortcutsUI: { items: [] },
+    lastClipboardSave: { paths: [] },
   });
   const ids = (rectangles) => appFunction("buildPaletteCommands", globals(rectangles))().map((command) => command.id);
   const live = { kind: "terminal", title: "Terminal", minimized: false, terminal: { term: {} } };
   assert.ok(ids([live]).includes("refresh-terminal-size"));
   assert.ok(!ids([{ ...live, minimized: true }]).includes("refresh-terminal-size"));
   assert.ok(!ids([]).includes("refresh-terminal-size"));
+});
+
+test("the palette offers Delete Last Clipboard Save only after a save", () => {
+  const ids = (paths) => appFunction("buildPaletteCommands", {
+    browseLocalPortHelpCommand: { id: "browse-local-port-help", label: "Browse local port" },
+    deskbarButtonEnabled: true, currentSessionName: "Main", currentSessionID: "main", sessions: [],
+    rectangles: [], getActivePane: () => null, arrangeOutSnapshot: null, workspaceMenuLabel: (pane) => pane.title,
+    window: {}, multiUser: false, authMode: "off", openShortcuts() {}, shortcutsUI: { items: [] },
+    lastClipboardSave: { paths },
+  })().map((command) => command.id);
+  assert.ok(ids([]).includes("save-clipboard"));
+  assert.ok(!ids([]).includes("delete-clipboard-save"));
+  assert.ok(ids(["/tmp/clipboard.txt"]).includes("delete-clipboard-save"));
 });

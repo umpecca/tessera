@@ -76,6 +76,7 @@ export function compatibilityDiagnostics(info) {
     `Native clipboard API: ${info.nativeClipboard ? "Available" : "Unavailable"}`,
     `Clipboard extension: ${info.extension}`,
     `Terminal clipboard writes: ${info.terminalClipboard}`,
+    `Enhanced copy/paste: ${info.enhancedClipboard || "Not checked"}`,
     `Performance profile: ${info.performanceProfile}`,
     `Terminal renderer: ${info.terminalRenderer}`,
     `Painting limit: ${info.performanceProfile === "Older Mac" ? "30 FPS; input temporarily bypasses cap" : "Display refresh rate"}`,

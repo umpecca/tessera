@@ -90,6 +90,21 @@ import { TerminalOutputTiming, formatOutputTiming } from "./terminal-output-timi
 import { terminalWorkingDirectory } from "./terminal-working-directory.mjs";
 import { terminalKittyKeyEvent } from "./terminal-kitty-keyboard.mjs";
 import {
+  clipboardItemsContent,
+  describeHostClipboard,
+  pastedImage,
+  readHostClipboardStatus,
+  terminalPasteKeys,
+  writeHostClipboardImage,
+} from "./clipboard-image.mjs";
+import {
+  clipboardSaveEntries,
+  deleteSavedFiles,
+  LastClipboardSave,
+  SaveClipboardDialog,
+  textSaveEntry,
+} from "./save-clipboard.mjs";
+import {
   acceptTerminalAlert,
   mergeTerminalAttention,
   showSystemNotification,
@@ -274,6 +289,9 @@ const serverHealthPollInterval = 5000;
 const maxKeepaliveSaveBytes = 60 * 1024;
 let serverConnectionState = { failures: 0, state: "" };
 let serverConnectionLastHealthy = null;
+// The server's last answer about its host clipboard, for Diagnostics.
+let hostClipboardStatus = null;
+let hostClipboardStatusFailed = false;
 let serverHealthMonitorTimer = null;
 let serverHealthProbe = null;
 let serverUpdateRestarting = false;
@@ -1207,6 +1225,20 @@ renameWindowModal.addEventListener("pointerdown", (event) => {
 });
 document.body.appendChild(renameWindowModal);
 
+const lastClipboardSave = new LastClipboardSave();
+const saveClipboardDialog = new SaveClipboardDialog({
+  readClipboard: readClipboardForSave,
+  pasteKey: appleKeyboardLayout ? "Cmd+V" : "Ctrl+V",
+  confirmReplace: async (name) => window.confirm(`${name} already exists in this folder. Replace it?`),
+  onSaved: ({ saved, skipped, directory }) => {
+    lastClipboardSave.set(saved, directory);
+    const text = saved.length === 1 ? `Saved ${saved[0]}` : `Saved ${saved.length} files to ${directory}`;
+    setWorkspaceStatus("saved", text, skipped.length ? `${text}. Kept existing: ${skipped.join(", ")}` : text);
+  },
+  onClose: () => getActivePane()?.terminal?.term?.focus?.(),
+});
+document.body.appendChild(saveClipboardDialog.element);
+
 const sessionsModal = document.createElement("div");
 sessionsModal.className = "settings-modal sessions-modal";
 sessionsModal.hidden = true;
@@ -1406,6 +1438,25 @@ board.addEventListener("lostpointercapture", (event) => {
     finishInteraction({ pointerId: event.pointerId, type: "pointercancel" });
   }
 });
+// macOS turns Control-click into a contextmenu event. Only a real secondary
+// button opens Tessera's menus, so swallow the Control-click variant before
+// any menu handler (or the native menu) sees it. Terminals decide for
+// themselves, since a mouse-aware program should still hear the click.
+let controlClickPending = false;
+document.addEventListener("pointerdown", (event) => {
+  controlClickPending = appleKeyboardLayout && event.button === 0 && event.ctrlKey;
+}, { capture: true });
+document.addEventListener("contextmenu", (event) => {
+  if (event.target?.closest?.(".terminal-container")) {
+    controlClickPending = false;
+    return;
+  }
+  const controlClick = controlClickPending || (appleKeyboardLayout && event.button === 0 && event.ctrlKey);
+  controlClickPending = false;
+  if (!controlClick) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, { capture: true });
 board.addEventListener("contextmenu", openWorkspaceMenu);
 document.addEventListener("pointerdown", hideMenusWhenOutside);
 document.addEventListener("keydown", hideMenusOnEscape);
@@ -4541,6 +4592,33 @@ function renderTerminalStatusBadge(rect) {
 // the container listener ghostty-web installed, and pastes through the terminal
 // instead — which wraps the text whenever the application asked for bracketed
 // paste.
+// An image goes to the host clipboard, then the program gets its paste key
+// and reads it from there; see clipboard-image.mjs.
+async function pasteImageIntoTerminal(rect, term, image) {
+  setWorkspaceStatus("saving", "Pasting image…");
+  try {
+    hostClipboardStatus = await writeHostClipboardImage(image);
+    hostClipboardStatusFailed = false;
+  } catch (error) {
+    if (error.status?.session) hostClipboardStatus = error.status;
+    setWorkspaceStatus("error", "Image paste failed", error.message);
+    return;
+  }
+  for (const keys of terminalPasteKeys(term, { appleKeyboard: appleKeyboardLayout })) {
+    sendTerminalKeys(rect, keys);
+  }
+  setWorkspaceStatus("saved", "Image pasted");
+}
+
+async function refreshHostClipboardStatus() {
+  try {
+    hostClipboardStatus = await readHostClipboardStatus();
+    hostClipboardStatusFailed = false;
+  } catch {
+    hostClipboardStatusFailed = true;
+  }
+}
+
 function attachTerminalPasteBridge(rect, term) {
   const host = rect.terminalContainer?.parentElement;
   if (!host) {
@@ -4569,6 +4647,11 @@ function attachTerminalPasteBridge(rect, term) {
     const text = terminalPasteText(event.clipboardData?.getData("text/plain") || "");
     if (text) {
       term.paste(text);
+      return;
+    }
+    const image = pastedImage(event.clipboardData);
+    if (image) {
+      void pasteImageIntoTerminal(rect, term, image);
     }
   };
 
@@ -4593,6 +4676,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   const hover = new TerminalMouseHover();
   const contextMenuFallback = new TerminalContextMenuFallback();
   let selectionAtReportedPress = null;
+  let controlPress = false;
   let wheelRemainder = 0;
   let wheelDirection = 0;
 
@@ -4607,9 +4691,16 @@ function attachTerminalMouseBridge(rect, term, socket) {
     return steps;
   };
 
+  // macOS turns Control-click into a secondary click. As in native Mac
+  // terminals, a mouse-aware program hears it as a right click that keeps Ctrl.
+  const reportsMacControl = (event) => appleKeyboardLayout && event.ctrlKey
+    && terminalShouldReportMouse(term, event, { allowControl: true });
+
   const onPointerDown = (event) => {
     selectionAtReportedPress = null;
-    if (isTerminalContextMenuGesture(event, { appleKeyboard: appleKeyboardLayout })
+    controlPress = appleKeyboardLayout && event.button === 0 && event.ctrlKey;
+    const reportControl = reportsMacControl(event);
+    if (!reportControl && isTerminalContextMenuGesture(event, { appleKeyboard: appleKeyboardLayout })
         && !terminalShouldReportMouse(term, event)) {
       // ghostty-web's selection manager handles every mouse-down. Cancel the
       // compatibility mouse event so a secondary click cannot replace the
@@ -4617,8 +4708,8 @@ function attachTerminalMouseBridge(rect, term, socket) {
       stopTerminalMouseEvent(event);
       return;
     }
-    const buttonCode = terminalMouseButtonCode(event.button);
-    if (buttonCode == null || !terminalShouldReportMouse(term, event)) {
+    const buttonCode = controlPress ? 2 : terminalMouseButtonCode(event.button);
+    if (buttonCode == null || !(reportControl || terminalShouldReportMouse(term, event))) {
       return;
     }
     const position = terminalMousePosition(term, container, event);
@@ -4643,6 +4734,7 @@ function attachTerminalMouseBridge(rect, term, socket) {
   const onMouseDown = (event) => {
     // Safari may send a Control-primary mousedown without a PointerEvent.
     // Keep macOS's contextual click out of Ghostty's left-drag selection.
+    if (appleKeyboardLayout && event.button === 0 && event.ctrlKey) controlPress = true;
     if (isTerminalContextMenuGesture(event, { appleKeyboard: appleKeyboardLayout })
         && !terminalShouldReportMouse(term, event)) {
       stopTerminalMouseEvent(event);
@@ -4741,12 +4833,14 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 
   const onContextMenu = (event) => {
-    if (terminalShouldReportMouse(term, event)) {
+    const controlClick = controlPress || (appleKeyboardLayout && event.button === 0 && event.ctrlKey);
+    controlPress = false;
+    if (reportsMacControl(event) || terminalShouldReportMouse(term, event)) {
       // macOS may show contextmenu before delivering pointerup for a
       // secondary click. Finish the already-forwarded press here so the TUI
       // cannot remain latched if that pointerup is suppressed.
       finishTerminalPointer(event, null);
-      if (event.button === 2 && contextMenuFallback.needsFallback(2, event.timeStamp)) {
+      if ((event.button === 2 || controlClick) && contextMenuFallback.needsFallback(2, event.timeStamp)) {
         // Safari on macOS may emit only contextmenu for a trackpad secondary
         // click. In that case report one complete right-click to the TUI. A
         // recent pointerdown suppresses this fallback in browsers that deliver
@@ -4764,6 +4858,11 @@ function attachTerminalMouseBridge(rect, term, socket) {
       // the click and preserving the normal right-click report to the TUI.
       clearTerminalSelectionStartedDuringGesture(term, selectionAtReportedPress);
       selectionAtReportedPress = null;
+      stopTerminalMouseEvent(event);
+      return;
+    }
+    if (controlClick) {
+      // Only a real right-click opens the terminal menu.
       stopTerminalMouseEvent(event);
       return;
     }
@@ -4841,8 +4940,8 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 }
 
-function terminalShouldReportMouse(term, event) {
-  if (event.shiftKey || event.ctrlKey || event.metaKey) {
+function terminalShouldReportMouse(term, event, { allowControl = false } = {}) {
+  if (event.shiftKey || (event.ctrlKey && !allowControl) || event.metaKey) {
     return false;
   }
   try {
@@ -6421,6 +6520,7 @@ function currentCompatibility() {
       const activity = recent ? `Last 5 s: ${recent.fps.toFixed(1)} FPS, ${recent.paintMsPerSecond.toFixed(1)} ms painting/s, average ${recent.averageMs.toFixed(2)} ms/frame, peak ${recent.maxMs.toFixed(2)} ms. ` : "";
       return `Terminal ${index + 1}: ${term.renderPaused ? "paused" : "visible"}. ${activity}Measurement sample: ${stats.frames} frames, average ${stats.averageMs.toFixed(2)} ms, peak ${stats.maxMs.toFixed(2)} ms, total ${stats.totalMs.toFixed(1)} ms`;
     }).filter(Boolean);
+  info.enhancedClipboard = describeHostClipboard(hostClipboardStatus, { failed: hostClipboardStatusFailed });
   info.paintCoalescing = terminalPaintCoalescing;
   info.outputCoalescing = terminalOutputCoalescing;
   info.typingPrediction = rectangles.filter(rect => rect.kind === "terminal" && rect.terminal?.term?.predictionStatistics)
@@ -6489,6 +6589,7 @@ function renderSettingsCompatibilityRow() {
       ["Clipboard support", info.nativeClipboard ? "Native API available" : "Native API unavailable"],
       ["Extension connection", info.extension],
       ["Terminal extension writes", info.terminalClipboard],
+      ["Enhanced copy/paste", info.enhancedClipboard],
       ["Rendering scale", `${info.renderScale} · ${info.performanceProfile} (${info.renderScaleDetail})`],
       ["Connection status", info.connection],
       ["Painting limit", olderMacMode ? "30 FPS (input temporarily bypasses cap)" : "Display refresh rate"],
@@ -6516,6 +6617,7 @@ function renderSettingsCompatibilityRow() {
     const [, healthResult] = await Promise.allSettled([
       clipboardBridge.check(),
       probeServerHealth(),
+      refreshHostClipboardStatus(),
     ]);
     if (healthResult.status === "fulfilled") serverConnectionLastHealthy = healthResult.value;
     if (!row.isConnected) return;
@@ -8268,6 +8370,23 @@ function buildPaletteCommands() {
     run: () => toggleDeskbarButton(),
   });
   // Keep Settings ahead of other equally ranked "se" prefix matches.
+  commands.push({
+    id: "save-clipboard",
+    label: "Save Clipboard to File...",
+    aliases: ["save clipboard", "paste to file", "save as"],
+    hint: "text, images or files",
+    run: () => openSaveClipboardDialog(),
+  });
+  if (lastClipboardSave.paths.length) {
+    const count = lastClipboardSave.paths.length;
+    commands.push({
+      id: "delete-clipboard-save",
+      label: "Delete Last Clipboard Save...",
+      aliases: ["undo clipboard save", "remove saved clipboard"],
+      hint: count === 1 ? lastClipboardSave.paths[0] : `${count} files`,
+      run: () => void deleteLastClipboardSave(),
+    });
+  }
   commands.push({ id: "settings", label: "Settings...", aliases: ["preferences"], hint: "workspace", run: () => openSettingsModal() });
   commands.push({ id: "sessions", label: "Tessera Sessions...", hint: currentSessionName || "manage", run: () => void openSessionsModal() });
   commands.push({ id: "new-session", label: "Create Session...", hint: "session", run: () => openSessionNameDialog("create") });
@@ -9202,7 +9321,21 @@ async function applyTerminalMenuAction(action, rect, { row = null } = {}) {
 
   if (action === "paste") {
     term.focus();
-    const text = await readClipboardText();
+    let text = await readClipboardText();
+    // readText() finds nothing on a clipboard that holds only an image.
+    if (!text && !clipboardReadFellBack && navigator.clipboard?.read) {
+      try {
+        const content = await clipboardItemsContent(await navigator.clipboard.read());
+        if (content?.image) {
+          await pasteImageIntoTerminal(rect, term, content.image);
+          term.focus();
+          return;
+        }
+        text = content?.text || "";
+      } catch {
+        // Declined or unsupported: there is nothing more to paste.
+      }
+    }
     if (text) {
       term.paste?.(text);
     }
@@ -9315,6 +9448,46 @@ function applyTerminalClipboardWrite(text) {
 // whatever Tessera itself last copied. Callers surface that, so a blocked read
 // never looks like a successful paste of someone else's text.
 let clipboardReadFellBack = false;
+
+// The clipboard for Save Clipboard to File. read() offers images as well as
+// text; where it is missing or refused, fall back to text alone.
+async function readClipboardForSave() {
+  if (navigator.clipboard?.read) {
+    try {
+      return await clipboardSaveEntries(await navigator.clipboard.read());
+    } catch {
+      // Refused or unsupported: try text.
+    }
+  }
+  const text = await readClipboardText();
+  return text ? [textSaveEntry(text)] : [];
+}
+
+function openSaveClipboardDialog() {
+  hideAllMenus();
+  const pane = getActivePane();
+  saveClipboardDialog.open({ current: pane?.kind === "terminal" ? pane.cwd || "" : "" });
+}
+
+async function deleteLastClipboardSave() {
+  const paths = lastClipboardSave.paths;
+  if (!paths.length) return;
+  const what = paths.length === 1 ? "this file" : `these ${paths.length} files`;
+  if (!window.confirm(`Delete ${what}, saved from the clipboard?\n\n${paths.join("\n")}`)) return;
+  try {
+    const { deleted, kept } = await deleteSavedFiles(paths);
+    lastClipboardSave.set([], "");
+    const text = deleted.length === 1 ? `Deleted ${deleted[0]}` : `Deleted ${deleted.length} files`;
+    if (!kept.length) {
+      setWorkspaceStatus("saved", text);
+      return;
+    }
+    const reasons = kept.map(file => `${file.path}: ${file.reason}`).join("; ");
+    setWorkspaceStatus("error", deleted.length ? `${text}, kept ${kept.length}` : `Kept ${kept.length === 1 ? "the file" : `all ${kept.length} files`}`, reasons);
+  } catch (error) {
+    setWorkspaceStatus("error", "Delete failed", error.message);
+  }
+}
 
 async function readClipboardText() {
   clipboardReadFellBack = false;
@@ -9445,7 +9618,7 @@ function paneShortcutAction(keys) {
   // Dialogs and pickers own keyboard input, including relayed iframe keys.
   if ([settingsModal, localHTTPSModal, renameWindowModal, sessionsModal, sessionActionModal,
     serverUpdateModal, serverConnectionModal, workspaceConflictModal, helpModal,
-    directoryBrowser, userSelect, shortcutsUI.element, screensaver.element].some((overlay) => !overlay.hidden)) {
+    directoryBrowser, userSelect, shortcutsUI.element, screensaver.element, saveClipboardDialog.element].some((overlay) => !overlay.hidden)) {
     return null;
   }
   const primary = (keys.ctrlKey || keys.metaKey) && !keys.altKey && !keys.shiftKey;
@@ -9599,6 +9772,7 @@ function hideAllMenus() {
   hideLocalHTTPSModal();
   hideHelpModal();
   hideRenameWindowModal();
+  saveClipboardDialog.close();
   hideSessionsModal();
   hideSessionActionModal();
 }

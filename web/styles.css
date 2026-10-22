@@ -2858,6 +2858,74 @@ input {
   margin-top: 4px;
 }
 
+.save-clipboard-panel {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  outline: none;
+}
+
+.save-clipboard-content {
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.save-clipboard-content > label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.save-clipboard-items {
+  display: grid;
+  gap: 4px;
+}
+
+.save-clipboard-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.save-clipboard-detail,
+.save-clipboard-hint,
+.save-clipboard-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.save-clipboard-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.save-clipboard-presets button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.save-clipboard-folders {
+  min-height: 80px;
+  max-height: 180px;
+  border: 1px solid var(--border-strong);
+}
+
+.save-clipboard-status {
+  min-height: 1.4em;
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.save-clipboard-status.is-error {
+  color: var(--danger-text);
+}
+
 .sessions-panel {
   width: min(560px, calc(100vw - 48px));
   outline: none;

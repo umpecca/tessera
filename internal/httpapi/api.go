@@ -43,6 +43,10 @@ type API struct {
 	browserProxy     *browserProxyManager
 	vncProxyOnce     sync.Once
 	vncProxy         *vncProxyManager
+
+	hostClipboardMu   sync.Mutex
+	hostClipboardLast *hostClipboardWrite
+	savedHostFiles    savedHostFiles
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -62,6 +66,9 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/update", a.selfUpdate)
 	mux.HandleFunc("/api/host/https", a.localHTTPSSettings)
 	mux.HandleFunc("/api/host/https/ca", a.localHTTPSRootCertificate)
+	mux.HandleFunc("/api/host/clipboard", a.hostClipboard)
+	mux.HandleFunc("/api/host/files", a.saveHostFile)
+	mux.HandleFunc("/api/host/files/delete", a.deleteHostFiles)
 	mux.HandleFunc("/local-https/", a.localHTTPSEnrollment)
 	mux.HandleFunc("/api/browser-proxy", a.browserProxyControl)
 	mux.HandleFunc("/api/browser-proxy/", a.browserProxyControl)

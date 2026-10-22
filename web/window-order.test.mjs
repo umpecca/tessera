@@ -9,6 +9,8 @@ const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replac
 function appFunction(name, globals) {
   globals.shortcutsUI ||= { element: { hidden: true } };
   globals.screensaver ||= { element: { hidden: true } };
+  globals.saveClipboardDialog ||= { element: { hidden: true }, close() {} };
+  globals.lastClipboardSave ||= { paths: [] };
   globals.windowListDrag ??= null;
   globals.terminalFindShortcut ||= terminalFindShortcut;
   globals.appleKeyboardLayout ??= false;

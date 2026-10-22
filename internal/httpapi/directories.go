@@ -108,11 +108,18 @@ func directoryRoots() []directoryEntry {
 }
 
 func directoryLocations() []directoryEntry {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
+	var locations []directoryEntry
+	if home, err := os.UserHomeDir(); err == nil {
+		locations = directoryLocationsFromHome(home)
 	}
-	return directoryLocationsFromHome(home)
+	// The per-user temporary folder ($TMPDIR on macOS), for files saved only
+	// to hand to a program.
+	if temp := filepath.Clean(os.TempDir()); temp != "" {
+		if info, err := os.Stat(temp); err == nil && info.IsDir() {
+			locations = append(locations, directoryEntry{Name: "Temp", Path: temp, Kind: "directory"})
+		}
+	}
+	return locations
 }
 
 func directoryLocationsFromHome(home string) []directoryEntry {

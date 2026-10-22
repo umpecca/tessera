@@ -26,6 +26,8 @@ test("background polling replaces its timer and restores the foreground cadence"
 function appFunction(name, globals) {
   globals.shortcutsUI ||= { element: { hidden: true } };
   globals.screensaver ||= { element: { hidden: true } };
+  globals.saveClipboardDialog ||= { element: { hidden: true }, close() {} };
+  globals.lastClipboardSave ||= { paths: [] };
   globals.terminalFindShortcut ||= terminalFindShortcut;
   globals.appleKeyboardLayout ??= false;
   const start = source.indexOf(`function ${name}(`);
