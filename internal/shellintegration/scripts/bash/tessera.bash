@@ -59,15 +59,18 @@ if [[ $- == *i* && -z ${_tessera_hooks-} && ${TESSERA_SHELL_INTEGRATION-} != 0 ]
   }
 
   # Runs from PS0, in a subshell, as a command starts: the command line,
-  # first line only and at most 200 characters, if bash saved it in its
-  # history (a command kept out by starting with a space isn't named).
+  # first line only and at most 200 characters, ending in … when that leaves
+  # some out, if bash saved it in its history (a command kept out by
+  # starting with a space isn't named).
   _tessera_command_mark() {
-    local line REPLY=
+    local line whole REPLY=
     if [[ $HISTCMD != "$_tessera_history" ]] && line=$(HISTTIMEFORMAT= builtin history 1) &&
       [[ $line =~ ^[[:space:]]*[0-9]+[*]?[[:space:]]+(.*)$ ]]; then
-      line=${BASH_REMATCH[1]}
-      line=${line%%$'\n'*}
-      _tessera_url_encode "${line:0:200}"
+      whole=${BASH_REMATCH[1]}
+      line=${whole%%$'\n'*}
+      line=${line:0:200}
+      [[ $line == "$whole" ]] || line+=…
+      _tessera_url_encode "$line"
     fi
     if [[ -n $REPLY ]]; then
       builtin printf '\e]133;C;cmdline_url=%s\e\\' "$REPLY"

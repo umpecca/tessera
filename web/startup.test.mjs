@@ -76,7 +76,7 @@ test("the visibility gate and parser-blocking script precede both CSS and the ap
 });
 
 function loadFunctions(names, globals) {
-  const context = vm.createContext(globals);
+  const context = vm.createContext({ phoneView: { active: false }, updatePhoneView() {}, ...globals });
   for (const name of names) {
     const start = app.indexOf(`function ${name}(`), end = app.indexOf("\n}\n", start) + 2;
     const prefix = app.slice(start - 6, start) === "async " ? "async " : "";

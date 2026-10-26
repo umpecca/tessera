@@ -53,13 +53,16 @@ _tessera_mark_prompt() {
 }
 
 # The command line as typed, first line only and at most 200 characters,
-# except one kept out of history by starting with a space.
+# ending in … when that leaves some out, except one kept out of history by
+# starting with a space.
 _tessera_preexec() {
   emulate -L zsh
   _tessera_running=1
   local line=${1%%$'\n'*} REPLY=
   if [[ -n $line && ! ( -o hist_ignore_space && $line == ' '* ) ]]; then
-    _tessera_url_encode ${line[1,200]}
+    line=${line[1,200]}
+    [[ $line == "$1" ]] || line+=…
+    _tessera_url_encode $line
     builtin printf '\e]133;C;cmdline_url=%s\e\\' $REPLY
   else
     builtin printf '\e]133;C\e\\'

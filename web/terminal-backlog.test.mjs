@@ -74,6 +74,7 @@ test("recovery URLs request a fresh snapshot until import, then resume from the 
   const rect = pane(1, () => {});
   const context = loadFunctions(["terminalWebSocketURL"], {
     window: { location: { protocol: "http:", host: "localhost:7331" } }, workspaceID: "workspace", URLSearchParams,
+    phoneViewWanted: () => false,
   });
   const parameters = () => new URL(context.terminalWebSocketURL(rect, 80, 24)).searchParams;
   assert.equal(parameters().get("resumeSequence"), "3");
@@ -122,4 +123,15 @@ test("successful socket opens do not reset overload backoff, and a quiet interva
   context.recoverTerminalBacklog(rect);
   context.handleTerminalSocketClose(rect, state, { code: terminalBacklogCloseCode });
   assert.equal(delays.at(-1), 500);
+});
+
+test("a phone attaches watching, so it never sizes the shell by attaching", () => {
+  const rect = pane(1, () => {});
+  const context = loadFunctions(["terminalWebSocketURL"], {
+    window: { location: { protocol: "http:", host: "localhost:7331" } }, workspaceID: "workspace", URLSearchParams,
+    phoneViewWanted: () => true,
+  });
+  assert.equal(new URL(context.terminalWebSocketURL(rect, 45, 30)).searchParams.get("watch"), "1");
+  context.phoneViewWanted = () => false;
+  assert.equal(new URL(context.terminalWebSocketURL(rect, 45, 30)).searchParams.get("watch"), null);
 });

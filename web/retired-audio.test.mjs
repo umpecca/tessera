@@ -18,7 +18,7 @@ test("loading a legacy workspace discards Audio panes and retains the remaining 
       rectangles.push(rect);
       return rect;
     },
-    reflowDockedPanesForTheme() {}, updateDeskbar() {}, parseRestoreBox: () => null,
+    reflowDockedPanesForTheme() {}, updateDeskbar() {}, parseRestoreBox: () => null, phoneView: { reset() {} },
     activePaneOnLoad: (panes, id) => panes.find(pane => pane.id === id) || panes[0],
     setActivePane: rect => { active = rect; },
   };

@@ -13,5 +13,5 @@ import "embed"
 //go:embed terminal-audio.mjs terminal-files.mjs clipboard-image.mjs save-clipboard.mjs
 //go:embed terminal-audio-stream.mjs terminal-working-directory.mjs terminal-attention.mjs terminal-progress.mjs terminal-kitty-keyboard.mjs terminal-find.mjs
 //go:embed startup.js
-//go:embed sign-in.mjs terminal-prediction.mjs key-readout.mjs
+//go:embed sign-in.mjs terminal-prediction.mjs key-readout.mjs phone-view.mjs phone-input.mjs
 var Files embed.FS

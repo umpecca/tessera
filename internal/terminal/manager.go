@@ -30,6 +30,9 @@ type Cursor struct {
 	OutputPaused      bool
 	SnapshotIfChanged bool
 	CatchUpReplay     bool
+	// Watch attaches without giving the shell this client's size, even when
+	// no other client is showing it, as a phone looking in does.
+	Watch bool
 }
 
 // Attachment is one client's view of a session at the moment it attaches.
@@ -169,7 +172,15 @@ type ManagedSession struct {
 	progressRevision                  uint32
 	synchronizedOutputStarts          uint32
 	command                           *runningCommand
-	synchronizedOutputTimer           *time.Timer
+	lastCommand                       *CommandResult
+	recentCommands                    []string
+	// sizeGeneration counts changes of size; claim is a size a browser
+	// took for a while (size.go).
+	sizeGeneration          uint64
+	claim                   *sizeClaim
+	marksPrompts            bool
+	lastOutput              time.Time
+	synchronizedOutputTimer *time.Timer
 }
 
 const outputTimingSlots = 512
@@ -363,13 +374,14 @@ func (s *ManagedSession) WriteMouse(p []byte) (int, error) {
 // size however many browsers show it, and it stays with whoever is using the
 // terminal: a browser that attaches while another is already showing it, such
 // as a background tab reconnecting after sleep, does not take the size. The
-// browser in use claims it by sending its own grid.
+// browser in use claims it by sending its own grid. A watching client never
+// takes it on attaching.
 func (s *ManagedSession) join(cursor Cursor, cols, rows int) *Attachment {
 	s.mu.Lock()
 	shared := len(s.subscribers) > 0
 	s.mu.Unlock()
 	attachment := s.subscribe(cursor)
-	if !shared {
+	if !shared && !cursor.Watch {
 		_ = s.Resize(cols, rows)
 	}
 	return attachment
@@ -774,6 +786,7 @@ func (s *ManagedSession) publishRead(chunk []byte, readAt time.Time) {
 		// published counts the stream, not what is still retained: trimming the
 		// front of the scrollback must not move a client's position.
 		s.published += int64(len(chunk))
+		s.lastOutput = readAt
 		if s.core != nil {
 			s.publishStateLocked(StateOutput, chunk)
 			s.outputTimings[s.sequence%outputTimingSlots] = OutputTiming{

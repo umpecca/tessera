@@ -18,6 +18,11 @@ export class TerminalFitScheduler {
     this.gridSizeDelay = options.gridSizeDelay ?? defaultGridSizeDelay;
     this.isHidden = options.isHidden
       || (() => globalThis.document?.hidden === true);
+    // A terminal can watch the shell at whatever size it has (a phone looking
+    // in), or take a size only for a while (a phone typing), which the host
+    // gives back when this browser lets go.
+    this.watchesSize = options.watchesSize || (() => false);
+    this.sizeIsTemporary = options.sizeIsTemporary || (() => false);
     this.frames = new Map();
     this.gridSizeTimers = new Map();
   }
@@ -99,7 +104,7 @@ export class TerminalFitScheduler {
     // app switcher, and sending that size reflows a running program's output
     // at the wrong width. The local canvas may still fit; the shell keeps the
     // last size sent, and the refit on becoming visible sends the real one.
-    if (this.isHidden()) {
+    if (this.isHidden() || this.watchesSize(terminalState)) {
       return;
     }
     const cols = term.desiredCols ?? term.cols;
@@ -117,6 +122,7 @@ export class TerminalFitScheduler {
     terminalState.socket.send(JSON.stringify({
       type: "resize",
       cols, rows, cellWidth, cellHeight,
+      ...(this.sizeIsTemporary(terminalState) ? { temporary: true } : {}),
     }));
   }
 }

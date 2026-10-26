@@ -54,6 +54,9 @@ type terminalClientMessage struct {
 	Enabled          bool   `json:"enabled"`
 	Focused          bool   `json:"focused"`
 	Alert            uint64 `json:"alert"`
+	// Temporary marks a resize the shell gets back from when this socket
+	// sends release-size or closes.
+	Temporary bool `json:"temporary"`
 }
 
 // terminalTimingMessage follows an output frame while a client is capturing
@@ -96,7 +99,7 @@ func terminalResumeCursor(r *http.Request) terminal.Cursor {
 		offset, _ := strconv.ParseInt(r.URL.Query().Get("resumeOffset"), 10, 64)
 		return terminal.Cursor{Protocol: terminal.StateProtocol, Core: r.URL.Query().Get("core"), Epoch: r.URL.Query().Get("resumeEpoch"), Sequence: sequence, Offset: offset,
 			OutputPaused: r.URL.Query().Get("outputPaused") == "1", SnapshotIfChanged: r.URL.Query().Get("snapshotIfChanged") == "1",
-			CatchUpReplay: r.URL.Query().Get("catchUpReplay") == "1"}
+			CatchUpReplay: r.URL.Query().Get("catchUpReplay") == "1", Watch: r.URL.Query().Get("watch") == "1"}
 	}
 	offset, err := strconv.ParseInt(r.URL.Query().Get("resumeOffset"), 10, 64)
 	if err != nil || offset < 0 {
@@ -179,6 +182,10 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer attachment.Unsubscribe()
+	// A size this socket took for a while goes back when it closes, as when
+	// a phone locks or loses its connection.
+	sizeOwner := new(byte)
+	defer session.ReleaseSize(sizeOwner)
 	colorMode := r.URL.Query().Get("colorMode")
 	if colorMode != "dark" && colorMode != "light" {
 		colorMode = settings.TerminalColorMode
@@ -417,7 +424,13 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			} else if message.Type == "resize" {
-				_ = session.ResizeWithMetrics(message.Cols, message.Rows, message.CellWidth, message.CellHeight)
+				if message.Temporary {
+					_ = session.ClaimSize(sizeOwner, message.Cols, message.Rows, message.CellWidth, message.CellHeight)
+				} else {
+					_ = session.ResizeWithMetrics(message.Cols, message.Rows, message.CellWidth, message.CellHeight)
+				}
+			} else if message.Type == "release-size" {
+				_ = session.ReleaseSize(sizeOwner)
 			} else if message.Type == "image-settings" || message.Type == "clear-images" {
 				var imageErr error
 				if message.Type == "clear-images" {

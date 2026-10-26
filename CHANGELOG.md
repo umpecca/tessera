@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- A new terminal window opens centered and half the size of the desktop
+  each way (at least 360×220), from the command palette, a shortcut, the
+  update prompt or the phone, and so do New Browser and New VNC from the
+  command palette. New Terminal from the desktop's right-click menu still
+  opens where you clicked, at the same size; browser windows opened from a
+  terminal link and the right-click menu's browser and VNC windows open as
+  before.
+
+- Phone view: on a phone, Tessera lists the session's terminals instead of
+  showing windows. Each card says what its shell is doing (running a
+  command and for how long, at the prompt, a failed or finished command or
+  a notification nobody has seen yet), with its folder, progress and last
+  lines of output, and updates as they change. Tap a card to use that
+  terminal full screen; its window keeps its place and size on the desk.
+  **Desktop** switches this browser back to windows; `/m` or **Phone View**
+  in the command palette switches it to the list.
+
+- Phone input: under an open terminal, a compose field (with the phone's
+  dictation and correction) sends text as one paste and then Enter, a row of
+  keys a phone lacks (Esc, Tab, Ctrl, arrows, `^C` and more) sends them as a
+  keyboard would, one-tap answers (`1` `2` `3` `y` `n` Enter Esc) appear when
+  a program is waiting, and **☰** offers the terminal's recent commands and
+  your snippets, which every device shares.
+
+- Phone image attach: **📎** in the phone view, or pasting a screenshot into
+  its compose field, keeps photos and images on the host and puts their
+  paths in the field for programs such as Claude Code. **Paste as image
+  instead** sends one to the program through the host's clipboard.
+
+- The phone view no longer resizes the shell: terminals show at the size the
+  desk gave them, as text rewrapped to the phone (the default) or as the
+  screen in a font that fits its width. **Fit to this phone** in the **Aa**
+  menu resizes the shell to the phone while it is open there, and the host
+  gives the earlier size back afterwards, unless another browser resized it
+  meanwhile.
+
+- Command finished notices and the shell's reported command line end with
+  … when the shell integration shortened the command (a second line, or past
+  200 characters).
+
 - Fixed: Browser panes loaded relative scripts, images and fetches against
   the site root on pages in a subfolder, sent relative redirects (such as Go's
   `./`) to the site root, and put pages whose `<head>` has attributes, or that

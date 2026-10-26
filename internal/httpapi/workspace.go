@@ -10,9 +10,9 @@ import (
 	"tessera/internal/store"
 )
 
-// workspace routes /api/workspace/{id} and its /background sub-resource. An
-// empty id (i.e. the bare /api/workspace/ path) maps to the legacy default
-// workspace. Named-session ids are opaque and authorized through their owner.
+// workspace routes /api/workspace/{id} and its /background and /terminals
+// sub-resources. An empty id (i.e. the bare /api/workspace/ path) maps to
+// the legacy default workspace. Named-session ids are opaque and authorized through their owner.
 func (a *API) workspace(w http.ResponseWriter, r *http.Request) {
 	id, sub, ok := parseWorkspacePath(r.URL.Path)
 	if !ok {
@@ -32,6 +32,8 @@ func (a *API) workspace(w http.ResponseWriter, r *http.Request) {
 		a.workspaceDocument(w, r, id)
 	case "background":
 		a.workspaceBackground(w, r, id)
+	case "terminals":
+		a.workspaceTerminals(w, r, id)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}

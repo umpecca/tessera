@@ -254,6 +254,7 @@ func (s *ManagedSession) resizeLocked(cols, rows, cellWidth, cellHeight int) ([]
 		replies, _ = s.core.Replies()
 	}
 	s.cols, s.rows, s.cellWidth, s.cellHeight = cols, rows, cellWidth, cellHeight
+	s.sizeGeneration++
 	payload := make([]byte, 16)
 	for i, n := range []int{cols, rows, cellWidth, cellHeight} {
 		binary.LittleEndian.PutUint32(payload[i*4:], uint32(n))

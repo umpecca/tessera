@@ -69,6 +69,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/host/clipboard", a.hostClipboard)
 	mux.HandleFunc("/api/host/files", a.saveHostFile)
 	mux.HandleFunc("/api/host/files/delete", a.deleteHostFiles)
+	mux.HandleFunc("/api/host/attachments", a.uploadAttachment)
 	mux.HandleFunc("/local-https/", a.localHTTPSEnrollment)
 	mux.HandleFunc("/api/browser-proxy", a.browserProxyControl)
 	mux.HandleFunc("/api/browser-proxy/", a.browserProxyControl)

@@ -4288,3 +4288,713 @@ input {
   width: 100%;
   height: 100%;
 }
+
+/* Phone view: the session's terminals as a list, and one terminal at a
+   time below a slim header. Windows keep their saved geometry underneath;
+   only the open one is shown, fixed to the screen. */
+.phone-view[hidden],
+.phone-view [hidden] {
+  display: none !important;
+}
+
+/* The phone view's lettering is the theme's, as on the desktop: the app font,
+   or Operator's interface font. */
+:root {
+  --phone-ui-font: var(--tessera-font);
+}
+
+:root[data-theme="operator"] {
+  --phone-ui-font: var(--operator-ui-font);
+}
+
+.phone-view {
+  --phone-header-height: 48px;
+  font-family: var(--phone-ui-font);
+  color: var(--text);
+}
+
+html[data-phone-view] .deskbar-button,
+html[data-phone-view] .deskbar-panel,
+html[data-phone-view] .palette-fab,
+html[data-phone-view] .workspace-status,
+html[data-phone-view] .rectangle:not(.is-phone-open) {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+html[data-phone-view="inbox"] .rectangle {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.phone-inbox {
+  position: fixed;
+  inset: 0;
+  z-index: 80000;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  background: var(--board-bg);
+  padding: 0 max(12px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  box-sizing: border-box;
+}
+
+.phone-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--phone-header-height);
+  padding-top: env(safe-area-inset-top);
+  box-sizing: content-box;
+}
+
+.phone-inbox > .phone-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -12px;
+  padding-left: 12px;
+  padding-right: 12px;
+  background: var(--board-bg);
+  border-bottom: 1px solid var(--divider);
+}
+
+.phone-session-button {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: 600 17px/1.2 var(--phone-ui-font);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-session-button::after {
+  content: " ▾";
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.phone-header-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.phone-icon-button,
+.phone-text-button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: 400 22px/1 var(--phone-ui-font);
+}
+
+.phone-text-button {
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.phone-icon-button:active,
+.phone-text-button:active,
+.phone-session-button:active {
+  background: var(--selection-bg);
+}
+
+.phone-list-status,
+.phone-others {
+  margin: 16px 4px;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.phone-cards {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.phone-card {
+  --phone-card-mark: var(--border-strong);
+  position: relative;
+  display: flex;
+  border: 1px solid var(--border-panel);
+  border-left: 4px solid var(--phone-card-mark);
+  border-radius: 8px;
+  background: var(--pane-bg);
+  overflow: hidden;
+}
+
+.phone-card[data-state="running"] { --phone-card-mark: var(--running-border); }
+.phone-card[data-state="attention"] { --phone-card-mark: var(--highlight-bg); }
+.phone-card[data-state="finished"] { --phone-card-mark: var(--accent-border); }
+.phone-card[data-state="failed"] { --phone-card-mark: var(--danger-border); }
+.phone-card[data-state="exited"],
+.phone-card[data-state="closed"] { opacity: 0.7; }
+
+.phone-card-open {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 4px 12px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.phone-card-open:active {
+  background: var(--selection-bg);
+}
+
+.phone-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.phone-card-title {
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-card-dot {
+  display: none;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--phone-card-mark);
+}
+
+.phone-card:is([data-state="attention"], [data-state="failed"], [data-state="finished"]) .phone-card-dot {
+  display: block;
+}
+
+.phone-card-state {
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.phone-card[data-state="failed"] .phone-card-state {
+  color: var(--danger-text);
+}
+
+.phone-card-directory {
+  overflow: hidden;
+  font-family: var(--tessera-font);
+  font-size: 12px;
+  color: var(--text-faint);
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-card-tail {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--terminal-bg);
+  color: var(--terminal-text);
+  font-family: var(--tessera-font);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.phone-card-progress {
+  position: relative;
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: var(--divider);
+  overflow: hidden;
+}
+
+.phone-card-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent-border);
+}
+
+.phone-card-progress[data-state="error"] > span { background: var(--danger-border); }
+.phone-card-progress[data-state="pause"] > span { background: var(--running-bg); }
+
+.phone-card-progress.is-indeterminate > span {
+  width: 30%;
+  animation: phone-progress 1.4s ease-in-out infinite;
+}
+
+@keyframes phone-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+
+.phone-card-more {
+  align-self: flex-start;
+  color: var(--text-muted);
+}
+
+.phone-terminal-header {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 80000;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--divider);
+}
+
+.phone-back {
+  font-size: 30px;
+}
+
+.phone-terminal-heading {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.phone-terminal-title,
+.phone-terminal-state {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-terminal-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.phone-terminal-state {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.phone-terminal-header[data-state="running"] .phone-terminal-state { color: var(--text); }
+.phone-terminal-header[data-state="exited"] .phone-terminal-state { color: var(--danger-text); }
+
+.phone-menu {
+  position: fixed;
+  z-index: 80001;
+  display: grid;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid var(--border-panel);
+  border-radius: 10px;
+  background: var(--pane-bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.phone-menu-item {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: 16px var(--phone-ui-font);
+  text-align: left;
+}
+
+.phone-menu-item:active,
+.phone-menu-item:focus-visible {
+  background: var(--selection-bg);
+}
+
+.phone-menu-item[data-danger="true"] {
+  color: var(--danger-text);
+}
+
+html[data-phone-view="terminal"] .rectangle.is-phone-open {
+  position: fixed;
+  inset: calc(var(--phone-header-height, 48px) + 1px + env(safe-area-inset-top)) env(safe-area-inset-right) calc(var(--phone-keyboard-inset, 0px) + var(--phone-input-height, 0px)) env(safe-area-inset-left);
+  width: auto !important;
+  height: auto !important;
+  border: 0;
+  transform: none !important;
+  rotate: none !important;
+  scale: none !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+html[data-phone-view="terminal"] .rectangle.is-phone-open :is(.window-tab, .resize-handle, .resize-edge) {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phone-card-progress.is-indeterminate > span { animation: none; width: 100%; opacity: 0.5; }
+}
+
+/* The list shows each terminal's alerts on its card already. */
+html[data-phone-view="inbox"] .terminal-notices {
+  display: none !important;
+}
+
+/* Phone input: quick replies, the key row and the compose field, under the
+   open terminal and above the phone's keyboard. */
+.phone-input {
+  position: fixed;
+  right: 0;
+  bottom: var(--phone-keyboard-inset, 0px);
+  left: 0;
+  z-index: 80000;
+  display: grid;
+  gap: 6px;
+  padding: 6px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  border-top: 1px solid var(--divider);
+  background: var(--chrome-bg);
+  font-family: var(--phone-ui-font);
+}
+
+html[data-phone-view="inbox"] .phone-input {
+  display: none;
+}
+
+.phone-replies,
+.phone-keys {
+  display: flex;
+  gap: 6px;
+}
+
+.phone-keys {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.phone-keys::-webkit-scrollbar {
+  display: none;
+}
+
+.phone-key {
+  flex: none;
+  min-width: 44px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-panel);
+  border-radius: 7px;
+  background: var(--pane-bg);
+  color: var(--text);
+  font: 500 15px/1 var(--tessera-font);
+  touch-action: manipulation;
+}
+
+.phone-key:active,
+.phone-key[aria-pressed="true"] {
+  border-color: var(--accent-border);
+  background: var(--accent-strong-bg);
+  color: var(--accent-strong-text);
+}
+
+.phone-key-mode {
+  font-family: var(--phone-ui-font);
+  font-size: 14px;
+}
+
+.phone-reply {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 0;
+  font-size: 17px;
+}
+
+.phone-input[data-waiting="true"] .phone-reply {
+  border-color: var(--running-border);
+}
+
+.phone-compose {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.phone-compose-field {
+  /* Grows into the room the buttons leave, never past it: a textarea's own
+     width (its columns) would push Send off the screen. */
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  min-height: 40px;
+  max-height: 132px;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--border-panel);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  /* 16px keeps iOS from zooming the page when the field takes focus. */
+  font: 16px/1.3 var(--phone-ui-font);
+  resize: none;
+}
+
+.phone-compose-button {
+  flex: none;
+  min-width: 40px;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border-panel);
+  border-radius: 10px;
+  background: var(--pane-bg);
+  color: var(--text);
+  font: 500 15px var(--phone-ui-font);
+  touch-action: manipulation;
+}
+
+.phone-send {
+  border-color: var(--accent-border);
+  background: var(--accent-strong-bg);
+  color: var(--accent-strong-text);
+}
+
+.phone-sheet {
+  position: fixed;
+  inset: calc(var(--phone-header-height, 48px) + env(safe-area-inset-top)) 0 var(--phone-keyboard-inset, 0px) 0;
+  z-index: 80002;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 max(12px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  border-top: 1px solid var(--divider);
+  background: var(--board-bg);
+}
+
+.phone-sheet-header,
+.phone-sheet-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.phone-sheet-header {
+  position: sticky;
+  top: 0;
+  min-height: 52px;
+  background: var(--board-bg);
+}
+
+.phone-sheet-title {
+  margin: 0;
+  font-size: 17px;
+}
+
+.phone-sheet-section h3 {
+  margin: 16px 0 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.phone-sheet-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.phone-sheet-item {
+  display: flex;
+  border: 1px solid var(--border-panel);
+  border-radius: 8px;
+  background: var(--pane-bg);
+}
+
+.phone-sheet-use {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: 15px var(--phone-ui-font);
+  text-align: left;
+}
+
+.phone-sheet-use:active {
+  background: var(--selection-bg);
+}
+
+.phone-sheet-label {
+  font-weight: 600;
+}
+
+.phone-sheet-text,
+.phone-sheet-command {
+  overflow: hidden;
+  font-family: var(--tessera-font);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-sheet-text {
+  color: var(--text-muted);
+}
+
+.phone-sheet-note {
+  margin: 4px 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.phone-sheet-error {
+  color: var(--danger-text);
+}
+
+.phone-snippet-form {
+  display: grid;
+  gap: 12px;
+}
+
+.phone-field-label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.phone-field {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border-panel);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: 16px/1.35 var(--phone-ui-font);
+}
+
+.phone-snippet-text {
+  font-family: var(--tessera-font);
+  font-size: 16px;
+  resize: vertical;
+}
+
+.phone-snippet-actions {
+  display: flex;
+  justify-content: space-between;
+}
+
+.phone-danger {
+  color: var(--danger-text);
+}
+
+/* The open terminal at the shell's own size: the font fits its columns to
+   the width, and once enlarged the screen scrolls sideways. */
+html[data-phone-view="terminal"] .rectangle.is-phone-open .terminal-container {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  padding: 4px;
+}
+
+html[data-phone-view="terminal"] .rectangle.is-phone-open .terminal-container canvas {
+  margin-inline: 0;
+}
+
+/* Text view: what the terminal holds as text, rewrapped to the phone. */
+.phone-reading {
+  position: fixed;
+  inset: calc(var(--phone-header-height, 48px) + 1px + env(safe-area-inset-top)) 0 calc(var(--phone-keyboard-inset, 0px) + var(--phone-input-height, 0px)) 0;
+  z-index: 79999;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  margin: 0;
+  padding: 8px max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
+  background: var(--terminal-bg);
+  color: var(--terminal-text);
+  font: 13px/1.45 var(--tessera-font);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+html[data-phone-view="inbox"] .phone-reading {
+  display: none;
+}
+
+.phone-view-button {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.phone-menu-note {
+  margin: 4px 12px 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.phone-menu-item[aria-checked="true"]::before {
+  content: "✓ ";
+}
+
+.phone-menu-item[aria-checked="false"]::before {
+  content: "";
+  display: inline-block;
+  width: 1.1em;
+}
+
+.phone-menu-item:disabled {
+  color: var(--text-disabled);
+}
+
+/* What happened to an image sent from the phone, above the input area. */
+.phone-input-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.phone-input-notice-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-input-notice-action {
+  flex: none;
+  min-height: 32px;
+  font-size: 13px;
+  color: var(--text);
+}

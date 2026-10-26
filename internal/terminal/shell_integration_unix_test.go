@@ -47,6 +47,16 @@ func TestShellIntegrationMarksPromptsAndCommands(t *testing.T) {
 				t.Fatal(err)
 			}
 			time.Sleep(500 * time.Millisecond)
+			// A command line cut short says so, so nobody runs the part of it
+			// that was reported as though it were the whole.
+			if _, err := session.Write([]byte("echo two \\\rlines\r")); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			if _, err := session.Write([]byte(": " + strings.Repeat("x", 250) + "\r")); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(500 * time.Millisecond)
 			if _, err := session.Write([]byte("exit\r")); err != nil {
 				t.Fatal(err)
 			}
@@ -61,6 +71,8 @@ func TestShellIntegrationMarksPromptsAndCommands(t *testing.T) {
 				"\x1b]133;A\x1b\\",
 				"\x1b]133;B\x1b\\",
 				"\x1b]133;C;cmdline_url=echo%20marked%3B%20false\x1b\\",
+				"\x1b]133;C;cmdline_url=echo%20two%20%5C%E2%80%A6\x1b\\",
+				"\x1b]133;C;cmdline_url=%3A%20" + strings.Repeat("x", 198) + "%E2%80%A6\x1b\\",
 				"marked",
 				"\x1b]133;D;1\x1b\\",
 			} {

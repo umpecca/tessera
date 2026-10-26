@@ -22,6 +22,8 @@ func (a *API) userResources(w http.ResponseWriter, r *http.Request) {
 	switch resource {
 	case "shortcuts":
 		a.userShortcuts(w, r, userID, id, action)
+	case "snippets":
+		a.userSnippets(w, r, userID, id, action)
 	case "sessions":
 		a.sessions(w, r, userID, id, action)
 	case "settings":

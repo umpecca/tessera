@@ -61,7 +61,7 @@ function fixture() {
   document.activeElement = document.body;
   const context = vm.createContext({
     WebSocket: Socket, Uint8Array, URLSearchParams, document, rectangles: [rect], activeRect: rect, workspaceID: "workspace",
-    activePaneID: rect.id, board: { dataset: {} }, scheduleWorkspaceSave() {}, updateDeskbar() {},
+    activePaneID: rect.id, board: { dataset: {} }, scheduleWorkspaceSave() {}, updateDeskbar() {}, phoneView: { active: false, openPaneID: "" }, phoneViewWanted: () => false,
     terminalIsCovered, terminalBacklogCloseCode, terminalCloseOutcome, terminalConnectingStatus, terminalShouldRetry,
     ghosttyModulePromise: null, terminalOutputCoalescing: false, authMode: "off", signInEndedCloseCode: 4401, terminalColorMode: "dark", serverConnectionModal: { hidden: true },
     window: { location: { protocol: "http:", host: "localhost:7331" }, setTimeout: schedule, clearTimeout: cancel },

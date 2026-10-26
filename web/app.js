@@ -36,6 +36,16 @@ import {
 } from "./terminal-keyboard.mjs";
 import { TerminalFindBar, terminalFindShortcut } from "./terminal-find.mjs";
 import {
+  PhoneView,
+  normalizePhoneViewOverride,
+  phoneFontShrink,
+  phoneFontSize,
+  readingLines,
+  phoneViewPathOverride,
+  phoneViewStorageKey,
+  shouldUsePhoneView,
+} from "./phone-view.mjs";
+import {
   TerminalContextMenuFallback,
   TerminalMouseHover,
   TerminalMousePress,
@@ -200,6 +210,78 @@ terminalNoticeList.hidden = true;
 terminalNoticeList.setAttribute("aria-live", "polite");
 document.body.appendChild(terminalNoticeList);
 const terminalNotices = new TerminalNotices(terminalNoticeList, { onOpen: openPaneFromNotice });
+
+// On a phone the workspace shows as a list of its terminals, and one at a
+// time full screen. This browser can choose either view; /m chooses this one.
+let phoneViewOverride = "";
+try {
+  phoneViewOverride = normalizePhoneViewOverride(window.localStorage.getItem(phoneViewStorageKey));
+} catch {
+  // Browser storage is unavailable; the screen decides.
+}
+if (phoneViewPathOverride(window.location.pathname)) {
+  phoneViewOverride = "phone";
+  savePhoneViewOverride();
+  window.history.replaceState(window.history.state, "", "/");
+}
+const coarsePointer = window.matchMedia("(pointer: coarse)");
+const phoneViewRoot = document.createElement("div");
+document.body.appendChild(phoneViewRoot);
+const phoneView = new PhoneView(phoneViewRoot, {
+  panes: () => rectangles.filter((rect) => rect.kind !== "pending")
+    .map((rect) => ({ id: rect.id, kind: rect.kind, title: rect.title, cwd: rect.cwd })),
+  workspaceID: () => workspaceID,
+  sessionName: () => currentSessionName,
+  onOpen: (paneID) => showPhoneTerminal(paneID),
+  onBack: (paneID) => hidePhoneTerminal(paneID),
+  onInterrupt: (paneID) => {
+    const rect = rectangles.find((candidate) => candidate.id === paneID);
+    if (rect?.kind === "terminal") sendTerminalInput(rect.terminal?.socket, "\x03");
+  },
+  onRename: async (paneID) => {
+    if (!await refreshPhoneWorkspace()) return;
+    openRenameWindowModal(rectangles.find((candidate) => candidate.id === paneID));
+  },
+  onClose: async (paneID) => {
+    if (!await refreshPhoneWorkspace()) return;
+    const rect = rectangles.find((candidate) => candidate.id === paneID);
+    if (rect) closeWindowFromTitleBar(rect);
+  },
+  onNewTerminal: async () => {
+    if (!await refreshPhoneWorkspace()) return;
+    phoneView.open(createTerminalPane().id);
+  },
+  onShellsChanged: () => void refreshPhoneWorkspace(),
+  onSessions: () => void openSessionsModal(),
+  onDesktop: () => setPhoneViewOverride("desktop"),
+  terminalView: (paneID) => phoneTerminalView(paneID),
+  setZoom: (paneID, factor) => setPhoneTerminalZoom(paneID, factor),
+  setFit: (paneID, on) => setPhoneTerminalFit(paneID, on),
+  refreshTerminal: (paneID) => applyPhoneTerminalFont(rectangles.find((candidate) => candidate.id === paneID)),
+  readingText: (paneID) => phoneReadingText(paneID),
+  storage: {
+    get(key) { try { return window.localStorage.getItem(key); } catch { return null; } },
+    set(key, value) { try { window.localStorage.setItem(key, value); } catch { /* the choice lasts until reload */ } },
+  },
+  input: {
+    sendText: (paneID, text, options) => sendPhoneText(paneID, text, options),
+    sendKey: (paneID, init) => sendPhoneKey(paneID, init),
+    typeDirectly: (paneID) => focusPane(rectangles.find((candidate) => candidate.id === paneID)),
+    loadSnippets: () => loadSnippets(),
+    saveSnippets: (doc) => saveSnippets(doc),
+    newID: () => newWorkspaceRevision(),
+    attachFile: (file) => uploadPhoneAttachment(file),
+    pasteImage: (paneID, file) => pastePhoneImage(paneID, file),
+    storage: {
+      get(key) { try { return window.localStorage.getItem(key); } catch { return null; } },
+      set(key, value) { try { window.localStorage.setItem(key, value); } catch { /* the draft lasts until reload */ } },
+      remove(key) { try { window.localStorage.removeItem(key); } catch { /* nothing kept */ } },
+    },
+  },
+});
+// Keys the phone view sends a terminal, which are the terminal's even when
+// they look like a window shortcut (Ctrl then L clears the screen).
+const phoneKeyEvents = new WeakSet();
 let currentSessionName = "";
 let sessionSelection = 0;
 let sessionQuery = "";
@@ -635,7 +717,8 @@ async function openStartupWorkspace() {
       board.removeAttribute("inert");
       board.removeAttribute("aria-busy");
     }
-    if (currentUser) focusPane(activeRect);
+    updatePhoneView();
+    if (currentUser && !phoneView.active) focusPane(activeRect);
     void refreshClipboardBridgeAndPrompt();
     showIPadHTTPGuidanceIfNeeded();
   } catch (error) {
@@ -1161,8 +1244,7 @@ document.body.appendChild(settingsModal);
 const shortcutsUI = new ShortcutsModal({
   getContext: () => ({ user: currentUser || "default", workspaceId: workspaceID, cwd: getActivePane()?.cwd || "" }),
   onLaunch: result => {
-    const point = paneSpawnPoint();
-    createTerminalPane(point.x, point.y, { title: result.title, cwd: result.cwd, terminalStartupCommand: result.command });
+    createTerminalPane(null, { title: result.title, cwd: result.cwd, terminalStartupCommand: result.command });
   },
   onSaved: () => { if (!commandPalette.hidden) renderPaletteResults(); },
   onClose: overlay => restorePaneFocusAfterOverlayDismiss(overlay),
@@ -2843,7 +2925,7 @@ function setActivePane(rect, options = {}) {
   } else if (options.focusElement) {
     rect.element.focus({ preventScroll: true });
   }
-  if (!wasActive || needsRaise) {
+  if ((!wasActive || needsRaise) && options.save !== false) {
     scheduleWorkspaceSave();
   }
   updateDeskbar();
@@ -3031,7 +3113,8 @@ function updateTerminalRenderState(rect) {
   if (!term) {
     return;
   }
-  const paused = document.hidden || Boolean(rect.minimized) || terminalIsCovered(rect, rectangles);
+  const paused = phoneView.active ? document.hidden || phoneView.openPaneID !== rect.id
+    : document.hidden || Boolean(rect.minimized) || terminalIsCovered(rect, rectangles);
   const wasPaused = term.renderPaused;
   term.setRenderPaused?.(paused);
   rect.terminal.output?.setActive?.(!paused && activeRect === rect);
@@ -3100,6 +3183,10 @@ function handleDocumentVisibilityChange() {
   updateTerminalFocus();
   if (serverHealthMonitorTimer !== null) scheduleServerHealthPolling();
   if (document.hidden) {
+    // A phone put away isn't using the size it took; the host gives it back.
+    // Coming back reconnects the terminal, which takes it again.
+    const open = phoneView.active ? rectangles.find((rect) => rect.id === phoneView.openPaneID) : null;
+    if (open?.terminal?.phoneFit) releasePhoneTerminalSize(open.terminal);
     // A backgrounded tab may be discarded without ever running code again,
     // so anything scheduled goes out now. This one takes the ordinary path:
     // the page is still here to read the response and keep its revision in
@@ -3119,6 +3206,7 @@ function handleDocumentVisibilityChange() {
   }
   resumeTerminalConnections();
   void checkServerConnection({ force: true });
+  if (phoneView.active) void refreshPhoneWorkspace();
 }
 
 function checkForBrowserWake() {
@@ -3441,6 +3529,7 @@ function loadWorkspace(workspace) {
       setActivePane(activeLoadedRect, { raise: false, focus: true });
     }
     updateDeskbar();
+    phoneView.reset();
     setWorkspaceStatus("saved", "Saved", "Workspace loaded");
   } finally {
     isLoadingWorkspace = false;
@@ -4234,6 +4323,7 @@ function handleTerminalAudioMessage(rect, data) {
 // keyboard. Programs that ask (mode 1004) are told when that changes; the
 // host combines what every browser showing the pane says.
 function terminalPaneFocused(rect) {
+  if (phoneView.active) return rect.id === phoneView.openPaneID && !document.hidden && document.hasFocus();
   return rect === activeRect && !rect.minimized && !document.hidden && document.hasFocus();
 }
 
@@ -4319,9 +4409,319 @@ function applyTerminalProgress(rect, progress) {
   bar.setAttribute("aria-label", bar.title);
 }
 
+function savePhoneViewOverride() {
+  try {
+    window.localStorage.setItem(phoneViewStorageKey, phoneViewOverride);
+  } catch {
+    // Browser storage is unavailable; the choice lasts until reload.
+  }
+}
+
+function setPhoneViewOverride(value) {
+  phoneViewOverride = normalizePhoneViewOverride(value);
+  savePhoneViewOverride();
+  updatePhoneView();
+}
+
+// The phone view follows the screen unless this browser chose a view.
+function updatePhoneView() {
+  if (!currentUser) return;
+  const wanted = shouldUsePhoneView({ width: window.innerWidth, coarsePointer: coarsePointer.matches, override: phoneViewOverride });
+  if (wanted === phoneView.active) return;
+  hideAllMenus();
+  if (wanted) {
+    phoneView.enter();
+    void refreshPhoneWorkspace();
+  } else {
+    phoneView.leave();
+    // Terminals were measured for the phone layout, or not at all.
+    for (const rect of rectangles) {
+      if (rect.kind === "terminal" && !rect.minimized) requestTerminalFit(rect);
+    }
+  }
+  scheduleTerminalVisibilityUpdate();
+  updateTerminalFocus();
+  updateDeskbar();
+}
+
+// The open terminal fills the screen below the phone view's header. Its
+// window keeps its saved place and size for the desktop view.
+// The phone view lists this page's copy of the workspace, and the desk can
+// change the workspace while the phone looks at it: a window opened there
+// would be missing from the list, and the phone's next save would be refused
+// as stale. So the phone takes the newest copy when it may have fallen
+// behind, and always before it changes anything. Changes of its own still
+// waiting to be saved go first, and meet a conflict as they would anyway.
+let phoneWorkspaceRefresh = null;
+function refreshPhoneWorkspace() {
+  phoneWorkspaceRefresh ??= (async () => {
+    try {
+      if (!phoneView.active || isLoadingWorkspace) return !workspaceSaveSuspended;
+      if (saveTimer !== null || workspaceSavePromise) await saveWorkspace();
+      if (workspaceSaveSuspended) return false;
+      const id = workspaceID;
+      const workspace = await fetchWorkspace(id);
+      if (id !== workspaceID || workspaceRevisionMatches(workspaceRevision, workspace.revision)) return true;
+      if (saveTimer !== null || workspaceSavePromise || isLoadingWorkspace) return true;
+      const open = phoneView.openPaneID;
+      loadWorkspace(workspace);
+      if (open && rectangles.some((rect) => rect.id === open)) phoneView.open(open);
+      return true;
+    } catch (error) {
+      console.warn(error);
+      return !workspaceSaveSuspended;
+    } finally {
+      phoneWorkspaceRefresh = null;
+    }
+  })();
+  return phoneWorkspaceRefresh;
+}
+
+function showPhoneTerminal(paneID) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  if (!rect) return;
+  hideAllMenus();
+  for (const other of rectangles) other.element.classList.toggle("is-phone-open", other === rect);
+  // Looking at a terminal is not an edit: saving it would put this phone's
+  // copy of the workspace in the way of the desk's next save.
+  setActivePane(rect, { raise: false, save: false });
+  window.requestAnimationFrame(() => {
+    if (phoneView.openPaneID !== rect.id) return;
+    if (rect.kind === "terminal") {
+      requestTerminalFit(rect);
+      applyPhoneTerminalFont(rect);
+    }
+    scheduleTerminalVisibilityUpdate();
+    updateTerminalFocus();
+  });
+}
+
+// On a phone a terminal shows the shell at whatever size it has, so looking
+// in from away never reflows what the desk shows. The phone takes the size
+// only when asked (Fit to this phone), for as long as it shows the
+// terminal, and the host gives it back after.
+function phoneViewWanted() {
+  return Boolean(currentUser) && shouldUsePhoneView({ width: window.innerWidth, coarsePointer: coarsePointer.matches, override: phoneViewOverride });
+}
+
+function terminalWatchesSize(state) {
+  return phoneViewWanted() && !state?.phoneFit;
+}
+
+// The open terminal's font, sized so the shell's columns fill the phone's
+// width, then larger by the zoom asked for (the screen then scrolls
+// sideways). Only this browser's view changes; the pane's saved size stays.
+function applyPhoneTerminalFont(rect) {
+  const state = rect?.kind === "terminal" ? rect.terminal : null;
+  const term = state?.term;
+  if (!term || phoneView.openPaneID !== rect.id) return;
+  if (state.phoneFit) {
+    if (term.options.fontSize !== rect.fontSize) {
+      term.options.fontSize = rect.fontSize;
+      requestTerminalFit(rect);
+    }
+    return;
+  }
+  const container = rect.terminalContainer;
+  const style = window.getComputedStyle(container);
+  const width = container.clientWidth - (Number.parseFloat(style.paddingLeft) || 0) - (Number.parseFloat(style.paddingRight) || 0);
+  // The font that fits the width is found once for these columns and this
+  // width; Larger and Smaller multiply it.
+  const fitKey = `${term.cols}:${width}`;
+  const zoom = state.phoneZoom || 1;
+  const key = `${fitKey}:${zoom}`;
+  if (state.phoneFontKey === key) return;
+  if (state.phoneFitKey !== fitKey) {
+    const metrics = term.renderer?.getMetrics?.();
+    if (!metrics?.width || width <= 0) return;
+    state.phoneFitFont = phoneFontSize({ columns: term.cols, width, fontSize: term.options.fontSize, cellWidth: metrics.width, largest: rect.fontSize * 3 });
+    state.phoneFitKey = fitKey;
+  }
+  state.phoneFontKey = key;
+  const size = Math.max(4, Math.min(rect.fontSize * 3, Math.floor(state.phoneFitFont * zoom * 4) / 4));
+  if (size !== term.options.fontSize) {
+    term.options.fontSize = size;
+    requestTerminalFit(rect);
+  }
+  if (zoom === 1) shrinkPhoneTerminalFont(rect, key, width);
+}
+
+// Cells round to whole pixels, so the size just set can come out a little
+// too wide. Step down until the columns fit, never back up: measuring and
+// computing afresh each time swung between two sizes for ever.
+function shrinkPhoneTerminalFont(rect, key, width, steps = 0) {
+  window.requestAnimationFrame(() => {
+    const state = rect.terminal, term = state?.term;
+    if (!term || state.phoneFontKey !== key || phoneView.openPaneID !== rect.id || steps > 40) return;
+    const metrics = term.renderer?.getMetrics?.();
+    const next = phoneFontShrink({ columns: term.cols, width, fontSize: term.options.fontSize, cellWidth: metrics?.width || 0 });
+    if (next === null) return;
+    term.options.fontSize = next;
+    state.phoneFitFont = next;
+    requestTerminalFit(rect);
+    shrinkPhoneTerminalFont(rect, key, width, steps + 1);
+  });
+}
+
+function phoneTerminalView(paneID) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  const term = rect?.kind === "terminal" ? rect.terminal?.term : null;
+  if (!term) return null;
+  return {
+    cols: term.cols, rows: term.rows,
+    fitted: Boolean(rect.terminal.phoneFit),
+    zoom: rect.terminal.phoneZoom || 1,
+    alternate: term.buffer?.active?.type === "alternate",
+  };
+}
+
+function setPhoneTerminalZoom(paneID, factor) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  if (!rect?.terminal?.term || rect.terminal.phoneFit) return;
+  rect.terminal.phoneZoom = Math.min(4, Math.max(1, (rect.terminal.phoneZoom || 1) * factor));
+  applyPhoneTerminalFont(rect);
+}
+
+function setPhoneTerminalFit(paneID, on) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  const state = rect?.kind === "terminal" ? rect.terminal : null;
+  if (!state?.term || Boolean(state.phoneFit) === on) return;
+  state.phoneFit = on;
+  state.phoneFontKey = "";
+  if (on) {
+    applyPhoneTerminalFont(rect);
+    state.sentCols = 0;
+    state.sentRows = 0;
+    requestTerminalFit(rect);
+    window.requestAnimationFrame(() => {
+      if (state.phoneFit) terminalFits.sendGridSize(state);
+    });
+    return;
+  }
+  releasePhoneTerminalSize(state);
+  applyPhoneTerminalFont(rect);
+}
+
+function releasePhoneTerminalSize(state) {
+  state.sentCols = 0;
+  state.sentRows = 0;
+  if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type: "release-size" }));
+}
+
+// The last rows the terminal holds, as text for the phone's text view, or
+// null while a full-screen program has the screen.
+const phoneReadingRows = 2000;
+function phoneReadingText(paneID) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  const term = rect?.kind === "terminal" ? rect.terminal?.term : null;
+  const buffer = term?.buffer?.active;
+  if (!buffer || buffer.type === "alternate") return null;
+  const marks = term.semanticMarks?.() || new Uint8Array(0);
+  const rows = [];
+  for (let index = Math.max(0, buffer.length - phoneReadingRows); index < buffer.length; index++) {
+    rows.push({ text: buffer.getLine(index)?.translateToString(false) ?? "", continues: Boolean((marks[index] ?? 0) & 8) });
+  }
+  return readingLines(rows);
+}
+
+// Text from the phone's compose field goes in as a paste, bracketed when the
+// program asked for that, so a multi-line prompt arrives as one message and
+// a shell doesn't run it line by line. Enter follows separately, as a key
+// would, after the program has taken the paste.
+function sendPhoneText(paneID, text, { enter }) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  const term = rect?.kind === "terminal" ? rect.terminal?.term : null;
+  if (!term) return;
+  term.scrollToBottom();
+  const pasted = terminalPasteText(text);
+  if (pasted) term.paste(pasted);
+  if (enter) window.setTimeout(() => sendPhoneKey(paneID, { key: "Enter", code: "Enter" }), pasted ? 40 : 0);
+}
+
+// A key from the phone's key row reaches the terminal as a key event, so it
+// is encoded as the same key from a keyboard would be.
+function sendPhoneKey(paneID, init) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  const container = rect?.kind === "terminal" ? rect.terminalContainer : null;
+  if (!container || !rect.terminal?.term) return;
+  rect.terminal.term.scrollToBottom();
+  for (const type of ["keydown", "keyup"]) {
+    const event = new KeyboardEvent(type, { ...init, bubbles: true, cancelable: true });
+    phoneKeyEvents.add(event);
+    container.dispatchEvent(event);
+  }
+}
+
+// An image from the phone, kept on the host so its path can go to a program.
+async function uploadPhoneAttachment(file) {
+  const response = await fetch(`/api/host/attachments?${new URLSearchParams({ name: file.name || "image" })}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+    credentials: "same-origin",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 413) throw new Error("it is larger than the host accepts");
+  if (!response.ok || !data.path) throw new Error(data.error || `the host answered ${response.status}`);
+  return data;
+}
+
+// An image from the phone put on the host's clipboard, then the program's
+// paste key, as pasting an image into a terminal on the desk does.
+async function pastePhoneImage(paneID, file) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  const term = rect?.kind === "terminal" ? rect.terminal?.term : null;
+  if (!term) throw new Error("the terminal is gone");
+  try {
+    hostClipboardStatus = await writeHostClipboardImage(file);
+    hostClipboardStatusFailed = false;
+  } catch (error) {
+    if (error.status?.session) hostClipboardStatus = error.status;
+    throw error;
+  }
+  for (const keys of terminalPasteKeys(term, { appleKeyboard: appleKeyboardLayout })) sendTerminalKeys(rect, keys);
+}
+
+async function loadSnippets() {
+  const response = await fetch(userAPIPath("snippets"), { cache: "no-store" });
+  if (!response.ok) throw new Error(`Snippets could not be loaded (${response.status}).`);
+  return response.json();
+}
+
+async function saveSnippets(doc) {
+  const response = await fetch(userAPIPath("snippets"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(doc),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(data.error || `Snippets could not be saved (${response.status}).`), { status: response.status });
+  return data;
+}
+
+function hidePhoneTerminal(paneID) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  if (!rect) return;
+  rect.element.classList.remove("is-phone-open");
+  if (rect.kind === "terminal" && rect.terminal?.term) {
+    setPhoneTerminalFit(paneID, false);
+    rect.terminal.phoneZoom = 1;
+    rect.terminal.phoneFontKey = "";
+    rect.terminal.phoneFitKey = "";
+    rect.terminal.term.options.fontSize = rect.fontSize;
+  }
+  if (rect.element.contains(document.activeElement)) document.activeElement.blur();
+  scheduleTerminalVisibilityUpdate();
+  updateTerminalFocus();
+}
+
 function openPaneFromNotice(paneID) {
   const rect = rectangles.find((candidate) => candidate.id === paneID);
   if (!rect) return;
+  if (phoneView.active) {
+    if (rect.kind === "terminal") phoneView.open(rect.id);
+    return;
+  }
   setMinimized(rect, false);
   setActivePane(rect, { raise: true, focus: true });
 }
@@ -5047,6 +5447,9 @@ function terminalWebSocketURL(rect, cols, rows, colorMode = "") {
   // snapshot; the applied cursor stays intact until that import completes.
   const stream = rect.terminal?.replica?.cursor;
   if (rect.terminal.outputPaused) params.set("outputPaused", "1");
+  // Attaching never sizes the shell from a phone; a size it takes goes by
+  // the resize message, which the host gives back.
+  if (phoneViewWanted()) params.set("watch", "1");
   if (rect.terminal.snapshotIfChanged) params.set("snapshotIfChanged", "1");
   if (stream?.epoch && !rect.terminal.replica.needsSnapshot) {
     params.set("catchUpReplay", "1");
@@ -5110,7 +5513,10 @@ function stopTerminalTimingCapture() {
   }
 }
 
-const terminalFits = new TerminalFitScheduler();
+const terminalFits = new TerminalFitScheduler({
+  watchesSize: (state) => terminalWatchesSize(state),
+  sizeIsTemporary: (state) => Boolean(state?.phoneFit),
+});
 
 function requestTerminalFit(rect) {
   terminalFits.request(rect?.terminal);
@@ -5355,9 +5761,9 @@ function renderWorkspaceMenu() {
   terminalButton.textContent = "New Terminal";
   terminalButton.className = "is-command";
   terminalButton.addEventListener("click", () => {
-    const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
+    const point = workspaceMenuPoint;
     hideWorkspaceMenu();
-    createTerminalPane(point.x, point.y);
+    createTerminalPane(point);
   });
   workspaceMenu.appendChild(terminalButton);
 
@@ -5368,7 +5774,7 @@ function renderWorkspaceMenu() {
   browserButton.addEventListener("click", () => {
     const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
     hideWorkspaceMenu();
-    createBrowserPane(point.x, point.y);
+    createBrowserPane(point);
   });
   workspaceMenu.appendChild(browserButton);
 
@@ -5379,7 +5785,7 @@ function renderWorkspaceMenu() {
   vncButton.addEventListener("click", () => {
     const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
     hideWorkspaceMenu();
-    createVNCPane(point.x, point.y);
+    createVNCPane(point);
   });
   workspaceMenu.appendChild(vncButton);
 
@@ -5598,6 +6004,7 @@ function handleDeskbarKeyboard(event) {
 }
 
 function updateDeskbar() {
+  if (phoneView.active) phoneView.panesChanged();
   const activePane = getActivePane();
   const hideForFocusedFullscreenPane = Boolean(activePane?.isFull && !activePane.minimized);
   deskbarButton.hidden = !deskbarButtonEnabled || hideForFocusedFullscreenPane;
@@ -6917,7 +7324,7 @@ function renderBrowserPortHelp(targetRect) {
     let destination = targetRect;
     if (!destination || !rectangles.includes(destination) || !destination.browser) {
       const point = paneSpawnPoint();
-      destination = createBrowserPane(point.x, point.y);
+      destination = createBrowserPane(point);
     }
     hideHelpModal();
     void navigateBrowserPane(destination, normalized);
@@ -8242,8 +8649,7 @@ function showSystemdUpdatePrompt(check) {
   terminalButton.type = "button";
   terminalButton.textContent = "Open Update Terminal";
   terminalButton.addEventListener("click", () => {
-    const point = paneSpawnPoint();
-    createTerminalPane(point.x, point.y, {
+    createTerminalPane(null, {
       title: "Update Tessera",
       terminalStartupCommand: check.updateCommand,
     });
@@ -8378,6 +8784,9 @@ function buildPaletteCommands() {
     openBrowserPortHelp(active?.kind === browserPaneKind ? active : null);
   } });
   commands.push({ id: "window-list", label: "Window List", hint: "Ctrl+L", run: () => openWindowList() });
+  commands.push(phoneView.active
+    ? { id: "desktop-view", label: "Desktop View", aliases: ["windows"], hint: "this browser", run: () => setPhoneViewOverride("desktop") }
+    : { id: "phone-view", label: "Phone View", aliases: ["mobile", "terminal list"], hint: "this browser", run: () => setPhoneViewOverride("phone") });
   commands.push({ id: "screensaver", label: "Screensaver", aliases: ["screen saver", "mosaic"], hint: "any key returns", run: () => screensaver.open() });
   commands.push({
     id: "deskbar-button-toggle",
@@ -8426,18 +8835,9 @@ function buildPaletteCommands() {
   for (const shortcut of shortcutsUI.items) {
     commands.push({ id: `shortcut:${shortcut.id}`, label: `Create ${shortcut.name}`, aliases: [shortcut.name], code: shortcut.code, shortcut: true, hint: "terminal shortcut", run: () => invokeShortcut(shortcut) });
   }
-  commands.push({ id: "new-terminal", label: "New Terminal", hint: "create", run: () => {
-    const point = paneSpawnPoint();
-    createTerminalPane(point.x, point.y);
-  } });
-  commands.push({ id: "new-browser", label: "New Browser", hint: "localhost development server", run: () => {
-    const point = paneSpawnPoint();
-    createBrowserPane(point.x, point.y);
-  } });
-  commands.push({ id: "new-vnc", label: "New VNC", hint: "remote desktop", run: () => {
-    const point = paneSpawnPoint();
-    createVNCPane(point.x, point.y);
-  } });
+  commands.push({ id: "new-terminal", label: "New Terminal", hint: "create", run: () => createTerminalPane() });
+  commands.push({ id: "new-browser", label: "New Browser", hint: "localhost development server", run: () => createBrowserPane() });
+  commands.push({ id: "new-vnc", label: "New VNC", hint: "remote desktop", run: () => createVNCPane() });
   commands.push({ id: "next-window", label: "Next Window", hint: "Ctrl+]", run: () => focusAdjacentPane(1) });
   commands.push({ id: "previous-window", label: "Previous Window", hint: "Ctrl+[", run: () => focusAdjacentPane(-1) });
   const visiblePaneCount = rectangles.filter((rect) => rect.kind !== "pending" && !rect.minimized).length;
@@ -8773,8 +9173,15 @@ function workspaceMenuLabel(rect) {
   return `${name}${kindSuffix}${rect.filePendingCount ? ` [${rect.filePendingCount} file transfer${rect.filePendingCount === 1 ? "" : "s"}]` : ""}${terminalAttentionLabel(rect.terminalAttention)}`;
 }
 
-function createTerminalPane(x, y, options = {}) {
-  const rect = createRectangle(x, Math.max(y, tabHeight), 640, 360, {
+// A new terminal takes half the board each way, centered, unless it opens
+// where someone right-clicked the desktop, which keeps that corner.
+function createTerminalPane(point = null, options = {}) {
+  const box = centeredPaneBox(board.getBoundingClientRect());
+  if (point) {
+    box.x = point.x;
+    box.y = Math.max(point.y, tabHeight);
+  }
+  const rect = createRectangle(box.x, box.y, box.width, box.height, {
     kind: "terminal",
     cwd: options.cwd ?? activeRect?.cwd ?? "",
     title: options.title,
@@ -8804,11 +9211,12 @@ function openTerminalLink(url) {
     return;
   }
   const point = paneSpawnPoint();
-  void navigateBrowserPane(createBrowserPane(point.x, point.y), local);
+  void navigateBrowserPane(createBrowserPane(point), local);
 }
 
-function createBrowserPane(x, y) {
-  const rect = createRectangle(x, Math.max(y, tabHeight), 720, 480, {
+function createBrowserPane(point = null) {
+  const box = paneBox(point, 720, 480);
+  const rect = createRectangle(box.x, box.y, box.width, box.height, {
     kind: browserPaneKind,
   });
   clampIntoBoard(rect);
@@ -8819,8 +9227,9 @@ function createBrowserPane(x, y) {
   return rect;
 }
 
-function createVNCPane(x, y) {
-  const rect = createRectangle(x, Math.max(y, tabHeight), 720, 480, {
+function createVNCPane(point = null) {
+  const box = paneBox(point, 720, 480);
+  const rect = createRectangle(box.x, box.y, box.width, box.height, {
     kind: vncPaneKind,
   });
   clampIntoBoard(rect);
@@ -8831,8 +9240,28 @@ function createVNCPane(x, y) {
   return rect;
 }
 
-// A cascading spawn point for panes created without a click location (from
-// the Deskbar or the command palette).
+// Where a new window goes: at a point, at the size given, or with no point
+// centered at half the board each way (centeredPaneBox).
+function paneBox(point, width, height) {
+  if (!point) return centeredPaneBox(board.getBoundingClientRect());
+  return { x: point.x, y: Math.max(point.y, tabHeight), width, height };
+}
+
+// A cascading spawn point for windows opened from elsewhere, such as a link
+// in a terminal.
+// Half the board's width and height, centered. Small screens keep a usable
+// window rather than an exact half.
+function centeredPaneBox(bounds) {
+  const width = Math.min(bounds.width, Math.max(360, Math.round(bounds.width / 2)));
+  const height = Math.min(bounds.height, Math.max(220, Math.round(bounds.height / 2)));
+  return {
+    x: Math.round((bounds.width - width) / 2),
+    y: Math.max(tabHeight, Math.round((bounds.height - height) / 2)),
+    width,
+    height,
+  };
+}
+
 function paneSpawnPoint() {
   const count = rectangles.filter((rect) => rect.kind !== "pending").length;
   const step = count % 6;
@@ -9125,6 +9554,8 @@ function reapplyFullGeometryForViewport() {
   }
 }
 window.addEventListener("resize", reapplyFullGeometryForViewport);
+window.addEventListener("resize", updatePhoneView);
+coarsePointer.addEventListener?.("change", updatePhoneView);
 
 // The workspace never scrolls: windows move, the page and board stay put.
 // iPadOS scrolls the page anyway to keep a focused terminal's caret clear of
@@ -9609,7 +10040,7 @@ function destroyRectangle(rect, options = {}) {
 }
 
 function handlePaneKeyboardShortcuts(event) {
-  if (event.defaultPrevented) {
+  if (event.defaultPrevented || phoneKeyEvents.has(event)) {
     return;
   }
   if (!serverConnectionModal.hidden) {

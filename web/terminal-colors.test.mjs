@@ -82,7 +82,7 @@ test("changing the user color default leaves explicitly themed terminals connect
 test("terminal attachment sends the effective color mode before workspace persistence", () => {
   const url = appFunction("terminalWebSocketURL", {
     window: { location: { protocol: "http:", host: "localhost:7331" } },
-    workspaceID: "session", URLSearchParams,
+    workspaceID: "session", URLSearchParams, phoneViewWanted: () => false,
   });
   const pane = { id: "pane", terminal: { term: { coreID: "core" } } };
   assert.equal(new URL(url(pane, 80, 24, "light")).searchParams.get("colorMode"), "light");

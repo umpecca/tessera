@@ -153,6 +153,7 @@ function appFunction(name, globals) {
   globals.screensaver ||= { element: { hidden: true } };
   globals.saveClipboardDialog ||= { element: { hidden: true }, close() {} };
   globals.lastClipboardSave ||= { paths: [] };
+  globals.phoneView ||= { active: false };
   const start = source.indexOf("function " + name + "(");
   const end = source.indexOf("\n}\n", start) + 2;
   return vm.runInNewContext("(" + source.slice(start, end) + ")", globals);

@@ -287,3 +287,30 @@ test("a hidden page never resizes the shell, and sends the real size once visibl
   timers.run();
   assert.deepEqual(terminal.sent.at(-1), { type: "resize", cols: 100, rows: 50, cellWidth: 8, cellHeight: 16 });
 });
+
+test("a watching terminal keeps its size to itself, and a temporary one says so", () => {
+  const frames = frameQueue();
+  const timers = timerQueue();
+  const scheduler = new TerminalFitScheduler({
+    requestFrame: frames.requestFrame,
+    cancelFrame: frames.cancelFrame,
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    watchesSize: (state) => state.watching,
+    sizeIsTemporary: (state) => state.temporary,
+  });
+  const terminal = fakeTerminal();
+  terminal.watching = true;
+  terminal.nextSize = { cols: 45, rows: 30 };
+  scheduler.request(terminal);
+  frames.run();
+  timers.run();
+  scheduler.claimGridSize({ ...terminal, term: { ...terminal.term, desiredCols: 45, cols: 80 } });
+  assert.deepEqual(terminal.sent, [], "neither a fit nor a claim sends it");
+  assert.equal(terminal.sentCols, 0, "and nothing counts as sent");
+
+  terminal.watching = false;
+  terminal.temporary = true;
+  scheduler.sendGridSize(terminal);
+  assert.deepEqual(terminal.sent, [{ type: "resize", cols: 45, rows: 30, cellWidth: 8, cellHeight: 16, temporary: true }]);
+});

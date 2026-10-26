@@ -45,6 +45,9 @@ tessera/
     sessions.go                # roster, named sessions, and user settings
     shortcuts.go               # per-user launcher API and host command expansion
     terminal.go                # terminal WebSocket transport
+    terminal_summaries.go      # what each shell is doing, for the phone view
+    snippets.go                # per-account snippets for the phone view
+    attachments.go             # images sent from the phone, kept for a week
     directories.go             # directory browser data
     background.go              # workspace background image API
     update.go                  # self-update API
@@ -66,11 +69,14 @@ tessera/
     workspace.go               # workspaces, panes, and archived document persistence
     session.go                 # session CRUD and per-user settings
     shortcuts.go               # independent per-user shortcut revisions
+    snippets.go                # independent per-user snippet revisions
     workspace_background.go    # image BLOB persistence
     audit.go                   # redacted HTTP security-event persistence
   internal/terminal/
     manager.go                 # session ownership, replay, and teardown
     audio.go                   # bounded per-listener live audio delivery
+    summary.go                 # shell state, folder and screen tail summaries
+    size.go                    # sizes a browser takes for a while and gives back
     session*.go                # ConPTY and Unix PTY implementations
   internal/shortcuts/
     shortcuts.go               # definition validation and literal shell arguments
@@ -84,6 +90,8 @@ tessera/
   web/
     app.js                     # SPA state, pane UI, interactions, and API calls
     shortcuts.mjs              # shortcut manager and invocation modal
+    phone-view.mjs             # phone terminal list and full-screen terminal
+    phone-input.mjs            # phone compose field, key row, replies, snippets
     styles.css                 # workspace, pane, modal, Deskbar, and theme styling
     index.html                 # application shell and bundled module loading
     embed.go                   # go:embed filesystem

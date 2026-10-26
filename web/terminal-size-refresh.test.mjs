@@ -7,6 +7,7 @@ import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
 
 const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 function appFunction(name, context) {
+  context.phoneView ??= { active: false };
   const start = source.indexOf(`function ${name}(`);
   const end = source.indexOf("\n}\n", start) + 2;
   return vm.runInNewContext(`(${source.slice(start, end)})`, context);
