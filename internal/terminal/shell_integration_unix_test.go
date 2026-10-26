@@ -66,12 +66,18 @@ func TestShellIntegrationMarksPromptsAndCommands(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("shell did not exit")
 			}
+			// zsh reports the first line of a continued command; bash's history
+			// joins the lines, so it has the whole command.
+			continued := "echo%20two%20%5C%E2%80%A6"
+			if shell == "bash" {
+				continued = "echo%20two%20lines"
+			}
 			for _, want := range []string{
 				"\x1b]7;file://",
 				"\x1b]133;A\x1b\\",
 				"\x1b]133;B\x1b\\",
 				"\x1b]133;C;cmdline_url=echo%20marked%3B%20false\x1b\\",
-				"\x1b]133;C;cmdline_url=echo%20two%20%5C%E2%80%A6\x1b\\",
+				"\x1b]133;C;cmdline_url=" + continued + "\x1b\\",
 				"\x1b]133;C;cmdline_url=%3A%20" + strings.Repeat("x", 198) + "%E2%80%A6\x1b\\",
 				"marked",
 				"\x1b]133;D;1\x1b\\",

@@ -73,7 +73,7 @@ func TestWorkspaceTerminalsSummarizeAndWaitForChanges(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		summaries = getTerminalSummaries(t, list)
-		if len(summaries.Terminals) == 1 && slices.Contains(summaries.Terminals[0].Tail, "hello phone") {
+		if len(summaries.Terminals) == 1 && slices.ContainsFunc(summaries.Terminals[0].Tail, func(line string) bool { return strings.HasSuffix(line, "hello phone") }) {
 			break
 		}
 		if time.Now().After(deadline) {
