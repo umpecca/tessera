@@ -5,7 +5,7 @@ const groupLabels = {
   R: "Repair", B: "Local ports", L: "Local HTTPS", U: "Update", T: "Tessera Sessions", C: "Create / shortcuts",
 };
 const shortLabels = {
-  NN: "Terminal", NB: "Browser", NV: "VNC", CS: "Shortcuts",
+  NN: "Terminal", NB: "Browser", NV: "VNC", NR: "RDP", CS: "Shortcuts",
   NX: "Next window", PW: "Previous", OO: "Cascade",
   DT: "Top", DL: "Left", DR: "Right", DB: "Bottom", DD: "Destroy",
   WT: "Set title", HP: "Help", HB: "Deskbar", LH: "HTTPS",
@@ -13,7 +13,7 @@ const shortLabels = {
 };
 const compactLabels = {
   N: "New", D: "Dock", M: "Size", W: "Title", O: "Arrange", S: "Settings", H: "Help", P: "Prev",
-  NN: "Term", NB: "Web", NV: "VNC", CS: "Shortcuts", NX: "Next",
+  NN: "Term", NB: "Web", NV: "VNC", NR: "RDP", CS: "Shortcuts", NX: "Next",
   PW: "Prev", OO: "Stack", DT: "Top", DL: "Left", DR: "Right", DB: "Bottom", DD: "Close",
   MM: "Max", MN: "Min", WT: "Title", HP: "Help", HB: "Bar", LH: "HTTPS", UP: "Update", RV: "Repair", BL: "Ports",
 };

@@ -525,7 +525,7 @@ func auditRequest(r *http.Request) bool {
 	case "/login":
 		return r.Method == http.MethodPost
 	}
-	return (r.URL.Path == "/api/terminal" || r.URL.Path == "/api/vnc-proxy/connect") && r.Method == http.MethodGet
+	return (r.URL.Path == "/api/terminal" || r.URL.Path == "/api/vnc-proxy/connect" || strings.HasPrefix(r.URL.Path, "/api/rdp-proxy/connect/")) && r.Method == http.MethodGet
 }
 
 func newRequestID() string {

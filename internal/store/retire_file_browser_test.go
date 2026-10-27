@@ -29,9 +29,9 @@ func TestRetireFileBrowserPreservesLayoutAndRejectsStaleSave(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Current store methods build the fixture; remove their new column before
+	// Current store methods build the fixture; remove their new columns before
 	// exercising the migration from the legacy schema.
-	if _, err := db.ExecContext(ctx, `ALTER TABLE panes ADD COLUMN terminal_color_mode TEXT NOT NULL DEFAULT ''`); err != nil {
+	if _, err := db.ExecContext(ctx, `ALTER TABLE panes ADD COLUMN terminal_color_mode TEXT NOT NULL DEFAULT ''; ALTER TABLE panes ADD COLUMN rdp_settings TEXT NOT NULL DEFAULT ''`); err != nil {
 		t.Fatal(err)
 	}
 	ws := &Workspace{ID: "default", ActivePaneID: "files", Panes: []Pane{{ID: "files", Kind: "terminal", Title: "Project files", Cwd: "/project", Minimized: true, X: 14, Y: 23, Width: 400, Height: 300}, {ID: "notes", Kind: "worksheet", BufferText: "unsaved notes"}}}
@@ -50,7 +50,7 @@ func TestRetireFileBrowserPreservesLayoutAndRejectsStaleSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `ALTER TABLE panes DROP COLUMN terminal_color_mode`); err != nil {
+	if _, err := db.ExecContext(ctx, `ALTER TABLE panes DROP COLUMN terminal_color_mode; ALTER TABLE panes DROP COLUMN rdp_settings`); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.migrate(ctx); err != nil {

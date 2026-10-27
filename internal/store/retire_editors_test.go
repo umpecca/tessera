@@ -31,9 +31,9 @@ func TestRetireEditorsPreservesDocumentsLayoutAndRevisions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Current store methods build the fixture; remove their new column before
+	// Current store methods build the fixture; remove their new columns before
 	// exercising the migration from the legacy schema.
-	if _, err := db.ExecContext(ctx, `ALTER TABLE panes ADD COLUMN terminal_color_mode TEXT NOT NULL DEFAULT ''`); err != nil {
+	if _, err := db.ExecContext(ctx, `ALTER TABLE panes ADD COLUMN terminal_color_mode TEXT NOT NULL DEFAULT ''; ALTER TABLE panes ADD COLUMN rdp_settings TEXT NOT NULL DEFAULT ''`); err != nil {
 		t.Fatal(err)
 	}
 	legacy := &Workspace{ID: "legacy", ActivePaneID: "editor", Layout: json.RawMessage(`{"panes":["notes","editor","blank"],"custom":"keep"}`), Panes: []Pane{
@@ -51,7 +51,7 @@ func TestRetireEditorsPreservesDocumentsLayoutAndRevisions(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE panes SET kind='worksheet' WHERE id='notes'; UPDATE panes SET kind='text-editor' WHERE id='editor'; UPDATE panes SET kind='' WHERE id='blank';`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `ALTER TABLE panes DROP COLUMN terminal_color_mode`); err != nil {
+	if _, err := db.ExecContext(ctx, `ALTER TABLE panes DROP COLUMN terminal_color_mode; ALTER TABLE panes DROP COLUMN rdp_settings`); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.migrate(ctx); err != nil {
@@ -68,6 +68,7 @@ func TestRetireEditorsPreservesDocumentsLayoutAndRevisions(t *testing.T) {
 		want := legacy.Panes[i]
 		want.Position = i
 		want.VNCScaleMode = "fit"
+		want.RDPScaleMode = "fit"
 		if !reflect.DeepEqual(pane, want) {
 			t.Fatalf("pane changed beyond kind: got %+v want %+v", pane, want)
 		}

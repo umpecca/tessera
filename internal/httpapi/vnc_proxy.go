@@ -109,33 +109,39 @@ func (a *API) vncProxyCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func normalizeVNCTarget(raw string) (string, error) {
+	return normalizeRemoteTarget(raw, "vnc", "VNC", 5900)
+}
+
+// normalizeRemoteTarget canonicalizes a remote-desktop address: an optional
+// scheme:// prefix, a DNS name, IPv4 address or bracketed IPv6 address, and
+// a port that defaults to defaultPort. label names the protocol in errors.
+func normalizeRemoteTarget(raw, scheme, label string, defaultPort int) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", errors.New("VNC target is required")
+		return "", fmt.Errorf("%s target is required", label)
 	}
 	if !strings.Contains(raw, "://") {
-		raw = "vnc://" + raw
+		raw = scheme + "://" + raw
 	}
 	target, err := url.Parse(raw)
-	if err != nil || strings.ToLower(target.Scheme) != "vnc" || target.User != nil || target.Hostname() == "" || target.Path != "" || target.RawQuery != "" || target.Fragment != "" {
-		return "", errors.New("invalid VNC target")
+	if err != nil || strings.ToLower(target.Scheme) != scheme || target.User != nil || target.Hostname() == "" || target.Path != "" || target.RawQuery != "" || target.Fragment != "" {
+		return "", fmt.Errorf("invalid %s target", label)
 	}
 	host := target.Hostname()
 	// Bare IPv6 such as 2001:db8::1 parses as host "2001:db8:" port "1";
 	// IPv6 targets must be bracketed so the port is unambiguous.
 	if strings.Contains(host, ":") && !strings.HasPrefix(target.Host, "[") {
-		return "", errors.New("IPv6 VNC targets must be bracketed, e.g. [2001:db8::1]:5900")
+		return "", fmt.Errorf("IPv6 %s targets must be bracketed, e.g. [2001:db8::1]:%d", label, defaultPort)
 	}
 	if strings.ContainsFunc(host, unicode.IsSpace) || strings.ContainsAny(host, "/\\@?#") {
-		return "", errors.New("invalid VNC target host")
+		return "", fmt.Errorf("invalid %s target host", label)
 	}
-	port := target.Port()
-	if port == "" {
-		port = "5900"
-	}
-	portNumber, err := strconv.Atoi(port)
-	if err != nil || portNumber < 1 || portNumber > 65535 {
-		return "", errors.New("VNC target port must be between 1 and 65535")
+	portNumber := defaultPort
+	if port := target.Port(); port != "" {
+		portNumber, err = strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return "", fmt.Errorf("%s target port must be between 1 and 65535", label)
+		}
 	}
 	if address := net.ParseIP(host); address != nil {
 		host = address.String()

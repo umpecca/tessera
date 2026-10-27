@@ -1,0 +1,51 @@
+From 8df06eac8e3a6d85086f6d2f4e1ed8f53c5e1528 Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Tue, 27 Oct 2026 13:52:30 -0500
+Subject: [PATCH 3/3] feat(web-client): add enableEgfx and h264FrameCallback
+ extensions
+
+Factories for the `enable_egfx` and `h264_frame_callback` session builder
+extensions, so a page can open the Graphics Pipeline and decode H.264 in
+JavaScript.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../iron-remote-desktop-rdp/src/main.ts       | 22 +++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/web-client/iron-remote-desktop-rdp/src/main.ts b/web-client/iron-remote-desktop-rdp/src/main.ts
+index c3312c9f..752ced0a 100644
+--- a/web-client/iron-remote-desktop-rdp/src/main.ts
++++ b/web-client/iron-remote-desktop-rdp/src/main.ts
+@@ -76,6 +76,28 @@ export function legacyGraphics(enable: boolean): Extension {
+     return new Extension('legacy_graphics', enable);
+ }
+ 
++/**
++ * Advertise and open the Graphics Pipeline (MS-RDPEGFX).
++ *
++ * On its own this offers no H.264; add `h264FrameCallback` for that.
++ */
++export function enableEgfx(enable: boolean): Extension {
++    return new Extension('enable_egfx', enable);
++}
++
++/**
++ * With `enableEgfx`, hand each H.264 picture to `callback` instead of decoding it.
++ *
++ * `data` is an Annex B access unit and `regions` packs `[x, y, width, height]` for each
++ * updated region of surface `surfaceId`. A picture without regions is to be decoded but not
++ * drawn: it keeps the stream in step (an AVC444 auxiliary view).
++ */
++export function h264FrameCallback(
++    callback: (data: Uint8Array, regions: Uint16Array, surfaceId: number) => void,
++): Extension {
++    return new Extension('h264_frame_callback', callback as unknown);
++}
++
+ // --- RDCleanPath ---
+ 
+ export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';
+-- 
+2.54.0 (Apple Git-157)
+

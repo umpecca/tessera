@@ -1,0 +1,341 @@
+From 1db18d13f7218d7034c40998be2d6ab3613798d4 Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Tue, 27 Oct 2026 13:48:33 -0500
+Subject: [PATCH 1/3] feat(egfx): let an H.264 decoder present frames itself
+
+A decoder can now show AVC pictures itself instead of returning them to
+the client-side compositor, for example a browser client whose hardware
+decoder draws straight onto a canvas and cannot return pixels
+synchronously.
+
+Such a decoder answers true from `H264Decoder::presents_frames` and
+receives each AVC420 frame, with its region rectangles, through
+`H264Decoder::present`; the compositor does not paint those regions. AVC444
+is advertised for it too: both views go to the decoder in order, because
+they share one H.264 stream, and only the main view, an ordinary 4:2:0
+picture, is shown.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-egfx/src/client.rs             |  30 ++-
+ crates/ironrdp-egfx/src/decode.rs             |  22 ++
+ .../tests/egfx/client.rs                      | 189 +++++++++++++++++-
+ 3 files changed, 232 insertions(+), 9 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index 4eede696..ef7c6af4 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -1099,7 +1099,7 @@ impl GraphicsPipelineClient {
+                 if !self
+                     .h264_decoder
+                     .as_ref()
+-                    .is_some_and(|decoder| decoder.supports_yuv420())
++                    .is_some_and(|decoder| decoder.supports_yuv420() || decoder.presents_frames())
+                 {
+                     trace!("No H.264 decoder returning YUV planes, forwarding AVC444 to handler");
+                     self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
+@@ -1238,6 +1238,17 @@ impl GraphicsPipelineClient {
+             return Ok(());
+         };
+ 
++        if decoder.presents_frames() {
++            // Without region metadata the destination rectangle is the update, as below.
++            let regions = if stream.rectangles.is_empty() {
++                core::slice::from_ref(dest_rect)
++            } else {
++                stream.rectangles.as_slice()
++            };
++            decoder.present(surface_id, stream.data, regions);
++            return Ok(());
++        }
++
+         // A decoder returning YUV planes is converted with the transform MS-RDPEGFX
+         // specifies, whatever matrix it would convert with itself.
+         let frame = if decoder.supports_yuv420() {
+@@ -1392,6 +1403,18 @@ impl GraphicsPipelineClient {
+             Encoding::CHROMA => (None, Some(&stream.stream1)),
+             _ => (Some(&stream.stream1), stream.stream2.as_ref()),
+         };
++
++        if decoder.presents_frames() {
++            // Both views go to the decoder, in order, because they share one H.264 stream;
++            // only the main view is shown.
++            if let Some(main) = main {
++                decoder.present(surface_id, main.data, &main.rectangles);
++            }
++            if let Some(auxiliary) = auxiliary {
++                decoder.present(surface_id, auxiliary.data, &[]);
++            }
++            return Ok(());
++        }
+         // UNTESTED: that the decoder returns each view for its own sub-stream. Both sub-streams
+         // are one H.264 stream (MS-RDPEGFX 2.2.4.5), and a decoder that delays pictures would
+         // pair a main view with the previous auxiliary view; the tests use a decoder that cannot
+@@ -1966,12 +1989,13 @@ impl DvcProcessor for GraphicsPipelineClient {
+         }
+ 
+         // Keep only the sets this client can honor: AVC420 needs a decoder, and AVC444
+-        // needs one returning the YUV planes the two views are combined from.
++        // needs one returning the YUV planes the two views are combined from, or one that
++        // presents frames itself (it shows the main view).
+         let avc420 = self.h264_decoder.is_some();
+         let avc444 = self
+             .h264_decoder
+             .as_ref()
+-            .is_some_and(|decoder| decoder.supports_yuv420());
++            .is_some_and(|decoder| decoder.supports_yuv420() || decoder.presents_frames());
+         let mut caps: Vec<CapabilitySet> = self
+             .handler
+             .capabilities()
+diff --git a/crates/ironrdp-egfx/src/decode.rs b/crates/ironrdp-egfx/src/decode.rs
+index 1adc2fed..b819c605 100644
+--- a/crates/ironrdp-egfx/src/decode.rs
++++ b/crates/ironrdp-egfx/src/decode.rs
+@@ -20,6 +20,8 @@
+ 
+ use core::fmt;
+ 
++use ironrdp_pdu::geometry::ExclusiveRectangle;
++
+ // ============================================================================
+ // Decoded Frame
+ // ============================================================================
+@@ -343,6 +345,26 @@ pub trait H264Decoder: Send {
+         true
+     }
+ 
++    /// Whether this decoder shows AVC pictures itself instead of returning them.
++    ///
++    /// Such a decoder receives every AVC420 frame, and each view of an AVC444 frame, through
++    /// [`Self::present`]. [`Self::decode`] and [`Self::decode_yuv420`] are not called for them,
++    /// and the client-side compositor does not paint their regions. AVC444 is advertised for a
++    /// presenting decoder too: it shows the main view, an ordinary 4:2:0 picture, and decodes
++    /// the auxiliary view only to keep the H.264 stream both views share in step.
++    fn presents_frames(&self) -> bool {
++        false
++    }
++
++    /// Decodes `data` and shows the picture's `regions` of surface `surface_id`, for a decoder
++    /// that [presents frames](Self::presents_frames).
++    ///
++    /// With no regions, the picture is decoded but not shown: an AVC444 auxiliary view, or a
++    /// main view whose update has no region rectangles.
++    fn present(&mut self, surface_id: u16, data: &[u8], regions: &[ExclusiveRectangle]) {
++        let _ = (surface_id, data, regions);
++    }
++
+     /// Reset the decoder state
+     ///
+     /// Called when surfaces are reset (e.g., on `ResetGraphics`).
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/client.rs b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+index 354789a0..37dbc70b 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/client.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+@@ -1,13 +1,14 @@
+ use ironrdp_core::{Decode as _, DecodeErrorKind, Encode, ReadCursor, WriteCursor, encode_vec};
+ use ironrdp_dvc::DvcProcessor as _;
+ use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface};
+-use ironrdp_egfx::decode::{DecodedFrame, DecoderResult, H264Decoder};
++use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+ use ironrdp_egfx::pdu::{
+-    CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags,
+-    CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet,
+-    CapabilityVersion, Codec1Type, Color, CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, GfxPdu,
+-    MapSurfaceToOutputPdu, MapSurfaceToScaledWindowPdu, MapSurfaceToWindowPdu, PixelFormat, Point, RawCapabilitySet,
+-    ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu, Timestamp, WireToSurface1Pdu,
++    Avc420BitmapStream, Avc444BitmapStream, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu,
++    CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags,
++    CapabilitiesV107Flags, CapabilitySet, CapabilityVersion, Codec1Type, Color, CreateSurfacePdu, DeleteSurfacePdu,
++    Encoding, EndFramePdu, GfxPdu, MapSurfaceToOutputPdu, MapSurfaceToScaledWindowPdu, MapSurfaceToWindowPdu,
++    PixelFormat, Point, QuantQuality, RawCapabilitySet, ResetGraphicsPdu, SolidFillPdu, StartFramePdu,
++    SurfaceToCachePdu, Timestamp, WireToSurface1Pdu,
+ };
+ use ironrdp_graphics::clearcodec::ClearCodecEncoder;
+ use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
+@@ -815,6 +816,182 @@ fn client_skips_avc420_without_decoder() {
+         .expect("should succeed without decoder");
+ }
+ 
++// ============================================================================
++// Tests: Decoders That Present Frames Themselves
++// ============================================================================
++
++type Presented = std::sync::Arc<std::sync::Mutex<Vec<(u16, Vec<u8>, Vec<ExclusiveRectangle>)>>>;
++
++/// Records what it is asked to present, and fails if it is asked to decode instead.
++struct PresentingDecoder(Presented);
++
++impl H264Decoder for PresentingDecoder {
++    fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
++        Err(DecoderError::msg("a presenting decoder is never asked to decode"))
++    }
++
++    fn presents_frames(&self) -> bool {
++        true
++    }
++
++    fn present(&mut self, surface_id: u16, data: &[u8], regions: &[ExclusiveRectangle]) {
++        self.0
++            .lock()
++            .expect("presented frames")
++            .push((surface_id, data.to_vec(), regions.to_vec()));
++    }
++}
++
++fn presenting_client() -> (GraphicsPipelineClient, Presented) {
++    let presented = Presented::default();
++    let client = setup_active_client_with_surface(Some(Box::new(PresentingDecoder(presented.clone()))), 1, 64, 64);
++    (client, presented)
++}
++
++fn exclusive(left: u16, top: u16, right: u16, bottom: u16) -> ExclusiveRectangle {
++    ExclusiveRectangle {
++        left,
++        top,
++        right,
++        bottom,
++    }
++}
++
++fn avc420_stream(rectangles: Vec<ExclusiveRectangle>, data: &[u8]) -> Avc420BitmapStream<'_> {
++    let quant_qual_vals = rectangles
++        .iter()
++        .map(|_| QuantQuality {
++            quantization_parameter: 22,
++            progressive: false,
++            quality: 100,
++        })
++        .collect();
++    Avc420BitmapStream {
++        rectangles,
++        quant_qual_vals,
++        data,
++    }
++}
++
++fn wire_to_surface(codec_id: Codec1Type, destination_rectangle: ExclusiveRectangle, bitmap_data: Vec<u8>) -> GfxPdu {
++    GfxPdu::WireToSurface1(WireToSurface1Pdu {
++        surface_id: 1,
++        codec_id,
++        pixel_format: PixelFormat::XRgb,
++        destination_rectangle,
++        bitmap_data,
++    })
++}
++
++// oracle: spec MS-RDPEGFX §2.2.4.4 (regionRects are the updated parts of the frame)
++#[test]
++fn a_presenting_decoder_receives_avc420_frames_with_their_regions() {
++    let (mut client, presented) = presenting_client();
++    let regions = vec![exclusive(0, 0, 32, 16), exclusive(16, 32, 48, 64)];
++    let stream = avc420_stream(regions.clone(), &[0x00, 0x00, 0x00, 0x01, 0x65]);
++    let pdu = wire_to_surface(
++        Codec1Type::Avc420,
++        exclusive(0, 0, 48, 64),
++        encode_vec(&stream).expect("encode AVC420"),
++    );
++
++    client
++        .process(0, &encode_for_process(&pdu))
++        .expect("the frame is handed over, not decoded");
++
++    assert_eq!(
++        *presented.lock().unwrap(),
++        [(1, vec![0x00, 0x00, 0x00, 0x01, 0x65], regions)]
++    );
++}
++
++#[test]
++fn a_presenting_decoder_receives_the_destination_when_an_update_has_no_regions() {
++    let (mut client, presented) = presenting_client();
++    let stream = avc420_stream(Vec::new(), &[0x00, 0x00, 0x00, 0x01, 0x65]);
++    let pdu = wire_to_surface(
++        Codec1Type::Avc420,
++        exclusive(8, 8, 40, 24),
++        encode_vec(&stream).expect("encode AVC420"),
++    );
++
++    client
++        .process(0, &encode_for_process(&pdu))
++        .expect("the frame is handed over");
++
++    assert_eq!(presented.lock().unwrap()[0].2, [exclusive(8, 8, 40, 24)]);
++}
++
++#[test]
++fn a_presenting_decoder_gets_avc444_advertised() {
++    let presented = Presented::default();
++    let mut client = GraphicsPipelineClient::new(
++        Box::new(TestHandler::new()),
++        Some(Box::new(PresentingDecoder(presented))),
++    );
++    let messages = client.start(0).expect("start should succeed");
++    let caps_pdu = decode_caps_from_message(&messages[0]);
++    let versions: Vec<_> = caps_pdu.0.iter().map(|cap| cap.version).collect();
++    assert_eq!(versions.first(), Some(&CapabilityVersion::V10_7));
++    assert!(versions.contains(&CapabilityVersion::V8_1));
++}
++
++// oracle: spec MS-RDPEGFX §2.2.4.5 (both views are carried in one H.264 stream)
++#[test]
++fn a_presenting_decoder_decodes_both_avc444_views_and_shows_the_main_one() {
++    let (mut client, presented) = presenting_client();
++    let main_regions = vec![exclusive(0, 0, 64, 32)];
++    let stream = Avc444BitmapStream {
++        encoding: Encoding::LUMA_AND_CHROMA,
++        stream1: avc420_stream(main_regions.clone(), &[0x00, 0x00, 0x00, 0x01, 0x65, 0x01]),
++        stream2: Some(avc420_stream(
++            vec![exclusive(0, 0, 64, 64)],
++            &[0x00, 0x00, 0x00, 0x01, 0x65, 0x02],
++        )),
++    };
++    let pdu = wire_to_surface(
++        Codec1Type::Avc444,
++        exclusive(0, 0, 64, 64),
++        encode_vec(&stream).expect("encode AVC444"),
++    );
++
++    client
++        .process(0, &encode_for_process(&pdu))
++        .expect("both views are handed over");
++
++    assert_eq!(
++        *presented.lock().unwrap(),
++        [
++            (1, vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x01], main_regions),
++            (1, vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x02], Vec::new()),
++        ]
++    );
++}
++
++#[test]
++fn a_presenting_decoder_decodes_a_chroma_only_avc444_update_without_showing_it() {
++    let (mut client, presented) = presenting_client();
++    let stream = Avc444BitmapStream {
++        encoding: Encoding::CHROMA,
++        stream1: avc420_stream(vec![exclusive(0, 0, 64, 64)], &[0x00, 0x00, 0x00, 0x01, 0x41]),
++        stream2: None,
++    };
++    let pdu = wire_to_surface(
++        Codec1Type::Avc444v2,
++        exclusive(0, 0, 64, 64),
++        encode_vec(&stream).expect("encode AVC444"),
++    );
++
++    client
++        .process(0, &encode_for_process(&pdu))
++        .expect("the auxiliary view is handed over");
++
++    assert_eq!(
++        *presented.lock().unwrap(),
++        [(1, vec![0x00, 0x00, 0x00, 0x01, 0x41], Vec::new())]
++    );
++}
++
+ #[test]
+ fn client_frame_ordering_via_process() {
+     let mut client = setup_active_client_with_surface(None, 1, 4, 4);
+-- 
+2.54.0 (Apple Git-157)
+

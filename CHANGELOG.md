@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- RDP windows: **New RDP** (command palette `NR`, desktop menu or window
+  type menu) opens a remote desktop to an existing RDP server, such as
+  Windows Remote Desktop, through the Tessera host. Tessera shows the
+  server's certificate for you to trust, warns if it later changes, and
+  asks for the password each time without saving it. Fit, 1:1 and Resize
+  scaling, Ctrl+Alt+Del and Windows-key buttons, and clipboard text in
+  both directions are included. VNC windows are unchanged.
+
+- RDP windows opened over HTTPS receive the remote desktop as H.264 video
+  when the server sends it, decoded by the browser (in hardware on an iPad)
+  and drawn straight onto the window; the toolbar shows **H.264** while it is
+  in use. With Remotr on macOS, an iPad shows each frame about 3 ms after it
+  arrives and needs much less bandwidth than with bitmap updates. Over plain
+  HTTP, or with a server that doesn't send H.264, RDP windows use bitmap
+  updates. RDP windows show the browser's own pointer shapes. Tessera bundles
+  a patched build of IronRDP, the remote desktop client inside it, for this;
+  `third_party/ironrdp/README.md` explains how to rebuild it.
+
 - A new terminal window opens centered and half the size of the desktop
   each way (at least 360×220), from the command palette, a shortcut, the
   update prompt or the phone, and so do New Browser and New VNC from the

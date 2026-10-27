@@ -160,24 +160,30 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	}
 
 	ws.Panes = []Pane{{
-		ID:             "pane-first",
-		Title:          "First",
-		BufferText:     "pwd\noutput\n",
-		EditorMode:     "normal",
-		FontSize:       18,
-		Cwd:            defaultCwd,
-		LastExportPath: filepath.Join(defaultCwd, "first.txt"),
-		EditorTabs:     `{"active":0,"tabs":[{"path":"first.txt","text":"pwd\noutput\n"}]}`,
-		BrowserURL:     "http://localhost:5000/",
-		VNCTarget:      "desktop.example:5901",
-		VNCViewOnly:    true,
-		VNCScaleMode:   "one-to-one",
-		Minimized:      true,
-		X:              11,
-		Y:              22,
-		Width:          333,
-		Height:         222,
-		ZIndex:         4,
+		ID:                    "pane-first",
+		Title:                 "First",
+		BufferText:            "pwd\noutput\n",
+		EditorMode:            "normal",
+		FontSize:              18,
+		Cwd:                   defaultCwd,
+		LastExportPath:        filepath.Join(defaultCwd, "first.txt"),
+		EditorTabs:            `{"active":0,"tabs":[{"path":"first.txt","text":"pwd\noutput\n"}]}`,
+		BrowserURL:            "http://localhost:5000/",
+		VNCTarget:             "desktop.example:5901",
+		VNCViewOnly:           true,
+		VNCScaleMode:          "one-to-one",
+		RDPTarget:             "windows.example:3390",
+		RDPUsername:           "jax",
+		RDPDomain:             "LAB",
+		RDPScaleMode:          "resize",
+		RDPTrustedTarget:      "windows.example:3390",
+		RDPTrustedFingerprint: "ab12",
+		Minimized:             true,
+		X:                     11,
+		Y:                     22,
+		Width:                 333,
+		Height:                222,
+		ZIndex:                4,
 	}, {
 		ID:         "pane-test",
 		Title:      "Second",
@@ -230,6 +236,12 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	}
 	if loaded.Panes[0].VNCTarget != "desktop.example:5901" || !loaded.Panes[0].VNCViewOnly || loaded.Panes[0].VNCScaleMode != "one-to-one" {
 		t.Fatalf("first pane VNC settings were not persisted: %+v", loaded.Panes[0])
+	}
+	if first := loaded.Panes[0]; first.RDPTarget != "windows.example:3390" || first.RDPUsername != "jax" || first.RDPDomain != "LAB" || first.RDPScaleMode != "resize" || first.RDPTrustedTarget != "windows.example:3390" || first.RDPTrustedFingerprint != "ab12" {
+		t.Fatalf("first pane RDP settings were not persisted: %+v", first)
+	}
+	if second := loaded.Panes[1]; second.RDPScaleMode != "fit" || second.RDPTarget != "" {
+		t.Fatalf("second pane RDP defaults = %+v", second)
 	}
 	if loaded.Panes[0].EditorMode != "normal" {
 		t.Fatalf("first pane editor mode = %q, want normal", loaded.Panes[0].EditorMode)

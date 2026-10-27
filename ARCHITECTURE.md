@@ -171,6 +171,9 @@ Primary data flows:
   framework.
 - **ghostty-web:** browser terminal renderer.
 - **esbuild:** produces committed terminal, audio-decoder and VNC bundles.
+- **IronRDP (WebAssembly):** browser RDP client in the RDP pane, committed
+  prebuilt from IronRDP `master` with Tessera's patches (`third_party/ironrdp`).
+- **WebCodecs:** the browser's H.264 decoder for RDP panes opened over HTTPS.
 - **getlantern/systray:** Windows and macOS notification-area controls. Linux
   releases exclude the tray implementation and remain CGO-free.
 - **GitHub Actions and GitHub Releases:** tagged builds, release assets, and the
@@ -208,6 +211,21 @@ Current pane types:
   Go host bridges to the requested TCP target. Targets and view preferences are
   durable; credentials and server-verification decisions exist only in the
   browser page.
+- **RDP:** manually connected IronRDP remote-desktop view. The pane first asks
+  the host for the server's TLS certificate (`/api/rdp-proxy/certificate`) and
+  has the user trust its SHA-256 fingerprint. A five-minute, single-use
+  capability bound to the target and that fingerprint then authorizes one
+  same-origin WebSocket at `/api/rdp-proxy/connect/<capability>`. The host
+  speaks RDCleanPath on it: it forwards the client's X.224 Connection Request,
+  completes TLS with the server, refuses a different certificate, returns the
+  X.224 confirm and certificate chain, and relays the decrypted stream; CredSSP
+  runs in the browser. Target, user name, domain, scale mode and the trusted
+  fingerprint are durable; the password exists only in the browser page. In a
+  secure context with WebCodecs H.264 support, the pane also offers the
+  Graphics Pipeline (MS-RDPEGFX) with H.264: IronRDP hands each H.264 picture
+  and its regions to `web/rdp-h264.mjs`, which declares the stream free of
+  reordering (`web/rdp-h264-sps.mjs`), decodes it and draws the regions onto
+  the canvas; other updates still go through IronRDP's compositor.
 The SPA also implements overlapping window geometry, active-pane and z-order
 state, minimize/maximize/dock/restore behavior, the Deskbar, command palette,
 settings, themes, background images, user selection, named-session management,
@@ -473,7 +491,7 @@ Passwords over plain HTTP from another device are refused unless
 `-allow-http-sign-in` is set. Browser-stored user selection and the `-users`
 roster remain convenience mechanisms, not proof of identity.
 
-Live connections: terminal and VNC websockets register with the sign-in they
+Live connections: terminal, VNC and RDP websockets register with the sign-in they
 were opened under. Sign-out, device revocation and `logout -all` close them at
 once with code 4401; while any are open, their sign-ins are re-checked every 30
 seconds for expiry or account changes. The page then shows a sign-in dialog
@@ -516,6 +534,9 @@ Key Security Tools/Practices:
   TCP destination reachable from the host. Capability tokens, same-origin
   checks, rate limiting, and audit records do not replace authentication or
   destination policy, so deployments must remain restricted to trusted users.
+  The RDP gateway is the same exception; it additionally terminates the
+  server's TLS, so RDP sessions are only as private as the browser's
+  connection to Tessera.
 - Reject cross-origin terminal WebSocket connections. This is defense in depth,
   not authentication.
 - Scope process teardown by workspace so deleting one session does not terminate
@@ -592,7 +613,7 @@ runs the Go test suite on every target runner.
 - **API:** Application Programming Interface exposed by the local Go host.
 - **CGO:** Go interoperability with C; required by the current macOS tray build.
 - **CWD:** Current working directory used by a pane's command or terminal.
-- **Pane:** A movable workspace window containing a terminal, browser, or VNC view. Terminal panes also receive live
+- **Pane:** A movable workspace window containing a terminal, browser, VNC or RDP view. Terminal panes also receive live
   audio effects with local activation and mute controls.
 - **PTY:** Pseudo-terminal backing an interactive terminal pane.
 - **Session:** A named, persisted desktop owned by one configured user entry.

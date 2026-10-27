@@ -56,15 +56,23 @@ type Pane struct {
 	VNCTarget         string `json:"vncTarget"`
 	VNCViewOnly       bool   `json:"vncViewOnly"`
 	VNCScaleMode      string `json:"vncScaleMode"`
-	IsFull            bool   `json:"isFull"`
-	RestoreBox        string `json:"restoreBox"`
-	Minimized         bool   `json:"minimized"`
-	X                 int    `json:"x"`
-	Y                 int    `json:"y"`
-	Width             int    `json:"width"`
-	Height            int    `json:"height"`
-	ZIndex            int    `json:"zIndex"`
-	Position          int    `json:"position"`
+	RDPTarget         string `json:"rdpTarget"`
+	RDPUsername       string `json:"rdpUsername"`
+	RDPDomain         string `json:"rdpDomain"`
+	RDPScaleMode      string `json:"rdpScaleMode"`
+	// RDPTrustedTarget and RDPTrustedFingerprint record the one server
+	// certificate the pane's user accepted. Passwords are never stored.
+	RDPTrustedTarget      string `json:"rdpTrustedTarget"`
+	RDPTrustedFingerprint string `json:"rdpTrustedFingerprint"`
+	IsFull                bool   `json:"isFull"`
+	RestoreBox            string `json:"restoreBox"`
+	Minimized             bool   `json:"minimized"`
+	X                     int    `json:"x"`
+	Y                     int    `json:"y"`
+	Width                 int    `json:"width"`
+	Height                int    `json:"height"`
+	ZIndex                int    `json:"zIndex"`
+	Position              int    `json:"position"`
 	// BufferTextUnchanged and EditorTabsUnchanged let a save skip resending a
 	// pane's documents: the stored copy is kept and BufferText/EditorTabs above
 	// are ignored. They are request-only, so a loaded workspace never sets them.
@@ -89,6 +97,45 @@ func applyPaneVNCSettings(pane *Pane, raw string) {
 	pane.VNCTarget = settings.Target
 	pane.VNCViewOnly = settings.ViewOnly
 	pane.VNCScaleMode = settings.ScaleMode
+}
+
+type paneRDPSettings struct {
+	Target             string `json:"target,omitempty"`
+	Username           string `json:"username,omitempty"`
+	Domain             string `json:"domain,omitempty"`
+	ScaleMode          string `json:"scaleMode,omitempty"`
+	TrustedTarget      string `json:"trustedTarget,omitempty"`
+	TrustedFingerprint string `json:"trustedFingerprint,omitempty"`
+}
+
+func paneRDPSettingsJSON(pane Pane) string {
+	settings, _ := json.Marshal(paneRDPSettings{
+		Target: pane.RDPTarget, Username: pane.RDPUsername, Domain: pane.RDPDomain, ScaleMode: pane.RDPScaleMode,
+		TrustedTarget: pane.RDPTrustedTarget, TrustedFingerprint: pane.RDPTrustedFingerprint,
+	})
+	return string(settings)
+}
+
+func applyPaneRDPSettings(pane *Pane, raw string) {
+	var settings paneRDPSettings
+	_ = json.Unmarshal([]byte(raw), &settings)
+	pane.RDPTarget = settings.Target
+	pane.RDPUsername = settings.Username
+	pane.RDPDomain = settings.Domain
+	pane.RDPScaleMode = settings.ScaleMode
+	pane.RDPTrustedTarget = settings.TrustedTarget
+	pane.RDPTrustedFingerprint = settings.TrustedFingerprint
+}
+
+// normalizePaneDisplayModes keeps the VNC and RDP scale modes to the values
+// the panes understand.
+func normalizePaneDisplayModes(pane *Pane) {
+	if pane.VNCScaleMode != "one-to-one" {
+		pane.VNCScaleMode = "fit"
+	}
+	if pane.RDPScaleMode != "one-to-one" && pane.RDPScaleMode != "resize" {
+		pane.RDPScaleMode = "fit"
+	}
 }
 
 func (s *Store) LoadDefaultWorkspace(ctx context.Context, defaultCwd string) (*Workspace, error) {
@@ -150,7 +197,7 @@ WHERE id = ?`, id).Scan(&ws.ID, &ws.Revision, &ws.OwnerID, &ws.Name, &ws.ActiveP
 	ws.ThemeID = normalizeThemeID(ws.ThemeID)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, rdp_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ?
 ORDER BY position ASC, created_at ASC`, id)
@@ -161,17 +208,16 @@ ORDER BY position ASC, created_at ASC`, id)
 
 	for rows.Next() {
 		var pane Pane
-		var vncSettings string
-		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.TerminalColorMode, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.BrowserURL, &vncSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
+		var vncSettings, rdpSettings string
+		if err := rows.Scan(&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.TerminalColorMode, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.BrowserURL, &vncSettings, &rdpSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position); err != nil {
 			return nil, fmt.Errorf("scan pane: %w", err)
 		}
 		applyPaneVNCSettings(&pane, vncSettings)
+		applyPaneRDPSettings(&pane, rdpSettings)
 		if pane.Kind == "" {
 			pane.Kind = "terminal"
 		}
-		if pane.VNCScaleMode != "one-to-one" {
-			pane.VNCScaleMode = "fit"
-		}
+		normalizePaneDisplayModes(&pane)
 		ws.Panes = append(ws.Panes, pane)
 	}
 	if err := rows.Err(); err != nil {
@@ -204,22 +250,21 @@ func (s *Store) LoadPane(ctx context.Context, workspaceID, paneID string) (*Pane
 		return nil, errors.New("pane id is required")
 	}
 	var pane Pane
-	var vncSettings string
+	var vncSettings, rdpSettings string
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
+SELECT id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, rdp_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position
 FROM panes
 WHERE workspace_id = ? AND id = ?`, workspaceID, paneID).Scan(
-		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.TerminalColorMode, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.BrowserURL, &vncSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
+		&pane.ID, &pane.Kind, &pane.Title, &pane.BufferText, &pane.EditorMode, &pane.FontSize, &pane.TerminalColorMode, &pane.Cwd, &pane.LastExportPath, &pane.EditorTabs, &pane.BrowserURL, &vncSettings, &rdpSettings, &pane.IsFull, &pane.RestoreBox, &pane.Minimized, &pane.X, &pane.Y, &pane.Width, &pane.Height, &pane.ZIndex, &pane.Position)
 	if err != nil {
 		return nil, err
 	}
 	applyPaneVNCSettings(&pane, vncSettings)
+	applyPaneRDPSettings(&pane, rdpSettings)
 	if pane.Kind == "" {
 		pane.Kind = "terminal"
 	}
-	if pane.VNCScaleMode != "one-to-one" {
-		pane.VNCScaleMode = "fit"
-	}
+	normalizePaneDisplayModes(&pane)
 	return &pane, nil
 }
 
@@ -357,9 +402,7 @@ WHERE id = ? AND (revision = ? OR (revision = ? AND ? <> ''))`,
 		if pane.Kind == "" {
 			pane.Kind = "terminal"
 		}
-		if pane.VNCScaleMode != "one-to-one" {
-			pane.VNCScaleMode = "fit"
-		}
+		normalizePaneDisplayModes(&pane)
 		if pane.Width < 1 {
 			pane.Width = 360
 		}
@@ -373,8 +416,8 @@ WHERE id = ? AND (revision = ? OR (revision = ? AND ? <> ''))`,
 		seen[pane.ID] = true
 
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO panes (id, workspace_id, kind, title, buffer_text, editor_mode, font_size, terminal_color_mode, cwd, last_export_path, editor_tabs, browser_url, vnc_settings, rdp_settings, is_full, restore_box, minimized, x, y, width, height, z_index, position, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   kind = excluded.kind,
   title = excluded.title,
@@ -387,6 +430,7 @@ ON CONFLICT(id) DO UPDATE SET
   editor_tabs = CASE WHEN ? THEN panes.editor_tabs ELSE excluded.editor_tabs END,
   browser_url = excluded.browser_url,
   vnc_settings = excluded.vnc_settings,
+  rdp_settings = excluded.rdp_settings,
   is_full = excluded.is_full,
   restore_box = excluded.restore_box,
   minimized = excluded.minimized,
@@ -397,7 +441,7 @@ ON CONFLICT(id) DO UPDATE SET
   z_index = excluded.z_index,
   position = excluded.position,
   updated_at = excluded.updated_at`,
-			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.TerminalColorMode, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.BrowserURL, paneVNCSettingsJSON(pane), pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now,
+			pane.ID, ws.ID, pane.Kind, pane.Title, pane.BufferText, pane.EditorMode, pane.FontSize, pane.TerminalColorMode, pane.Cwd, pane.LastExportPath, pane.EditorTabs, pane.BrowserURL, paneVNCSettingsJSON(pane), paneRDPSettingsJSON(pane), pane.IsFull, pane.RestoreBox, pane.Minimized, pane.X, pane.Y, pane.Width, pane.Height, pane.ZIndex, pane.Position, now, now,
 			pane.BufferTextUnchanged, pane.EditorTabsUnchanged); err != nil {
 			return fmt.Errorf("upsert pane %s: %w", pane.ID, err)
 		}

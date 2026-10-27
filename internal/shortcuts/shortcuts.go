@@ -15,7 +15,7 @@ const MaxCommandBytes = 16 * 1024
 
 // Keep this list aligned with the static command palette. One-letter built-ins
 // also reserve their prefix because the Command Wheel dispatches them immediately.
-var ReservedCodes = []string{"HP", "BL", "NN", "RV", "NB", "NV", "NX", "PW", "OO", "MM", "MN", "DT", "DL", "DR", "DB", "DD", "WT", "HB", "S", "TS", "LH", "UP", "CS"}
+var ReservedCodes = []string{"HP", "BL", "NN", "RV", "NB", "NV", "NR", "NX", "PW", "OO", "MM", "MN", "DT", "DL", "DR", "DB", "DD", "WT", "HB", "S", "TS", "LH", "UP", "CS"}
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 var codePattern = regexp.MustCompile(`^[A-Z]{2}$`)
 var switchPattern = regexp.MustCompile(`^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$`)

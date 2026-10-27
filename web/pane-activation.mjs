@@ -51,6 +51,8 @@ export function focusPane(pane) {
       : pane.browser?.address || target;
   } else if (pane.kind === "vnc") {
     target = pane.vnc?.rfb || pane.vnc?.address || target;
+  } else if (pane.kind === "rdp") {
+    target = pane.rdp?.session ? pane.rdp.canvas : pane.rdp?.address || target;
   } else if (pane.kind === "audio") {
     target = pane.audio?.play && !pane.audio.play.disabled ? pane.audio.play : target;
   }

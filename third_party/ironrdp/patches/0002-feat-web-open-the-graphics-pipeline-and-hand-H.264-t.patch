@@ -1,0 +1,299 @@
+From 74c315eed983674505fe95b3d47101363b9d5a2c Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Tue, 27 Oct 2026 13:51:15 -0500
+Subject: [PATCH 2/3] feat(web): open the graphics pipeline and hand H.264 to
+ JavaScript
+
+Two session builder extensions:
+
+- `enable_egfx` advertises the Graphics Pipeline (MS-RDPEGFX) and opens its
+  dynamic channel. Without an H.264 decoder no AVC capability set is
+  advertised and the server picks among the other codecs.
+- `h264_frame_callback`, with `enable_egfx`, adds a decoder that presents
+  frames itself: each H.264 picture is called back as
+  `(data, regions, surfaceId)`, with `data` an Annex B access unit and
+  `regions` packing `[x, y, width, height]` per region (none means decode
+  only), so the page can decode it, for example with WebCodecs, and draw it
+  onto the canvas.
+
+A `ResetGraphics` resizes the decoded image without the
+Deactivation-Reactivation Sequence, so the canvas now follows the image's
+size before each draw and before H.264 frames go to the callback.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.lock                        |   1 +
+ crates/ironrdp-web/Cargo.toml     |   1 +
+ crates/ironrdp-web/src/canvas.rs  |  10 +++
+ crates/ironrdp-web/src/session.rs | 112 ++++++++++++++++++++++++++++--
+ 4 files changed, 120 insertions(+), 4 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index b357e757..3194c8a6 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3760,6 +3760,7 @@ dependencies = [
+  "ironrdp",
+  "ironrdp-cliprdr-format",
+  "ironrdp-core 0.3.0",
++ "ironrdp-egfx",
+  "ironrdp-futures",
+  "ironrdp-pdu",
+  "ironrdp-propertyset",
+diff --git a/crates/ironrdp-web/Cargo.toml b/crates/ironrdp-web/Cargo.toml
+index c964d7ce..8c470c09 100644
+--- a/crates/ironrdp-web/Cargo.toml
++++ b/crates/ironrdp-web/Cargo.toml
+@@ -40,6 +40,7 @@ ironrdp = { path = "../ironrdp", features = [
+ ] }
+ ironrdp-core.path = "../ironrdp-core"
+ ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
++ironrdp-egfx.path = "../ironrdp-egfx"
+ ironrdp-futures.path = "../ironrdp-futures"
+ ironrdp-pdu.path = "../ironrdp-pdu"
+ ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
+diff --git a/crates/ironrdp-web/src/canvas.rs b/crates/ironrdp-web/src/canvas.rs
+index 30ba5be7..b4719549 100644
+--- a/crates/ironrdp-web/src/canvas.rs
++++ b/crates/ironrdp-web/src/canvas.rs
+@@ -36,6 +36,16 @@ impl Canvas {
+         self.canvas.set_height(height.get());
+     }
+ 
++    /// Matches the backing store to the decoded image. A graphics pipeline `ResetGraphics` resizes
++    /// the image without the Deactivation-Reactivation Sequence that calls [`Self::resize`].
++    pub(crate) fn fit(&mut self, width: u16, height: u16) {
++        let (width, height) = (u32::from(width), u32::from(height));
++        if self.canvas.width() != width || self.canvas.height() != height {
++            self.canvas.set_width(width);
++            self.canvas.set_height(height);
++        }
++    }
++
+     /// Blits a dirty region with `put_image_data`. Forces alpha opaque first: the framebuffer isn't
+     /// guaranteed opaque (zero-init columns, QOI-RGBA) and `put_image_data` stores alpha verbatim.
+     pub(crate) fn draw(&self, buffer: &mut [u8], region: InclusiveRectangle) -> anyhow::Result<()> {
+diff --git a/crates/ironrdp-web/src/session.rs b/crates/ironrdp-web/src/session.rs
+index cb2637a3..14e13c9e 100644
+--- a/crates/ironrdp-web/src/session.rs
++++ b/crates/ironrdp-web/src/session.rs
+@@ -32,6 +32,8 @@ use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
+ use ironrdp::session::image::DecodedImage;
+ use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
+ use ironrdp_core::WriteBuf;
++use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
++use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+ use ironrdp_futures::{FramedWrite, single_sequence_step_read};
+ use rgb::AsPixels as _;
+ use tap::prelude::*;
+@@ -97,6 +99,8 @@ struct SessionBuilderInner {
+     printer_driver_name: Option<String>,
+ 
+     use_display_control: bool,
++    enable_egfx: bool,
++    h264_frame_callback: Option<js_sys::Function>,
+     enable_credssp: bool,
+     enable_standard_rdp_security: bool,
+     enable_server_pointer: bool,
+@@ -143,6 +147,8 @@ impl Default for SessionBuilderInner {
+             printer_driver_name: None,
+ 
+             use_display_control: false,
++            enable_egfx: false,
++            h264_frame_callback: None,
+             enable_credssp: true,
+             enable_standard_rdp_security: false,
+             enable_server_pointer: true,
+@@ -292,6 +298,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
+             |vmconnect: String| { self.0.borrow_mut().vmconnect = Some(vmconnect) };
+             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
+             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
++            |enable_egfx: bool| { self.0.borrow_mut().enable_egfx = enable_egfx };
++            |h264_frame_callback: JsValue| {
++                self.0.borrow_mut().h264_frame_callback = h264_frame_callback.dyn_into::<js_sys::Function>().ok();
++            };
+             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
+             |enable_standard_rdp_security: bool| {
+                 self.0.borrow_mut().enable_standard_rdp_security = enable_standard_rdp_security;
+@@ -480,6 +490,14 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
+         let enable_server_pointer = self.0.borrow().enable_server_pointer;
+         config.enable_server_pointer = enable_server_pointer;
+ 
++        let enable_egfx = self.0.borrow().enable_egfx;
++        config.support_dyn_vc_gfx_protocol = enable_egfx;
++        // With the graphics pipeline, H.264 frames go to JavaScript, which decodes and draws them.
++        let h264_frame_callback = self.0.borrow().h264_frame_callback.clone().filter(|_| enable_egfx);
++        let (h264_frames_tx, h264_frames_rx) = mpsc::unbounded();
++        let h264_frames_tx = h264_frame_callback.is_some().then_some(h264_frames_tx);
++        let h264_frames = h264_frame_callback.map(|callback| (callback, h264_frames_rx));
++
+         let (input_events_tx, input_events_rx) = mpsc::unbounded();
+ 
+         let clipboard = remote_clipboard_changed_callback.clone().map(|callback| {
+@@ -573,6 +591,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
+             printer_driver_name,
+             computer_name: client_name.clone(),
+             use_display_control,
++            enable_egfx,
++            h264_frames_tx,
+         })
+         .await?;
+ 
+@@ -599,6 +619,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
+             connection_result: RefCell::new(Some(connection_result)),
+             clipboard: RefCell::new(Some(clipboard)),
+             printer: RefCell::new(Some(printer)),
++            h264_frames: RefCell::new(h264_frames),
+         })
+     }
+ }
+@@ -648,6 +669,8 @@ pub(crate) struct Session {
+     rdp_reader: RefCell<Option<ReadHalf<WebSocket>>>,
+     clipboard: RefCell<Option<Option<WasmClipboard>>>,
+     printer: RefCell<Option<Option<WasmPrinter>>>,
++    /// The JavaScript callback that decodes and draws H.264 frames, and the frames for it.
++    h264_frames: RefCell<Option<(js_sys::Function, mpsc::UnboundedReceiver<H264Frame>)>>,
+ }
+ 
+ impl Session {
+@@ -717,6 +740,7 @@ impl iron_remote_desktop::Session for Session {
+ 
+         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
+         let mut wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
++        let mut h264_frames = self.h264_frames.borrow_mut().take();
+ 
+         let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
+ 
+@@ -972,6 +996,21 @@ impl iron_remote_desktop::Session for Session {
+                 }
+             };
+ 
++            // H.264 frames queued while processing go to JavaScript first. They draw onto the
++            // canvas directly, so it has to match a size a `ResetGraphics` changed.
++            if let Some((callback, frames)) = h264_frames.as_mut() {
++                while let Ok(frame) = frames.try_recv() {
++                    gui.fit(image.width(), image.height());
++                    let data = js_sys::Uint8Array::from(frame.data.as_slice());
++                    let regions = js_sys::Uint16Array::from(frame.regions.as_slice());
++                    if let Err(error) =
++                        callback.call3(&JsValue::NULL, &data, &regions, &JsValue::from(frame.surface_id))
++                    {
++                        warn!(?error, "H.264 frame callback failed");
++                    }
++                }
++            }
++
+             for out in outputs {
+                 match out {
+                     ActiveStageOutput::ResponseFrame(frame) => {
+@@ -980,6 +1019,7 @@ impl iron_remote_desktop::Session for Session {
+                             .context("Send frame to writer task")?;
+                     }
+                     ActiveStageOutput::GraphicsUpdate(region) => {
++                        gui.fit(image.width(), image.height());
+                         let region = extract_partial_image(&image, region, &mut draw_buffer);
+                         gui.draw(draw_buffer.filled_mut(), region)
+                             .context("draw updated region")?;
+@@ -1655,6 +1695,10 @@ struct ConnectParams {
+     /// `computer_name` when constructing the `Rdpdr` processor.
+     computer_name: String,
+     use_display_control: bool,
++    /// Advertise and open the Graphics Pipeline (MS-RDPEGFX).
++    enable_egfx: bool,
++    /// With `enable_egfx`, H.264 frames are sent here for JavaScript to decode and draw.
++    h264_frames_tx: Option<mpsc::UnboundedSender<H264Frame>>,
+ }
+ 
+ fn default_printer_driver_name() -> String {
+@@ -1705,6 +1749,8 @@ async fn connect(
+         printer_driver_name,
+         computer_name,
+         use_display_control,
++        enable_egfx,
++        h264_frames_tx,
+     }: ConnectParams,
+ ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
+     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
+@@ -1732,10 +1778,21 @@ async fn connect(
+         );
+     }
+ 
+-    if use_display_control {
+-        connector.attach_static_channel(
+-            DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+-        );
++    if use_display_control || enable_egfx {
++        let mut drdynvc = DrdynvcClient::new();
++        if use_display_control {
++            drdynvc = drdynvc.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
++        }
++        if enable_egfx {
++            // The session drains the client-side compositor into the decoded image, so the
++            // handler's per-command callbacks are unused. Without an H.264 decoder no AVC
++            // capability set is advertised, and the server picks among the other codecs.
++            struct EgfxHandler;
++            impl GraphicsPipelineHandler for EgfxHandler {}
++            let decoder = h264_frames_tx.map(|frames| -> Box<dyn H264Decoder> { Box::new(JsPresentedH264 { frames }) });
++            drdynvc = drdynvc.with_dynamic_channel(GraphicsPipelineClient::new(Box::new(EgfxHandler), decoder));
++        }
++        connector.attach_static_channel(drdynvc);
+     }
+ 
+     let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
+@@ -2014,6 +2071,53 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
+     value as u16
+ }
+ 
++/// An H.264 picture for JavaScript to decode and draw: an Annex B access unit and the surface
++/// regions it updates, as `[x, y, width, height]` quadruples. No regions means decode only.
++pub(crate) struct H264Frame {
++    surface_id: u16,
++    data: Vec<u8>,
++    regions: Vec<u16>,
++}
++
++/// An H.264 decoder that leaves decoding and drawing to JavaScript: each picture goes to the
++/// session, which hands it to the `h264_frame_callback`.
++struct JsPresentedH264 {
++    frames: mpsc::UnboundedSender<H264Frame>,
++}
++
++impl H264Decoder for JsPresentedH264 {
++    fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
++        // Unreachable: a decoder that presents frames is handed them through `present`.
++        Err(DecoderError::msg("H.264 is decoded in JavaScript"))
++    }
++
++    fn presents_frames(&self) -> bool {
++        true
++    }
++
++    fn present(&mut self, surface_id: u16, data: &[u8], regions: &[ironrdp::pdu::geometry::ExclusiveRectangle]) {
++        let regions = regions
++            .iter()
++            .flat_map(|region| {
++                [
++                    region.left,
++                    region.top,
++                    region.right.saturating_sub(region.left),
++                    region.bottom.saturating_sub(region.top),
++                ]
++            })
++            .collect();
++        let frame = H264Frame {
++            surface_id,
++            data: data.to_vec(),
++            regions,
++        };
++        if self.frames.unbounded_send(frame).is_err() {
++            warn!("H.264 frame dropped: the session is no longer reading them");
++        }
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use futures_util::io::Cursor;
+-- 
+2.54.0 (Apple Git-157)
+

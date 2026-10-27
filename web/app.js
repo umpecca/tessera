@@ -88,6 +88,22 @@ import {
   vncCredentialFields,
   vncWebSocketURL,
 } from "./vnc-pane.mjs";
+import {
+  formatRDPFingerprint,
+  normalizeRDPScaleMode,
+  normalizeRDPTarget,
+  rdpCanvasDisplaySize,
+  rdpCanvasPoint,
+  rdpCertificateTrust,
+  rdpClipboardText,
+  rdpCtrlAltDelete,
+  rdpDesktopSize,
+  rdpErrorMessage,
+  rdpScanCode,
+  rdpWebSocketURL,
+  rdpWindowsKey,
+} from "./rdp-pane.mjs";
+import { createRDPH264Presenter, rdpH264Supported } from "./rdp-h264.mjs";
 import { newWorkspaceRevision, workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
 import { activePaneOnLoad, focusPane, openTerminalWithoutFocus, paneNeedsRaise } from "./pane-activation.mjs";
 import { paneContentFields } from "./pane-content-sync.mjs";
@@ -315,6 +331,7 @@ let userSettingsRevision = "";
 let userSettingsInFlightRevision = "";
 let ghosttyModulePromise = null;
 let vncModulePromise = null;
+let rdpModulePromise = null;
 const terminalTextEncoder = new TextEncoder();
 // The terminal must render in a monospace face for column
 // alignment; keep this in sync with --tessera-font in styles.css. xterm
@@ -1157,6 +1174,7 @@ async function clearBackground() {
 }
 
 const vncPaneKind = "vnc";
+const rdpPaneKind = "rdp";
 // Which modifier the platform pastes with, since that decides whether the
 // browser will deliver a paste event on its own. userAgentData is the modern
 // signal; navigator.platform is deprecated but still the only one in some
@@ -1570,6 +1588,7 @@ window.addEventListener("pagehide", () => {
   shortcutsUI.close();
   for (const rect of rectangles) {
     disposeVNCPane(rect);
+    disposeRDPPane(rect);
     rect.terminal?.files?.dispose();
   }
 });
@@ -1809,6 +1828,13 @@ function createRectangle(x, y, width, height, options = {}) {
     vncViewOnly: Boolean(options.vncViewOnly),
     vncScaleMode: normalizeVNCScaleMode(options.vncScaleMode),
     vnc: null,
+    rdpTarget: options.rdpTarget || "",
+    rdpUsername: options.rdpUsername || "",
+    rdpDomain: options.rdpDomain || "",
+    rdpScaleMode: normalizeRDPScaleMode(options.rdpScaleMode),
+    rdpTrustedTarget: options.rdpTrustedTarget || "",
+    rdpTrustedFingerprint: options.rdpTrustedFingerprint || "",
+    rdp: null,
     isFull: Boolean(options.isFull),
     minimized: Boolean(options.minimized),
     restoreBox: options.restoreBox || null,
@@ -1981,7 +2007,7 @@ function createRectangle(x, y, width, height, options = {}) {
   cwdLabel.className = "window-status-label";
   cwdLabel.textContent =  rect.kind === browserPaneKind
         ? "url"
-      : rect.kind === vncPaneKind
+      : rect.kind === vncPaneKind || rect.kind === rdpPaneKind
         ? "target"
       : "cwd";
 
@@ -1992,11 +2018,15 @@ function createRectangle(x, y, width, height, options = {}) {
       ? rect.browserUrl
     : rect.kind === vncPaneKind
       ? rect.vncTarget
+    : rect.kind === rdpPaneKind
+      ? rect.rdpTarget
       : rect.cwd;
   cwdInput.placeholder =  rect.kind === browserPaneKind
         ? "localhost:5000"
       : rect.kind === vncPaneKind
         ? "host:5900"
+      : rect.kind === rdpPaneKind
+        ? "host:3389"
       : "host default";
   cwdInput.readOnly = true;
   cwdInput.spellcheck = false;
@@ -2004,9 +2034,11 @@ function createRectangle(x, y, width, height, options = {}) {
         ? "Browser address"
       : rect.kind === vncPaneKind
         ? "VNC target"
+      : rect.kind === rdpPaneKind
+        ? "RDP target"
       : "Pane working directory");
   cwdInput.addEventListener("pointerdown", (event) => {
-    if (rect.kind === browserPaneKind || rect.kind === vncPaneKind) {
+    if (rect.kind === browserPaneKind || rect.kind === vncPaneKind || rect.kind === rdpPaneKind) {
       return;
     }
     event.preventDefault();
@@ -2016,7 +2048,7 @@ function createRectangle(x, y, width, height, options = {}) {
     openDirectoryBrowser(rect, rect.cwd);
   });
   cwdInput.addEventListener("keydown", (event) => {
-    if (rect.kind === browserPaneKind || rect.kind === vncPaneKind) {
+    if (rect.kind === browserPaneKind || rect.kind === vncPaneKind || rect.kind === rdpPaneKind) {
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -2039,6 +2071,8 @@ function createRectangle(x, y, width, height, options = {}) {
         ? "Browser"
       : rect.kind === vncPaneKind
         ? "VNC remote desktop"
+      : rect.kind === rdpPaneKind
+        ? "RDP remote desktop"
       : rect.kind === "pending"
         ? "New window"
         : "Terminal");
@@ -2093,6 +2127,8 @@ function createRectangle(x, y, width, height, options = {}) {
     rect.browserStatusInput = cwdInput;
   } else if (rect.kind === vncPaneKind) {
     rect.vncStatusInput = cwdInput;
+  } else if (rect.kind === rdpPaneKind) {
+    rect.rdpStatusInput = cwdInput;
   } else if (rect.kind !== browserPaneKind) {
     rect.cwdInput = cwdInput;
   }
@@ -2115,6 +2151,8 @@ function createRectangle(x, y, width, height, options = {}) {
     mountBrowserPane(rect);
   } else if (rect.kind === vncPaneKind) {
     mountVNCPane(rect);
+  } else if (rect.kind === rdpPaneKind) {
+    mountRDPPane(rect);
   } else {
     body.classList.add("is-pending");
   }
@@ -2776,6 +2814,735 @@ function disposeVNCPane(rect) {
   view.remoteClipboard = "";
   view.rfb = null;
   rect.vnc = null;
+}
+
+function loadRDPModule() {
+  if (!rdpModulePromise) {
+    // A prebuilt, patched IronRDP (third_party/ironrdp). It inlines its
+    // WebAssembly as a data: URL, which the CSP permits (connect-src data:,
+    // script-src 'wasm-unsafe-eval').
+    rdpModulePromise = import("./vendor/rdp.js?v=ironrdp-7fc80c4d-tessera.1").then(async (module) => {
+      await module.init("warn");
+      return module;
+    });
+    rdpModulePromise.catch(() => {
+      rdpModulePromise = null;
+    });
+  }
+  return rdpModulePromise;
+}
+
+function mountRDPPane(rect) {
+  rect.body.classList.add("is-rdp");
+  const pane = document.createElement("div");
+  pane.className = "rdp-pane";
+  const toolbar = document.createElement("div");
+  toolbar.className = "rdp-toolbar";
+  const address = document.createElement("input");
+  address.className = "rdp-address";
+  address.type = "text";
+  address.placeholder = "host:3389";
+  address.value = rect.rdpTarget;
+  address.spellcheck = false;
+  address.setAttribute("aria-label", "RDP target");
+  const connect = browserToolbarButton("Connect", "Connect or disconnect RDP");
+  connect.classList.add("rdp-connect");
+  const ctrlAltDelete = browserToolbarButton("CAD", "Send Ctrl+Alt+Del");
+  const windowsKey = browserToolbarButton("Win", "Send the Windows key");
+  const scale = document.createElement("select");
+  scale.className = "rdp-select";
+  scale.setAttribute("aria-label", "RDP scaling");
+  for (const [value, label] of [["fit", "Fit"], ["one-to-one", "1:1"], ["resize", "Resize"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    scale.appendChild(option);
+  }
+  scale.value = rect.rdpScaleMode;
+  const sendClipboard = browserToolbarButton("↑", "Send local clipboard to remote");
+  const copyClipboard = browserToolbarButton("↓", "Copy remote clipboard locally");
+  const video = document.createElement("span");
+  video.className = "rdp-video";
+  video.textContent = "H.264";
+  video.title = "The remote desktop arrives as H.264 video, decoded by this browser";
+  video.hidden = true;
+  const message = document.createElement("div");
+  message.className = "rdp-message";
+  message.textContent = rect.rdpTarget ? "Ready to connect." : "Enter an RDP server address.";
+  const screen = document.createElement("div");
+  screen.className = "rdp-screen";
+  screen.hidden = true;
+  const canvas = document.createElement("canvas");
+  canvas.className = "rdp-canvas";
+  canvas.tabIndex = 0;
+  canvas.setAttribute("aria-label", "Remote desktop");
+  screen.appendChild(canvas);
+  const dialog = document.createElement("form");
+  dialog.className = "rdp-dialog";
+  dialog.hidden = true;
+
+  const view = {
+    pane, address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, message, screen, canvas, dialog,
+    module: null, session: null, connecting: false, attempt: 0, dialogResolve: null, intentionalDisconnect: false,
+    remoteClipboard: "", lastSentClipboard: "", clipboardRequested: false, resizeTimer: null, resizeObserver: null, canvasObserver: null,
+    pointerFrame: 0, pendingPointer: null, h264: null, h264Drawn: false,
+  };
+  rect.rdp = view;
+  toolbar.append(address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video);
+  pane.append(toolbar, message, screen, dialog);
+  rect.body.appendChild(pane);
+  updateRDPControls(rect);
+
+  address.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void connectRDPPane(rect);
+    }
+  });
+  address.addEventListener("input", () => {
+    rect.rdpTarget = address.value;
+    if (rect.rdpStatusInput) {
+      rect.rdpStatusInput.value = rect.rdpTarget;
+    }
+    scheduleWorkspaceSave();
+  });
+  connect.addEventListener("click", () => {
+    if (view.session || view.connecting) {
+      disconnectRDPPane(rect);
+    } else {
+      void connectRDPPane(rect);
+    }
+  });
+  ctrlAltDelete.addEventListener("click", () => sendRDPKeys(rect, rdpCtrlAltDelete));
+  windowsKey.addEventListener("click", () => sendRDPKeys(rect, rdpWindowsKey));
+  scale.addEventListener("change", () => {
+    rect.rdpScaleMode = normalizeRDPScaleMode(scale.value);
+    layoutRDPCanvas(rect);
+    scheduleRDPResize(rect);
+    scheduleWorkspaceSave();
+  });
+  sendClipboard.addEventListener("click", () => void sendRDPClipboard(rect));
+  copyClipboard.addEventListener("click", () => void copyRDPClipboard(rect));
+
+  canvas.addEventListener("pointerdown", (event) => {
+    if (!view.session) return;
+    event.preventDefault();
+    canvas.focus({ preventScroll: true });
+    canvas.setPointerCapture?.(event.pointerId);
+    syncRDPLockKeys(rect, event);
+    cancelRDPPointerMove(view);
+    const { DeviceEvent } = view.module.Backend;
+    sendRDPInput(rect, [rdpPointerMove(rect, event), DeviceEvent.mouseButtonPressed(event.button)]);
+  });
+  // Pointer moves arrive up to 120 times a second and IronRDP decodes on the
+  // same thread, so only the latest position is sent, once per frame.
+  canvas.addEventListener("pointermove", (event) => {
+    if (!view.session) return;
+    view.pendingPointer = { clientX: event.clientX, clientY: event.clientY };
+    view.pointerFrame ||= requestAnimationFrame(() => {
+      view.pointerFrame = 0;
+      const pointer = view.pendingPointer;
+      view.pendingPointer = null;
+      if (pointer && view.session) sendRDPInput(rect, [rdpPointerMove(rect, pointer)]);
+    });
+  });
+  for (const type of ["pointerup", "pointercancel"]) {
+    canvas.addEventListener(type, (event) => {
+      if (!view.session) return;
+      cancelRDPPointerMove(view);
+      sendRDPInput(rect, [rdpPointerMove(rect, event), view.module.Backend.DeviceEvent.mouseButtonReleased(event.button)]);
+    });
+  }
+  canvas.addEventListener("wheel", (event) => {
+    if (!view.session) return;
+    event.preventDefault();
+    const vertical = event.deltaY !== 0;
+    // RotationUnit matches deltaMode: pixel 0, line 1, page 2.
+    const unit = Math.min(Math.max(event.deltaMode, 0), 2);
+    sendRDPInput(rect, [view.module.Backend.DeviceEvent.wheelRotations(vertical, -(vertical ? event.deltaY : event.deltaX), unit)]);
+  }, { passive: false });
+  canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+  canvas.addEventListener("keydown", (event) => handleRDPKey(rect, event));
+  canvas.addEventListener("keyup", (event) => handleRDPKey(rect, event));
+  canvas.addEventListener("blur", () => view.session?.releaseAllInputs());
+
+  if (typeof ResizeObserver === "function") {
+    view.resizeObserver = new ResizeObserver(() => {
+      layoutRDPCanvas(rect);
+      scheduleRDPResize(rect);
+    });
+    view.resizeObserver.observe(screen);
+  }
+  // IronRDP sizes the canvas itself when the session starts and when the
+  // remote desktop is resized, and never calls canvasResizedCallback, so the
+  // canvas's width and height attributes are the signal to lay it out again.
+  view.canvasObserver = new MutationObserver(() => {
+    layoutRDPCanvas(rect);
+  });
+  view.canvasObserver.observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
+}
+
+function setRDPMessage(rect, text, error = false) {
+  if (!rect.rdp) {
+    return;
+  }
+  rect.rdp.message.textContent = text;
+  rect.rdp.message.classList.toggle("is-error", error);
+  rect.rdp.message.hidden = false;
+}
+
+function updateRDPControls(rect) {
+  const view = rect.rdp;
+  if (!view) {
+    return;
+  }
+  const connected = Boolean(view.session);
+  view.connect.textContent = connected ? "Disconnect" : view.connecting ? "Cancel" : "Connect";
+  view.address.disabled = connected || view.connecting;
+  view.ctrlAltDelete.disabled = !connected;
+  view.windowsKey.disabled = !connected;
+  view.sendClipboard.disabled = !connected;
+  view.copyClipboard.disabled = !view.remoteClipboard;
+  view.video.hidden = !(connected && view.h264Drawn);
+}
+
+// Fit scales the desktop into the pane; 1:1 and Resize show it unscaled.
+function layoutRDPCanvas(rect) {
+  const view = rect.rdp;
+  if (!view) {
+    return;
+  }
+  const size = rdpCanvasDisplaySize(rect.rdpScaleMode, view.canvas.width, view.canvas.height, view.screen.clientWidth, view.screen.clientHeight);
+  view.canvas.style.width = `${size.width}px`;
+  view.canvas.style.height = `${size.height}px`;
+  view.screen.classList.toggle("is-one-to-one", rect.rdpScaleMode !== "fit");
+  if (rect.rdpStatusInput) {
+    rect.rdpStatusInput.value = view.session
+      ? `${rect.rdpTarget} · ${view.canvas.width}×${view.canvas.height}`
+      : rect.rdpTarget;
+  }
+}
+
+// In Resize mode the remote desktop follows the pane's size, once the pane
+// has settled, through the Display Control channel.
+function scheduleRDPResize(rect) {
+  const view = rect.rdp;
+  if (!view) {
+    return;
+  }
+  window.clearTimeout(view.resizeTimer);
+  if (!view.session || rect.rdpScaleMode !== "resize") {
+    return;
+  }
+  view.resizeTimer = window.setTimeout(() => {
+    if (!view.session || rect.rdpScaleMode !== "resize" || !view.screen.clientWidth) return;
+    const size = rdpDesktopSize(view.screen.clientWidth, view.screen.clientHeight);
+    if (size.width === view.canvas.width && size.height === view.canvas.height) return;
+    view.session.resize(size.width, size.height);
+  }, 300);
+}
+
+function sendRDPInput(rect, events) {
+  const view = rect.rdp;
+  if (!view?.session) {
+    return;
+  }
+  const transaction = new view.module.Backend.InputTransaction();
+  for (const event of events) {
+    transaction.addEvent(event);
+  }
+  view.session.applyInputs(transaction);
+}
+
+function sendRDPKeys(rect, scanCodes) {
+  const view = rect.rdp;
+  if (!view?.session) {
+    return;
+  }
+  const { DeviceEvent } = view.module.Backend;
+  sendRDPInput(rect, [
+    ...scanCodes.map((code) => DeviceEvent.keyPressed(code)),
+    ...[...scanCodes].reverse().map((code) => DeviceEvent.keyReleased(code)),
+  ]);
+  view.canvas.focus({ preventScroll: true });
+}
+
+// A button press or release carries its own position, so a move still
+// waiting for the next frame is dropped rather than sent after it.
+function cancelRDPPointerMove(view) {
+  cancelAnimationFrame(view.pointerFrame);
+  view.pointerFrame = 0;
+  view.pendingPointer = null;
+}
+
+function rdpPointerMove(rect, event) {
+  const view = rect.rdp;
+  const point = rdpCanvasPoint(event.clientX, event.clientY, view.canvas.getBoundingClientRect(), view.canvas.width, view.canvas.height);
+  return view.module.Backend.DeviceEvent.mouseMove(point.x, point.y);
+}
+
+const rdpLockKeyCodes = new Set(["CapsLock", "NumLock", "ScrollLock", "KanaMode"]);
+
+function syncRDPLockKeys(rect, event) {
+  rect.rdp?.session?.synchronizeLockKeys(
+    event.getModifierState("ScrollLock"),
+    event.getModifierState("NumLock"),
+    event.getModifierState("CapsLock"),
+    event.getModifierState("KanaMode"),
+  );
+}
+
+function handleRDPKey(rect, event) {
+  const view = rect.rdp;
+  if (!view?.session) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  // Lock keys are mirrored from the browser's state rather than toggled, so
+  // the two sides cannot drift apart.
+  if (rdpLockKeyCodes.has(event.code)) {
+    if (event.type === "keyup") syncRDPLockKeys(rect, event);
+    return;
+  }
+  const code = rdpScanCode(event.code);
+  if (code === null) {
+    return;
+  }
+  const { DeviceEvent } = view.module.Backend;
+  sendRDPInput(rect, [event.type === "keydown" ? DeviceEvent.keyPressed(code) : DeviceEvent.keyReleased(code)]);
+  // macOS never sends keyup for keys released while Command is held, so
+  // letting go of Command releases everything still marked down.
+  if (event.type === "keyup" && appleKeyboardLayout && (event.code === "MetaLeft" || event.code === "MetaRight")) {
+    view.session.releaseAllInputs();
+  }
+}
+
+function rdpConnectionIsCurrent(rect, view, attempt) {
+  return rect.rdp === view && view.attempt === attempt && rectangles.includes(rect);
+}
+
+async function rdpProxyRequest(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `RDP proxy failed: ${response.status}`);
+  }
+  return data;
+}
+
+async function connectRDPPane(rect) {
+  const view = rect?.rdp;
+  if (!view || view.session || view.connecting) {
+    return;
+  }
+  const target = normalizeRDPTarget(view.address.value);
+  if (!target) {
+    setRDPMessage(rect, "Enter a host, host:port, or bracketed IPv6 address.", true);
+    return;
+  }
+  const attempt = ++view.attempt;
+  const current = () => rdpConnectionIsCurrent(rect, view, attempt);
+  // This attempt's H.264 presenter; view.h264 may belong to a newer attempt.
+  let h264 = null;
+  view.connecting = true;
+  view.intentionalDisconnect = false;
+  hideRDPDialog(rect);
+  updateRDPControls(rect);
+  setRDPMessage(rect, `Checking ${target}...`);
+  try {
+    const certificate = await rdpProxyRequest("/api/rdp-proxy/certificate", { workspaceId: workspaceID, target });
+    if (!current()) return;
+    rect.rdpTarget = certificate.target;
+    view.address.value = rect.rdpTarget;
+    if (rect.rdpStatusInput) {
+      rect.rdpStatusInput.value = rect.rdpTarget;
+    }
+    const trust = rdpCertificateTrust({ trustedTarget: rect.rdpTrustedTarget, trustedFingerprint: rect.rdpTrustedFingerprint }, certificate.target, certificate.fingerprint);
+    if (trust !== "trusted") {
+      if (!await confirmRDPCertificate(rect, certificate, trust)) {
+        if (current()) setRDPMessage(rect, "Connection cancelled.");
+        return;
+      }
+      rect.rdpTrustedTarget = certificate.target;
+      rect.rdpTrustedFingerprint = certificate.fingerprint;
+      scheduleWorkspaceSave();
+    }
+    const credentials = await askRDPCredentials(rect);
+    if (!credentials) {
+      if (current()) setRDPMessage(rect, "Connection cancelled.");
+      return;
+    }
+    rect.rdpUsername = credentials.username;
+    rect.rdpDomain = credentials.domain;
+    scheduleWorkspaceSave();
+    setRDPMessage(rect, `Connecting to ${certificate.target}...`);
+    const [module, proxy] = await Promise.all([
+      loadRDPModule(),
+      rdpProxyRequest("/api/rdp-proxy", { workspaceId: workspaceID, target: certificate.target, fingerprint: certificate.fingerprint }),
+    ]);
+    if (!current()) return;
+    view.module = module;
+    const { Backend } = module;
+    const area = view.screen.hidden ? view.message : view.screen;
+    const size = rdpDesktopSize(area.clientWidth, area.clientHeight);
+    const builder = new Backend.SessionBuilder();
+    builder.proxyAddress(rdpWebSocketURL(proxy.path, window.location));
+    builder.destination(certificate.target);
+    builder.serverDomain(credentials.domain);
+    builder.username(credentials.username);
+    builder.password(credentials.password);
+    // The capability path authorizes the socket; IronRDP requires a token.
+    builder.authToken("tessera");
+    builder.desktopSize(new Backend.DesktopSize(size.width, size.height));
+    builder.renderCanvas(view.canvas);
+    builder.setCursorStyleCallbackContext(view);
+    builder.setCursorStyleCallback((kind, data, hotspotX, hotspotY) => setRDPCursor(view, kind, data, hotspotX, hotspotY));
+    builder.remoteClipboardChangedCallback((data) => receiveRDPClipboard(rect, view, data));
+    builder.forceClipboardUpdateCallback(() => {
+      if (view.session) {
+        void sendRDPClipboardText(rect, view.lastSentClipboard);
+      } else {
+        view.clipboardRequested = true;
+      }
+    });
+    builder.extension(module.displayControl(true));
+    // Pointer shapes are the browser's own: with the server's, input felt
+    // slower on iPad.
+    builder.extension(module.enableServerPointer(false));
+    closeRDPH264(view);
+    if (await rdpH264Available()) {
+      if (!current()) return;
+      h264 = createRDPH264Presenter({
+        canvas: view.canvas,
+        onFirstPicture: () => {
+          view.h264Drawn = true;
+          updateRDPControls(rect);
+        },
+      });
+      view.h264 = h264;
+      // The graphics pipeline only with H.264: its other codecs are decoded
+      // in WebAssembly and are slower on iPad than the plain bitmap updates.
+      builder.extension(module.enableEgfx(true));
+      builder.extension(module.h264FrameCallback((data, regions) => h264.push(data, regions)));
+    }
+    const session = await builder.connect();
+    if (!current()) {
+      h264?.close();
+      session.shutdown();
+      return;
+    }
+    view.session = session;
+    const desktop = session.desktopSize();
+    view.canvas.width = desktop.width;
+    view.canvas.height = desktop.height;
+    view.screen.hidden = false;
+    view.message.hidden = true;
+    layoutRDPCanvas(rect);
+    view.canvas.focus({ preventScroll: true });
+    if (view.clipboardRequested) {
+      view.clipboardRequested = false;
+      void sendRDPClipboardText(rect, view.lastSentClipboard);
+    }
+    void runRDPSession(rect, view, session);
+  } catch (error) {
+    h264?.close();
+    if (current()) setRDPMessage(rect, rdpFailureMessage(error), true);
+  } finally {
+    if (view.attempt === attempt) {
+      view.connecting = false;
+      updateRDPControls(rect);
+    }
+  }
+}
+
+async function runRDPSession(rect, view, session) {
+  let text = "";
+  let failed = false;
+  try {
+    const info = await session.run();
+    text = info?.reason?.() || "";
+  } catch (error) {
+    failed = true;
+    text = rdpFailureMessage(error);
+  }
+  if (rect.rdp !== view || view.session !== session) {
+    return;
+  }
+  window.clearTimeout(view.resizeTimer);
+  closeRDPH264(view);
+  view.session = null;
+  view.screen.hidden = true;
+  layoutRDPCanvas(rect);
+  hideRDPDialog(rect);
+  if (view.intentionalDisconnect) {
+    setRDPMessage(rect, "Disconnected.");
+  } else if (failed) {
+    setRDPMessage(rect, text, true);
+  } else {
+    setRDPMessage(rect, text ? `Disconnected: ${text}` : "Disconnected.");
+  }
+  view.intentionalDisconnect = false;
+  updateRDPControls(rect);
+}
+
+let rdpH264Support = null;
+
+// H.264 needs the browser's decoder, which exists only over HTTPS. Checked
+// once per page.
+function rdpH264Available() {
+  rdpH264Support ||= rdpH264Supported();
+  return rdpH264Support;
+}
+
+function closeRDPH264(view) {
+  view.h264?.close();
+  view.h264 = null;
+  view.h264Drawn = false;
+}
+
+// IronRDP rejects with an IronError object rather than an Error.
+function rdpFailureMessage(error) {
+  if (typeof error?.kind === "function") {
+    const detail = String(error.backtrace?.() || "").split("\n")[0].slice(0, 200);
+    return rdpErrorMessage(error.kind(), error.rdcleanpathDetails?.(), detail);
+  }
+  return error?.message || "Could not connect to the RDP server.";
+}
+
+function setRDPCursor(view, kind, data, hotspotX, hotspotY) {
+  if (kind === "hidden") {
+    view.canvas.style.cursor = "none";
+  } else if (kind === "url" && data && hotspotX !== undefined && hotspotY !== undefined) {
+    view.canvas.style.cursor = `url(${data}) ${Math.round(hotspotX)} ${Math.round(hotspotY)}, default`;
+  } else {
+    view.canvas.style.cursor = "default";
+  }
+}
+
+function confirmRDPCertificate(rect, certificate, trust) {
+  const view = rect.rdp;
+  view.dialog.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = trust === "changed"
+    ? "Warning: this RDP server's certificate has changed"
+    : "Verify this RDP server's certificate";
+  const note = document.createElement("span");
+  note.textContent = trust === "changed"
+    ? "The server presented a different certificate from the one you trusted. Continue only if you know why it changed."
+    : "Check the fingerprint against the server before sending your password.";
+  const details = document.createElement("dl");
+  details.className = "rdp-certificate";
+  for (const [label, value] of [
+    ["Target", certificate.target],
+    ["Subject", certificate.subject],
+    ["Issuer", certificate.issuer],
+    ["Expires", certificate.notAfter],
+    ["SHA-256", formatRDPFingerprint(certificate.fingerprint)],
+  ]) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const definition = document.createElement("dd");
+    definition.textContent = value || "—";
+    details.append(term, definition);
+  }
+  const approve = document.createElement("button");
+  approve.type = "submit";
+  approve.textContent = trust === "changed" ? "Trust the new certificate" : "Trust and continue";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  view.dialog.append(title, note, details, approve, cancel);
+  return showRDPDialog(rect, cancel, () => true, false, trust === "changed" ? cancel : approve);
+}
+
+function askRDPCredentials(rect) {
+  const view = rect.rdp;
+  view.dialog.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = `Sign in to ${rect.rdpTarget}`;
+  const username = document.createElement("input");
+  username.type = "text";
+  username.placeholder = "User name";
+  username.autocomplete = "username";
+  username.value = rect.rdpUsername;
+  const domain = document.createElement("input");
+  domain.type = "text";
+  domain.placeholder = "Domain (optional)";
+  domain.autocomplete = "off";
+  domain.value = rect.rdpDomain;
+  const password = document.createElement("input");
+  password.type = "password";
+  password.placeholder = "Password";
+  password.autocomplete = "current-password";
+  for (const input of [username, domain, password]) {
+    input.spellcheck = false;
+    input.setAttribute("aria-label", input.placeholder);
+  }
+  view.dialog.append(title, username, domain, password);
+  if (!rdpTransportIsPrivate(window.location)) {
+    const warning = document.createElement("span");
+    warning.className = "rdp-warning";
+    warning.textContent = "This page is not served over HTTPS, so the remote desktop session crosses the network between this browser and Tessera unencrypted.";
+    view.dialog.appendChild(warning);
+  }
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = "Connect";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  view.dialog.append(submit, cancel);
+  const read = () => {
+    const credentials = { username: username.value.trim(), domain: domain.value.trim(), password: password.value };
+    password.value = "";
+    return credentials;
+  };
+  return showRDPDialog(rect, cancel, read, null, username.value ? password : username);
+}
+
+// Resolves with onSubmit()'s value, or cancelValue when the dialog is
+// cancelled or replaced.
+function showRDPDialog(rect, cancel, onSubmit, cancelValue, focus) {
+  const view = rect.rdp;
+  return new Promise((resolve) => {
+    view.dialogResolve = () => resolve(cancelValue);
+    cancel.addEventListener("click", () => hideRDPDialog(rect));
+    view.dialog.onsubmit = (event) => {
+      event.preventDefault();
+      const value = onSubmit();
+      view.dialogResolve = null;
+      hideRDPDialog(rect);
+      resolve(value);
+    };
+    view.dialog.hidden = false;
+    focus?.focus();
+  });
+}
+
+function hideRDPDialog(rect) {
+  const view = rect.rdp;
+  if (!view) return;
+  view.dialog.hidden = true;
+  view.dialog.onsubmit = null;
+  view.dialog.replaceChildren();
+  const resolve = view.dialogResolve;
+  view.dialogResolve = null;
+  resolve?.();
+}
+
+function rdpTransportIsPrivate(locationLike) {
+  return locationLike.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(locationLike.hostname);
+}
+
+function receiveRDPClipboard(rect, view, data) {
+  const items = data.items().map((item) => ({ mimeType: item.mimeType(), value: item.value() }));
+  const text = rdpClipboardText(items);
+  if (!text || rect.rdp !== view) {
+    return;
+  }
+  view.remoteClipboard = text;
+  updateRDPControls(rect);
+}
+
+async function sendRDPClipboardText(rect, text) {
+  const view = rect.rdp;
+  if (!view?.session) {
+    return;
+  }
+  const data = new view.module.Backend.ClipboardData();
+  if (text) {
+    data.addText("text/plain", text);
+  }
+  await view.session.onClipboardPaste(data);
+}
+
+function showRDPClipboardEntry(rect) {
+  const view = rect.rdp;
+  if (!view?.session) return;
+  view.dialog.replaceChildren();
+  const field = document.createElement("textarea");
+  field.placeholder = "Paste text to send to the remote desktop";
+  field.setAttribute("aria-label", "Remote clipboard text");
+  const send = document.createElement("button");
+  send.type = "submit";
+  send.textContent = "Send";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  view.dialog.append(field, send, cancel);
+  void showRDPDialog(rect, cancel, () => field.value, null, field).then((text) => {
+    if (text === null) return;
+    view.lastSentClipboard = text;
+    void sendRDPClipboardText(rect, text);
+    view.canvas.focus({ preventScroll: true });
+  });
+}
+
+async function sendRDPClipboard(rect) {
+  const view = rect.rdp;
+  if (!view?.session) return;
+  try {
+    const text = await readClipboardText();
+    if (clipboardReadFellBack) throw new Error("clipboard unavailable");
+    view.lastSentClipboard = text;
+    await sendRDPClipboardText(rect, text);
+    view.canvas.focus({ preventScroll: true });
+  } catch {
+    showRDPClipboardEntry(rect);
+  }
+}
+
+async function copyRDPClipboard(rect) {
+  const text = rect.rdp?.remoteClipboard;
+  if (!text) return;
+  if (!await writeClipboardText(text)) {
+    setWorkspaceStatus("error", "Clipboard blocked", "The remote text is available to Tessera's own Paste.");
+  }
+  rect.rdp?.canvas.focus({ preventScroll: true });
+}
+
+function disconnectRDPPane(rect) {
+  const view = rect?.rdp;
+  if (!view) return;
+  if (view.session) {
+    view.intentionalDisconnect = true;
+    view.session.shutdown();
+    return;
+  }
+  if (view.connecting) {
+    view.attempt += 1;
+    view.connecting = false;
+    hideRDPDialog(rect);
+    setRDPMessage(rect, "Connection cancelled.");
+    updateRDPControls(rect);
+  }
+}
+
+function disposeRDPPane(rect) {
+  const view = rect?.rdp;
+  if (!view) return;
+  view.attempt += 1;
+  view.intentionalDisconnect = true;
+  hideRDPDialog(rect);
+  window.clearTimeout(view.resizeTimer);
+  view.resizeObserver?.disconnect();
+  view.canvasObserver?.disconnect();
+  cancelRDPPointerMove(view);
+  closeRDPH264(view);
+  try {
+    view.session?.shutdown();
+  } catch {
+    // The session may already have ended.
+  }
+  view.session = null;
+  view.remoteClipboard = "";
+  view.lastSentClipboard = "";
+  rect.rdp = null;
 }
 
 
@@ -3513,6 +4280,12 @@ function loadWorkspace(workspace) {
         vncTarget: pane.vncTarget,
         vncViewOnly: Boolean(pane.vncViewOnly),
         vncScaleMode: pane.vncScaleMode,
+        rdpTarget: pane.rdpTarget,
+        rdpUsername: pane.rdpUsername,
+        rdpDomain: pane.rdpDomain,
+        rdpScaleMode: pane.rdpScaleMode,
+        rdpTrustedTarget: pane.rdpTrustedTarget,
+        rdpTrustedFingerprint: pane.rdpTrustedFingerprint,
         zIndex: pane.zIndex || 0,
         minimized: Boolean(pane.minimized),
         isFull: Boolean(pane.isFull),
@@ -3546,6 +4319,7 @@ function clearRectanglesForLoad() {
     disposeTerminal(rect);
     disposeBrowserPane(rect);
     disposeVNCPane(rect);
+    disposeRDPPane(rect);
     rect.element.remove();
   }
   activeRect = null;
@@ -3779,6 +4553,12 @@ function workspaceSavePayload() {
     vncTarget: rect.kind === vncPaneKind ? rect.vncTarget : "",
     vncViewOnly: rect.kind === vncPaneKind && rect.vncViewOnly,
     vncScaleMode: rect.kind === vncPaneKind ? rect.vncScaleMode : "fit",
+    rdpTarget: rect.kind === rdpPaneKind ? rect.rdpTarget : "",
+    rdpUsername: rect.kind === rdpPaneKind ? rect.rdpUsername : "",
+    rdpDomain: rect.kind === rdpPaneKind ? rect.rdpDomain : "",
+    rdpScaleMode: rect.kind === rdpPaneKind ? rect.rdpScaleMode : "fit",
+    rdpTrustedTarget: rect.kind === rdpPaneKind ? rect.rdpTrustedTarget : "",
+    rdpTrustedFingerprint: rect.kind === rdpPaneKind ? rect.rdpTrustedFingerprint : "",
     x: rect.x,
     y: rect.y,
     width: rect.width,
@@ -5662,6 +6442,8 @@ function defaultPaneTitle(kind) {
         ? "Browser"
       : kind === vncPaneKind
         ? "VNC"
+      : kind === rdpPaneKind
+        ? "RDP"
       : "Window";
   if (themeID === "operator") return base;
   let highest = 0;
@@ -5788,6 +6570,17 @@ function renderWorkspaceMenu() {
     createVNCPane(point);
   });
   workspaceMenu.appendChild(vncButton);
+
+  const rdpButton = document.createElement("button");
+  rdpButton.type = "button";
+  rdpButton.textContent = "New RDP";
+  rdpButton.className = "is-command";
+  rdpButton.addEventListener("click", () => {
+    const point = workspaceMenuPoint || { x: 80, y: tabHeight + 56 };
+    hideWorkspaceMenu();
+    createRDPPane(point);
+  });
+  workspaceMenu.appendChild(rdpButton);
 
   const shortcutsButton = directoryBrowserButton("Shortcuts...", openShortcuts);
   workspaceMenu.appendChild(shortcutsButton);
@@ -6538,7 +7331,7 @@ function showIPadHTTPGuidanceIfNeeded() {
   const explanation = document.createElement("p");
   explanation.textContent = "Tessera works over HTTP, but iPadOS limits clipboard access and other browser features on connections that are not secure.";
   const recommendation = document.createElement("p");
-  recommendation.textContent = "Set up Tessera Local HTTPS for more reliable terminal copy and paste. HTTP will remain available on port 7331 for recovery and certificate enrollment.";
+  recommendation.textContent = "Set up Tessera Local HTTPS for more reliable terminal copy and paste, and for hardware video decoding in RDP windows. HTTP will remain available on port 7331 for recovery and certificate enrollment.";
 
   const actions = document.createElement("div");
   actions.className = "rename-window-actions";
@@ -8838,6 +9631,7 @@ function buildPaletteCommands() {
   commands.push({ id: "new-terminal", label: "New Terminal", hint: "create", run: () => createTerminalPane() });
   commands.push({ id: "new-browser", label: "New Browser", hint: "localhost development server", run: () => createBrowserPane() });
   commands.push({ id: "new-vnc", label: "New VNC", hint: "remote desktop", run: () => createVNCPane() });
+  commands.push({ id: "new-rdp", label: "New RDP", hint: "Windows remote desktop", run: () => createRDPPane() });
   commands.push({ id: "next-window", label: "Next Window", hint: "Ctrl+]", run: () => focusAdjacentPane(1) });
   commands.push({ id: "previous-window", label: "Previous Window", hint: "Ctrl+[", run: () => focusAdjacentPane(-1) });
   const visiblePaneCount = rectangles.filter((rect) => rect.kind !== "pending" && !rect.minimized).length;
@@ -8948,6 +9742,7 @@ const paletteShortcutCodes = {
   "repair-terminal-view": "RV",
   "new-browser": "NB",
   "new-vnc": "NV",
+  "new-rdp": "NR",
   "manage-shortcuts": "CS",
   "next-window": "NX",
   "previous-window": "PW",
@@ -9124,6 +9919,7 @@ function renderWindowTypeMenu() {
     ["terminal", "Terminal"],
     [browserPaneKind, "Browser"],
     [vncPaneKind, "VNC"],
+    [rdpPaneKind, "RDP"],
   ];
   for (const [kind, label] of actions) {
     const button = document.createElement("button");
@@ -9142,7 +9938,7 @@ function finalizePendingRectangle(rect, kind) {
   if (!rect || rect.kind !== "pending" || !rectangles.includes(rect)) {
     return;
   }
-  const paneKind = kind === "terminal" || kind === browserPaneKind || kind === vncPaneKind
+  const paneKind = kind === "terminal" || kind === browserPaneKind || kind === vncPaneKind || kind === rdpPaneKind
     ? kind
     : "terminal";
   const box = rectangleBox(rect);
@@ -9169,6 +9965,8 @@ function workspaceMenuLabel(rect) {
         ? " [browser]"
       : rect.kind === vncPaneKind
         ? " [vnc]"
+      : rect.kind === rdpPaneKind
+        ? " [rdp]"
       : "";
   return `${name}${kindSuffix}${rect.filePendingCount ? ` [${rect.filePendingCount} file transfer${rect.filePendingCount === 1 ? "" : "s"}]` : ""}${terminalAttentionLabel(rect.terminalAttention)}`;
 }
@@ -9236,6 +10034,19 @@ function createVNCPane(point = null) {
   setRectangle(rect, rect);
   setActivePane(rect, { raise: true, focus: true });
   rect.vnc?.address.focus();
+  scheduleWorkspaceSave();
+  return rect;
+}
+
+function createRDPPane(point = null) {
+  const box = paneBox(point, 720, 480);
+  const rect = createRectangle(box.x, box.y, box.width, box.height, {
+    kind: rdpPaneKind,
+  });
+  clampIntoBoard(rect);
+  setRectangle(rect, rect);
+  setActivePane(rect, { raise: true, focus: true });
+  rect.rdp?.address.focus();
   scheduleWorkspaceSave();
   return rect;
 }
@@ -10028,6 +10839,7 @@ function destroyRectangle(rect, options = {}) {
   disposeTerminal(rect, { closeServer: options.closeServerTerminal });
   disposeBrowserPane(rect);
   disposeVNCPane(rect);
+  disposeRDPPane(rect);
   window.clearTimeout(rect.fontSizeIndicatorTimer);
   rect.fontSizeIndicatorTimer = null;
   rect.element.remove();

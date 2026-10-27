@@ -394,6 +394,11 @@ Current pane types:
   port, then choose **Connect**. The target and display preferences persist,
   but credentials remain only in the current browser page and connections are
   never restored automatically.
+- **RDP:** a Windows-style remote desktop powered by the bundled IronRDP
+  client. Enter a host with an optional port (3389 by default) and choose
+  **Connect**. Tessera shows the server's certificate for you to trust before
+  asking for a user name, optional domain and password. The target, user
+  name, domain and trusted certificate persist; the password is never saved.
 ### Browser pane limits
 
 A Browser pane shows the development server in a sandboxed frame without
@@ -436,6 +441,44 @@ pixels with scrolling. **View only** suppresses remote input. Clipboard text is
 never moved automatically: the up-arrow sends local clipboard text and the
 down-arrow copies the most recently received remote text. A visible text field
 is offered when the browser refuses clipboard access.
+
+### RDP connections
+
+RDP panes connect to an existing RDP server, such as Windows Remote Desktop,
+`xrdp` or another standard implementation, on any address the Tessera host
+can reach. The browser runs the IronRDP client; Tessera opens the TCP
+connection, performs the server's TLS handshake, and relays the session
+over the page's WebSocket (IronRDP's RDCleanPath protocol). The server must
+offer TLS or Network Level Authentication (CredSSP); servers limited to the
+legacy Standard RDP Security are refused. macOS has no built-in RDP server, so
+use a VNC pane for a Mac's own Screen Sharing.
+
+Because Tessera completes TLS with the server, the session is decrypted on the
+Tessera host and travels between the browser and Tessera inside the page's
+connection. Serve Tessera over HTTPS, or use it on loopback, when the session
+crosses a network; the sign-in dialog warns otherwise. On first connection,
+and whenever a server's certificate changes, the pane shows its subject,
+expiry and SHA-256 fingerprint; Tessera refuses to relay a connection whose
+certificate differs from the one you accepted. Like the VNC bridge, the RDP
+gateway can reach any TCP destination, so the same trusted-users rule applies.
+
+**Fit** scales the remote desktop into the window, **1:1** shows native pixels
+with scrolling, and **Resize** asks the server to change its resolution to
+match the window (servers without the Display Control channel keep their
+size). **CAD** sends Ctrl+Alt+Del and **Win** the Windows key; the Command key
+on a Mac is sent as the Windows key. Clipboard text works as in VNC panes:
+the up-arrow sends local text and the down-arrow copies the remote text.
+Audio, drive and printer redirection, RD Gateway, Kerberos and automatic
+reconnect are not included.
+
+When Tessera is opened over HTTPS (or on loopback) in a browser that can decode
+H.264, the pane offers the server the Graphics Pipeline with H.264 video. The
+browser decodes it, in hardware where it can, and draws it straight onto the
+pane, which needs far less bandwidth than bitmap updates and, on an iPad, is
+much faster; the toolbar shows **H.264** while it is in use. Over plain HTTP,
+or when the server doesn't send H.264, the pane uses bitmap updates instead.
+This has been tested with Remotr on macOS from iPad Safari. The pane shows the
+browser's own pointer shapes rather than the server's.
 
 ### Terminal output backlog
 
@@ -849,7 +892,7 @@ tessera -addr 0.0.0.0:7331 -auth=file
 - **Settings → Signed-in devices** lists this account's sign-ins, with Sign
   Out for each and Sign Out Everywhere.
 - When a sign-in ends (signed out elsewhere, expired, or its password
-  changed), open terminal and VNC connections close, and the workspace shows a
+  changed), open terminal, VNC and RDP connections close, and the workspace shows a
   sign-in dialog. Signing in there reconnects the same terminals; their
   programs keep running throughout, and pending changes are saved.
 - With `-audit-log`, sign-ins, failures, throttling, sign-outs and recovery
@@ -945,8 +988,8 @@ updates as things change while the page is open, holding one request open on
 the host rather than connecting to every terminal. Tap a card to use that
 terminal full screen; **‹** goes back to the list. **⋯** on a card or the open
 terminal sends `Ctrl+C`, renames the window or closes it, **+** starts a new
-terminal, and the session name at the top switches sessions. Browser and VNC
-windows stay on the desktop view.
+terminal, and the session name at the top switches sessions. Browser, VNC and
+RDP windows stay on the desktop view.
 
 Under an open terminal, a compose field takes what you type, dictate or let
 the phone correct, and **Send** gives it to the terminal followed by Enter
@@ -1015,7 +1058,8 @@ without changing the service command line. Choose the HTTPS listener, add every
 DNS name and LAN or VPN IP address used to open Tessera. Saving creates
 Tessera's private root CA, stores the host configuration, and reloads the
 listeners in the running process. The primary listener remains available over
-HTTP on port 7331 while HTTPS uses port 7332 by default.
+HTTP on port 7331 while HTTPS uses port 7332 by default. RDP windows need HTTPS
+for H.264 video, since browsers decode it only on secure pages.
 
 Open `http://<host-address>:7331/local-https/` to reach the enrollment page if
 the device does not trust HTTPS yet. It downloads only the public root
@@ -1064,7 +1108,14 @@ npm run build:web
 ```
 
 The VNC bundle uses noVNC 1.7.0 under MPL-2.0 and carries its upstream license
-notices beside `web/vendor/vnc.js`.
+notices beside `web/vendor/vnc.js`. The RDP bundle is IronRDP's
+`@devolutions/iron-remote-desktop-rdp` web package under MIT or Apache-2.0,
+built from an IronRDP `master` commit with Tessera's patches for H.264; both
+notices are beside `web/vendor/rdp.js`. That bundle is prebuilt rather than
+built by `npm run build:web`; `third_party/ironrdp/README.md` lists the commit
+and patches and explains how to rebuild it. After upgrading it, run
+`TESSERA_RDP_INTEROP=1 go test ./internal/httpapi -run IronRDP` to drive the
+bundled client against the gateway.
 
 Routine checks:
 

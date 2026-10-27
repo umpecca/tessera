@@ -31,9 +31,9 @@ func TestRetireAudioMigrationPreservesWorkspaceContentAndInvalidatesStaleSaves(t
 			t.Fatal(err)
 		}
 	}
-	// Current store methods build the fixture; remove their new column before
+	// Current store methods build the fixture; remove their new columns before
 	// exercising the migration from the legacy schema.
-	if _, err := db.ExecContext(ctx, `ALTER TABLE panes ADD COLUMN terminal_color_mode TEXT NOT NULL DEFAULT ''`); err != nil {
+	if _, err := db.ExecContext(ctx, `ALTER TABLE panes ADD COLUMN terminal_color_mode TEXT NOT NULL DEFAULT ''; ALTER TABLE panes ADD COLUMN rdp_settings TEXT NOT NULL DEFAULT ''`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE user_settings ADD COLUMN terminal_shell_integration_off INTEGER NOT NULL DEFAULT 0`); err != nil {
@@ -79,7 +79,7 @@ UPDATE audio_station SET source_kind = 'file', source_value = '/music.mp3';`); e
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `ALTER TABLE panes DROP COLUMN terminal_color_mode`); err != nil {
+	if _, err := db.ExecContext(ctx, `ALTER TABLE panes DROP COLUMN terminal_color_mode; ALTER TABLE panes DROP COLUMN rdp_settings`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE user_settings DROP COLUMN terminal_shell_integration_off`); err != nil {

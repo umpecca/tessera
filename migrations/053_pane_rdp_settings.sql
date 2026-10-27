@@ -1,0 +1,1 @@
+ALTER TABLE panes ADD COLUMN rdp_settings TEXT NOT NULL DEFAULT '';

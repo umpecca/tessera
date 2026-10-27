@@ -9,6 +9,7 @@ import "embed"
 //
 //go:embed index.html manifest.webmanifest app.js styles.css browser-pane.mjs vnc-pane.mjs pane-activation.mjs server-connection.mjs server-update.mjs local-https-settings.mjs ipad-http-guidance.mjs terminal-font.mjs terminal-colors.mjs terminal-block-renderer.mjs terminal-input.mjs terminal-settings.mjs terminal-keyboard.mjs terminal-osc52.mjs terminal-reconnect.mjs terminal-replica.mjs terminal-output-timing.mjs terminal-write-scheduler.mjs wheel-sensitivity.mjs oled-border-size.mjs workspace-concurrency.mjs pane-content-sync.mjs window-switcher.mjs terminal-fit-scheduler.mjs clipboard-bridge.mjs compatibility.mjs terminal-visibility.mjs extensions vendor assets
 //go:embed command-wheel.mjs shortcuts.mjs
+//go:embed rdp-pane.mjs rdp-h264.mjs rdp-h264-sps.mjs
 //go:embed window-wobble.mjs screensaver.mjs
 //go:embed terminal-audio.mjs terminal-files.mjs clipboard-image.mjs save-clipboard.mjs
 //go:embed terminal-audio-stream.mjs terminal-working-directory.mjs terminal-attention.mjs terminal-progress.mjs terminal-kitty-keyboard.mjs terminal-find.mjs

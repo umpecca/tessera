@@ -1382,13 +1382,15 @@ input {
   display: none;
 }
 
-.window-body.is-vnc {
+.window-body.is-vnc,
+.window-body.is-rdp {
   cursor: default;
   user-select: none;
   background: #202020;
 }
 
-.vnc-pane {
+.vnc-pane,
+.rdp-pane {
   position: relative;
   display: grid;
   grid-template-rows: 34px minmax(0, 1fr);
@@ -1397,7 +1399,8 @@ input {
   overflow: hidden;
 }
 
-.vnc-toolbar {
+.vnc-toolbar,
+.rdp-toolbar {
   display: flex;
   align-items: center;
   gap: 3px;
@@ -1409,7 +1412,8 @@ input {
   background: var(--chrome-bg);
 }
 
-.vnc-address {
+.vnc-address,
+.rdp-address {
   flex: 1 1 160px;
   min-width: 120px;
   height: 25px;
@@ -1421,17 +1425,31 @@ input {
   font: 12px/1 var(--tessera-font);
 }
 
-.vnc-connect {
+.vnc-connect,
+.rdp-connect {
   flex-basis: 76px;
   font-size: 11px;
 }
 
-.vnc-select {
+.vnc-select,
+.rdp-select {
   height: 25px;
   border: 1px solid var(--divider);
   background: var(--pane-bg);
   color: var(--text);
   font: 11px/1 var(--tessera-font);
+}
+
+.rdp-video {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  color: var(--muted-text);
+  font: 11px/1 var(--tessera-font);
+  white-space: nowrap;
+}
+
+.rdp-video[hidden] {
+  display: none;
 }
 
 .vnc-toggle {
@@ -1445,7 +1463,9 @@ input {
 }
 
 .vnc-screen,
-.vnc-message {
+.vnc-message,
+.rdp-screen,
+.rdp-message {
   grid-row: 2;
   min-width: 0;
   min-height: 0;
@@ -1454,16 +1474,19 @@ input {
   box-sizing: border-box;
 }
 
-.vnc-screen {
+.vnc-screen,
+.rdp-screen {
   overflow: hidden;
   background: #202020;
 }
 
-.vnc-screen.is-one-to-one {
+.vnc-screen.is-one-to-one,
+.rdp-screen.is-one-to-one {
   overflow: auto;
 }
 
-.vnc-message {
+.vnc-message,
+.rdp-message {
   display: grid;
   place-items: center;
   padding: 24px;
@@ -1473,17 +1496,22 @@ input {
   text-align: center;
 }
 
-.vnc-message.is-error {
+.vnc-message.is-error,
+.rdp-message.is-error {
   color: var(--danger-text, #b00020);
 }
 
 .vnc-message[hidden],
 .vnc-screen[hidden],
-.vnc-dialog[hidden] {
+.vnc-dialog[hidden],
+.rdp-message[hidden],
+.rdp-screen[hidden],
+.rdp-dialog[hidden] {
   display: none;
 }
 
-.vnc-dialog {
+.vnc-dialog,
+.rdp-dialog {
   position: absolute;
   z-index: 2;
   top: 48px;
@@ -1502,7 +1530,9 @@ input {
 }
 
 .vnc-dialog input,
-.vnc-dialog textarea {
+.vnc-dialog textarea,
+.rdp-dialog input,
+.rdp-dialog textarea {
   min-width: 0;
   box-sizing: border-box;
   border: 1px solid var(--divider);
@@ -1512,9 +1542,46 @@ input {
   font: 12px/1.3 var(--tessera-font);
 }
 
-.vnc-dialog textarea {
+.vnc-dialog textarea,
+.rdp-dialog textarea {
   min-height: 90px;
   resize: vertical;
+}
+
+.rdp-screen {
+  display: flex;
+  /* Drags on the canvas are remote mouse input. Without this, iPadOS turns a
+     mouse or trackpad drag into a selection of the page around the pane. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.rdp-canvas {
+  flex: none;
+  margin: auto;
+  outline: none;
+  touch-action: none;
+}
+
+.rdp-certificate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 8px;
+  margin: 0;
+}
+
+.rdp-certificate dt {
+  color: var(--muted-text);
+}
+
+.rdp-certificate dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rdp-warning {
+  color: var(--danger-text, #b00020);
 }
 
 .terminal-container {
