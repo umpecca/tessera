@@ -1,0 +1,1202 @@
+From 814b28736ee48068ac62b71f138590b0f957e178 Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Tue, 27 Oct 2026 16:14:53 -0500
+Subject: [PATCH 4/5] feat(headless): add a display-less RDP client for
+ WebAssembly hosts
+
+`ironrdp-headless` builds to `wasm32-wasip1` and runs one RDP session per
+`run` call, with the host owning the network: the host opens TCP, upgrades
+to TLS when asked (and verifies the certificate), and moves bytes through
+four imports (`tessera.recv`, `send`, `upgrade_tls`, `event`). This lets a
+server keep an RDP session open while no viewer is attached.
+
+The module runs the connection sequence and CredSSP (NTLM, no network
+client), the session including the Deactivation-Reactivation Sequence,
+keyboard, mouse, wheel and Unicode input through `ironrdp_input::Database`,
+resize through Display Control, Suppress Output and full-redraw requests.
+H.264 pictures go to the host undecoded through the presenting-decoder
+hook; other updates are reported as RGBA regions of the composited image.
+The server's auto-reconnect cookie stays inside the module, and a later run
+can present it to rejoin the same session.
+
+The host-facing byte formats live in `wire` and have unit tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.lock                          |  11 +
+ crates/ironrdp-headless/Cargo.toml  |  26 ++
+ crates/ironrdp-headless/src/lib.rs  | 654 ++++++++++++++++++++++++++++
+ crates/ironrdp-headless/src/wire.rs | 445 +++++++++++++++++++
+ 4 files changed, 1136 insertions(+)
+ create mode 100644 crates/ironrdp-headless/Cargo.toml
+ create mode 100644 crates/ironrdp-headless/src/lib.rs
+ create mode 100644 crates/ironrdp-headless/src/wire.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 3194c8a6..a22e5ea9 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3129,6 +3129,17 @@ dependencies = [
+  "yuv",
+ ]
+ 
++[[package]]
++name = "ironrdp-headless"
++version = "0.0.0"
++dependencies = [
++ "bytes",
++ "ironrdp",
++ "ironrdp-blocking",
++ "ironrdp-core 0.3.0",
++ "ironrdp-egfx",
++]
++
+ [[package]]
+ name = "ironrdp-input"
+ version = "0.8.0"
+diff --git a/crates/ironrdp-headless/Cargo.toml b/crates/ironrdp-headless/Cargo.toml
+new file mode 100644
+index 00000000..a4a4d0ac
+--- /dev/null
++++ b/crates/ironrdp-headless/Cargo.toml
+@@ -0,0 +1,26 @@
++[package]
++name = "ironrdp-headless"
++version = "0.0.0"
++description = "A display-less RDP client for WebAssembly hosts (WASI), driven through host-provided I/O"
++publish = false
++edition.workspace = true
++license.workspace = true
++homepage.workspace = true
++repository.workspace = true
++authors.workspace = true
++keywords.workspace = true
++categories.workspace = true
++
++[lib]
++doctest = false
++crate-type = ["cdylib", "rlib"]
++
++[dependencies]
++ironrdp = { path = "../ironrdp", features = ["connector", "session", "graphics", "input", "dvc", "svc", "displaycontrol", "pdu"] }
++ironrdp-blocking.path = "../ironrdp-blocking"
++ironrdp-core.path = "../ironrdp-core"
++ironrdp-egfx.path = "../ironrdp-egfx"
++bytes = "1"
++
++[lints]
++workspace = true
+diff --git a/crates/ironrdp-headless/src/lib.rs b/crates/ironrdp-headless/src/lib.rs
+new file mode 100644
+index 00000000..039ce5d6
+--- /dev/null
++++ b/crates/ironrdp-headless/src/lib.rs
+@@ -0,0 +1,654 @@
++//! A display-less RDP client for WebAssembly hosts (WASI).
++//!
++//! The host owns the network: it opens the TCP connection, upgrades it to TLS when asked, and
++//! moves bytes. This module runs IronRDP's connection sequence (CredSSP included) and session,
++//! takes input and display requests from the host, and reports what the server sends as events.
++//! One call to [`run`] drives one session to its end. The module instance keeps the server's
++//! latest auto-reconnect cookie between runs, so a later run can rejoin that session.
++//!
++//! Host imports, from the `tessera` module:
++//!
++//! - `recv(ptr, cap) -> i32` blocks until the host has a message for the session, writes it
++//!   ([`wire::parse_message`]) and returns its length, 0 when the connection is gone, or a
++//!   negative error.
++//! - `send(ptr, len) -> i32` writes bytes to the server, returning 0 or a negative error.
++//! - `upgrade_tls(ptr, cap) -> i32` upgrades the connection to TLS and writes the server's public
++//!   key, which CredSSP binds to, returning its length or a negative error. The host verifies the
++//!   server's certificate.
++//! - `event(kind, ptr, len)` reports an [`Event`].
++//!
++//! Exports: [`alloc`], for the host to place the configuration ([`wire::parse_config`]), and
++//! [`run`].
++
++#![allow(unsafe_code, reason = "the host interface is FFI")]
++
++pub mod wire;
++
++use core::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
++use std::collections::VecDeque;
++use std::io::{self, Read, Write};
++use std::sync::Mutex;
++
++use bytes::{Bytes, BytesMut};
++use ironrdp::connector::connection_activation::{ConnectionActivationFactory, ConnectionActivationState};
++use ironrdp::connector::sspi;
++use ironrdp::connector::sspi::generator::NetworkRequest;
++use ironrdp::connector::sspi::network_client::NetworkClient;
++use ironrdp::connector::{self, ClientConnector, ConnectionOutcome, Credentials, Sequence as _, ServerName};
++use ironrdp::displaycontrol::client::DisplayControlClient;
++use ironrdp::dvc::DrdynvcClient;
++use ironrdp::graphics::image_processing::PixelFormat;
++use ironrdp::input::Database;
++use ironrdp::pdu::PduHint;
++use ironrdp::pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
++use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel, client_codecs_capabilities};
++use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
++use ironrdp::pdu::rdp::headers::ShareDataPdu;
++use ironrdp::pdu::rdp::session_info::ServerAutoReconnect;
++use ironrdp::pdu::rdp::suppress_output::SuppressOutputPdu;
++use ironrdp::session::image::DecodedImage;
++use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
++use ironrdp_blocking::Framed;
++use ironrdp_core::WriteBuf;
++use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
++use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
++
++use self::wire::{Config, End, Input, Message};
++
++/// The latest auto-reconnect cookie the server issued. Its random bits are credential material, so
++/// it never leaves the module: a run with `rejoin` presents it instead.
++static RECONNECT_COOKIE: Mutex<Option<ServerAutoReconnect>> = Mutex::new(None);
++
++/// Event kinds passed to the host's `event` import.
++#[repr(u32)]
++#[derive(Clone, Copy)]
++pub enum Event {
++    /// UTF-8 text worth logging.
++    Log = 1,
++    /// The session is active: `[width u16][height u16]`.
++    Connected = 2,
++    /// An H.264 picture ([`wire::h264_payload`]), for the viewer to decode.
++    H264 = 3,
++    /// Pixels of the composited image that changed ([`wire::image_payload`]).
++    Image = 4,
++    /// The server issued an auto-reconnect cookie: `[logon id u32]`. The cookie stays here.
++    ReconnectCookie = 5,
++    /// The remote session ID: `[u32]`.
++    SessionId = 6,
++    /// The session ended: `[`[`End`]` u8][UTF-8 reason]`.
++    Ended = 7,
++    /// The desktop changed size: `[width u16][height u16]`.
++    DesktopSize = 8,
++}
++
++impl Event {
++    #[expect(clippy::as_conversions, reason = "reads the repr(u32) discriminant")]
++    fn code(self) -> u32 {
++        self as u32
++    }
++}
++
++#[cfg(target_family = "wasm")]
++mod host {
++    #[link(wasm_import_module = "tessera")]
++    unsafe extern "C" {
++        pub(super) fn recv(ptr: *mut u8, cap: usize) -> i32;
++        pub(super) fn send(ptr: *const u8, len: usize) -> i32;
++        pub(super) fn upgrade_tls(ptr: *mut u8, cap: usize) -> i32;
++        pub(super) fn event(kind: u32, ptr: *const u8, len: usize);
++    }
++}
++
++// The host functions exist only inside a WebAssembly host; native builds are for unit tests.
++#[cfg(not(target_family = "wasm"))]
++mod host {
++    pub(super) unsafe fn recv(_ptr: *mut u8, _cap: usize) -> i32 {
++        -1
++    }
++    pub(super) unsafe fn send(_ptr: *const u8, _len: usize) -> i32 {
++        -1
++    }
++    pub(super) unsafe fn upgrade_tls(_ptr: *mut u8, _cap: usize) -> i32 {
++        -1
++    }
++    pub(super) unsafe fn event(_kind: u32, _ptr: *const u8, _len: usize) {}
++}
++
++fn emit(kind: Event, payload: &[u8]) {
++    // SAFETY: the host reads `payload.len()` bytes at `payload.as_ptr()` during the call.
++    unsafe { host::event(kind.code(), payload.as_ptr(), payload.len()) }
++}
++
++fn log(text: &str) {
++    emit(Event::Log, text.as_bytes());
++}
++
++fn emit_size(kind: Event, width: u16, height: u16) {
++    let mut payload = width.to_le_bytes().to_vec();
++    payload.extend_from_slice(&height.to_le_bytes());
++    emit(kind, &payload);
++}
++
++fn receive() -> Result<Message, String> {
++    let mut buffer = vec![0u8; 64 * 1024];
++    // SAFETY: the host writes at most `buffer.len()` bytes into `buffer`.
++    let length = unsafe { host::recv(buffer.as_mut_ptr(), buffer.len()) };
++    let length = usize::try_from(length).map_err(|_| "host recv failed".to_owned())?;
++    buffer.truncate(length);
++    wire::parse_message(&buffer)
++}
++
++fn transmit(bytes: &[u8]) -> io::Result<()> {
++    // SAFETY: the host reads `bytes.len()` bytes at `bytes.as_ptr()` during the call.
++    let status = unsafe { host::send(bytes.as_ptr(), bytes.len()) };
++    if status < 0 {
++        return Err(io::Error::other("host send failed"));
++    }
++    Ok(())
++}
++
++/// The server connection during the connection sequence. Only server bytes matter then; the host
++/// doesn't send input before `Connected`, and a quit ends the stream.
++#[derive(Default)]
++struct ServerStream {
++    unread: Vec<u8>,
++}
++
++impl Read for ServerStream {
++    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
++        while self.unread.is_empty() {
++            match receive().map_err(io::Error::other)? {
++                Message::ServerBytes(bytes) => self.unread = bytes,
++                Message::Quit | Message::End => return Ok(0),
++                _ => {}
++            }
++        }
++        let count = buf.len().min(self.unread.len());
++        buf[..count].copy_from_slice(&self.unread[..count]);
++        self.unread.drain(..count);
++        Ok(count)
++    }
++}
++
++impl Write for ServerStream {
++    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++        transmit(buf)?;
++        Ok(buf.len())
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        Ok(())
++    }
++}
++
++/// CredSSP only uses the network for Kerberos; NTLM, a password login, never does.
++struct NoNetwork;
++
++impl NetworkClient for NoNetwork {
++    fn send(&self, _request: &NetworkRequest) -> sspi::Result<Vec<u8>> {
++        Err(sspi::Error::new(
++            sspi::ErrorKind::NoAuthenticatingAuthority,
++            "this client has no network access for Kerberos",
++        ))
++    }
++}
++
++/// Hands each H.264 picture to the host instead of decoding it.
++struct HostPresentedH264;
++
++impl H264Decoder for HostPresentedH264 {
++    fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
++        // Unreachable: a decoder that presents frames is handed them through `present`.
++        Err(DecoderError::msg("H.264 is decoded by the viewer"))
++    }
++
++    fn presents_frames(&self) -> bool {
++        true
++    }
++
++    fn present(&mut self, surface_id: u16, data: &[u8], regions: &[ExclusiveRectangle]) {
++        emit(Event::H264, &wire::h264_payload(surface_id, regions, data));
++    }
++}
++
++fn connector_config(config: &Config) -> connector::Config {
++    connector::Config {
++        credentials: Credentials::UsernamePassword {
++            username: config.username.clone(),
++            password: config.password.clone(),
++        },
++        domain: config.domain.clone(),
++        enable_tls: true,
++        enable_credssp: true,
++        enable_standard_rdp_security: false,
++        keyboard_type: ironrdp::pdu::gcc::KeyboardType::IBM_ENHANCED,
++        keyboard_subtype: 0,
++        keyboard_layout: 0,
++        keyboard_functional_keys_count: 12,
++        connection_type: ironrdp::pdu::gcc::ConnectionType::Lan,
++        ime_file_name: String::new(),
++        dig_product_id: String::new(),
++        desktop_size: connector::DesktopSize {
++            width: config.width,
++            height: config.height,
++        },
++        monitor_layout: None,
++        bitmap: Some(connector::BitmapConfig {
++            color_depth: 16,
++            lossy_compression: true,
++            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
++        }),
++        client_build: 0,
++        client_name: "tessera".to_owned(),
++        // Like FreeRDP and the web client.
++        client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
++        platform: MajorPlatformType::UNSPECIFIED,
++        compression_type: None,
++        // The viewer shows its own pointer.
++        enable_server_pointer: false,
++        autologon: false,
++        enable_audio_playback: false,
++        enable_audio_capture: false,
++        request_data: None,
++        pointer_software_rendering: false,
++        multitransport_flags: None,
++        support_dyn_vc_gfx_protocol: true,
++        performance_flags: PerformanceFlags::default(),
++        desktop_scale_factor: 0,
++        desktop_physical_size: None,
++        desktop_orientation: None,
++        device_scale_factor: None,
++        monitor_extended_layout: None,
++        relative_mouse_input: false,
++        hardware_id: None,
++        license_cache: None,
++        timezone_info: TimezoneInfo::default(),
++        alternate_shell: String::new(),
++        work_dir: String::new(),
++        remote_application_mode: false,
++        rail_support_level: RailSupportLevel::SUPPORTED,
++    }
++}
++
++/// Why `run` returned.
++struct Ending(End, String);
++
++impl Ending {
++    fn error(reason: impl core::fmt::Display) -> Self {
++        Self(End::Error, reason.to_string())
++    }
++}
++
++struct Session {
++    active_stage: ActiveStage,
++    image: DecodedImage,
++    activation_factory: ConnectionActivationFactory,
++    refresh_rect_support: bool,
++    suppress_output_support: bool,
++    input: Database,
++    /// Server bytes not yet framed into PDUs.
++    pending: BytesMut,
++    /// Host messages that arrived while a reactivation was reading server bytes.
++    deferred: VecDeque<Message>,
++}
++
++impl Session {
++    fn next_message(&mut self) -> Result<Message, Ending> {
++        match self.deferred.pop_front() {
++            Some(message) => Ok(message),
++            None => receive().map_err(Ending::error),
++        }
++    }
++
++    /// Reads the next PDU the hint matches, dropping any it doesn't, as `Framed::read_by_hint`
++    /// does. Host messages other than server bytes wait in `deferred`.
++    fn read_by_hint(&mut self, hint: &dyn PduHint) -> Result<Bytes, Ending> {
++        loop {
++            if let Some((matched, length)) = hint.find_size(&self.pending).map_err(Ending::error)? {
++                if self.pending.len() >= length {
++                    let pdu = self.pending.split_to(length).freeze();
++                    if matched {
++                        return Ok(pdu);
++                    }
++                    continue;
++                }
++            }
++            match receive().map_err(Ending::error)? {
++                Message::ServerBytes(bytes) => self.pending.extend_from_slice(&bytes),
++                Message::Quit => return Err(Ending(End::Quit, "quit during reactivation".to_owned())),
++                Message::End => return Err(Ending(End::ConnectionLost, "the connection closed".to_owned())),
++                message => self.deferred.push_back(message),
++            }
++        }
++    }
++
++    /// The Deactivation-Reactivation Sequence ([MS-RDPBCGR] 1.3.1.3), after a Deactivate All PDU.
++    fn reactivate(&mut self) -> Result<(), Ending> {
++        let mut activation = self.activation_factory.create();
++        let mut buf = WriteBuf::new();
++        loop {
++            buf.clear();
++            let written = match activation.next_pdu_hint() {
++                Some(hint) => {
++                    let pdu = self.read_by_hint(hint)?;
++                    activation.step(&pdu, None, &mut buf)
++                }
++                None => activation.step_no_input(&mut buf),
++            }
++            .map_err(|error| Ending::error(format!("reactivation: {error}")))?;
++            if let Some(length) = written.size() {
++                transmit(&buf[..length]).map_err(Ending::error)?;
++            }
++            if let ConnectionActivationState::Finalized {
++                desktop_size,
++                share_id,
++                static_channel_chunk_size,
++                enable_server_pointer,
++                pointer_software_rendering,
++                refresh_rect_support,
++                suppress_output_support,
++                window_support_level,
++                ..
++            } = activation.connection_activation_state()
++            {
++                self.image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
++                if !self.active_stage.reactivate(
++                    activation.io_channel_id(),
++                    activation.user_channel_id(),
++                    share_id,
++                    enable_server_pointer,
++                    pointer_software_rendering,
++                    static_channel_chunk_size,
++                ) {
++                    return Err(Ending::error("reactivation: invalid static channel chunk size"));
++                }
++                self.active_stage.set_window_support_level(window_support_level);
++                self.refresh_rect_support = refresh_rect_support;
++                self.suppress_output_support = suppress_output_support;
++                emit_size(Event::DesktopSize, desktop_size.width, desktop_size.height);
++                log("reactivated");
++                return Ok(());
++            }
++        }
++    }
++
++    fn handle(&mut self, outputs: Vec<ActiveStageOutput>) -> Result<(), Ending> {
++        for output in outputs {
++            match output {
++                ActiveStageOutput::ResponseFrame(bytes) => transmit(&bytes).map_err(Ending::error)?,
++                ActiveStageOutput::GraphicsUpdate(region) => {
++                    if let Some(payload) = wire::image_payload(self.image.data(), self.image.width(), &region) {
++                        emit(Event::Image, &payload);
++                    }
++                }
++                ActiveStageOutput::AutoReconnectCookie(cookie) => {
++                    emit(Event::ReconnectCookie, &cookie.logon_id.to_le_bytes());
++                    if let Ok(mut slot) = RECONNECT_COOKIE.lock() {
++                        *slot = Some(cookie);
++                    }
++                }
++                ActiveStageOutput::SessionId(id) => emit(Event::SessionId, &id.to_le_bytes()),
++                ActiveStageOutput::AutoReconnectFailed => log("the server rejected the auto-reconnect cookie"),
++                ActiveStageOutput::LogonErrors(errors) => log(&format!("logon errors: {errors:?}")),
++                ActiveStageOutput::DeactivateAll => self.reactivate()?,
++                ActiveStageOutput::ServerRedirection(_) => {
++                    return Err(Ending::error(
++                        "the server redirected the session, which is not supported",
++                    ));
++                }
++                ActiveStageOutput::Terminate(reason) => return Err(Ending(End::Server, reason.to_string())),
++                _ => {}
++            }
++        }
++        Ok(())
++    }
++
++    /// Processes the server bytes in `pending` that form whole PDUs.
++    fn process_pending(&mut self) -> Result<(), Ending> {
++        while let Some(info) = ironrdp::pdu::find_size(&self.pending).map_err(Ending::error)? {
++            if self.pending.len() < info.length {
++                break;
++            }
++            let frame = self.pending.split_to(info.length);
++            let size = (self.image.width(), self.image.height());
++            let outputs = self
++                .active_stage
++                .process(&mut self.image, info.action, &frame, None)
++                .map_err(Ending::error)?;
++            self.handle(outputs)?;
++            // A graphics pipeline ResetGraphics resizes the image without a reactivation.
++            if (self.image.width(), self.image.height()) != size {
++                emit_size(Event::DesktopSize, self.image.width(), self.image.height());
++            }
++        }
++        Ok(())
++    }
++
++    fn apply_input(&mut self, inputs: Vec<Input>) -> Result<(), Ending> {
++        let mut operations = Vec::new();
++        let mut events = Vec::new();
++        for input in inputs {
++            match input {
++                Input::Operation(operation) => operations.push(operation),
++                Input::ReleaseAll => {
++                    events.extend(self.input.apply(operations.drain(..)));
++                    events.extend(self.input.release_all());
++                }
++            }
++        }
++        events.extend(self.input.apply(operations));
++        if events.is_empty() {
++            return Ok(());
++        }
++        let outputs = self
++            .active_stage
++            .process_fastpath_input(&mut self.image, &events)
++            .map_err(Ending::error)?;
++        self.handle(outputs)
++    }
++
++    fn suppress_output(&mut self, allow: bool) -> Result<(), Ending> {
++        let desktop_rect = allow.then(|| InclusiveRectangle {
++            left: 0,
++            top: 0,
++            right: self.image.width().saturating_sub(1),
++            bottom: self.image.height().saturating_sub(1),
++        });
++        let mut frame = WriteBuf::new();
++        self.active_stage
++            .encode_static(
++                &mut frame,
++                ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect }),
++            )
++            .map_err(Ending::error)?;
++        transmit(frame.filled()).map_err(Ending::error)
++    }
++
++    fn run(&mut self) -> Ending {
++        loop {
++            if let Err(ending) = self.process_pending() {
++                return ending;
++            }
++            let result = match self.next_message() {
++                Ok(Message::ServerBytes(bytes)) => {
++                    self.pending.extend_from_slice(&bytes);
++                    Ok(())
++                }
++                Ok(Message::SuppressOutput { allow }) => self.suppress_output(allow),
++                Ok(Message::Input(inputs)) => self.apply_input(inputs),
++                Ok(Message::Resize { width, height }) => {
++                    match self
++                        .active_stage
++                        .encode_resize(u32::from(width), u32::from(height), None, None)
++                    {
++                        Some(frame) => frame
++                            .map_err(Ending::error)
++                            .and_then(|frame| transmit(&frame).map_err(Ending::error)),
++                        None => {
++                            log("the server doesn't support resizing");
++                            Ok(())
++                        }
++                    }
++                }
++                Ok(Message::Refresh) => self
++                    .active_stage
++                    .request_full_redraw(
++                        self.image.width(),
++                        self.image.height(),
++                        self.refresh_rect_support,
++                        self.suppress_output_support,
++                    )
++                    .map_err(Ending::error)
++                    .and_then(|frames| {
++                        frames
++                            .iter()
++                            .try_for_each(|frame| transmit(frame).map_err(Ending::error))
++                    }),
++                Ok(Message::Quit) => {
++                    let shutdown = self.active_stage.graceful_shutdown().map_err(Ending::error);
++                    let sent = shutdown.and_then(|outputs| {
++                        outputs.iter().try_for_each(|output| match output {
++                            ActiveStageOutput::ResponseFrame(bytes) => transmit(bytes).map_err(Ending::error),
++                            _ => Ok(()),
++                        })
++                    });
++                    return match sent {
++                        Ok(()) => Ending(End::Quit, "quit".to_owned()),
++                        Err(ending) => ending,
++                    };
++                }
++                Ok(Message::End) => return Ending(End::ConnectionLost, "the connection closed".to_owned()),
++                Err(ending) => return ending,
++            };
++            if let Err(ending) = result {
++                return ending;
++            }
++        }
++    }
++}
++
++fn connect(config: &Config) -> Result<Session, Ending> {
++    struct EgfxHandler;
++    impl GraphicsPipelineHandler for EgfxHandler {}
++
++    let decoder = config
++        .h264
++        .then(|| -> Box<dyn H264Decoder> { Box::new(HostPresentedH264) });
++    let mut connector = ClientConnector::new(
++        connector_config(config),
++        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
++    );
++    if config.rejoin {
++        let cookie = RECONNECT_COOKIE
++            .lock()
++            .map_err(|_| Ending::error("cookie lock poisoned"))?
++            .clone();
++        match cookie {
++            Some(cookie) => {
++                log(&format!(
++                    "rejoining logon {} with its auto-reconnect cookie",
++                    cookie.logon_id
++                ));
++                connector = connector.with_auto_reconnect_cookie(cookie);
++            }
++            None => log("no auto-reconnect cookie to rejoin with"),
++        }
++    }
++    connector.attach_static_channel(
++        DrdynvcClient::new()
++            .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
++            .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(EgfxHandler), decoder)),
++    );
++
++    let mut framed = Framed::new(ServerStream::default());
++    let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector)
++        .map_err(|error| Ending::error(format!("connect: {error}")))?;
++    let stream = framed.into_inner_no_leftover();
++
++    let mut public_key = vec![0u8; 16 * 1024];
++    // SAFETY: the host writes at most `public_key.len()` bytes into `public_key`.
++    let length = unsafe { host::upgrade_tls(public_key.as_mut_ptr(), public_key.len()) };
++    let length = usize::try_from(length).map_err(|_| Ending::error("TLS upgrade failed"))?;
++    public_key.truncate(length);
++
++    let upgraded = ironrdp_blocking::mark_as_upgraded(should_upgrade, &mut connector);
++    let mut framed = Framed::new(stream);
++    let outcome = ironrdp_blocking::connect_finalize(
++        upgraded,
++        connector,
++        &mut framed,
++        &mut NoNetwork,
++        ServerName::new(config.server_name.clone()),
++        public_key,
++        None,
++    )
++    .map_err(|error| Ending::error(format!("connect: {error}")))?;
++    let ConnectionOutcome::Connected(connection_result) = outcome else {
++        return Err(Ending::error(
++            "the server redirected the connection, which is not supported",
++        ));
++    };
++
++    emit_size(
++        Event::Connected,
++        connection_result.desktop_size.width,
++        connection_result.desktop_size.height,
++    );
++    let image = DecodedImage::new(
++        PixelFormat::RgbA32,
++        connection_result.desktop_size.width,
++        connection_result.desktop_size.height,
++    );
++    let active_stage = ActiveStageBuilder {
++        static_channels: connection_result.static_channels,
++        user_channel_id: connection_result.user_channel_id,
++        io_channel_id: connection_result.io_channel_id,
++        message_channel_id: connection_result.message_channel_id,
++        share_id: connection_result.share_id,
++        compression_type: connection_result.compression_type,
++        enable_server_pointer: connection_result.enable_server_pointer,
++        pointer_software_rendering: connection_result.pointer_software_rendering,
++    }
++    .build();
++    let (_stream, leftover) = framed.into_inner();
++    Ok(Session {
++        active_stage,
++        image,
++        activation_factory: connection_result.activation_factory,
++        refresh_rect_support: connection_result.refresh_rect_support,
++        suppress_output_support: connection_result.suppress_output_support,
++        input: Database::new(),
++        pending: BytesMut::from(&*leftover),
++        deferred: VecDeque::new(),
++    })
++}
++
++/// Allocates `len` bytes for the host to write the configuration into. The memory is leaked: one
++/// configuration per run.
++#[unsafe(no_mangle)]
++pub extern "C" fn alloc(len: usize) -> *mut u8 {
++    Box::leak(vec![0u8; len].into_boxed_slice()).as_mut_ptr()
++}
++
++/// Runs one session from the configuration at `ptr`, until it ends. Returns the [`End`] code,
++/// which the `Ended` event also carries with the reason.
++///
++/// # Safety
++///
++/// `ptr` must point to `len` readable bytes, such as a buffer from [`alloc`].
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn run(ptr: *const u8, len: usize) -> i32 {
++    // SAFETY: the caller guarantees `len` readable bytes at `ptr`.
++    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
++    let Ending(end, reason) = match wire::parse_config(bytes) {
++        None => Ending::error("invalid configuration"),
++        Some(config) => match connect(&config) {
++            Ok(mut session) => session.run(),
++            Err(ending) => ending,
++        },
++    };
++    let mut payload = vec![end.code()];
++    payload.extend_from_slice(reason.as_bytes());
++    emit(Event::Ended, &payload);
++    i32::from(end.code())
++}
+diff --git a/crates/ironrdp-headless/src/wire.rs b/crates/ironrdp-headless/src/wire.rs
+new file mode 100644
+index 00000000..0dbbd94f
+--- /dev/null
++++ b/crates/ironrdp-headless/src/wire.rs
+@@ -0,0 +1,445 @@
++//! The byte formats between the host and the module: the configuration the host passes to `run`,
++//! the messages it returns from `recv`, and the event payloads the module reports.
++//!
++//! Integers are little-endian. Strings are `[u16 length][UTF-8]`.
++
++use ironrdp::input::{MouseButton, MousePosition, Operation, Scancode, WheelRotations};
++use ironrdp::pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
++
++/// Bytes from the server.
++pub const TAG_SERVER_BYTES: u8 = 0;
++/// `[allow u8]`: 1 resumes the server's display updates, 0 suppresses them.
++pub const TAG_SUPPRESS_OUTPUT: u8 = 1;
++/// End the session gracefully.
++pub const TAG_QUIT: u8 = 2;
++/// Input records (see [`parse_input`]).
++pub const TAG_INPUT: u8 = 3;
++/// `[width u16][height u16]`: ask the server for a new desktop size.
++pub const TAG_RESIZE: u8 = 4;
++/// Ask the server to send the whole screen again.
++pub const TAG_REFRESH: u8 = 5;
++
++const INPUT_MOUSE_MOVE: u8 = 1;
++const INPUT_MOUSE_BUTTON: u8 = 2;
++const INPUT_WHEEL: u8 = 3;
++const INPUT_KEY: u8 = 4;
++const INPUT_UNICODE: u8 = 5;
++const INPUT_RELEASE_ALL: u8 = 6;
++
++/// How a session ended, the first byte of the `Ended` event.
++#[repr(u8)]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum End {
++    /// The host asked to quit.
++    Quit = 0,
++    /// The connection closed or failed without the server ending the session: a rejoin can
++    /// resume it.
++    ConnectionLost = 1,
++    /// The server ended the session.
++    Server = 2,
++    /// The session could not start or broke.
++    Error = 3,
++}
++
++impl End {
++    #[expect(clippy::as_conversions, reason = "reads the repr(u8) discriminant")]
++    pub fn code(self) -> u8 {
++        self as u8
++    }
++}
++
++#[derive(Debug, PartialEq, Eq)]
++pub struct Config {
++    pub server_name: String,
++    pub username: String,
++    pub password: String,
++    pub domain: Option<String>,
++    pub width: u16,
++    pub height: u16,
++    /// Offer H.264, which the module hands to the host undecoded.
++    pub h264: bool,
++    /// Present the last auto-reconnect cookie, to rejoin that session.
++    pub rejoin: bool,
++}
++
++const CONFIG_H264: u8 = 1;
++const CONFIG_REJOIN: u8 = 2;
++
++struct Reader<'a>(&'a [u8]);
++
++impl<'a> Reader<'a> {
++    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
++        let (head, tail) = self.0.split_at_checked(count)?;
++        self.0 = tail;
++        Some(head)
++    }
++
++    fn u8(&mut self) -> Option<u8> {
++        Some(self.take(1)?[0])
++    }
++
++    fn u16(&mut self) -> Option<u16> {
++        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
++    }
++
++    fn i16(&mut self) -> Option<i16> {
++        Some(i16::from_le_bytes(self.take(2)?.try_into().ok()?))
++    }
++
++    fn u32(&mut self) -> Option<u32> {
++        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
++    }
++
++    fn string(&mut self) -> Option<String> {
++        let length = usize::from(self.u16()?);
++        String::from_utf8(self.take(length)?.to_vec()).ok()
++    }
++
++    fn is_empty(&self) -> bool {
++        self.0.is_empty()
++    }
++}
++
++/// The configuration: server name, user name, password and domain (empty for none) as strings,
++/// then width u16, height u16 and flags u8 (bit 0: H.264; bit 1: rejoin with the last cookie).
++pub fn parse_config(bytes: &[u8]) -> Option<Config> {
++    let mut reader = Reader(bytes);
++    let server_name = reader.string()?;
++    let username = reader.string()?;
++    let password = reader.string()?;
++    let domain = reader.string()?;
++    let width = reader.u16()?;
++    let height = reader.u16()?;
++    let flags = reader.u8()?;
++    if !reader.is_empty() || width == 0 || height == 0 {
++        return None;
++    }
++    Some(Config {
++        server_name,
++        username,
++        password,
++        domain: (!domain.is_empty()).then_some(domain),
++        width,
++        height,
++        h264: flags & CONFIG_H264 != 0,
++        rejoin: flags & CONFIG_REJOIN != 0,
++    })
++}
++
++#[derive(Debug)]
++pub enum Message {
++    ServerBytes(Vec<u8>),
++    SuppressOutput {
++        allow: bool,
++    },
++    Quit,
++    Input(Vec<Input>),
++    Resize {
++        width: u16,
++        height: u16,
++    },
++    Refresh,
++    /// The host has nothing more: the connection is gone.
++    End,
++}
++
++#[derive(Debug)]
++pub enum Input {
++    Operation(Operation),
++    ReleaseAll,
++}
++
++pub fn parse_message(buffer: &[u8]) -> Result<Message, String> {
++    let Some((&tag, payload)) = buffer.split_first() else {
++        return Ok(Message::End);
++    };
++    match tag {
++        TAG_SERVER_BYTES => Ok(Message::ServerBytes(payload.to_vec())),
++        TAG_SUPPRESS_OUTPUT => Ok(Message::SuppressOutput {
++            allow: payload.first() == Some(&1),
++        }),
++        TAG_QUIT => Ok(Message::Quit),
++        TAG_INPUT => parse_input(payload).map(Message::Input),
++        TAG_RESIZE => {
++            let mut reader = Reader(payload);
++            match (reader.u16(), reader.u16()) {
++                (Some(width), Some(height)) if width > 0 && height > 0 => Ok(Message::Resize { width, height }),
++                _ => Err("invalid resize message".to_owned()),
++            }
++        }
++        TAG_REFRESH => Ok(Message::Refresh),
++        tag => Err(format!("unknown host message tag {tag}")),
++    }
++}
++
++/// Input records, each `[kind u8]` and its fields:
++///
++/// - mouse move: `[x u16][y u16]`
++/// - mouse button: `[button u8 (0 left, 1 middle, 2 right, 3 back, 4 forward)][pressed u8]`
++/// - wheel: `[vertical u8][rotation units i16]`
++/// - key: `[scan code u16, with 0xE0 in the high byte for extended keys][pressed u8]`
++/// - Unicode character: `[code point u32][pressed u8]`
++/// - release everything pressed: no fields
++pub fn parse_input(payload: &[u8]) -> Result<Vec<Input>, String> {
++    let mut reader = Reader(payload);
++    let mut inputs = Vec::new();
++    let invalid = || "invalid input record".to_owned();
++    while !reader.is_empty() {
++        let input = match reader.u8().ok_or_else(invalid)? {
++            INPUT_MOUSE_MOVE => {
++                let x = reader.u16().ok_or_else(invalid)?;
++                let y = reader.u16().ok_or_else(invalid)?;
++                Input::Operation(Operation::MouseMove(MousePosition { x, y }))
++            }
++            INPUT_MOUSE_BUTTON => {
++                let button =
++                    MouseButton::from_idx(usize::from(reader.u8().ok_or_else(invalid)?)).ok_or_else(invalid)?;
++                Input::Operation(if reader.u8().ok_or_else(invalid)? != 0 {
++                    Operation::MouseButtonPressed(button)
++                } else {
++                    Operation::MouseButtonReleased(button)
++                })
++            }
++            INPUT_WHEEL => {
++                let is_vertical = reader.u8().ok_or_else(invalid)? != 0;
++                let rotation_units = reader.i16().ok_or_else(invalid)?;
++                Input::Operation(Operation::WheelRotations(WheelRotations {
++                    is_vertical,
++                    rotation_units,
++                }))
++            }
++            INPUT_KEY => {
++                let scancode = Scancode::from_u16(reader.u16().ok_or_else(invalid)?);
++                Input::Operation(if reader.u8().ok_or_else(invalid)? != 0 {
++                    Operation::KeyPressed(scancode)
++                } else {
++                    Operation::KeyReleased(scancode)
++                })
++            }
++            INPUT_UNICODE => {
++                let character = char::from_u32(reader.u32().ok_or_else(invalid)?).ok_or_else(invalid)?;
++                Input::Operation(if reader.u8().ok_or_else(invalid)? != 0 {
++                    Operation::UnicodeKeyPressed(character)
++                } else {
++                    Operation::UnicodeKeyReleased(character)
++                })
++            }
++            INPUT_RELEASE_ALL => Input::ReleaseAll,
++            _ => return Err(invalid()),
++        };
++        inputs.push(input);
++    }
++    Ok(inputs)
++}
++
++/// `[surface u16][region count u16][x, y, width, height u16 each][Annex B data]`.
++pub fn h264_payload(surface_id: u16, regions: &[ExclusiveRectangle], data: &[u8]) -> Vec<u8> {
++    let mut payload = Vec::with_capacity(4 + regions.len() * 8 + data.len());
++    payload.extend_from_slice(&surface_id.to_le_bytes());
++    payload.extend_from_slice(&u16::try_from(regions.len()).unwrap_or(u16::MAX).to_le_bytes());
++    for region in regions.iter().take(usize::from(u16::MAX)) {
++        for value in [
++            region.left,
++            region.top,
++            region.right.saturating_sub(region.left),
++            region.bottom.saturating_sub(region.top),
++        ] {
++            payload.extend_from_slice(&value.to_le_bytes());
++        }
++    }
++    payload.extend_from_slice(data);
++    payload
++}
++
++/// `[x u16][y u16][width u16][height u16][RGBA rows]` for `region` of an RGBA image `image_width`
++/// pixels wide, or `None` if the region doesn't fit in `image`.
++pub fn image_payload(image: &[u8], image_width: u16, region: &InclusiveRectangle) -> Option<Vec<u8>> {
++    let (x, y) = (usize::from(region.left), usize::from(region.top));
++    let (width, height) = (usize::from(region.width()), usize::from(region.height()));
++    let stride = usize::from(image_width).checked_mul(4)?;
++    if x.checked_add(width)? > usize::from(image_width) {
++        return None;
++    }
++    let mut payload = Vec::with_capacity(8 + width * height * 4);
++    for value in [region.left, region.top, region.width(), region.height()] {
++        payload.extend_from_slice(&value.to_le_bytes());
++    }
++    for row in y..y.checked_add(height)? {
++        let start = row.checked_mul(stride)?.checked_add(x * 4)?;
++        payload.extend_from_slice(image.get(start..start.checked_add(width * 4)?)?);
++    }
++    Some(payload)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn string(value: &str) -> Vec<u8> {
++        let mut out = u16::try_from(value.len()).unwrap().to_le_bytes().to_vec();
++        out.extend_from_slice(value.as_bytes());
++        out
++    }
++
++    fn config_bytes(domain: &str, width: u16, height: u16, flags: u8) -> Vec<u8> {
++        let mut out = Vec::new();
++        for field in ["localhost", "jane", "p@ss:w\u{f6}rd", domain] {
++            out.extend(string(field));
++        }
++        out.extend_from_slice(&width.to_le_bytes());
++        out.extend_from_slice(&height.to_le_bytes());
++        out.push(flags);
++        out
++    }
++
++    #[test]
++    fn parses_a_configuration() {
++        let config = parse_config(&config_bytes("", 1216, 640, CONFIG_H264)).unwrap();
++        assert_eq!(
++            config,
++            Config {
++                server_name: "localhost".to_owned(),
++                username: "jane".to_owned(),
++                password: "p@ss:w\u{f6}rd".to_owned(),
++                domain: None,
++                width: 1216,
++                height: 640,
++                h264: true,
++                rejoin: false,
++            }
++        );
++        let config = parse_config(&config_bytes("CORP", 800, 600, CONFIG_REJOIN)).unwrap();
++        assert_eq!(config.domain.as_deref(), Some("CORP"));
++        assert!(!config.h264);
++        assert!(config.rejoin);
++    }
++
++    #[test]
++    fn rejects_malformed_configurations() {
++        let good = config_bytes("", 1216, 640, 0);
++        assert!(parse_config(&good[..good.len() - 1]).is_none());
++        let mut long = good;
++        long.push(0);
++        assert!(parse_config(&long).is_none());
++        assert!(parse_config(&config_bytes("", 0, 640, 0)).is_none());
++        assert!(parse_config(&[0xff, 0xff]).is_none());
++    }
++
++    #[test]
++    fn parses_messages() {
++        assert!(matches!(parse_message(&[]), Ok(Message::End)));
++        assert!(matches!(parse_message(&[TAG_SERVER_BYTES, 1, 2]), Ok(Message::ServerBytes(bytes)) if bytes == [1, 2]));
++        assert!(matches!(
++            parse_message(&[TAG_SUPPRESS_OUTPUT, 0]),
++            Ok(Message::SuppressOutput { allow: false })
++        ));
++        assert!(matches!(
++            parse_message(&[TAG_SUPPRESS_OUTPUT, 1]),
++            Ok(Message::SuppressOutput { allow: true })
++        ));
++        assert!(matches!(parse_message(&[TAG_QUIT]), Ok(Message::Quit)));
++        assert!(matches!(
++            parse_message(&[TAG_RESIZE, 0xc0, 0x04, 0x80, 0x02]),
++            Ok(Message::Resize {
++                width: 1216,
++                height: 640
++            })
++        ));
++        assert!(parse_message(&[TAG_RESIZE, 0, 0, 1, 0]).is_err());
++        assert!(matches!(parse_message(&[TAG_REFRESH]), Ok(Message::Refresh)));
++        assert!(parse_message(&[99]).is_err());
++    }
++
++    #[test]
++    fn parses_input_records() {
++        let mut payload = vec![INPUT_MOUSE_MOVE, 10, 0, 20, 0, INPUT_MOUSE_BUTTON, 2, 1, INPUT_WHEEL, 1];
++        payload.extend_from_slice(&(-120i16).to_le_bytes());
++        payload.extend_from_slice(&[INPUT_KEY, 0x5b, 0xe0, 1, INPUT_KEY, 0x1e, 0x00, 0]);
++        payload.push(INPUT_UNICODE);
++        payload.extend_from_slice(&0x20acu32.to_le_bytes());
++        payload.push(1);
++        payload.push(INPUT_RELEASE_ALL);
++        let inputs = parse_input(&payload).unwrap();
++        let described: Vec<String> = inputs.iter().map(|input| format!("{input:?}")).collect();
++        assert_eq!(described.len(), 7);
++        assert!(
++            described[0].contains("MouseMove(MousePosition { x: 10, y: 20 })"),
++            "{}",
++            described[0]
++        );
++        assert!(described[1].contains("MouseButtonPressed(Right)"), "{}", described[1]);
++        assert!(
++            described[2].contains("is_vertical: true") && described[2].contains("-120"),
++            "{}",
++            described[2]
++        );
++        assert!(
++            described[3].contains("KeyPressed") && described[3].contains("extended: true"),
++            "{}",
++            described[3]
++        );
++        assert!(
++            described[4].contains("KeyReleased") && described[4].contains("extended: false"),
++            "{}",
++            described[4]
++        );
++        assert!(
++            described[5].contains("UnicodeKeyPressed('\u{20ac}')"),
++            "{}",
++            described[5]
++        );
++        assert_eq!(described[6], "ReleaseAll");
++    }
++
++    #[test]
++    fn rejects_malformed_input() {
++        assert!(parse_input(&[INPUT_MOUSE_MOVE, 1, 0, 2]).is_err());
++        assert!(parse_input(&[INPUT_MOUSE_BUTTON, 9, 1]).is_err());
++        assert!(parse_input(&[INPUT_UNICODE, 0x00, 0xd8, 0, 0, 1]).is_err());
++        assert!(parse_input(&[42]).is_err());
++    }
++
++    #[test]
++    fn encodes_h264_pictures() {
++        let regions = [ExclusiveRectangle {
++            left: 2,
++            top: 3,
++            right: 12,
++            bottom: 8,
++        }];
++        assert_eq!(
++            h264_payload(7, &regions, &[0, 0, 0, 1, 0x65]),
++            [7, 0, 1, 0, 2, 0, 3, 0, 10, 0, 5, 0, 0, 0, 0, 1, 0x65]
++        );
++    }
++
++    #[test]
++    fn copies_image_regions() {
++        // A 3x2 RGBA image whose pixels are numbered 0..6.
++        let image: Vec<u8> = (0u8..6).flat_map(|pixel| [pixel, pixel, pixel, 255]).collect();
++        let region = InclusiveRectangle {
++            left: 1,
++            top: 0,
++            right: 2,
++            bottom: 1,
++        };
++        let payload = image_payload(&image, 3, &region).unwrap();
++        assert_eq!(&payload[..8], [1, 0, 0, 0, 2, 0, 2, 0]);
++        let pixels: Vec<u8> = payload[8..].chunks(4).map(|pixel| pixel[0]).collect();
++        assert_eq!(pixels, [1, 2, 4, 5]);
++        let outside = InclusiveRectangle {
++            left: 2,
++            top: 0,
++            right: 3,
++            bottom: 0,
++        };
++        assert!(image_payload(&image, 3, &outside).is_none());
++        let below = InclusiveRectangle {
++            left: 0,
++            top: 1,
++            right: 0,
++            bottom: 2,
++        };
++        assert!(image_payload(&image, 3, &below).is_none());
++    }
++}
+-- 
+2.54.0 (Apple Git-157)
+

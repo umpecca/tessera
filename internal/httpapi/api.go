@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"tessera/internal/localhttps"
+	"tessera/internal/rdpsession"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
 	"tessera/internal/update"
@@ -38,6 +39,9 @@ type API struct {
 	HTTPSDefaultAddress string
 	HTTPSPKIDir         string
 	RequestRestart      func(localhttps.Config)
+	// RDPSessions keeps RDP sessions on the host while no browser shows them
+	// (task 238). Nil turns the kept-session endpoints off.
+	RDPSessions *rdpsession.Manager
 
 	browserProxyOnce sync.Once
 	browserProxy     *browserProxyManager
@@ -73,6 +77,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/host/files/delete", a.deleteHostFiles)
 	mux.HandleFunc("/api/host/attachments", a.uploadAttachment)
 	mux.HandleFunc("/local-https/", a.localHTTPSEnrollment)
+	mux.HandleFunc("/api/rdp-kept", a.rdpKept)
+	mux.HandleFunc("/api/rdp-kept/", a.rdpKeptAction)
 	mux.HandleFunc("/api/browser-proxy", a.browserProxyControl)
 	mux.HandleFunc("/api/browser-proxy/", a.browserProxyControl)
 	mux.HandleFunc("/browser-proxy/", a.browserProxyRequest)

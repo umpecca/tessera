@@ -104,6 +104,16 @@ import {
   rdpWindowsKey,
 } from "./rdp-pane.mjs";
 import { createRDPH264Presenter, rdpH264Supported } from "./rdp-h264.mjs";
+import {
+  fetchKeptRDPSessions,
+  findKeptRDPSession,
+  keptRDPCreateBody,
+  keptRDPPaneBody,
+  rdpKeepLabelText,
+  readRDPKeepPreference,
+  saveRDPKeepPreference,
+} from "./rdp-kept.mjs";
+import { connectRDPViewer, rdpViewerModule, rdpViewerURL } from "./rdp-viewer.mjs";
 import { newWorkspaceRevision, workspaceRevisionMatches, workspaceSaveOutcome } from "./workspace-concurrency.mjs";
 import { activePaneOnLoad, focusPane, openTerminalWithoutFocus, paneNeedsRaise } from "./pane-activation.mjs";
 import { paneContentFields } from "./pane-content-sync.mjs";
@@ -2866,6 +2876,11 @@ function mountRDPPane(rect) {
   video.textContent = "H.264";
   video.title = "The remote desktop arrives as H.264 video, decoded by this browser";
   video.hidden = true;
+  const keptLabel = document.createElement("span");
+  keptLabel.className = "rdp-video";
+  keptLabel.textContent = "On host";
+  keptLabel.title = "This session keeps running on the Tessera host when you close this page";
+  keptLabel.hidden = true;
   const message = document.createElement("div");
   message.className = "rdp-message";
   message.textContent = rect.rdpTarget ? "Ready to connect." : "Enter an RDP server address.";
@@ -2882,13 +2897,13 @@ function mountRDPPane(rect) {
   dialog.hidden = true;
 
   const view = {
-    pane, address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, message, screen, canvas, dialog,
+    pane, address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel, message, screen, canvas, dialog,
     module: null, session: null, connecting: false, attempt: 0, dialogResolve: null, intentionalDisconnect: false,
     remoteClipboard: "", lastSentClipboard: "", clipboardRequested: false, resizeTimer: null, resizeObserver: null, canvasObserver: null,
-    pointerFrame: 0, pendingPointer: null, h264: null, h264Drawn: false,
+    pointerFrame: 0, pendingPointer: null, h264: null, h264Drawn: false, kept: false,
   };
   rect.rdp = view;
-  toolbar.append(address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video);
+  toolbar.append(address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel);
   pane.append(toolbar, message, screen, dialog);
   rect.body.appendChild(pane);
   updateRDPControls(rect);
@@ -2980,6 +2995,8 @@ function mountRDPPane(rect) {
     layoutRDPCanvas(rect);
   });
   view.canvasObserver.observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
+  // A session the host kept for this window attaches by itself.
+  void autoAttachKeptRDP(rect).catch((error) => setRDPMessage(rect, rdpFailureMessage(error), true));
 }
 
 function setRDPMessage(rect, text, error = false) {
@@ -3001,9 +3018,11 @@ function updateRDPControls(rect) {
   view.address.disabled = connected || view.connecting;
   view.ctrlAltDelete.disabled = !connected;
   view.windowsKey.disabled = !connected;
-  view.sendClipboard.disabled = !connected;
+  view.sendClipboard.disabled = !connected || view.kept;
+  view.sendClipboard.title = view.kept ? "Clipboard isn't available for sessions kept on the host" : "Send local clipboard to remote";
   view.copyClipboard.disabled = !view.remoteClipboard;
   view.video.hidden = !(connected && view.h264Drawn);
+  view.keptLabel.hidden = !(connected && view.kept);
 }
 
 // Fit scales the desktop into the pane; 1:1 and Resize show it unscaled.
@@ -3135,6 +3154,134 @@ async function rdpProxyRequest(path, body) {
   return data;
 }
 
+// Whether the host keeps RDP sessions for this page: null until asked.
+let rdpKeptAvailable = null;
+let rdpKeptListCache = null;
+
+// The host's kept sessions and idle limit, or null when it doesn't offer them.
+// Panes that load together share one request.
+function rdpKeptSessions({ fresh = false } = {}) {
+  if (fresh || !rdpKeptListCache || Date.now() - rdpKeptListCache.at > 1500) {
+    rdpKeptListCache = {
+      at: Date.now(),
+      listing: fetchKeptRDPSessions().then((listing) => {
+        rdpKeptAvailable = listing !== null;
+        return listing;
+      }),
+    };
+  }
+  return rdpKeptListCache.listing;
+}
+
+// What the host keeps for this window: whether it keeps sessions at all, for
+// how long without a viewer, and the window's own session, if any.
+async function rdpKeptState(rect, options) {
+  const listing = await rdpKeptSessions(options);
+  return {
+    available: listing !== null,
+    idleLimitSeconds: listing?.idleLimitSeconds || 0,
+    session: findKeptRDPSession(listing?.sessions, workspaceID, rect.id),
+  };
+}
+
+// Ends the session the host keeps for this window, if any.
+function endKeptRDP(rect) {
+  rdpKeptListCache = null;
+  return rdpProxyRequest("/api/rdp-kept/disconnect", keptRDPPaneBody(workspaceID, rect.id)).catch((error) => {
+    // No kept session, or the host is gone: nothing is left to end.
+    console.debug("RDP kept session end:", error);
+  });
+}
+
+// Shows a session as live, whether IronRDP runs it in this page or the host
+// keeps it and this page only views it.
+function activateRDPSession(rect, view, session) {
+  view.session = session;
+  const desktop = session.desktopSize();
+  view.canvas.width = desktop.width;
+  view.canvas.height = desktop.height;
+  view.screen.hidden = false;
+  view.message.hidden = true;
+  layoutRDPCanvas(rect);
+  view.canvas.focus({ preventScroll: true });
+  if (view.clipboardRequested) {
+    view.clipboardRequested = false;
+    void sendRDPClipboardText(rect, view.lastSentClipboard);
+  }
+  void runRDPSession(rect, view, session);
+}
+
+// Attaches this window to the session the host keeps for it.
+async function attachKeptRDP(rect, view, kept, current) {
+  setRDPMessage(rect, "Attaching to the session kept on the host...");
+  if (kept.target && kept.target !== rect.rdpTarget) {
+    rect.rdpTarget = kept.target;
+    view.address.value = kept.target;
+    if (rect.rdpStatusInput) {
+      rect.rdpStatusInput.value = kept.target;
+    }
+    scheduleWorkspaceSave();
+  }
+  closeRDPH264(view);
+  view.canvas.style.cursor = "";
+  const session = await connectRDPViewer({
+    url: rdpViewerURL(workspaceID, rect.id, window.location),
+    canvas: view.canvas,
+    onFirstPicture: () => {
+      view.h264Drawn = true;
+      updateRDPControls(rect);
+    },
+  });
+  if (!current()) {
+    session.shutdown();
+    return;
+  }
+  view.module = rdpViewerModule;
+  view.kept = true;
+  activateRDPSession(rect, view, session);
+}
+
+// Handles a window whose session the host keeps. It returns true when it
+// dealt with the connection: attached to it, asked for the password to rejoin
+// it, or was cancelled; false when the session is over and a new one is needed.
+async function resumeKeptRDP(rect, view, kept, current) {
+  if (kept.state === "active") {
+    await attachKeptRDP(rect, view, kept, current);
+    return true;
+  }
+  if (kept.state === "lost" && kept.canRejoin) {
+    rect.rdpTarget = kept.target || rect.rdpTarget;
+    const credentials = await askRDPCredentials(rect, { rejoin: true });
+    if (!credentials) {
+      if (current()) setRDPMessage(rect, "Connection cancelled.");
+      return true;
+    }
+    setRDPMessage(rect, `Rejoining ${kept.target}...`);
+    await rdpProxyRequest("/api/rdp-kept/rejoin", keptRDPPaneBody(workspaceID, rect.id, credentials.password));
+    rdpKeptListCache = null;
+    if (!current()) return true;
+    await attachKeptRDP(rect, view, kept, current);
+    return true;
+  }
+  return false;
+}
+
+// When a window appears (the page opened, or its workspace loaded), attaches to
+// the session the host kept for it, so the desktop is where it was left.
+async function autoAttachKeptRDP(rect) {
+  const view = rect.rdp;
+  const kept = await rdpKeptState(rect);
+  if (!kept.session || rect.rdp !== view || view.session || view.connecting) {
+    return;
+  }
+  if (kept.session.state === "active") {
+    view.address.value ||= kept.session.target || "";
+    void connectRDPPane(rect);
+  } else if (kept.session.state === "lost") {
+    setRDPMessage(rect, "The connection to the RDP server was lost. Choose Connect to rejoin the session.");
+  }
+}
+
 async function connectRDPPane(rect) {
   const view = rect?.rdp;
   if (!view || view.session || view.connecting) {
@@ -3155,6 +3302,10 @@ async function connectRDPPane(rect) {
   updateRDPControls(rect);
   setRDPMessage(rect, `Checking ${target}...`);
   try {
+    // A window whose session the host keeps attaches to it, or rejoins it.
+    const kept = await rdpKeptState(rect, { fresh: true });
+    if (!current()) return;
+    if (kept.session && await resumeKeptRDP(rect, view, kept.session, current)) return;
     const certificate = await rdpProxyRequest("/api/rdp-proxy/certificate", { workspaceId: workspaceID, target });
     if (!current()) return;
     rect.rdpTarget = certificate.target;
@@ -3172,7 +3323,7 @@ async function connectRDPPane(rect) {
       rect.rdpTrustedFingerprint = certificate.fingerprint;
       scheduleWorkspaceSave();
     }
-    const credentials = await askRDPCredentials(rect);
+    const credentials = await askRDPCredentials(rect, { keep: kept.available, idleLimitSeconds: kept.idleLimitSeconds });
     if (!credentials) {
       if (current()) setRDPMessage(rect, "Connection cancelled.");
       return;
@@ -3180,6 +3331,28 @@ async function connectRDPPane(rect) {
     rect.rdpUsername = credentials.username;
     rect.rdpDomain = credentials.domain;
     scheduleWorkspaceSave();
+    const area = view.screen.hidden ? view.message : view.screen;
+    const size = rdpDesktopSize(area.clientWidth, area.clientHeight);
+    if (credentials.keep) {
+      // The host runs the session, so it outlives this page.
+      setRDPMessage(rect, `Logging in to ${certificate.target}...`);
+      await rdpProxyRequest("/api/rdp-kept", keptRDPCreateBody({
+        workspaceId: workspaceID,
+        pane: rect.id,
+        target: certificate.target,
+        fingerprint: certificate.fingerprint,
+        credentials,
+        size,
+        h264: await rdpH264Available(),
+      }));
+      rdpKeptListCache = null;
+      if (!current()) {
+        void endKeptRDP(rect);
+        return;
+      }
+      await attachKeptRDP(rect, view, { target: certificate.target }, current);
+      return;
+    }
     setRDPMessage(rect, `Connecting to ${certificate.target}...`);
     const [module, proxy] = await Promise.all([
       loadRDPModule(),
@@ -3188,8 +3361,6 @@ async function connectRDPPane(rect) {
     if (!current()) return;
     view.module = module;
     const { Backend } = module;
-    const area = view.screen.hidden ? view.message : view.screen;
-    const size = rdpDesktopSize(area.clientWidth, area.clientHeight);
     const builder = new Backend.SessionBuilder();
     builder.proxyAddress(rdpWebSocketURL(proxy.path, window.location));
     builder.destination(certificate.target);
@@ -3236,19 +3407,8 @@ async function connectRDPPane(rect) {
       session.shutdown();
       return;
     }
-    view.session = session;
-    const desktop = session.desktopSize();
-    view.canvas.width = desktop.width;
-    view.canvas.height = desktop.height;
-    view.screen.hidden = false;
-    view.message.hidden = true;
-    layoutRDPCanvas(rect);
-    view.canvas.focus({ preventScroll: true });
-    if (view.clipboardRequested) {
-      view.clipboardRequested = false;
-      void sendRDPClipboardText(rect, view.lastSentClipboard);
-    }
-    void runRDPSession(rect, view, session);
+    view.kept = false;
+    activateRDPSession(rect, view, session);
   } catch (error) {
     h264?.close();
     if (current()) setRDPMessage(rect, rdpFailureMessage(error), true);
@@ -3276,6 +3436,7 @@ async function runRDPSession(rect, view, session) {
   window.clearTimeout(view.resizeTimer);
   closeRDPH264(view);
   view.session = null;
+  view.kept = false;
   view.screen.hidden = true;
   layoutRDPCanvas(rect);
   hideRDPDialog(rect);
@@ -3360,11 +3521,14 @@ function confirmRDPCertificate(rect, certificate, trust) {
   return showRDPDialog(rect, cancel, () => true, false, trust === "changed" ? cancel : approve);
 }
 
-function askRDPCredentials(rect) {
+// Asks for the sign-in. With options.keep the dialog offers to keep the session
+// on the Tessera host; with options.rejoin it asks only for the password, to
+// rejoin a session the host kept after its connection to the server dropped.
+function askRDPCredentials(rect, options = {}) {
   const view = rect.rdp;
   view.dialog.replaceChildren();
   const title = document.createElement("strong");
-  title.textContent = `Sign in to ${rect.rdpTarget}`;
+  title.textContent = options.rejoin ? `Rejoin ${rect.rdpTarget}` : `Sign in to ${rect.rdpTarget}`;
   const username = document.createElement("input");
   username.type = "text";
   username.placeholder = "User name";
@@ -3383,7 +3547,29 @@ function askRDPCredentials(rect) {
     input.spellcheck = false;
     input.setAttribute("aria-label", input.placeholder);
   }
-  view.dialog.append(title, username, domain, password);
+  if (options.rejoin) {
+    const note = document.createElement("span");
+    note.textContent = "The connection to the server was lost. Enter your password to rejoin the same session.";
+    view.dialog.append(title, note, password);
+  } else {
+    view.dialog.append(title, username, domain, password);
+  }
+  let keep = null;
+  let storage = null;
+  if (options.keep && !options.rejoin) {
+    try {
+      storage = window.localStorage;
+    } catch {
+      // The choice just isn't remembered.
+    }
+    const keepLabel = document.createElement("label");
+    keepLabel.className = "rdp-keep";
+    keep = document.createElement("input");
+    keep.type = "checkbox";
+    keep.checked = readRDPKeepPreference(storage);
+    keepLabel.append(keep, document.createTextNode(rdpKeepLabelText(options.idleLimitSeconds)));
+    view.dialog.appendChild(keepLabel);
+  }
   if (!rdpTransportIsPrivate(window.location)) {
     const warning = document.createElement("span");
     warning.className = "rdp-warning";
@@ -3398,11 +3584,12 @@ function askRDPCredentials(rect) {
   cancel.textContent = "Cancel";
   view.dialog.append(submit, cancel);
   const read = () => {
-    const credentials = { username: username.value.trim(), domain: domain.value.trim(), password: password.value };
+    const credentials = { username: username.value.trim(), domain: domain.value.trim(), password: password.value, keep: Boolean(keep?.checked) };
+    if (keep) saveRDPKeepPreference(storage, keep.checked);
     password.value = "";
     return credentials;
   };
-  return showRDPDialog(rect, cancel, read, null, username.value ? password : username);
+  return showRDPDialog(rect, cancel, read, null, username.value || options.rejoin ? password : username);
 }
 
 // Resolves with onSubmit()'s value, or cancelValue when the dialog is
@@ -3451,7 +3638,8 @@ function receiveRDPClipboard(rect, view, data) {
 
 async function sendRDPClipboardText(rect, text) {
   const view = rect.rdp;
-  if (!view?.session) {
+  // Sessions kept on the host don't carry the clipboard yet.
+  if (!view?.session || view.kept) {
     return;
   }
   const data = new view.module.Backend.ClipboardData();
@@ -3511,6 +3699,8 @@ function disconnectRDPPane(rect) {
   if (!view) return;
   if (view.session) {
     view.intentionalDisconnect = true;
+    // Disconnect ends a session the host keeps; closing the page only leaves it.
+    if (view.kept) void endKeptRDP(rect);
     view.session.shutdown();
     return;
   }
@@ -10839,6 +11029,9 @@ function destroyRectangle(rect, options = {}) {
   disposeTerminal(rect, { closeServer: options.closeServerTerminal });
   disposeBrowserPane(rect);
   disposeVNCPane(rect);
+  // Closing the window ends the session the host keeps for it; the other
+  // places that dispose of the pane only detach, so the session lives on.
+  if (rect.rdp && rdpKeptAvailable) void endKeptRDP(rect);
   disposeRDPPane(rect);
   window.clearTimeout(rect.fontSizeIndicatorTimer);
   rect.fontSizeIndicatorTimer = null;

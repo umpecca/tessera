@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"tessera/internal/localhttps"
+	"tessera/internal/rdpsession"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
 )
@@ -179,5 +181,28 @@ func TestStartWiresFileUploadLimit(t *testing.T) {
 	}
 	if DefaultMaxUploadBytes != 1<<30 {
 		t.Fatalf("default max upload bytes = %d", DefaultMaxUploadBytes)
+	}
+}
+
+func TestStartWiresRDPIdleLimit(t *testing.T) {
+	for _, tc := range []struct {
+		limit, want time.Duration
+	}{
+		{0, rdpsession.DefaultIdleLimit},
+		{90 * time.Minute, 90 * time.Minute},
+	} {
+		server, err := Start(context.Background(), Options{
+			Addr:         "127.0.0.1:0",
+			DBPath:       filepath.Join(t.TempDir(), "tessera.sqlite3"),
+			RDPIdleLimit: tc.limit,
+		})
+		if err != nil {
+			t.Fatalf("start server: %v", err)
+		}
+		got := server.rdpSessions.IdleLimit()
+		server.Shutdown(context.Background())
+		if got != tc.want {
+			t.Fatalf("RDPIdleLimit %s: manager idle limit = %s, want %s", tc.limit, got, tc.want)
+		}
 	}
 }

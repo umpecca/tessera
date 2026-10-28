@@ -16,6 +16,7 @@ import (
 	"tessera/internal/desktop"
 	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
+	"tessera/internal/rdpsession"
 	"tessera/internal/server"
 	"tessera/internal/store"
 	"tessera/internal/sysauth"
@@ -66,6 +67,7 @@ serve:
 	allowHTTPSignIn := flag.Bool("allow-http-sign-in", false, "accept passwords over plain HTTP from other devices; only for already-encrypted links such as Tailscale or a VPN")
 	signInIdle := flag.Duration("signin-idle", httpapi.DefaultRememberIdle, "how long a remembered sign-in lasts without use")
 	signInMax := flag.Duration("signin-max", httpapi.DefaultRememberMax, "longest a remembered sign-in lasts")
+	rdpIdleLimit := flag.Duration("rdp-idle-limit", rdpsession.DefaultIdleLimit, "how long an RDP session kept on the host lasts with no browser attached")
 	systemdUpdate := flag.Bool("systemd-update", false, "apply an update and restart tessera.service (root transient-unit helper)")
 	flag.Parse()
 
@@ -77,6 +79,9 @@ serve:
 		return
 	}
 
+	if err := checkRDPIdleLimit(*rdpIdleLimit); err != nil {
+		log.Fatalf("%v", err)
+	}
 	users := parseUsers(*usersFlag)
 	authOptions, err := authOptionsFromFlags(*authMode, *authFile, users, *allowHTTPSignIn, *signInIdle, *signInMax)
 	if err != nil {
@@ -121,6 +126,7 @@ serve:
 		AuditEnabled:       *auditLog,
 		AuditRetentionDays: *auditRetention,
 		MaxUploadBytes:     *maxUploadSize,
+		RDPIdleLimit:       *rdpIdleLimit,
 		RequestRestart:     requestLocalRestart,
 		Auth:               authOptions,
 	})
@@ -313,6 +319,16 @@ func parseUsers(raw string) []string {
 		users = append(users, name)
 	}
 	return users
+}
+
+// checkRDPIdleLimit validates -rdp-idle-limit. Kept sessions always end
+// eventually, and a limit under a minute would end one before its viewer could
+// come back from a page reload.
+func checkRDPIdleLimit(limit time.Duration) error {
+	if limit < time.Minute {
+		return fmt.Errorf("-rdp-idle-limit must be at least 1m, not %s", limit)
+	}
+	return nil
 }
 
 // authOptionsFromFlags validates the sign-in flags. With -auth=file the

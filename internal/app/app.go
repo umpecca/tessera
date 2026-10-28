@@ -6,6 +6,7 @@ import (
 
 	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
+	"tessera/internal/rdpsession"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
 	"tessera/internal/update"
@@ -29,6 +30,8 @@ type App struct {
 	// Security configures origin checks, proxy trust, rate limiting, response
 	// headers, and audit persistence around the complete application handler.
 	Security httpapi.SecurityOptions
+	// RDPSessions optionally keeps RDP sessions on the host.
+	RDPSessions *rdpsession.Manager
 }
 
 func (a *App) Handler() http.Handler {
@@ -51,6 +54,7 @@ func (a *App) Handler() http.Handler {
 		HTTPSDefaultAddress: a.HTTPSDefaultAddress,
 		HTTPSPKIDir:         a.HTTPSPKIDir,
 		RequestRestart:      a.RequestRestart,
+		RDPSessions:         a.RDPSessions,
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)

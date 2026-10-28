@@ -1,0 +1,60 @@
+From 17ebae8567998ef1e72e8018b57d6acf3838e880 Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Tue, 27 Oct 2026 16:18:14 -0500
+Subject: [PATCH 5/5] fix(headless): wipe the configuration once it is read
+
+The configuration the host writes into the module's memory holds the
+password. `run` now zeroes that buffer as soon as it is parsed, and its
+parsed copy of the password once the connection sequence has used it, so
+neither stays in the instance's memory for the life of the session.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-headless/src/lib.rs | 27 ++++++++++++++++++---------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/crates/ironrdp-headless/src/lib.rs b/crates/ironrdp-headless/src/lib.rs
+index 039ce5d6..e05b53ed 100644
+--- a/crates/ironrdp-headless/src/lib.rs
++++ b/crates/ironrdp-headless/src/lib.rs
+@@ -633,19 +633,28 @@ pub extern "C" fn alloc(len: usize) -> *mut u8 {
+ /// Runs one session from the configuration at `ptr`, until it ends. Returns the [`End`] code,
+ /// which the `Ended` event also carries with the reason.
+ ///
++/// The configuration holds the password, so the buffer is wiped once it is read, and the parsed
++/// copy once the connection sequence has used it.
++///
+ /// # Safety
+ ///
+-/// `ptr` must point to `len` readable bytes, such as a buffer from [`alloc`].
++/// `ptr` must point to `len` writable bytes, such as a buffer from [`alloc`].
+ #[unsafe(no_mangle)]
+-pub unsafe extern "C" fn run(ptr: *const u8, len: usize) -> i32 {
+-    // SAFETY: the caller guarantees `len` readable bytes at `ptr`.
+-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+-    let Ending(end, reason) = match wire::parse_config(bytes) {
++pub unsafe extern "C" fn run(ptr: *mut u8, len: usize) -> i32 {
++    // SAFETY: the caller guarantees `len` writable bytes at `ptr`.
++    let bytes = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
++    let config = wire::parse_config(bytes);
++    bytes.fill(0);
++    let Ending(end, reason) = match config {
+         None => Ending::error("invalid configuration"),
+-        Some(config) => match connect(&config) {
+-            Ok(mut session) => session.run(),
+-            Err(ending) => ending,
+-        },
++        Some(mut config) => {
++            let connected = connect(&config);
++            core::mem::take(&mut config.password).into_bytes().fill(0);
++            match connected {
++                Ok(mut session) => session.run(),
++                Err(ending) => ending,
++            }
++        }
+     };
+     let mut payload = vec![end.code()];
+     payload.extend_from_slice(reason.as_bytes());
+-- 
+2.54.0 (Apple Git-157)
+

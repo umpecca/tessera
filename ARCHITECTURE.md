@@ -174,6 +174,8 @@ Primary data flows:
 - **IronRDP (WebAssembly):** browser RDP client in the RDP pane, committed
   prebuilt from IronRDP `master` with Tessera's patches (`third_party/ironrdp`).
 - **WebCodecs:** the browser's H.264 decoder for RDP panes opened over HTTPS.
+- **wazero:** runs the display-less IronRDP module that keeps RDP sessions on
+  the host, in pure Go, so the binary stays CGO-free.
 - **getlantern/systray:** Windows and macOS notification-area controls. Linux
   releases exclude the tray implementation and remain CGO-free.
 - **GitHub Actions and GitHub Releases:** tagged builds, release assets, and the
@@ -226,6 +228,30 @@ Current pane types:
   and its regions to `web/rdp-h264.mjs`, which declares the stream free of
   reordering (`web/rdp-h264-sps.mjs`), decodes it and draws the regions onto
   the canvas; other updates still go through IronRDP's compositor.
+- **Kept RDP sessions:** with sign-in on, over HTTPS or loopback, an RDP pane
+  can instead keep its session on the host (`internal/rdpsession`), so it
+  outlives the page. The host runs a display-less IronRDP build
+  (`ironrdp_headless.wasm`, embedded, built from the same patch series) under
+  wazero, one module instance per session, compiled on first use and cached
+  in `rdp-module-cache` beside the database. Go owns the network: it dials the
+  server, completes TLS against the trusted fingerprint, and moves bytes for
+  the module through four host imports, while the module runs the connection
+  sequence, CredSSP and the session, and keeps the server's auto-reconnect
+  cookie. `POST /api/rdp-kept` logs a session in (the password is wiped from
+  module memory once read and never stored), `GET` lists the account's
+  sessions and the idle limit, and `/api/rdp-kept/rejoin` and `/disconnect`
+  rejoin a lost session with the cookie and the password, or end one.
+  `/api/rdp-kept/view` is a binary WebSocket for one viewer at a time (a new
+  one takes over): the host sends the desktop size, H.264 pictures with their
+  regions, composited image regions and the end reason, and the viewer sends
+  input records, resize and refresh requests (`viewer_protocol.go`, mirrored
+  by `web/rdp-viewer-wire.mjs`). `web/rdp-viewer.mjs` stands in for IronRDP's
+  browser session, so the pane's input, scaling and resize code is shared.
+  With no viewer the host sends Suppress Output, so the server stops drawing,
+  and on attach Refresh Rect repaints the desktop. Sessions are keyed by
+  account and workspace pane, end after `-rdp-idle-limit` (default 8 hours)
+  with no viewer, on Disconnect or closing the window, and on shutdown; they
+  are memory-only and do not survive a restart.
 The SPA also implements overlapping window geometry, active-pane and z-order
 state, minimize/maximize/dock/restore behavior, the Deskbar, command palette,
 settings, themes, background images, user selection, named-session management,
@@ -537,6 +563,10 @@ Key Security Tools/Practices:
   The RDP gateway is the same exception; it additionally terminates the
   server's TLS, so RDP sessions are only as private as the browser's
   connection to Tessera.
+- Keep RDP sessions on the host only for signed-in accounts, over HTTPS or
+  loopback, and show each only to the account that kept it. A kept session is
+  a logged-in desktop held by the Tessera process; it ends on an idle limit so
+  an abandoned one doesn't stay logged in indefinitely.
 - Reject cross-origin terminal WebSocket connections. This is defense in depth,
   not authentication.
 - Scope process teardown by workspace so deleting one session does not terminate

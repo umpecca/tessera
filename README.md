@@ -259,6 +259,7 @@ Useful flags:
 -audit-log bool               persist redacted audit events (default false)
 -audit-retention-days int     enabled audit retention in days (default 30)
 -max-upload-size int          maximum bytes per terminal file upload (default 1073741824)
+-rdp-idle-limit duration      how long a kept RDP session lasts with no browser attached (default 8h)
 ```
 
 For example:
@@ -468,8 +469,9 @@ match the window (servers without the Display Control channel keep their
 size). **CAD** sends Ctrl+Alt+Del and **Win** the Windows key; the Command key
 on a Mac is sent as the Windows key. Clipboard text works as in VNC panes:
 the up-arrow sends local text and the down-arrow copies the remote text.
-Audio, drive and printer redirection, RD Gateway, Kerberos and automatic
-reconnect are not included.
+Audio, drive and printer redirection, RD Gateway and Kerberos are not
+included, and a pane that isn't [kept on the host](#kept-rdp-sessions) doesn't
+reconnect by itself.
 
 When Tessera is opened over HTTPS (or on loopback) in a browser that can decode
 H.264, the pane offers the server the Graphics Pipeline with H.264 video. The
@@ -479,6 +481,42 @@ much faster; the toolbar shows **H.264** while it is in use. Over plain HTTP,
 or when the server doesn't send H.264, the pane uses bitmap updates instead.
 This has been tested with Remotr on macOS from iPad Safari. The pane shows the
 browser's own pointer shapes rather than the server's.
+
+#### Kept RDP sessions
+
+With [sign-in](#sign-in) on, and Tessera opened over HTTPS or on loopback, the
+RDP sign-in dialog offers **Keep this session on the Tessera host**. A kept
+session's RDP client runs on the Tessera host instead of in the page, so the
+session stays logged in when you close the tab, reload, switch workspace or
+put the iPad to sleep. Open the window again, from any browser signed in to
+the same account, and it shows the desktop where you left it, without asking
+for the password; the toolbar shows **On host**. The choice is remembered in
+this browser.
+
+- **Disconnect**, or closing the window, ends the session, as a client
+  disconnecting would; a Mac running Remotr stays at its login screen.
+- A session ends after **8 hours** with no browser attached; change this with
+  `-rdp-idle-limit` (for example `-rdp-idle-limit 2h`, at least `1m`). The
+  sign-in dialog says what the limit is.
+- Restarting or updating Tessera ends every kept session.
+- If the connection to the RDP server drops, the window asks for the password
+  again and rejoins the same desktop session with the server's reconnect
+  cookie. The server's certificate must still be the one you trusted.
+- One browser shows a session at a time; opening it in another takes it over,
+  and the first shows that it was taken over.
+- Only the account that kept a session can see or end it. Signing out closes
+  the view but leaves the session running until it is ended or idles out.
+- Clipboard text isn't available in kept sessions yet.
+- A session kept from a browser that decodes H.264 stays on H.264, so view it
+  from browsers that can decode it too; one that can't shows only the parts
+  of the screen the server sends as bitmaps.
+
+The password travels to the host once, to log in, and is wiped from the RDP
+client's memory as soon as it is read; Tessera never stores it. While a kept
+session runs, the host holds a logged-in connection to the RDP server, so a
+Tessera account is as powerful as the remote desktops it keeps. The server's
+own lock screen is unaffected: anyone at a Mac's own keyboard still has to log
+in.
 
 ### Terminal output backlog
 
@@ -897,6 +935,8 @@ tessera -addr 0.0.0.0:7331 -auth=file
   programs keep running throughout, and pending changes are saved.
 - With `-audit-log`, sign-ins, failures, throttling, sign-outs and recovery
   links are recorded with the sign-in's ID, never passwords or cookies.
+- [Kept RDP sessions](#kept-rdp-sessions) need sign-in: each belongs to the
+  account that kept it.
 
 ## Users and named sessions
 

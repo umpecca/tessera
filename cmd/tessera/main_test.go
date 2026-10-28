@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"tessera/internal/update"
 )
@@ -142,5 +143,20 @@ func TestTrayUpdateActionReturnsApplyFailure(t *testing.T) {
 	}
 	if restarting || updater.restarts != 0 {
 		t.Fatalf("restarting = %v, restart requests = %d", restarting, updater.restarts)
+	}
+}
+
+func TestCheckRDPIdleLimit(t *testing.T) {
+	for _, limit := range []time.Duration{time.Minute, 8 * time.Hour} {
+		if err := checkRDPIdleLimit(limit); err != nil {
+			t.Fatalf("checkRDPIdleLimit(%s) = %v", limit, err)
+		}
+	}
+	// Zero would mean a session never ends; under a minute would end one
+	// before its viewer could come back.
+	for _, limit := range []time.Duration{0, -time.Hour, 30 * time.Second} {
+		if err := checkRDPIdleLimit(limit); err == nil {
+			t.Fatalf("checkRDPIdleLimit(%s) accepted", limit)
+		}
 	}
 }

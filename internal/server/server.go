@@ -18,6 +18,7 @@ import (
 	"tessera/internal/app"
 	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
+	"tessera/internal/rdpsession"
 	"tessera/internal/store"
 	"tessera/internal/terminal"
 	"tessera/internal/update"
@@ -54,6 +55,9 @@ type Options struct {
 	// MaxUploadBytes limits one terminal file upload; zero selects the 1 GiB
 	// default.
 	MaxUploadBytes int64
+	// RDPIdleLimit is how long a kept RDP session lasts with no browser
+	// attached; zero selects rdpsession.DefaultIdleLimit.
+	RDPIdleLimit time.Duration
 	// PKIDir overrides the directory beside DBPath used for Local HTTPS keys.
 	// It is primarily useful for tests and portable deployments.
 	PKIDir         string
@@ -78,6 +82,7 @@ type Server struct {
 	pkiDir         string
 	store          *store.Store
 	terminals      *terminal.Manager
+	rdpSessions    *rdpsession.Manager
 	serveErr       chan error
 }
 
@@ -123,6 +128,13 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	if pkiDir == "" {
 		pkiDir = filepath.Join(filepath.Dir(opts.DBPath), "pki")
 	}
+	// RDP sessions kept on the host (task 238); the module compiles on the
+	// first one, and its compiled code is cached beside the database.
+	rdpIdleLimit := opts.RDPIdleLimit
+	if rdpIdleLimit <= 0 {
+		rdpIdleLimit = rdpsession.DefaultIdleLimit
+	}
+	rdpSessions := rdpsession.NewManager(filepath.Join(filepath.Dir(opts.DBPath), "rdp-module-cache"), rdpIdleLimit)
 	terminalManager := terminal.NewManager()
 	terminalManager.Files.SetMaxUpload(maxUploadBytes)
 	var webFS fs.FS = web.Files
@@ -150,6 +162,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		HTTPSDefaultAddress: opts.Addr,
 		HTTPSPKIDir:         pkiDir,
 		RequestRestart:      opts.RequestRestart,
+		RDPSessions:         rdpSessions,
 	}
 
 	srv := &Server{
@@ -158,6 +171,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		pkiDir:         pkiDir,
 		store:          st,
 		terminals:      terminalManager,
+		rdpSessions:    rdpSessions,
 		serveErr:       make(chan error, 1),
 	}
 	if err := srv.startListeners(httpsConfig); err != nil {
@@ -304,6 +318,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.shutdownListenersLocked(ctx)
 	s.listenerMu.Unlock()
 	s.terminals.Close()
+	s.rdpSessions.Shutdown(ctx)
 	if closeErr := s.store.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}

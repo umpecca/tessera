@@ -20,6 +20,24 @@
   a patched build of IronRDP, the remote desktop client inside it, for this;
   `third_party/ironrdp/README.md` explains how to rebuild it.
 
+- RDP sessions can stay open on the Tessera host. With sign-in on, over HTTPS
+  or loopback, check **Keep this session on the Tessera host** when you
+  connect: closing the tab, reloading or switching workspace leaves the
+  session logged in, and opening the window again, from any browser signed in
+  to the same account, shows the desktop where you left it without asking for
+  the password. The toolbar shows **On host**. If the connection to the server
+  drops, Tessera asks only for the password and rejoins the same desktop
+  session. **Disconnect** or closing the window ends the session, as does 8
+  hours with no browser attached (`-rdp-idle-limit` changes this) or a
+  Tessera restart. The server's own lock screen still applies, and the
+  password is never stored. Clipboard text isn't available in kept sessions
+  yet.
+
+- The bundled IronRDP module that keeps RDP sessions on the host is built
+  with its source paths remapped, so it contains none of the builder's local
+  directories. `third_party/ironrdp/README.md` gives the build flags
+  and a check for a rebuilt module.
+
 - A new terminal window opens centered and half the size of the desktop
   each way (at least 360×220), from the command palette, a shortcut, the
   update prompt or the phone, and so do New Browser and New VNC from the
