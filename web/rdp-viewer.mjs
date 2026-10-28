@@ -106,8 +106,8 @@ export function connectRDPViewer({
       const bytes = inputMessage(transaction.records);
       if (bytes && socket.readyState === 1) socket.send(bytes);
     },
-    resize(width, height) {
-      if (socket.readyState === 1) socket.send(resizeMessage(width, height));
+    resize(width, height, scale) {
+      if (socket.readyState === 1) socket.send(resizeMessage(width, height, scale));
     },
     refresh() {
       if (socket.readyState === 1) socket.send(refreshMessage());

@@ -23,7 +23,8 @@ import "errors"
 // Viewer to host:
 //
 //	ViewInput        input records (see validInput)
-//	ViewResize       [width u16][height u16]
+//	ViewResize       [width u16][height u16], optionally [scale u16]: the
+//	                 desktop scale factor in percent, 100 to 500
 //	ViewRefresh      (no payload)
 const (
 	ViewDesktopSize = 1

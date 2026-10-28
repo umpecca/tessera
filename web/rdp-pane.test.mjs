@@ -124,3 +124,61 @@ test("scales RDP wheel deltas and carries fractions between events", async () =>
 
   assert.equal(rdpWheelAmount({ remainder: 0 }, -1e6, 0, 2), 32767);
 });
+
+test("sharp mode asks for the screen's own pixels, at most twice the CSS size", async () => {
+  const { rdpOffersSharp, rdpPixelRatio, readRDPSharpPreference, saveRDPSharpPreference } = await import("./rdp-pane.mjs");
+  assert.equal(rdpOffersSharp(2), true);
+  assert.equal(rdpOffersSharp(1), false);
+  assert.equal(rdpOffersSharp(undefined), false);
+
+  assert.equal(rdpPixelRatio(false, 2), 1);
+  assert.equal(rdpPixelRatio(true, 2), 2);
+  assert.equal(rdpPixelRatio(true, 1.5), 1.5);
+  assert.equal(rdpPixelRatio(true, 3), 2);
+  assert.equal(rdpPixelRatio(true, 1), 1);
+  assert.equal(rdpPixelRatio(true, Number.NaN), 1);
+
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  assert.equal(readRDPSharpPreference(storage), false);
+  saveRDPSharpPreference(storage, true);
+  assert.equal(readRDPSharpPreference(storage), true);
+  const broken = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); } };
+  assert.equal(readRDPSharpPreference(broken), false);
+  saveRDPSharpPreference(broken, true);
+});
+
+test("the full-size 2x layout stays within Remotr's limits", async () => {
+  const { rdpScaledLayout, rdpScaledMaxAspect, rdpScaledMaxPixels, rdpScaledMaxWidth } = await import("./rdp-pane.mjs");
+  // A window that fits: exactly twice its size.
+  assert.deepEqual(rdpScaledLayout(800, 500), { width: 1600, height: 1000, scale: 200, ratio: 2 });
+  assert.deepEqual(rdpScaledLayout(960, 540), { width: 1920, height: 1080, scale: 200, ratio: 2 });
+  // A typical MacBook window, wider than 16:9: 16:9 at the most pixels Remotr allows.
+  const big = rdpScaledLayout(1368, 752);
+  assert.deepEqual([big.width, big.height], [1920, 1080]);
+  assert.ok(Math.abs(big.ratio - 1080 / 752) < 1e-9, "as large as fits the window");
+  // The maximized window that froze Remotr at 1920x952.
+  const wide = rdpScaledLayout(1512, 476);
+  assert.ok(wide.width / wide.height <= rdpScaledMaxAspect, JSON.stringify(wide));
+  // A tall window: capped by the pixel count, its shape kept.
+  const tall = rdpScaledLayout(700, 1000);
+  assert.ok(Math.abs(tall.width / tall.height - 0.7) < 0.02, JSON.stringify(tall));
+  for (const [w, h] of [[1368, 752], [2400, 1300], [700, 1000], [3000, 400], [1512, 476], [50, 50]]) {
+    const layout = rdpScaledLayout(w, h);
+    assert.ok(layout.width <= rdpScaledMaxWidth && layout.width * layout.height <= rdpScaledMaxPixels, `${w}x${h}: ${JSON.stringify(layout)}`);
+    assert.ok(layout.width / layout.height <= rdpScaledMaxAspect + 1e-9, `${w}x${h}: ${JSON.stringify(layout)}`);
+    assert.equal(layout.width % 8, 0);
+    assert.equal(layout.height % 8, 0);
+    assert.ok(layout.width >= 200 && layout.height >= 200);
+    assert.ok(layout.width / layout.ratio <= w + 1e-6 && layout.height / layout.ratio <= h + 1e-6, "shown within the screen");
+  }
+});
+
+
+test("splits a target into its host and port", async () => {
+  const { normalizeRDPTarget, splitRDPTarget } = await import("./rdp-pane.mjs");
+  assert.deepEqual(splitRDPTarget(normalizeRDPTarget("localhost")), { host: "localhost", port: "3389" });
+  assert.deepEqual(splitRDPTarget(normalizeRDPTarget("Mac.local:3390")), { host: "mac.local", port: "3390" });
+  assert.deepEqual(splitRDPTarget(normalizeRDPTarget("[fd7a::4a3a]:3389")), { host: "fd7a::4a3a", port: "3389" });
+  assert.deepEqual(splitRDPTarget("odd"), { host: "odd", port: "" });
+});

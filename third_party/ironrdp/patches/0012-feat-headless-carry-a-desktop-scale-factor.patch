@@ -1,0 +1,182 @@
+From 606c8ee43efa555a032fb94ee00f8348e2ad4cc8 Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Wed, 28 Oct 2026 11:54:57 -0500
+Subject: [PATCH] feat(headless): carry a desktop scale factor
+
+The configuration may end with a desktop scale factor (u16 percent, 100
+to 500, or 0 for none), which the connector asks for, and a resize
+message may carry one, which goes to the server with the new monitor
+layout. Both stay valid without it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-headless/src/lib.rs  | 14 ++++----
+ crates/ironrdp-headless/src/wire.rs | 52 ++++++++++++++++++++++++++---
+ 2 files changed, 55 insertions(+), 11 deletions(-)
+
+diff --git a/crates/ironrdp-headless/src/lib.rs b/crates/ironrdp-headless/src/lib.rs
+index 268ec89e..851b449f 100644
+--- a/crates/ironrdp-headless/src/lib.rs
++++ b/crates/ironrdp-headless/src/lib.rs
+@@ -275,7 +275,7 @@ fn connector_config(config: &Config) -> connector::Config {
+         multitransport_flags: None,
+         support_dyn_vc_gfx_protocol: true,
+         performance_flags: PerformanceFlags::default(),
+-        desktop_scale_factor: 0,
++        desktop_scale_factor: u32::from(config.scale),
+         desktop_physical_size: None,
+         desktop_orientation: None,
+         device_scale_factor: None,
+@@ -497,11 +497,13 @@ impl Session {
+                 }
+                 Ok(Message::SuppressOutput { allow }) => self.suppress_output(allow),
+                 Ok(Message::Input(inputs)) => self.apply_input(inputs),
+-                Ok(Message::Resize { width, height }) => {
+-                    match self
+-                        .active_stage
+-                        .encode_resize(u32::from(width), u32::from(height), None, None)
+-                    {
++                Ok(Message::Resize { width, height, scale }) => {
++                    match self.active_stage.encode_resize(
++                        u32::from(width),
++                        u32::from(height),
++                        scale.map(u32::from),
++                        None,
++                    ) {
+                         Some(frame) => frame
+                             .map_err(Ending::error)
+                             .and_then(|frame| transmit(&frame).map_err(Ending::error)),
+diff --git a/crates/ironrdp-headless/src/wire.rs b/crates/ironrdp-headless/src/wire.rs
+index 42110415..c1c415c5 100644
+--- a/crates/ironrdp-headless/src/wire.rs
++++ b/crates/ironrdp-headless/src/wire.rs
+@@ -61,6 +61,8 @@ pub struct Config {
+     pub h264: bool,
+     /// Present the last auto-reconnect cookie, to rejoin that session.
+     pub rejoin: bool,
++    /// The desktop scale factor to ask for, in percent (100 to 500), or 0 for none.
++    pub scale: u16,
+ }
+ 
+ const CONFIG_H264: u8 = 1;
+@@ -102,7 +104,8 @@ impl<'a> Reader<'a> {
+ }
+ 
+ /// The configuration: server name, user name, password and domain (empty for none) as strings,
+-/// then width u16, height u16 and flags u8 (bit 0: H.264; bit 1: rejoin with the last cookie).
++/// then width u16, height u16, flags u8 (bit 0: H.264; bit 1: rejoin with the last cookie) and,
++/// optionally, the desktop scale factor u16 (see [`valid_scale`]).
+ pub fn parse_config(bytes: &[u8]) -> Option<Config> {
+     let mut reader = Reader(bytes);
+     let server_name = reader.string()?;
+@@ -112,7 +115,8 @@ pub fn parse_config(bytes: &[u8]) -> Option<Config> {
+     let width = reader.u16()?;
+     let height = reader.u16()?;
+     let flags = reader.u8()?;
+-    if !reader.is_empty() || width == 0 || height == 0 {
++    let scale = if reader.is_empty() { 0 } else { reader.u16()? };
++    if !reader.is_empty() || width == 0 || height == 0 || !valid_scale(scale) {
+         return None;
+     }
+     Some(Config {
+@@ -124,9 +128,15 @@ pub fn parse_config(bytes: &[u8]) -> Option<Config> {
+         height,
+         h264: flags & CONFIG_H264 != 0,
+         rejoin: flags & CONFIG_REJOIN != 0,
++        scale,
+     })
+ }
+ 
++/// A desktop scale factor is 0 (none) or 100 to 500 percent (MS-RDPBCGR 2.2.1.3.2).
++fn valid_scale(scale: u16) -> bool {
++    scale == 0 || (100..=500).contains(&scale)
++}
++
+ #[derive(Debug)]
+ pub enum Message {
+     ServerBytes(Vec<u8>),
+@@ -138,6 +148,8 @@ pub enum Message {
+     Resize {
+         width: u16,
+         height: u16,
++        /// The desktop scale factor in percent, if the host gave one.
++        scale: Option<u16>,
+     },
+     Refresh,
+     /// The host has nothing more: the connection is gone.
+@@ -163,8 +175,18 @@ pub fn parse_message(buffer: &[u8]) -> Result<Message, String> {
+         TAG_INPUT => parse_input(payload).map(Message::Input),
+         TAG_RESIZE => {
+             let mut reader = Reader(payload);
+-            match (reader.u16(), reader.u16()) {
+-                (Some(width), Some(height)) if width > 0 && height > 0 => Ok(Message::Resize { width, height }),
++            let (width, height) = (reader.u16(), reader.u16());
++            let scale = if reader.is_empty() { Some(0) } else { reader.u16() };
++            match (width, height, scale) {
++                (Some(width), Some(height), Some(scale))
++                    if width > 0 && height > 0 && reader.is_empty() && valid_scale(scale) =>
++                {
++                    Ok(Message::Resize {
++                        width,
++                        height,
++                        scale: (scale != 0).then_some(scale),
++                    })
++                }
+                 _ => Err("invalid resize message".to_owned()),
+             }
+         }
+@@ -378,12 +400,16 @@ mod tests {
+                 height: 640,
+                 h264: true,
+                 rejoin: false,
++                scale: 0,
+             }
+         );
+         let config = parse_config(&config_bytes("CORP", 800, 600, CONFIG_REJOIN)).unwrap();
+         assert_eq!(config.domain.as_deref(), Some("CORP"));
+         assert!(!config.h264);
+         assert!(config.rejoin);
++        let mut scaled = config_bytes("", 2432, 1280, CONFIG_H264);
++        scaled.extend_from_slice(&200u16.to_le_bytes());
++        assert_eq!(parse_config(&scaled).unwrap().scale, 200);
+     }
+ 
+     #[test]
+@@ -395,6 +421,11 @@ mod tests {
+         assert!(parse_config(&long).is_none());
+         assert!(parse_config(&config_bytes("", 0, 640, 0)).is_none());
+         assert!(parse_config(&[0xff, 0xff]).is_none());
++        for scale in [99u16, 501] {
++            let mut scaled = config_bytes("", 1216, 640, 0);
++            scaled.extend_from_slice(&scale.to_le_bytes());
++            assert!(parse_config(&scaled).is_none(), "scale {scale}");
++        }
+     }
+ 
+     #[test]
+@@ -414,10 +445,21 @@ mod tests {
+             parse_message(&[TAG_RESIZE, 0xc0, 0x04, 0x80, 0x02]),
+             Ok(Message::Resize {
+                 width: 1216,
+-                height: 640
++                height: 640,
++                scale: None,
++            })
++        ));
++        assert!(matches!(
++            parse_message(&[TAG_RESIZE, 0xc0, 0x04, 0x80, 0x02, 200, 0]),
++            Ok(Message::Resize {
++                width: 1216,
++                height: 640,
++                scale: Some(200),
+             })
+         ));
+         assert!(parse_message(&[TAG_RESIZE, 0, 0, 1, 0]).is_err());
++        assert!(parse_message(&[TAG_RESIZE, 0xc0, 0x04, 0x80, 0x02, 50, 0]).is_err());
++        assert!(parse_message(&[TAG_RESIZE, 0xc0, 0x04, 0x80, 0x02, 200]).is_err());
+         assert!(matches!(parse_message(&[TAG_REFRESH]), Ok(Message::Refresh)));
+         assert!(parse_message(&[99]).is_err());
+     }
+-- 
+2.54.0 (Apple Git-157)
+

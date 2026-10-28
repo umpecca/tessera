@@ -483,3 +483,16 @@ test("with full color, draws the combined picture to the update's surface", asyn
   assert.deepEqual(env.draws, [[0, 0, 16, 16, 0, 0, 16, 16]]);
   assert.equal(combiner.calls.at(-1)[0], "paint");
 });
+
+test("reports every drawn picture", () => {
+  const env = fakes();
+  let pictures = 0;
+  const h264 = presenter(env, { onPicture: () => { pictures += 1; } });
+  h264.push(idr(), Uint16Array.of(0, 0, 8, 8));
+  h264.push(delta(), new Uint16Array());
+  h264.push(delta(), Uint16Array.of(0, 0, 8, 8));
+  env.decoders[0].emit(0);
+  env.decoders[0].emit(1);
+  env.decoders[0].emit(2);
+  assert.equal(pictures, 2, "a picture without regions draws nothing");
+});

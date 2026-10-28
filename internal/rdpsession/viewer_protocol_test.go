@@ -50,18 +50,21 @@ func TestViewerMessagesReachTheModule(t *testing.T) {
 	s, _ := startedSession(t, runner, 0)
 	input := []byte{inputMouseMove, 10, 0, 20, 0, inputKey, 0x1e, 0, 1}
 	resize := binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, 1280), 720)
+	scaled := binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, 1920), 1048), 200)
 	for _, message := range [][]byte{
 		append([]byte{ViewInput}, input...),
 		append([]byte{ViewResize}, resize...),
+		append([]byte{ViewResize}, scaled...),
 		{ViewRefresh},
 	} {
 		if err := s.HandleViewerMessage(message); err != nil {
 			t.Fatalf("%v: %v", message, err)
 		}
 	}
-	eventually(t, "all three messages", func() bool {
+	eventually(t, "all four messages", func() bool {
 		return runner.count(append([]byte{tagInput}, input...)) == 1 &&
 			runner.count(append([]byte{tagResize}, resize...)) == 1 &&
+			runner.count(append([]byte{tagResize}, scaled...)) == 1 &&
 			runner.count([]byte{tagRefresh}) == 1
 	})
 }
@@ -79,6 +82,8 @@ func TestViewerMessagesAreValidated(t *testing.T) {
 		huge,
 		{ViewResize, 1, 0},
 		append([]byte{ViewResize}, bad...),
+		{ViewResize, 0x00, 0x05, 0xd0, 0x02, 50, 0}, // scale below 100%
+		{ViewResize, 0x00, 0x05, 0xd0, 0x02, 200},   // half a scale
 		{ViewRefresh, 1},
 	} {
 		if err := s.HandleViewerMessage(message); !errors.Is(err, ErrViewerMessage) {

@@ -44,6 +44,9 @@ func (s *Session) begin(ctx context.Context, password string, rejoin bool) error
 	s.state = StateConnecting
 	s.wasActive = false
 	s.surfaces = nil
+	s.scaledLaidOut = false
+	s.scaledWanted = Layout{}
+	s.scaledGeneration++
 	s.err = nil
 	s.endCode, s.endReason = EndError, ""
 	activated, finished := make(chan struct{}), make(chan struct{})
@@ -187,6 +190,8 @@ func (s *Session) handleEvent(kind uint32, payload []byte) {
 		}
 	case eventH264:
 		s.recordSurfaceOutput(payload)
+		s.noteScaledPictureLocked(payload)
+		s.scheduleScaledLayoutLocked(payload)
 	}
 	forward, viewer := s.onEvent, s.viewer
 	s.mu.Unlock()
@@ -206,6 +211,86 @@ const (
 	h264ViewOffset    = 2
 	h264RegionsOffset = 3
 )
+
+// scaledLayoutDelay is how long after a run's first picture the session asks
+// for its target's scaled layout. Remotr ignores the desktop scale factor a
+// connection asks for and honors one only in a monitor layout that changes
+// the desktop's size, and a layout sent before its display runs leaves it
+// stuck reconfiguring: the first picture shows it running, and the delay lets
+// it settle.
+var scaledLayoutDelay = time.Second
+
+// scheduleScaledLayoutLocked asks, once per run and after scaledLayoutDelay,
+// for the target's scaled layout, once an H.264 picture shows the server's
+// display running. The caller holds s.mu.
+func (s *Session) scheduleScaledLayoutLocked(payload []byte) {
+	layout := s.target.Scaled
+	if layout.Scale == 0 || s.scaledLaidOut || s.state != StateActive ||
+		len(payload) < h264PayloadHeader || payload[h264ViewOffset] >= viewSurfaceOutput {
+		return
+	}
+	s.scaledLaidOut = true
+	watch := scaledLayoutWatch
+	time.AfterFunc(scaledLayoutDelay, func() {
+		s.requestScaledLayout(layout, watch)
+	})
+}
+
+// scaledLayoutWatch is how long a scaled layout has to bring the server's
+// video back at its size. Remotr stays on its Connecting screen after a
+// scaled layout it can't lay out, ignoring further scaled ones, and a plain
+// layout of another size always brings it back; a successful switch shows
+// video in about 2.5 s.
+var scaledLayoutWatch = 5 * time.Second
+
+// requestScaledLayout asks for layout and, if no picture arrives at its size
+// within watch, for the plain layout the session connected with.
+func (s *Session) requestScaledLayout(layout Layout, watch time.Duration) {
+	s.mu.Lock()
+	s.scaledWanted = layout
+	s.scaledGeneration++
+	generation := s.scaledGeneration
+	s.mu.Unlock()
+	if !s.Post(resizeMessage(layout)) {
+		return
+	}
+	time.AfterFunc(watch, func() {
+		s.mu.Lock()
+		stuck := s.scaledGeneration == generation && s.scaledWanted == layout && s.state == StateActive
+		if stuck {
+			s.scaledWanted = Layout{}
+		}
+		width, height := s.target.Width, s.target.Height
+		s.mu.Unlock()
+		if !stuck {
+			return
+		}
+		plain := []byte{tagResize}
+		plain = binary.LittleEndian.AppendUint16(plain, uint16(width))
+		plain = binary.LittleEndian.AppendUint16(plain, uint16(height))
+		s.Post(plain)
+	})
+}
+
+// noteScaledPictureLocked marks the wanted layout shown once a picture
+// arrives with the desktop at its size. The caller holds s.mu.
+func (s *Session) noteScaledPictureLocked(payload []byte) {
+	wanted := s.scaledWanted
+	if wanted == (Layout{}) || len(payload) < h264PayloadHeader || payload[h264ViewOffset] >= viewSurfaceOutput {
+		return
+	}
+	if s.width == wanted.Width && s.height == wanted.Height {
+		s.scaledWanted = Layout{}
+	}
+}
+
+// resizeMessage asks the module for layout.
+func resizeMessage(layout Layout) []byte {
+	message := []byte{tagResize}
+	message = binary.LittleEndian.AppendUint16(message, uint16(layout.Width))
+	message = binary.LittleEndian.AppendUint16(message, uint16(layout.Height))
+	return binary.LittleEndian.AppendUint16(message, uint16(layout.Scale))
+}
 
 // recordSurfaceOutput keeps the module's "surface shown" events, dropping a
 // surface's when it is no longer shown and all of them on a reset. The

@@ -64,15 +64,18 @@ type Pane struct {
 	// certificate the pane's user accepted. Passwords are never stored.
 	RDPTrustedTarget      string `json:"rdpTrustedTarget"`
 	RDPTrustedFingerprint string `json:"rdpTrustedFingerprint"`
-	IsFull                bool   `json:"isFull"`
-	RestoreBox            string `json:"restoreBox"`
-	Minimized             bool   `json:"minimized"`
-	X                     int    `json:"x"`
-	Y                     int    `json:"y"`
-	Width                 int    `json:"width"`
-	Height                int    `json:"height"`
-	ZIndex                int    `json:"zIndex"`
-	Position              int    `json:"position"`
+	// RDPFullSize keeps the server's interface full size in sharp mode, with
+	// a 2x scaled layout within Remotr's limits.
+	RDPFullSize bool   `json:"rdpFullSize"`
+	IsFull      bool   `json:"isFull"`
+	RestoreBox  string `json:"restoreBox"`
+	Minimized   bool   `json:"minimized"`
+	X           int    `json:"x"`
+	Y           int    `json:"y"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	ZIndex      int    `json:"zIndex"`
+	Position    int    `json:"position"`
 	// BufferTextUnchanged and EditorTabsUnchanged let a save skip resending a
 	// pane's documents: the stored copy is kept and BufferText/EditorTabs above
 	// are ignored. They are request-only, so a loaded workspace never sets them.
@@ -106,12 +109,14 @@ type paneRDPSettings struct {
 	ScaleMode          string `json:"scaleMode,omitempty"`
 	TrustedTarget      string `json:"trustedTarget,omitempty"`
 	TrustedFingerprint string `json:"trustedFingerprint,omitempty"`
+	FullSize           bool   `json:"fullSize,omitempty"`
 }
 
 func paneRDPSettingsJSON(pane Pane) string {
 	settings, _ := json.Marshal(paneRDPSettings{
 		Target: pane.RDPTarget, Username: pane.RDPUsername, Domain: pane.RDPDomain, ScaleMode: pane.RDPScaleMode,
 		TrustedTarget: pane.RDPTrustedTarget, TrustedFingerprint: pane.RDPTrustedFingerprint,
+		FullSize: pane.RDPFullSize,
 	})
 	return string(settings)
 }
@@ -125,6 +130,7 @@ func applyPaneRDPSettings(pane *Pane, raw string) {
 	pane.RDPScaleMode = settings.ScaleMode
 	pane.RDPTrustedTarget = settings.TrustedTarget
 	pane.RDPTrustedFingerprint = settings.TrustedFingerprint
+	pane.RDPFullSize = settings.FullSize
 }
 
 // normalizePaneDisplayModes keeps the VNC and RDP scale modes to the values

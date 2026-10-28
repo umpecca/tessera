@@ -1,3 +1,5 @@
+import { offerLoginToBrowser } from "./password-manager.mjs";
+
 // Sign-in support for the workspace page. When a sign-in ends (signed out
 // elsewhere, expired, revoked, or its password changed) the server answers
 // 401, or closes live sockets with 4401. The page then shows a sign-in dialog
@@ -182,6 +184,8 @@ export class SignInRecovery {
         return;
       }
       if (response.ok) {
+        // A sign-in without navigating: offer it to the password manager.
+        void offerLoginToBrowser({ username: name.value, password: password.value, name: `${name.value} — Tessera` }, this.target);
         password.value = "";
         modal.remove();
         done();

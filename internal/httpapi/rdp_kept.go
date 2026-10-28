@@ -42,18 +42,34 @@ type rdpKeptRequest struct {
 	Width       int    `json:"width"`
 	Height      int    `json:"height"`
 	H264        bool   `json:"h264"`
+	// PixelRatio is the desktop pixels per CSS pixel the desktop is sized
+	// for, or 0.
+	PixelRatio float64 `json:"pixelRatio"`
+	// ScaledWidth, ScaledHeight and ScaleFactor, when set, are the layout the
+	// session asks for once the server's display runs.
+	ScaledWidth  int `json:"scaledWidth"`
+	ScaledHeight int `json:"scaledHeight"`
+	ScaleFactor  int `json:"scaleFactor"`
 }
 
 type rdpKeptInfo struct {
 	WorkspaceID string `json:"workspaceId"`
 	Pane        string `json:"pane"`
 	// Target is the server the session is for.
-	Target    string `json:"target"`
-	State     string `json:"state"`
-	Width     int    `json:"width,omitempty"`
-	Height    int    `json:"height,omitempty"`
-	CanRejoin bool   `json:"canRejoin"`
-	Reason    string `json:"reason,omitempty"`
+	Target string `json:"target"`
+	State  string `json:"state"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	// PixelRatio is the desktop pixels per CSS pixel the session was sized
+	// for, if any.
+	PixelRatio float64 `json:"pixelRatio,omitempty"`
+	// ScaledWidth, ScaledHeight and ScaleFactor are the session's scaled
+	// layout, if it has one.
+	ScaledWidth  int    `json:"scaledWidth,omitempty"`
+	ScaledHeight int    `json:"scaledHeight,omitempty"`
+	ScaleFactor  int    `json:"scaleFactor,omitempty"`
+	CanRejoin    bool   `json:"canRejoin"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // rdpKeptOwner applies the kept-session rules and returns the owner: the
@@ -108,14 +124,19 @@ func decodeRDPKeptRequest(w http.ResponseWriter, r *http.Request) (rdpKeptReques
 	return request, true
 }
 
-func rdpKeptInfoFor(key rdpsession.Key, target string, info rdpsession.Info) rdpKeptInfo {
+func rdpKeptInfoFor(key rdpsession.Key, session *rdpsession.Session, info rdpsession.Info) rdpKeptInfo {
+	target, pixelRatio, scaled := session.Address(), session.PixelRatio(), session.Scaled()
 	workspaceID, pane, _ := strings.Cut(key.Pane, "/")
 	result := rdpKeptInfo{
-		WorkspaceID: workspaceID,
-		Pane:        pane,
-		Target:      target,
-		State:       info.State.String(),
-		CanRejoin:   info.CanRejoin,
+		WorkspaceID:  workspaceID,
+		Pane:         pane,
+		Target:       target,
+		PixelRatio:   pixelRatio,
+		ScaledWidth:  scaled.Width,
+		ScaledHeight: scaled.Height,
+		ScaleFactor:  scaled.Scale,
+		State:        info.State.String(),
+		CanRejoin:    info.CanRejoin,
 	}
 	if info.State == rdpsession.StateActive || info.State == rdpsession.StateLost {
 		result.Width, result.Height = info.Width, info.Height
@@ -166,7 +187,7 @@ func (a *API) rdpKept(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if session, found := a.RDPSessions.Get(key); found {
-				sessions = append(sessions, rdpKeptInfoFor(key, session.Address(), session.Info()))
+				sessions = append(sessions, rdpKeptInfoFor(key, session, session.Info()))
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -211,6 +232,15 @@ func (a *API) rdpKeptCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid RDP desktop size")
 		return
 	}
+	if !rdpsession.ValidPixelRatio(request.PixelRatio) {
+		writeError(w, http.StatusBadRequest, "invalid RDP pixel ratio")
+		return
+	}
+	scaled := rdpsession.Layout{Width: request.ScaledWidth, Height: request.ScaledHeight, Scale: request.ScaleFactor}
+	if !scaled.Valid() {
+		writeError(w, http.StatusBadRequest, "invalid RDP scaled layout")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), rdpKeptLoginTimeout)
 	defer cancel()
 	session, err := a.RDPSessions.Create(ctx, key, rdpsession.Target{
@@ -221,12 +251,14 @@ func (a *API) rdpKeptCreate(w http.ResponseWriter, r *http.Request) {
 		Width:       request.Width,
 		Height:      request.Height,
 		H264:        request.H264,
+		PixelRatio:  request.PixelRatio,
+		Scaled:      scaled,
 	}, request.Password, nil)
 	if err != nil {
 		rdpKeptLoginError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, rdpKeptInfoFor(key, session.Address(), session.Info()))
+	writeJSON(w, http.StatusCreated, rdpKeptInfoFor(key, session, session.Info()))
 }
 
 // rdpKeptAction handles /api/rdp-kept/rejoin, disconnect and view.
@@ -272,5 +304,5 @@ func (a *API) rdpKeptAction(w http.ResponseWriter, r *http.Request) {
 		rdpKeptLoginError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, rdpKeptInfoFor(key, session.Address(), session.Info()))
+	writeJSON(w, http.StatusOK, rdpKeptInfoFor(key, session, session.Info()))
 }

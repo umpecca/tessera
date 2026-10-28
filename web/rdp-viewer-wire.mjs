@@ -93,10 +93,14 @@ export function inputMessage(records) {
   return message(viewInput, ...records);
 }
 
-export function resizeMessage(width, height) {
-  return message(viewResize, record(4, (view) => {
+// `scale`, the desktop scale factor in percent (100 to 500), is sent only when
+// there is one.
+export function resizeMessage(width, height, scale = 0) {
+  const scaled = scale >= 100 && scale <= 500;
+  return message(viewResize, record(scaled ? 6 : 4, (view) => {
     view.setUint16(0, clamp16(width), true);
     view.setUint16(2, clamp16(height), true);
+    if (scaled) view.setUint16(4, Math.round(scale), true);
   }));
 }
 

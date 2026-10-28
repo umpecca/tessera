@@ -131,11 +131,13 @@ test("sends input, resize, refresh and release-all", async () => {
   session.applyInputs(transaction);
   session.applyInputs(new InputTransaction());
   session.resize(1280, 720);
+  session.resize(1920, 1048, 200);
   session.refresh();
   session.releaseAllInputs();
   assert.deepEqual(socket().sent, [
     [1, 1, 10, 0, 20, 0, 2, 0, 1, 4, 0x5b, 0xe0, 1, 3, 1, 100, 0],
     [2, 0x00, 0x05, 0xd0, 0x02],
+    [2, 0x80, 0x07, 0x18, 0x04, 200, 0],
     [3],
     [1, 6],
   ]);

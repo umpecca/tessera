@@ -19,13 +19,21 @@ func (s *Session) HandleViewerMessage(message []byte) error {
 		}
 		s.Post(append([]byte{tagInput}, payload...))
 	case ViewResize:
-		if len(payload) != 4 {
+		if len(payload) != 4 && len(payload) != 6 {
 			return ErrViewerMessage
 		}
 		width := int(binary.LittleEndian.Uint16(payload))
 		height := int(binary.LittleEndian.Uint16(payload[2:]))
 		if width < minDesktopSide || width > maxDesktopSide || height < minDesktopSide || height > maxDesktopSide {
 			return ErrViewerMessage
+		}
+		if len(payload) == 6 {
+			scale := int(binary.LittleEndian.Uint16(payload[4:]))
+			if !validScale(scale) {
+				return ErrViewerMessage
+			}
+			s.requestScaledLayout(Layout{Width: width, Height: height, Scale: scale}, scaledLayoutWatch)
+			return nil
 		}
 		s.Post(append([]byte{tagResize}, payload...))
 	case ViewRefresh:

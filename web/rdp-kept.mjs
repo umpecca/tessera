@@ -60,7 +60,7 @@ export function saveRDPKeepPreference(storage, keep) {
 }
 
 // The request that keeps a new session; its fields are exactly the host's.
-export function keptRDPCreateBody({ workspaceId, pane, target, fingerprint, credentials, size, h264 }) {
+export function keptRDPCreateBody({ workspaceId, pane, target, fingerprint, credentials, size, h264, pixelRatio, scaled }) {
   return {
     workspaceId,
     pane,
@@ -72,6 +72,10 @@ export function keptRDPCreateBody({ workspaceId, pane, target, fingerprint, cred
     width: size.width,
     height: size.height,
     h264: Boolean(h264),
+    pixelRatio: pixelRatio || 0,
+    scaledWidth: scaled?.width || 0,
+    scaledHeight: scaled?.height || 0,
+    scaleFactor: scaled?.scale || 0,
   };
 }
 

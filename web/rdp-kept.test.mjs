@@ -55,7 +55,7 @@ test("remembers whether to keep sessions, on by default", () => {
 
 // The fields of rdpKeptRequest in internal/httpapi/rdp_kept.go, which the host
 // decodes strictly: an unknown field is refused.
-const hostFields = ["domain", "fingerprint", "h264", "height", "pane", "password", "target", "username", "width", "workspaceId"];
+const hostFields = ["domain", "fingerprint", "h264", "height", "pane", "password", "pixelRatio", "scaleFactor", "scaledHeight", "scaledWidth", "target", "username", "width", "workspaceId"];
 
 test("builds the create request with exactly the host's fields", () => {
   const body = keptRDPCreateBody({
@@ -64,12 +64,18 @@ test("builds the create request with exactly the host's fields", () => {
     target: "mac.local:3389",
     fingerprint: "ab".repeat(32),
     credentials: { username: "jane", domain: "", password: "secret" },
-    size: { width: 1216, height: 640 },
+    size: { width: 2432, height: 1280 },
     h264: true,
+    pixelRatio: 2,
+    scaled: { width: 1920, height: 1048, scale: 200 },
   });
   assert.deepEqual(Object.keys(body).sort(), hostFields);
-  assert.deepEqual([body.width, body.height, body.h264, body.username, body.password], [1216, 640, true, "jane", "secret"]);
-  assert.equal(keptRDPCreateBody({ credentials: {}, size: {}, h264: undefined }).h264, false);
+  assert.deepEqual([body.width, body.height, body.h264, body.pixelRatio, body.username, body.password], [2432, 1280, true, 2, "jane", "secret"]);
+  const plain = keptRDPCreateBody({ credentials: {}, size: {}, h264: undefined });
+  assert.equal(plain.h264, false);
+  assert.equal(plain.pixelRatio, 0);
+  assert.deepEqual([body.scaledWidth, body.scaledHeight, body.scaleFactor], [1920, 1048, 200]);
+  assert.deepEqual([plain.scaledWidth, plain.scaledHeight, plain.scaleFactor], [0, 0, 0]);
 });
 
 test("builds the rejoin and disconnect requests", () => {

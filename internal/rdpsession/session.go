@@ -58,6 +58,41 @@ type Target struct {
 	Height int
 	// H264 offers H.264, which viewers decode.
 	H264 bool
+	// PixelRatio is the desktop pixels per CSS pixel the desktop was sized
+	// for (above 1 in sharp mode), so viewers show it at that ratio. The
+	// server never sees it.
+	PixelRatio float64
+	// Scaled, when set, is the monitor layout the session asks for once the
+	// server's display runs (see scaledLayoutDelay): a desktop scale factor
+	// the server honors only in a layout, as Remotr does.
+	Scaled Layout
+}
+
+// Layout is a desktop size with a desktop scale factor in percent.
+type Layout struct {
+	Width, Height, Scale int
+}
+
+// Valid reports whether l is unset, or a size RDP allows with a desktop scale
+// factor of 100 to 500 percent.
+func (l Layout) Valid() bool {
+	if l == (Layout{}) {
+		return true
+	}
+	return l.Width >= minDesktopSide && l.Width <= maxDesktopSide && l.Width%2 == 0 &&
+		l.Height >= minDesktopSide && l.Height <= maxDesktopSide && validScale(l.Scale)
+}
+
+// validScale reports whether scale is a desktop scale factor RDP allows: 100
+// to 500 percent (MS-RDPBCGR 2.2.1.3.2).
+func validScale(scale int) bool {
+	return scale >= 100 && scale <= 500
+}
+
+// ValidPixelRatio reports whether ratio is one a session can be kept with: 0
+// (unset) or 1 to 2, the most sharp mode asks for.
+func ValidPixelRatio(ratio float64) bool {
+	return ratio == 0 || (ratio >= 1 && ratio <= 2)
 }
 
 func (t Target) config(password string, rejoin bool) Config {
@@ -123,13 +158,20 @@ type Session struct {
 	// surfaces holds the latest "surface shown" H.264 event for each surface
 	// the module said is shown, so a viewer attaching later learns where to
 	// draw (see recordSurfaceOutput).
-	surfaces     map[uint16][]byte
-	sessionID    uint32
-	hasSessionID bool
-	hasCookie    bool
-	endCode      End
-	endReason    string
-	err          error
+	surfaces map[uint16][]byte
+	// scaledLaidOut is set once this run asked for the target's scaled
+	// layout (see scaledLayoutDelay). scaledWanted is the scaled layout last
+	// asked for, until a picture arrives at its size, and scaledGeneration
+	// tells its watch from a later request's (see requestScaledLayout).
+	scaledLaidOut    bool
+	scaledWanted     Layout
+	scaledGeneration uint64
+	sessionID        uint32
+	hasSessionID     bool
+	hasCookie        bool
+	endCode          End
+	endReason        string
+	err              error
 }
 
 // NewSession returns a session that is not yet connected. onEvent, if set,
@@ -157,6 +199,12 @@ func (s *Session) Info() Info {
 
 // Address is the host:port of the server the session is for.
 func (s *Session) Address() string { return s.target.Address }
+
+// PixelRatio is the target's PixelRatio.
+func (s *Session) PixelRatio() float64 { return s.target.PixelRatio }
+
+// Scaled is the target's scaled layout.
+func (s *Session) Scaled() Layout { return s.target.Scaled }
 
 // Done returns a channel that closes when the current run is over, after
 // which the session is lost or ended. It is nil before Start.

@@ -163,7 +163,7 @@ func readFrame(t *testing.T, conn *websocket.Conn) []byte {
 // web/rdp-kept.test.mjs asserts the same list for the browser's request, so
 // renaming a field on either side fails a test.
 func TestKeptRequestFieldsMatchTheBrowser(t *testing.T) {
-	want := []string{"domain", "fingerprint", "h264", "height", "pane", "password", "target", "username", "width", "workspaceId"}
+	want := []string{"domain", "fingerprint", "h264", "height", "pane", "password", "pixelRatio", "scaleFactor", "scaledHeight", "scaledWidth", "target", "username", "width", "workspaceId"}
 	var got []string
 	requestType := reflect.TypeOf(rdpKeptRequest{})
 	for i := 0; i < requestType.NumField(); i++ {
@@ -373,5 +373,60 @@ func TestRDPKeptListReportsIdleLimit(t *testing.T) {
 	h := newKeptHarness(t)
 	if got := h.listing("alice").IdleLimitSeconds; got != int64(keptHarnessIdleLimit/time.Second) {
 		t.Fatalf("idleLimitSeconds = %d, want %d", got, int64(keptHarnessIdleLimit/time.Second))
+	}
+}
+
+func TestKeptSessionKeepsItsPixelRatio(t *testing.T) {
+	h := newKeptHarness(t)
+	refused := h.createBody("alice", "pane-1")
+	refused["pixelRatio"] = 3
+	if status, body := h.post("alice", "/api/rdp-kept", refused); status != http.StatusBadRequest {
+		t.Fatalf("create with pixel ratio 3 = %d %s", status, body)
+	}
+	scaled := h.createBody("alice", "pane-1")
+	scaled["pixelRatio"] = 2
+	status, body := h.post("alice", "/api/rdp-kept", scaled)
+	if status != http.StatusCreated {
+		t.Fatalf("create = %d %s", status, body)
+	}
+	var created rdpKeptInfo
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.PixelRatio != 2 {
+		t.Fatalf("created pixel ratio = %v", created.PixelRatio)
+	}
+	if sessions := h.list("alice"); len(sessions) != 1 || sessions[0].PixelRatio != 2 {
+		t.Fatalf("listed = %+v", sessions)
+	}
+}
+
+func TestKeptSessionKeepsItsScaledLayout(t *testing.T) {
+	h := newKeptHarness(t)
+	for _, bad := range []map[string]any{
+		{"scaledWidth": 1920, "scaledHeight": 1200, "scaleFactor": 50},
+		{"scaledWidth": 1921, "scaledHeight": 1200, "scaleFactor": 200},
+		{"scaledWidth": 0, "scaledHeight": 1200, "scaleFactor": 200},
+	} {
+		body := h.createBody("alice", "pane-1")
+		for key, value := range bad {
+			body[key] = value
+		}
+		if status, response := h.post("alice", "/api/rdp-kept", body); status != http.StatusBadRequest {
+			t.Fatalf("create with %v = %d %s", bad, status, response)
+		}
+	}
+	body := h.createBody("alice", "pane-1")
+	body["scaledWidth"], body["scaledHeight"], body["scaleFactor"], body["pixelRatio"] = 1920, 1048, 200, 1.4
+	status, response := h.post("alice", "/api/rdp-kept", body)
+	if status != http.StatusCreated {
+		t.Fatalf("create = %d %s", status, response)
+	}
+	var created rdpKeptInfo
+	if err := json.Unmarshal(response, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ScaledWidth != 1920 || created.ScaledHeight != 1048 || created.ScaleFactor != 200 || created.PixelRatio != 1.4 {
+		t.Fatalf("created = %+v", created)
 	}
 }

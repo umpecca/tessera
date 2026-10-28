@@ -14,6 +14,7 @@ import { browserWakeDetected, nextServerConnectionState } from "./server-connect
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
 import { normalizePredictionMode } from "./terminal-prediction.mjs";
 import { KeyReadout, keyReadoutShouldPreventKeydown } from "./key-readout.mjs";
+import { offerLoginToBrowser } from "./password-manager.mjs";
 import { renderSignedInDevices, SignInRecovery, signInEndedCloseCode, signOut } from "./sign-in.mjs";
 import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL, validateLocalHTTPSDraft } from "./local-https-settings.mjs";
 import { shouldShowIPadHTTPGuidance } from "./ipad-http-guidance.mjs";
@@ -98,6 +99,14 @@ import {
   rdpClipboardText,
   rdpCtrlAltDelete,
   rdpDesktopSize,
+  rdpOffersSharp,
+  rdpPixelRatio,
+  rdpScaledLayout,
+  rdpScaledLayoutDelayMs,
+  rdpScaledLayoutWatchMs,
+  splitRDPTarget,
+  readRDPSharpPreference,
+  saveRDPSharpPreference,
   defaultRDPWheelSpeed,
   normalizeRDPWheelSpeed,
   rdpWheelAmount,
@@ -1861,6 +1870,7 @@ function createRectangle(x, y, width, height, options = {}) {
     rdpScaleMode: normalizeRDPScaleMode(options.rdpScaleMode),
     rdpTrustedTarget: options.rdpTrustedTarget || "",
     rdpTrustedFingerprint: options.rdpTrustedFingerprint || "",
+    rdpFullSize: Boolean(options.rdpFullSize),
     rdp: null,
     isFull: Boolean(options.isFull),
     minimized: Boolean(options.minimized),
@@ -2921,6 +2931,16 @@ function mountRDPPane(rect) {
     remoteClipboard: "", lastSentClipboard: "", clipboardRequested: false, resizeTimer: null, resizeObserver: null, canvasObserver: null,
     pointerFrame: 0, pendingPointer: null, h264: null, h264Drawn: false, h264FullColor: false, kept: false,
     wheelVertical: { remainder: 0 }, wheelHorizontal: { remainder: 0 },
+    // Desktop pixels per CSS pixel: above 1 in sharp mode.
+    pixelRatio: 1,
+    // In full-size sharp mode, the 2x layout asked for once the server's
+    // display runs (rdpScaledLayout), and whether it was asked for yet.
+    scaled: null,
+    scaledLaidOut: false,
+    // The scaled layout being watched for a picture at its size, and a count
+    // that retires older watches (see sendRDPScaledLayout).
+    scaledWanted: null,
+    scaledGeneration: 0,
   };
   rect.rdp = view;
   toolbar.append(address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel);
@@ -3056,7 +3076,8 @@ function layoutRDPCanvas(rect) {
   if (!view) {
     return;
   }
-  const size = rdpCanvasDisplaySize(rect.rdpScaleMode, view.canvas.width, view.canvas.height, view.screen.clientWidth, view.screen.clientHeight);
+  const ratio = rdpDisplayRatio(view);
+  const size = rdpCanvasDisplaySize(rect.rdpScaleMode, view.canvas.width / ratio, view.canvas.height / ratio, view.screen.clientWidth, view.screen.clientHeight);
   view.canvas.style.width = `${size.width}px`;
   view.canvas.style.height = `${size.height}px`;
   view.screen.classList.toggle("is-one-to-one", rect.rdpScaleMode !== "fit");
@@ -3080,7 +3101,15 @@ function scheduleRDPResize(rect) {
   }
   view.resizeTimer = window.setTimeout(() => {
     if (!view.session || rect.rdpScaleMode !== "resize" || !view.screen.clientWidth) return;
-    const size = rdpDesktopSize(view.screen.clientWidth, view.screen.clientHeight);
+    if (view.scaled) {
+      // Full-size sharp mode: a 2x layout within Remotr's limits.
+      const layout = rdpScaledLayout(view.screen.clientWidth, view.screen.clientHeight);
+      if (layout.width === view.canvas.width && layout.height === view.canvas.height) return;
+      sendRDPScaledLayout(view, layout, () => rect.rdp === view);
+      return;
+    }
+    const ratio = view.pixelRatio || 1;
+    const size = rdpDesktopSize(view.screen.clientWidth * ratio, view.screen.clientHeight * ratio);
     if (size.width === view.canvas.width && size.height === view.canvas.height) return;
     view.session.resize(size.width, size.height);
   }, 300);
@@ -3249,6 +3278,11 @@ async function attachKeptRDP(rect, view, kept, current) {
   }
   closeRDPH264(view);
   view.canvas.style.cursor = "";
+  // The desktop was sized for the browser that kept the session.
+  view.scaled = kept.scaledWidth
+    ? { width: kept.scaledWidth, height: kept.scaledHeight, scale: kept.scaleFactor, ratio: kept.pixelRatio || 1 }
+    : null;
+  view.pixelRatio = view.scaled ? 1 : kept.pixelRatio || 1;
   const session = await connectRDPViewer({
     url: rdpViewerURL(workspaceID, rect.id, window.location),
     canvas: view.canvas,
@@ -3288,6 +3322,8 @@ async function resumeKeptRDP(rect, view, kept, current) {
     }
     setRDPMessage(rect, `Rejoining ${kept.target}...`);
     await rdpProxyRequest("/api/rdp-kept/rejoin", keptRDPPaneBody(workspaceID, rect.id, credentials.password));
+    void offerLoginToBrowser({ username: rect.rdpUsername, password: credentials.password, name: `${rect.rdpUsername} — ${rect.rdpTarget}` });
+    credentials.password = "";
     rdpKeptListCache = null;
     if (!current()) return true;
     await attachKeptRDP(rect, view, kept, current);
@@ -3353,7 +3389,12 @@ async function connectRDPPane(rect) {
       rect.rdpTrustedFingerprint = certificate.fingerprint;
       scheduleWorkspaceSave();
     }
-    const credentials = await askRDPCredentials(rect, { keep: kept.available, idleLimitSeconds: kept.idleLimitSeconds, h264: await rdpH264Available() });
+    const credentials = await askRDPCredentials(rect, {
+      keep: kept.available,
+      idleLimitSeconds: kept.idleLimitSeconds,
+      h264: await rdpH264Available(),
+      sharp: rdpOffersSharp(window.devicePixelRatio),
+    });
     if (!credentials) {
       if (current()) setRDPMessage(rect, "Connection cancelled.");
       return;
@@ -3362,7 +3403,12 @@ async function connectRDPPane(rect) {
     rect.rdpDomain = credentials.domain;
     scheduleWorkspaceSave();
     const area = view.screen.hidden ? view.message : view.screen;
-    const size = rdpDesktopSize(area.clientWidth, area.clientHeight);
+    // Full-size sharp mode connects at the plain size and asks for the 2x
+    // layout once the display runs; plain sharp mode asks for the screen's
+    // own pixels from the start.
+    const scaled = credentials.sharp && credentials.fullSize ? rdpScaledLayout(area.clientWidth, area.clientHeight) : null;
+    const ratio = scaled ? 1 : rdpPixelRatio(credentials.sharp, window.devicePixelRatio);
+    const size = rdpDesktopSize(area.clientWidth * ratio, area.clientHeight * ratio);
     if (credentials.keep) {
       // The host runs the session, so it outlives this page.
       setRDPMessage(rect, `Logging in to ${certificate.target}...`);
@@ -3374,13 +3420,24 @@ async function connectRDPPane(rect) {
         credentials,
         size,
         h264: await rdpH264Available(),
+        pixelRatio: scaled ? scaled.ratio : ratio,
+        scaled,
       }));
+      // The host logged in: the login works.
+      void offerLoginToBrowser({ username: credentials.username, password: credentials.password, name: `${credentials.username} — ${certificate.target}` });
+      credentials.password = "";
       rdpKeptListCache = null;
       if (!current()) {
         void endKeptRDP(rect);
         return;
       }
-      await attachKeptRDP(rect, view, { target: certificate.target }, current);
+      await attachKeptRDP(rect, view, {
+        target: certificate.target,
+        pixelRatio: scaled ? scaled.ratio : ratio,
+        scaledWidth: scaled?.width,
+        scaledHeight: scaled?.height,
+        scaleFactor: scaled?.scale,
+      }, current);
       return;
     }
     setRDPMessage(rect, `Connecting to ${certificate.target}...`);
@@ -3400,6 +3457,9 @@ async function connectRDPPane(rect) {
     // The capability path authorizes the socket; IronRDP requires a token.
     builder.authToken("tessera");
     builder.desktopSize(new Backend.DesktopSize(size.width, size.height));
+    view.pixelRatio = ratio;
+    view.scaled = scaled;
+    view.scaledLaidOut = false;
     builder.renderCanvas(view.canvas);
     builder.setCursorStyleCallbackContext(view);
     builder.setCursorStyleCallback((kind, data, hotspotX, hotspotY) => setRDPCursor(view, kind, data, hotspotX, hotspotY));
@@ -3423,7 +3483,9 @@ async function connectRDPPane(rect) {
         onFirstPicture: () => {
           view.h264Drawn = true;
           updateRDPControls(rect);
+          scheduleRDPScaledLayout(view, current);
         },
+        onPicture: () => noteRDPScaledPicture(view),
         fullColor: credentials.fullColor,
         onFullColor: () => {
           view.h264FullColor = true;
@@ -3437,6 +3499,8 @@ async function connectRDPPane(rect) {
       builder.extension(module.h264FrameCallback((data, regions, surfaceId, frameView) => h264.push(data, regions, frameView, surfaceId)));
     }
     const session = await builder.connect();
+    void offerLoginToBrowser({ username: credentials.username, password: credentials.password, name: `${credentials.username} — ${certificate.target}` });
+    credentials.password = "";
     if (!current()) {
       h264?.close();
       session.shutdown();
@@ -3444,6 +3508,8 @@ async function connectRDPPane(rect) {
     }
     view.kept = false;
     activateRDPSession(rect, view, session);
+    // Without H.264 there is no first picture to wait for.
+    if (!h264) scheduleRDPScaledLayout(view, current);
   } catch (error) {
     h264?.close();
     if (current()) setRDPMessage(rect, rdpFailureMessage(error), true);
@@ -3484,6 +3550,56 @@ async function runRDPSession(rect, view, session) {
   }
   view.intentionalDisconnect = false;
   updateRDPControls(rect);
+}
+
+// Desktop pixels per CSS pixel of what the pane shows: the full-size 2x
+// layout's once the server has laid it out, else the connection's.
+function rdpDisplayRatio(view) {
+  const scaled = view.scaled;
+  if (scaled && view.canvas.width === scaled.width && view.canvas.height === scaled.height) {
+    return scaled.ratio;
+  }
+  return view.pixelRatio || 1;
+}
+
+// Asks once per connection, a moment after the first picture shows the
+// server's display running, for the full-size 2x layout (see
+// rdpScaledLayoutDelayMs). The host does this for kept sessions.
+function scheduleRDPScaledLayout(view, current) {
+  if (!view.scaled || view.scaledLaidOut) return;
+  view.scaledLaidOut = true;
+  window.setTimeout(() => {
+    if (!current() || !view.session || view.kept || !view.scaled) return;
+    sendRDPScaledLayout(view, view.scaled, current);
+  }, rdpScaledLayoutDelayMs);
+}
+
+// Asks for a scaled layout and, in a session with H.264 whose pictures show
+// when the server switched, falls back to the plain layout if none shows at
+// its size (see rdpScaledLayoutWatchMs): the connection then stays plain. The
+// host does this for kept sessions.
+function sendRDPScaledLayout(view, layout, current) {
+  view.scaled = layout;
+  view.scaledWanted = layout;
+  view.session.resize(layout.width, layout.height, layout.scale);
+  const generation = ++view.scaledGeneration;
+  if (view.kept || !view.h264) return;
+  window.setTimeout(() => {
+    if (!current() || !view.session || view.scaledGeneration !== generation || view.scaledWanted !== layout) return;
+    view.scaled = null;
+    view.scaledWanted = null;
+    view.pixelRatio = 1;
+    const plain = rdpDesktopSize(view.screen.clientWidth, view.screen.clientHeight);
+    view.session.resize(plain.width, plain.height);
+  }, rdpScaledLayoutWatchMs);
+}
+
+// A picture at the watched layout's size shows the server switched.
+function noteRDPScaledPicture(view) {
+  const wanted = view.scaledWanted;
+  if (wanted && view.canvas.width === wanted.width && view.canvas.height === wanted.height) {
+    view.scaledWanted = null;
+  }
 }
 
 let rdpH264Support = null;
@@ -3564,9 +3680,24 @@ function askRDPCredentials(rect, options = {}) {
   const view = rect.rdp;
   view.dialog.replaceChildren();
   const title = document.createElement("strong");
-  title.textContent = options.rejoin ? `Rejoin ${rect.rdpTarget}` : `Sign in to ${rect.rdpTarget}`;
+  title.textContent = options.rejoin ? "Rejoin RDP session" : "Sign in to RDP server";
+  // The server, for reading; it is changed in the toolbar's address field.
+  const server = splitRDPTarget(rect.rdpTarget);
+  const details = document.createElement("dl");
+  details.className = "rdp-certificate";
+  for (const [label, value] of [["Address", server.host], ["Port", server.port]]) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const definition = document.createElement("dd");
+    definition.textContent = value || "—";
+    details.append(term, definition);
+  }
+  // Names and autocomplete tokens let the browser's password manager fill and
+  // save the login.
   const username = document.createElement("input");
   username.type = "text";
+  username.name = "username";
+  username.id = `rdp-${rect.id}-username`;
   username.placeholder = "User name";
   username.autocomplete = "username";
   username.value = rect.rdpUsername;
@@ -3577,6 +3708,8 @@ function askRDPCredentials(rect, options = {}) {
   domain.value = rect.rdpDomain;
   const password = document.createElement("input");
   password.type = "password";
+  password.name = "password";
+  password.id = `rdp-${rect.id}-password`;
   password.placeholder = "Password";
   password.autocomplete = "current-password";
   for (const input of [username, domain, password]) {
@@ -3586,9 +3719,12 @@ function askRDPCredentials(rect, options = {}) {
   if (options.rejoin) {
     const note = document.createElement("span");
     note.textContent = "The connection to the server was lost. Enter your password to rejoin the same session.";
-    view.dialog.append(title, note, password);
+    // The account, unseen, so a password manager knows whose password this is.
+    username.hidden = true;
+    username.tabIndex = -1;
+    view.dialog.append(title, details, note, username, password);
   } else {
-    view.dialog.append(title, username, domain, password);
+    view.dialog.append(title, details, username, domain, password);
   }
   let keep = null;
   const storage = rdpPreferenceStorage();
@@ -3600,6 +3736,31 @@ function askRDPCredentials(rect, options = {}) {
     keep.checked = readRDPKeepPreference(storage);
     keepLabel.append(keep, document.createTextNode(rdpKeepLabelText(options.idleLimitSeconds)));
     view.dialog.appendChild(keepLabel);
+  }
+  let sharp = null;
+  let fullSize = null;
+  if (options.sharp && !options.rejoin) {
+    const sharpLabel = document.createElement("label");
+    sharpLabel.className = "rdp-keep";
+    sharpLabel.title = "Ask for the desktop at this screen's full resolution, so text is crisp on a Retina screen. The remote desktop's text and windows look smaller, with more room. Sends about four times the pixels: leave it off on slow connections.";
+    sharp = document.createElement("input");
+    sharp.type = "checkbox";
+    sharp.checked = readRDPSharpPreference(storage);
+    sharpLabel.append(sharp, document.createTextNode("Sharp on this high-resolution screen (more bandwidth)"));
+    view.dialog.appendChild(sharpLabel);
+    // Remembered for this window, since it is about the server.
+    const fullSizeLabel = document.createElement("label");
+    fullSizeLabel.className = "rdp-keep rdp-keep-sub";
+    fullSizeLabel.title = "Without this, sharp mode shows the remote desktop at this screen's own resolution, with its text and windows smaller. With it, Remotr lays out a Retina (2×) desktop so they keep their size. Remotr does this only up to 1920 pixels wide, 1920×1200 pixels in all, and no wider than 16:9, so a larger or wider window gets the largest desktop within those limits, enlarged a little. Remotr shows its Connecting screen for a moment after connecting while it switches; if it doesn't come back within 5 seconds, the connection returns to the usual size. Remembered for this window.";
+    fullSize = document.createElement("input");
+    fullSize.type = "checkbox";
+    fullSize.checked = rect.rdpFullSize;
+    fullSizeLabel.append(fullSize, document.createTextNode("Keep the remote text full size (Remotr Retina mode)"));
+    fullSizeLabel.hidden = !sharp.checked;
+    sharp.addEventListener("change", () => {
+      fullSizeLabel.hidden = !sharp.checked;
+    });
+    view.dialog.appendChild(fullSizeLabel);
   }
   // Full color applies to how this browser shows H.264, so it is offered
   // only when H.264 is.
@@ -3634,9 +3795,16 @@ function askRDPCredentials(rect, options = {}) {
       password: password.value,
       keep: Boolean(keep?.checked),
       fullColor: fullColor ? fullColor.checked : readRDPFullColorPreference(storage),
+      sharp: sharp ? sharp.checked : false,
+      fullSize: Boolean(sharp?.checked && fullSize?.checked),
     };
     if (keep) saveRDPKeepPreference(storage, keep.checked);
     if (fullColor) saveRDPFullColorPreference(storage, fullColor.checked);
+    if (sharp) saveRDPSharpPreference(storage, sharp.checked);
+    if (sharp?.checked && fullSize && rect.rdpFullSize !== fullSize.checked) {
+      rect.rdpFullSize = fullSize.checked;
+      scheduleWorkspaceSave();
+    }
     password.value = "";
     return credentials;
   };
@@ -4561,6 +4729,7 @@ function loadWorkspace(workspace) {
         rdpScaleMode: pane.rdpScaleMode,
         rdpTrustedTarget: pane.rdpTrustedTarget,
         rdpTrustedFingerprint: pane.rdpTrustedFingerprint,
+        rdpFullSize: Boolean(pane.rdpFullSize),
         zIndex: pane.zIndex || 0,
         minimized: Boolean(pane.minimized),
         isFull: Boolean(pane.isFull),
@@ -4834,6 +5003,7 @@ function workspaceSavePayload() {
     rdpScaleMode: rect.kind === rdpPaneKind ? rect.rdpScaleMode : "fit",
     rdpTrustedTarget: rect.kind === rdpPaneKind ? rect.rdpTrustedTarget : "",
     rdpTrustedFingerprint: rect.kind === rdpPaneKind ? rect.rdpTrustedFingerprint : "",
+    rdpFullSize: rect.kind === rdpPaneKind && rect.rdpFullSize,
     x: rect.x,
     y: rect.y,
     width: rect.width,

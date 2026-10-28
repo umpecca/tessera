@@ -97,6 +97,8 @@ export function createRDPH264Presenter({
   VideoDecoder = globalThis.VideoDecoder,
   EncodedVideoChunk = globalThis.EncodedVideoChunk,
   onFirstPicture = () => {},
+  // Called after each picture is drawn.
+  onPicture = () => {},
   fullColor = false,
   onFullColor = () => {},
   createCombiner = createRDPAVC444Combiner,
@@ -155,6 +157,7 @@ export function createRDPH264Presenter({
       drawn = true;
       onFirstPicture();
     }
+    onPicture();
   }
 
   function surface(id) {

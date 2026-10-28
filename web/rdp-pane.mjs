@@ -26,6 +26,13 @@ export function normalizeRDPTarget(value) {
   return `${parsed.hostname.toLowerCase()}:${port}`;
 }
 
+// The host and port of a target as normalizeRDPTarget writes it, the host
+// without an IPv6 address's brackets.
+export function splitRDPTarget(target) {
+  const match = /^\[?(.*?)\]?:(\d+)$/.exec(String(target || ""));
+  return match ? { host: match[1], port: match[2] } : { host: String(target || ""), port: "" };
+}
+
 export function normalizeRDPScaleMode(value) {
   return rdpScaleModes.has(value) ? value : defaultRDPScaleMode;
 }
@@ -212,4 +219,70 @@ export function rdpWheelAmount(state, delta, deltaMode, speed) {
   const whole = Math.trunc(total) || 0;
   state.remainder = total - whole;
   return Math.max(-32768, Math.min(32767, whole));
+}
+
+// Sharp mode asks for the desktop at the screen's own resolution instead of
+// its CSS size, so on a Retina screen one remote pixel lands on one screen
+// pixel instead of being stretched over four. The server's interface then
+// looks smaller, with more room: Remotr ignores the RDP desktop scale factor
+// that would keep it the same size, and gets stuck reconfiguring when a
+// resize carries one, so none is sent. Chosen per browser and off by default:
+// it is four times the pixels to send and decode.
+export const rdpSharpPreferenceKey = "tessera.rdp-sharp";
+
+export function readRDPSharpPreference(storage) {
+  try {
+    return storage?.getItem(rdpSharpPreferenceKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveRDPSharpPreference(storage, sharp) {
+  try {
+    storage?.setItem(rdpSharpPreferenceKey, sharp ? "true" : "false");
+  } catch {
+    // The choice just isn't remembered.
+  }
+}
+
+// Whether this screen has more pixels than CSS pixels, so sharp mode helps.
+export function rdpOffersSharp(devicePixelRatio) {
+  return Number(devicePixelRatio) > 1;
+}
+
+// Desktop pixels per CSS pixel: the screen's pixel ratio in sharp mode, at
+// most 2 so a phone's 3x screen doesn't ask for nine times the pixels, else 1.
+export function rdpPixelRatio(sharp, devicePixelRatio) {
+  const ratio = Number(devicePixelRatio);
+  return sharp && Number.isFinite(ratio) && ratio > 1 ? Math.min(ratio, 2) : 1;
+}
+
+// Remotr lays out a 2x (Retina) desktop, with the interface at its usual
+// size, only up to 1920 pixels wide, 1920x1200 pixels in all and 16:9 wide;
+// any other 2x layout leaves it stuck on its Connecting screen (measured
+// 2026-10-28). It honors the scale factor only in a monitor layout that
+// changes the desktop's size, so the layout is asked for once its display
+// runs, rdpScaledLayoutDelayMs after the first picture. If no picture shows
+// at the layout's size rdpScaledLayoutWatchMs later, the plain layout is
+// asked for instead, which always brings Remotr back.
+export const rdpScaledMaxWidth = 1920;
+export const rdpScaledMaxPixels = 1920 * 1200;
+export const rdpScaledMaxAspect = 16 / 9;
+export const rdpScaledScale = 200;
+export const rdpScaledLayoutDelayMs = 1000;
+export const rdpScaledLayoutWatchMs = 5000;
+
+// The 2x layout for a screen `cssWidth` x `cssHeight` CSS pixels: twice its
+// size, narrowed to 16:9 and shrunk to Remotr's limits, in whole multiples of
+// 8. `ratio` is its desktop pixels per CSS pixel, as large as fits the screen.
+export function rdpScaledLayout(cssWidth, cssHeight) {
+  const screenWidth = Math.max(1, Number(cssWidth) || 0);
+  const screenHeight = Math.max(1, Number(cssHeight) || 0);
+  const height = screenHeight * 2;
+  const width = Math.min(screenWidth * 2, height * rdpScaledMaxAspect);
+  const shrink = Math.min(1, rdpScaledMaxWidth / width, Math.sqrt(rdpScaledMaxPixels / (width * height)));
+  const fit = (value) => Math.max(200, Math.floor((value * shrink) / 8) * 8);
+  const layout = { width: fit(width), height: fit(height), scale: rdpScaledScale };
+  return { ...layout, ratio: Math.max(layout.width / screenWidth, layout.height / screenHeight) };
 }

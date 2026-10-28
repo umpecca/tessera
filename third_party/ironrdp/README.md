@@ -42,6 +42,10 @@ canvas, so H.264 pixels never pass through WebAssembly:
 10. `0010` `ironrdp-web`: those operations reach the callback in order with the pictures, as views
     16 (surface shown at an origin, or hidden), 17 (copy) and 18 (every surface gone).
 11. `0011` `ironrdp-headless`: the H.264 event carries the same operations.
+12. `0012` `ironrdp-headless`: a resize message may carry a desktop scale factor, which goes to
+    the server in the Display Control monitor layout (and the configuration may carry one for the
+    connection, which Tessera leaves unset). Tessera's full-size sharp mode asks Remotr for a 2x
+    layout this way, since Remotr honors the scale factor only in a layout.
 
 `0004` and `0005` only add the crate, so `rdp.js` is the same built with or without them.
 

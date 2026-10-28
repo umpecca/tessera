@@ -27,6 +27,16 @@
   default, which shows the same stream at 4:2:0 as before. Remembered in the
   browser, and used for kept sessions too.
 
+- RDP windows on a Retina or other high-resolution screen can be sharp: check
+  **Sharp on this high-resolution screen** when signing in to get the desktop
+  at the screen's own resolution, shown pixel for pixel, with the remote
+  interface smaller. With **Keep the remote text full size** as well, Remotr
+  lays out a Retina desktop so the interface keeps its size, within what
+  Remotr allows (1920 pixels wide, 1920×1200 in all, 16:9), and falls back to
+  the usual size if Remotr doesn't come back from the switch. About four times
+  the bandwidth, so Sharp is off by default, for fast connections, and
+  remembered in the browser; the full-size choice is remembered per window.
+
 - Settings > Scroll wheel > Remote desktop sets how far wheel and two-finger
   scrolling move in RDP windows, from 0.1× to 2×, saved in this browser.
   Trackpad scrolling, which felt far too fast, can be turned down; slow
@@ -35,6 +45,25 @@
 - Tab and Shift+Tab move through every field and button of the RDP and VNC
   sign-in dialogs and wrap around inside them, in every browser, instead of
   leaving the dialog for the toolbar behind it.
+
+- The RDP sign-in dialog shows the server's address and port, each on its own
+  line, under a "Sign in to RDP server" title (or "Rejoin RDP session"). The
+  server is still changed in the window's address field.
+
+- Browsers can save and fill RDP and Tessera logins with their password
+  manager. The RDP sign-in fields are marked up for it, with the user name
+  carried along when only the password is asked for. Chrome and Edge are
+  offered an RDP login once it works, named "*user* — *server*", and a
+  Tessera login made in the panel that appears when a sign-in ends, named
+  "*name* — Tessera"; Tessera's login page already worked with password
+  managers. Browsers keep logins per website, so every saved login lives
+  under Tessera's address. Tessera itself still never stores a password.
+
+- The README is now a short overview: what Tessera does, security, running,
+  installing and a documentation index. The details moved, unchanged, into
+  pages under `docs/`: terminal panes, workspace, browser pane, VNC and RDP
+  panes, sign-in, remote access (iPad, phone view, Local HTTPS), deployment,
+  and development and releases.
 
 - RDP sessions can stay open on the Tessera host. With sign-in on, over HTTPS
   or loopback, check **Keep this session on the Tessera host** when you

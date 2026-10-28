@@ -44,6 +44,8 @@ test("builds viewer messages", () => {
   assert.equal(inputMessage([new Uint8Array(0)]), null);
   assert.equal(inputMessage([new Uint8Array(maxViewerMessageBytes)]), null);
   assert.deepEqual(bytes(...resizeMessage(1216, 640)), [2, 0xc0, 0x04, 0x80, 0x02]);
+  assert.deepEqual(bytes(...resizeMessage(1216, 640, 200)), [2, 0xc0, 0x04, 0x80, 0x02, 200, 0]);
+  assert.deepEqual(bytes(...resizeMessage(1216, 640, 50)), [2, 0xc0, 0x04, 0x80, 0x02], "no scale below 100%");
   assert.deepEqual(bytes(...refreshMessage()), [3]);
 });
 

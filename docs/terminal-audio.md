@@ -203,3 +203,11 @@ Use `--browsers=chrome` or `--browsers=firefox` to run one available browser.
 Add `--stream=true` to verify an 18-second FLAC-to-Opus stream, live unmute,
 hidden playback, reconnect joining, and EOF cleanup. Decoder and embedded Opus
 license notices ship in `vendor/terminal-opus-LICENSE.txt`.
+
+## Retired Audio pane
+
+The standalone Audio pane, shared file/URL transport, process capture, and
+bundled LAME encoder have been retired. On upgrade, migration 044 removes saved
+Audio panes and station state, preserving all other panes and workspace settings.
+Old capture/encoder flags are no longer accepted. Previously installed encoder
+files are left alone.

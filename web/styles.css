@@ -1542,6 +1542,10 @@ input {
   font: 12px/1.3 var(--tessera-font);
 }
 
+.rdp-dialog input[hidden] {
+  display: none;
+}
+
 .vnc-dialog textarea,
 .rdp-dialog textarea {
   min-height: 90px;
@@ -1588,6 +1592,15 @@ input {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+}
+
+/* An option that applies only with the one above it. */
+.rdp-keep-sub {
+  padding-left: 22px;
+}
+
+.rdp-keep[hidden] {
+  display: none;
 }
 
 .rdp-dialog .rdp-keep input {

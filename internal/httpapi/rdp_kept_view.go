@@ -112,7 +112,7 @@ func (a *API) rdpKeptView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info := session.Info(); info.State != rdpsession.StateActive {
-		writeJSON(w, http.StatusConflict, rdpKeptInfoFor(key, session.Address(), info))
+		writeJSON(w, http.StatusConflict, rdpKeptInfoFor(key, session, info))
 		return
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: sameOriginWebSocket}

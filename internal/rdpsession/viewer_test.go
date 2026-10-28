@@ -3,6 +3,7 @@ package rdpsession
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"strings"
 	"sync"
@@ -185,7 +186,7 @@ func TestAViewerLearnsWhereSurfacesAreShownBeforeAnythingElse(t *testing.T) {
 		{0xfc, 0xff, viewSurfaceOutput, 0, 0}, // 65532 no longer shown
 		surfaceShown(3, 10, 20),
 		surfaceShown(1, 0, 0),
-		surfaceShown(3, 30, 40), // replaces the earlier origin
+		surfaceShown(3, 30, 40),                                   // replaces the earlier origin
 		{1, 0, 0, 1, 0, 0, 0, 0, 0, 8, 0, 8, 0, 0, 0, 0, 1, 0x65}, // a picture isn't kept
 	} {
 		s.handleEvent(eventH264, payload)
@@ -207,5 +208,86 @@ func TestAViewerLearnsWhereSurfacesAreShownBeforeAnythingElse(t *testing.T) {
 	}
 	if viewer.events[2].kind != eventConnected {
 		t.Fatalf("event 2 = %d, want the desktop size", viewer.events[2].kind)
+	}
+}
+
+func TestASessionAsksForItsScaledLayoutOnceItsDisplayRuns(t *testing.T) {
+	previous := scaledLayoutDelay
+	scaledLayoutDelay = 10 * time.Millisecond
+	t.Cleanup(func() { scaledLayoutDelay = previous })
+
+	runner := &scriptRunner{cookie: true}
+	server := startHoldServer(t)
+	target := testTarget(server.address())
+	target.Scaled = Layout{Width: 1920, Height: 1048, Scale: 200}
+	s := NewSession(runner, target, nil)
+	if err := s.Start(context.Background(), "pw"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	want := []byte{tagResize}
+	want = binary.LittleEndian.AppendUint16(want, 1920)
+	want = binary.LittleEndian.AppendUint16(want, 1048)
+	want = binary.LittleEndian.AppendUint16(want, 200)
+
+	// A surface operation isn't a picture: the display may not be running yet.
+	s.handleEvent(eventH264, surfaceShown(0, 0, 0))
+	time.Sleep(50 * time.Millisecond)
+	if runner.count(want) != 0 {
+		t.Fatal("asked for the scaled layout before any picture")
+	}
+	picture := []byte{0, 0, 0, 0, 0, 0, 0, 0, 1, 0x65}
+	s.handleEvent(eventH264, picture)
+	s.handleEvent(eventH264, picture)
+	eventually(t, "the scaled layout", func() bool { return runner.count(want) == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if n := runner.count(want); n != 1 {
+		t.Fatalf("asked %d times", n)
+	}
+}
+
+func TestASessionWithoutAScaledLayoutSendsNone(t *testing.T) {
+	previous := scaledLayoutDelay
+	scaledLayoutDelay = time.Millisecond
+	t.Cleanup(func() { scaledLayoutDelay = previous })
+	runner := &scriptRunner{cookie: true}
+	s, _ := startedSession(t, runner, 0)
+	s.handleEvent(eventH264, []byte{0, 0, 0, 0, 0, 0, 0, 0, 1, 0x65})
+	time.Sleep(50 * time.Millisecond)
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, message := range runner.received {
+		if len(message) > 0 && message[0] == tagResize {
+			t.Fatalf("sent a resize: %v", message)
+		}
+	}
+}
+
+func TestAStuckScaledLayoutFallsBackToThePlainOne(t *testing.T) {
+	previous := scaledLayoutWatch
+	scaledLayoutWatch = 40 * time.Millisecond
+	t.Cleanup(func() { scaledLayoutWatch = previous })
+
+	runner := &scriptRunner{cookie: true}
+	s, _ := startedSession(t, runner, 0)
+	scaled := binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, 1920), 1080), 200)
+	plain := binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16([]byte{tagResize}, 1216), 640)
+
+	// No picture at the scaled size: the plain layout the session connected with.
+	if err := s.HandleViewerMessage(append([]byte{ViewResize}, scaled...)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the scaled layout", func() bool { return runner.count(append([]byte{tagResize}, scaled...)) == 1 })
+	eventually(t, "the plain layout", func() bool { return runner.count(plain) == 1 })
+
+	// A picture at the scaled size in time: no fallback.
+	if err := s.HandleViewerMessage(append([]byte{ViewResize}, scaled...)); err != nil {
+		t.Fatal(err)
+	}
+	s.handleEvent(eventDesktopSize, binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, 1920), 1080))
+	s.handleEvent(eventH264, []byte{0, 0, 0, 0, 0, 0, 0, 0, 1, 0x65})
+	time.Sleep(200 * time.Millisecond)
+	if n := runner.count(plain); n != 1 {
+		t.Fatalf("fell back %d times", n)
 	}
 }
