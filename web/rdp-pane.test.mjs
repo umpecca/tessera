@@ -101,3 +101,26 @@ test("explains connection failures", () => {
   );
   assert.equal(rdpErrorMessage(0, undefined, "[connect @ src/x.rs:1] custom error: bad thing"), "Could not connect to the RDP server: bad thing");
 });
+
+test("scales RDP wheel deltas and carries fractions between events", async () => {
+  const { normalizeRDPWheelSpeed, rdpWheelAmount } = await import("./rdp-pane.mjs");
+  assert.equal(normalizeRDPWheelSpeed("0.25"), 0.25);
+  assert.equal(normalizeRDPWheelSpeed("0.3"), 1);
+  assert.equal(normalizeRDPWheelSpeed(null), 1);
+
+  // Pixels, negated: scrolling down (positive deltaY) is a negative rotation.
+  assert.equal(rdpWheelAmount({ remainder: 0 }, 120, 0, 1), -120);
+  // Lines and pages convert as IronRDP's web client does.
+  assert.equal(rdpWheelAmount({ remainder: 0 }, -3, 1, 1), 150);
+  assert.equal(rdpWheelAmount({ remainder: 0 }, 1, 2, 0.5), -950);
+
+  // At a low speed, small trackpad deltas add up instead of vanishing.
+  const state = { remainder: 0 };
+  const sent = [4, 4, 4, 4, 4].map((delta) => rdpWheelAmount(state, delta, 0, 0.1));
+  assert.deepEqual(sent, [0, 0, -1, 0, -1]);
+  // Turning around drops what was left over.
+  assert.equal(rdpWheelAmount(state, -4, 0, 0.1), 0);
+  assert.ok(state.remainder > 0);
+
+  assert.equal(rdpWheelAmount({ remainder: 0 }, -1e6, 0, 2), 32767);
+});

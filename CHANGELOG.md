@@ -27,6 +27,11 @@
   default, which shows the same stream at 4:2:0 as before. Remembered in the
   browser, and used for kept sessions too.
 
+- Settings > Scroll wheel > Remote desktop sets how far wheel and two-finger
+  scrolling move in RDP windows, from 0.1× to 2×, saved in this browser.
+  Trackpad scrolling, which felt far too fast, can be turned down; slow
+  scrolls still register at low speeds.
+
 - Tab and Shift+Tab move through every field and button of the RDP and VNC
   sign-in dialogs and wrap around inside them, in every browser, instead of
   leaving the dialog for the toolbar behind it.

@@ -181,3 +181,35 @@ function rdpGatewayErrorMessage(details) {
   }
   return "Could not reach the RDP server.";
 }
+
+// How far RDP windows scroll: a multiplier on the browser's wheel deltas,
+// chosen per browser, since a trackpad and a mouse wheel report very
+// differently.
+export const defaultRDPWheelSpeed = 1;
+export const rdpWheelSpeedOptions = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2];
+
+export function normalizeRDPWheelSpeed(value) {
+  const parsed = Number(value);
+  return rdpWheelSpeedOptions.includes(parsed) ? parsed : defaultRDPWheelSpeed;
+}
+
+// Lines and pages in pixels, as IronRDP's web client converts them.
+const rdpWheelLinePixels = 50;
+const rdpWheelPagePixels = 38 * rdpWheelLinePixels;
+
+// Turns one wheel delta along an axis into the wheel amount sent to the
+// server, in IronRDP's pixel unit: negated, as RDP counts away from the user
+// as positive, and scaled by `speed`. The fraction left over is kept in
+// `state` for the next event, so slow scrolls still add up at low speeds; a
+// change of direction drops it.
+export function rdpWheelAmount(state, delta, deltaMode, speed) {
+  const pixels = deltaMode === 1 ? delta * rdpWheelLinePixels : deltaMode === 2 ? delta * rdpWheelPagePixels : delta;
+  let total = -pixels * speed;
+  if (state.remainder && Math.sign(state.remainder) !== Math.sign(total)) {
+    state.remainder = 0;
+  }
+  total += state.remainder || 0;
+  const whole = Math.trunc(total) || 0;
+  state.remainder = total - whole;
+  return Math.max(-32768, Math.min(32767, whole));
+}

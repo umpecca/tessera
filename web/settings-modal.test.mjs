@@ -89,7 +89,7 @@ function fixture() {
     defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,
     terminalShellIntegration: true, commandNoticesEnabled: true, setTerminalShellIntegration() {}, setCommandNoticesEnabled() {},
     setWindowWobbleEnabled() {},
-    terminalWheelSensitivity: 1, editorWheelSensitivity: 1,
+    terminalWheelSensitivity: 1, editorWheelSensitivity: 1, rdpWheelSpeed: 1, rdpWheelSpeedOptions: [1], setRDPWheelSpeed() {},
     terminalPaintCoalescing: true, terminalOutputCoalescing: false,
     window: {
       requestAnimationFrame: callback => frames.push(callback),

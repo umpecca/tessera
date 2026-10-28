@@ -480,7 +480,9 @@ pane, which needs far less bandwidth than bitmap updates and, on an iPad, is
 much faster; the toolbar shows **H.264** while it is in use. Over plain HTTP,
 or when the server doesn't send H.264, the pane uses bitmap updates instead.
 This has been tested with Remotr on macOS from iPad Safari. The pane shows the
-browser's own pointer shapes rather than the server's.
+browser's own pointer shapes rather than the server's. If wheel or trackpad
+scrolling moves too far, lower **Settings > Scroll wheel > Remote desktop**
+(saved per browser).
 
 Servers may send H.264 in 4:4:4 (AVC444), which keeps colored text and thin
 colored lines sharp. The sign-in dialog's **Full color (4:4:4) when the server

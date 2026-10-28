@@ -98,6 +98,10 @@ import {
   rdpClipboardText,
   rdpCtrlAltDelete,
   rdpDesktopSize,
+  defaultRDPWheelSpeed,
+  normalizeRDPWheelSpeed,
+  rdpWheelAmount,
+  rdpWheelSpeedOptions,
   rdpErrorMessage,
   rdpScanCode,
   rdpWebSocketURL,
@@ -461,6 +465,19 @@ function setDefaultTheme(id) {
 function setDefaultPaneFontSize(fontSize) {
   defaultPaneFontSize = normalizePaneFontSize(fontSize);
   scheduleUserSettingsSave();
+}
+
+const rdpWheelSpeedStorageKey = "tessera.rdp-wheel-speed.v1";
+let rdpWheelSpeed = defaultRDPWheelSpeed;
+try {
+  rdpWheelSpeed = normalizeRDPWheelSpeed(window.localStorage.getItem(rdpWheelSpeedStorageKey) ?? defaultRDPWheelSpeed);
+} catch {
+  // Storage can be unavailable in hardened or private browser contexts.
+}
+
+function setRDPWheelSpeed(value) {
+  rdpWheelSpeed = normalizeRDPWheelSpeed(value);
+  saveBrowserSetting(rdpWheelSpeedStorageKey, rdpWheelSpeed);
 }
 
 function setTerminalWheelSensitivity(value) {
@@ -2903,6 +2920,7 @@ function mountRDPPane(rect) {
     module: null, session: null, connecting: false, attempt: 0, dialogResolve: null, intentionalDisconnect: false,
     remoteClipboard: "", lastSentClipboard: "", clipboardRequested: false, resizeTimer: null, resizeObserver: null, canvasObserver: null,
     pointerFrame: 0, pendingPointer: null, h264: null, h264Drawn: false, h264FullColor: false, kept: false,
+    wheelVertical: { remainder: 0 }, wheelHorizontal: { remainder: 0 },
   };
   rect.rdp = view;
   toolbar.append(address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel);
@@ -2974,9 +2992,12 @@ function mountRDPPane(rect) {
     if (!view.session) return;
     event.preventDefault();
     const vertical = event.deltaY !== 0;
-    // RotationUnit matches deltaMode: pixel 0, line 1, page 2.
-    const unit = Math.min(Math.max(event.deltaMode, 0), 2);
-    sendRDPInput(rect, [view.module.Backend.DeviceEvent.wheelRotations(vertical, -(vertical ? event.deltaY : event.deltaX), unit)]);
+    const amount = rdpWheelAmount(vertical ? view.wheelVertical : view.wheelHorizontal,
+      vertical ? event.deltaY : event.deltaX, event.deltaMode, rdpWheelSpeed);
+    if (amount) {
+      // RotationUnit 0: pixels.
+      sendRDPInput(rect, [view.module.Backend.DeviceEvent.wheelRotations(vertical, amount, 0)]);
+    }
   }, { passive: false });
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
   canvas.addEventListener("keydown", (event) => handleRDPKey(rect, event));
@@ -7881,6 +7902,13 @@ function renderSettingsModal() {
       terminalWheelSensitivity,
       (next) => setTerminalWheelSensitivity(next),
     ),
+    renderSettingsWheelRow(
+      "Remote desktop",
+      "Wheel and two-finger scrolling in RDP windows. Lower it if a scroll moves too far. Applies to this browser.",
+      rdpWheelSpeed,
+      (next) => setRDPWheelSpeed(next),
+      rdpWheelSpeedOptions,
+    ),
   ]));
   content.appendChild(renderSettingsSection("Shortcuts", [directoryBrowserButton("Manage shortcuts...", openShortcuts)]));
   content.appendChild(renderSettingsSection("Background", [
@@ -8751,7 +8779,7 @@ function renderSettingsOLEDWindowBorderRow() {
   return row;
 }
 
-function renderSettingsWheelRow(labelText, description, value, onChange) {
+function renderSettingsWheelRow(labelText, description, value, onChange, options = wheelSensitivityOptions) {
   const row = document.createElement("label");
   row.className = "settings-row";
   const label = document.createElement("span");
@@ -8765,7 +8793,7 @@ function renderSettingsWheelRow(labelText, description, value, onChange) {
   const select = document.createElement("select");
   select.className = "settings-theme-select";
   select.setAttribute("aria-label", `${labelText} wheel speed`);
-  for (const multiplier of wheelSensitivityOptions) {
+  for (const multiplier of options) {
     const option = document.createElement("option");
     option.value = String(multiplier);
     option.textContent = multiplier === 1 ? "1.0×" : `${multiplier}×`;
