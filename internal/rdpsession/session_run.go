@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"sort"
 	"time"
 )
 
@@ -42,6 +43,7 @@ func (s *Session) begin(ctx context.Context, password string, rejoin bool) error
 	s.started = true
 	s.state = StateConnecting
 	s.wasActive = false
+	s.surfaces = nil
 	s.err = nil
 	s.endCode, s.endReason = EndError, ""
 	activated, finished := make(chan struct{}), make(chan struct{})
@@ -183,6 +185,8 @@ func (s *Session) handleEvent(kind uint32, payload []byte) {
 		if len(payload) > 0 {
 			s.endCode, s.endReason = End(payload[0]), string(payload[1:])
 		}
+	case eventH264:
+		s.recordSurfaceOutput(payload)
 	}
 	forward, viewer := s.onEvent, s.viewer
 	s.mu.Unlock()
@@ -192,6 +196,53 @@ func (s *Session) handleEvent(kind uint32, payload []byte) {
 	if viewer != nil {
 		viewer.Event(kind, payload)
 	}
+}
+
+// H.264 event views that are surface operations (see viewer_protocol.go).
+const (
+	viewSurfaceOutput = 16
+	viewSurfacesReset = 18
+	h264PayloadHeader = 5
+	h264ViewOffset    = 2
+	h264RegionsOffset = 3
+)
+
+// recordSurfaceOutput keeps the module's "surface shown" events, dropping a
+// surface's when it is no longer shown and all of them on a reset. The
+// caller holds s.mu.
+func (s *Session) recordSurfaceOutput(payload []byte) {
+	if len(payload) < h264PayloadHeader {
+		return
+	}
+	switch payload[h264ViewOffset] {
+	case viewSurfacesReset:
+		s.surfaces = nil
+	case viewSurfaceOutput:
+		surface := binary.LittleEndian.Uint16(payload)
+		if binary.LittleEndian.Uint16(payload[h264RegionsOffset:]) == 0 {
+			delete(s.surfaces, surface)
+			return
+		}
+		if s.surfaces == nil {
+			s.surfaces = make(map[uint16][]byte)
+		}
+		s.surfaces[surface] = append([]byte(nil), payload...)
+	}
+}
+
+// surfaceOutputsLocked returns the recorded "surface shown" events in surface
+// order. The caller holds s.mu.
+func (s *Session) surfaceOutputsLocked() [][]byte {
+	ids := make([]int, 0, len(s.surfaces))
+	for id := range s.surfaces {
+		ids = append(ids, int(id))
+	}
+	sort.Ints(ids)
+	events := make([][]byte, 0, len(ids))
+	for _, id := range ids {
+		events = append(events, s.surfaces[uint16(id)])
+	}
+	return events
 }
 
 func (s *Session) setSize(payload []byte) {

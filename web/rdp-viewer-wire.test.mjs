@@ -50,9 +50,10 @@ test("builds viewer messages", () => {
 test("parses frames from the host", () => {
   assert.deepEqual(parseViewerFrame(frame(1, 0xc0, 0x04, 0x80, 0x02)), { type: "size", width: 1216, height: 640 });
 
-  const h264 = parseViewerFrame(frame(viewH264, 7, 0, 1, 0, 2, 0, 3, 0, 10, 0, 5, 0, 0, 0, 0, 1, 0x65));
+  const h264 = parseViewerFrame(frame(viewH264, 7, 0, 9, 1, 0, 2, 0, 3, 0, 10, 0, 5, 0, 0, 0, 0, 1, 0x65));
   assert.equal(h264.type, "h264");
   assert.equal(h264.surface, 7);
+  assert.equal(h264.view, 9);
   assert.deepEqual(Array.from(h264.regions), [2, 3, 10, 5]);
   assert.deepEqual(Array.from(h264.data), [0, 0, 0, 1, 0x65]);
 
@@ -73,7 +74,8 @@ test("rejects malformed frames", () => {
     new Uint8Array(0).buffer,
     frame(1, 0, 0, 0),
     frame(viewH264, 7, 0),
-    frame(viewH264, 7, 0, 1, 0, 2, 0),
+    frame(viewH264, 7, 0, 0, 1),
+    frame(viewH264, 7, 0, 0, 1, 0, 2, 0),
     frame(viewImage, 0, 0, 0, 0, 2, 0, 2, 0, 1, 2, 3, 4),
     frame(viewEnded),
     frame(99, 1, 2, 3),

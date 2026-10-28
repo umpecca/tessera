@@ -1,0 +1,128 @@
+From 80e607c78fbd855a5ef87c0733d35ef97acac556 Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Wed, 28 Oct 2026 11:14:36 -0500
+Subject: [PATCH 10/11] feat(web): pass surface operations to the H.264
+ callback
+
+`present_output`, `present_copy` and `reset` reach the
+`h264_frame_callback` through the same channel as pictures, so they keep
+their order: views 16 (surface shown at an origin, or hidden), 17 (copy
+a rectangle to points on a destination surface) and 18 (every surface
+gone), with no data and values packed four to a region.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-web/src/session.rs             | 68 ++++++++++++++++++-
+ .../iron-remote-desktop-rdp/src/main.ts       |  6 ++
+ 2 files changed, 72 insertions(+), 2 deletions(-)
+
+diff --git a/crates/ironrdp-web/src/session.rs b/crates/ironrdp-web/src/session.rs
+index b2233fd4..454581aa 100644
+--- a/crates/ironrdp-web/src/session.rs
++++ b/crates/ironrdp-web/src/session.rs
+@@ -2085,6 +2085,20 @@ pub(crate) struct H264Frame {
+     regions: Vec<u16>,
+ }
+ 
++/// A surface operation for JavaScript, sent through the same callback as pictures so it keeps
++/// their order, with no data: surface `surfaceId` is shown with its top-left corner at
++/// `[x, y, 0, 0]`, or not shown when there are no regions.
++const VIEW_SURFACE_OUTPUT: u8 = 16;
++/// `[x, y, width, height]` of surface `surfaceId` is copied to `[x, y, destination, 0]` for
++/// each destination point.
++const VIEW_SURFACE_COPY: u8 = 17;
++/// Every surface is gone.
++const VIEW_SURFACES_RESET: u8 = 18;
++
++fn saturating_u16(value: u32) -> u16 {
++    u16::try_from(value).unwrap_or(u16::MAX)
++}
++
+ /// The view of an H.264 picture as JavaScript gets it: 0 for AVC420, 1 for an AVC444 main
+ /// view and 2 for an AVC444 auxiliary view, plus 4 for the AVC444v2 layout and 8 when the
+ /// auxiliary view of the same update follows a main view.
+@@ -2134,12 +2148,62 @@ impl H264Decoder for JsPresentedH264 {
+                 ]
+             })
+             .collect();
+-        let frame = H264Frame {
++        self.send(H264Frame {
+             surface_id,
+             view: view_code(view),
+             data: data.to_vec(),
+             regions,
+-        };
++        });
++    }
++
++    fn present_output(&mut self, surface_id: u16, origin: Option<(u32, u32)>) {
++        let regions = origin
++            .map(|(x, y)| vec![saturating_u16(x), saturating_u16(y), 0, 0])
++            .unwrap_or_default();
++        self.send(H264Frame {
++            surface_id,
++            view: VIEW_SURFACE_OUTPUT,
++            data: Vec::new(),
++            regions,
++        });
++    }
++
++    fn present_copy(
++        &mut self,
++        source: u16,
++        source_rectangle: &ironrdp::pdu::geometry::ExclusiveRectangle,
++        destination: u16,
++        points: &[ironrdp_egfx::pdu::Point],
++    ) {
++        let mut regions = vec![
++            source_rectangle.left,
++            source_rectangle.top,
++            source_rectangle.right.saturating_sub(source_rectangle.left),
++            source_rectangle.bottom.saturating_sub(source_rectangle.top),
++        ];
++        for point in points {
++            regions.extend_from_slice(&[point.x, point.y, destination, 0]);
++        }
++        self.send(H264Frame {
++            surface_id: source,
++            view: VIEW_SURFACE_COPY,
++            data: Vec::new(),
++            regions,
++        });
++    }
++
++    fn reset(&mut self) {
++        self.send(H264Frame {
++            surface_id: 0,
++            view: VIEW_SURFACES_RESET,
++            data: Vec::new(),
++            regions: Vec::new(),
++        });
++    }
++}
++
++impl JsPresentedH264 {
++    fn send(&self, frame: H264Frame) {
+         if self.frames.unbounded_send(frame).is_err() {
+             warn!("H.264 frame dropped: the session is no longer reading them");
+         }
+diff --git a/web-client/iron-remote-desktop-rdp/src/main.ts b/web-client/iron-remote-desktop-rdp/src/main.ts
+index d2763889..76b46b1b 100644
+--- a/web-client/iron-remote-desktop-rdp/src/main.ts
++++ b/web-client/iron-remote-desktop-rdp/src/main.ts
+@@ -96,6 +96,12 @@ export function enableEgfx(enable: boolean): Extension {
+  * ordinary 4:2:0 picture) and 2 for its auxiliary view (the remaining chroma), plus 4 when the
+  * auxiliary view uses the AVC444v2 layout and 8 when a main view's auxiliary view follows.
+  * Both views of an AVC444 update come in order through the one H.264 stream.
++ *
++ * Pictures go to surfaces, which the callback draws itself. Surface operations come through
++ * the same callback, in order with the pictures, with empty `data` and their values packed four
++ * to a region: view 16 shows surface `surfaceId` with its top-left corner at `[x, y, 0, 0]`, or
++ * hides it when there are no regions; view 17 copies `[x, y, width, height]` of surface
++ * `surfaceId` to `[x, y, destination, 0]` for each further region; view 18 forgets every surface.
+  */
+ export function h264FrameCallback(
+     callback: (data: Uint8Array, regions: Uint16Array, surfaceId: number, view: number) => void,
+-- 
+2.54.0 (Apple Git-157)
+

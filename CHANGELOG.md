@@ -20,6 +20,13 @@
   a patched build of IronRDP, the remote desktop client inside it, for this;
   `third_party/ironrdp/README.md` explains how to rebuild it.
 
+- RDP windows can show H.264 in full color: when the server sends H.264
+  4:4:4 (AVC444), check **Full color (4:4:4) when the server sends it** in
+  the sign-in dialog and the browser combines it into full color with WebGL2,
+  keeping colored text sharp; the toolbar shows **H.264 4:4:4**. Off by
+  default, which shows the same stream at 4:2:0 as before. Remembered in the
+  browser, and used for kept sessions too.
+
 - RDP sessions can stay open on the Tessera host. With sign-in on, over HTTPS
   or loopback, check **Keep this session on the Tessera host** when you
   connect: closing the tab, reloading or switching workspace leaves the

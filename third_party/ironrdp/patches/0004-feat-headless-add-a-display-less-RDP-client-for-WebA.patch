@@ -1,7 +1,7 @@
 From 814b28736ee48068ac62b71f138590b0f957e178 Mon Sep 17 00:00:00 2001
 From: jaxdad <atxhxag@gmail.com>
 Date: Tue, 27 Oct 2026 16:14:53 -0500
-Subject: [PATCH 4/5] feat(headless): add a display-less RDP client for
+Subject: [PATCH 04/11] feat(headless): add a display-less RDP client for
  WebAssembly hosts
 
 `ironrdp-headless` builds to `wasm32-wasip1` and runs one RDP session per

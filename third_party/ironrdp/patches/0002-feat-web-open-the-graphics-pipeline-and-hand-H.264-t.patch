@@ -1,7 +1,7 @@
 From 74c315eed983674505fe95b3d47101363b9d5a2c Mon Sep 17 00:00:00 2001
 From: jaxdad <atxhxag@gmail.com>
 Date: Tue, 27 Oct 2026 13:51:15 -0500
-Subject: [PATCH 2/3] feat(web): open the graphics pipeline and hand H.264 to
+Subject: [PATCH 02/11] feat(web): open the graphics pipeline and hand H.264 to
  JavaScript
 
 Two session builder extensions:

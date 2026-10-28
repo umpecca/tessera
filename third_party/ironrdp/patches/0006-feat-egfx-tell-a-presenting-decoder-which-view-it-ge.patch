@@ -1,0 +1,308 @@
+From ffa5f48121ddbc8814d79d76aa1c830d4becfc0f Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Wed, 28 Oct 2026 09:58:00 -0500
+Subject: [PATCH 06/11] feat(egfx): tell a presenting decoder which view it
+ gets
+
+`H264Decoder::present` gains a `PresentedView`: an AVC420 picture, or the
+main or auxiliary view of an AVC444 update with its layout (AVC444 or
+AVC444v2) and, for a main view, whether the auxiliary view of the same
+update follows. The auxiliary view now comes with its own region
+rectangles instead of none, so a decoder that presents frames can combine
+both views into a 4:4:4 picture, or keep showing the main view alone.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-egfx/src/client.rs             | 16 ++--
+ crates/ironrdp-egfx/src/decode.rs             | 41 +++++++--
+ .../tests/egfx/client.rs                      | 90 ++++++++++++++++---
+ 3 files changed, 119 insertions(+), 28 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index ef7c6af4..a6d4d16f 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -80,7 +80,7 @@ use crate::cache::{
+     SMALL_CACHE_BYTES, SMALL_CACHE_SLOTS,
+ };
+ use crate::compositor::{Compositor, OutputUpdate};
+-use crate::decode::H264Decoder;
++use crate::decode::{H264Decoder, PresentedView};
+ use crate::pdu::{
+     Avc420BitmapStream, Avc444BitmapStream, CacheImportOfferPdu, CacheImportReplyPdu, CacheToSurfacePdu,
+     CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags,
+@@ -1245,7 +1245,7 @@ impl GraphicsPipelineClient {
+             } else {
+                 stream.rectangles.as_slice()
+             };
+-            decoder.present(surface_id, stream.data, regions);
++            decoder.present(surface_id, PresentedView::Avc420, stream.data, regions);
+             return Ok(());
+         }
+ 
+@@ -1405,13 +1405,17 @@ impl GraphicsPipelineClient {
+         };
+ 
+         if decoder.presents_frames() {
+-            // Both views go to the decoder, in order, because they share one H.264 stream;
+-            // only the main view is shown.
++            // Both views go to the decoder, in order, because they share one H.264 stream.
+             if let Some(main) = main {
+-                decoder.present(surface_id, main.data, &main.rectangles);
++                let view = PresentedView::Avc444Main {
++                    layout,
++                    auxiliary_follows: auxiliary.is_some(),
++                };
++                decoder.present(surface_id, view, main.data, &main.rectangles);
+             }
+             if let Some(auxiliary) = auxiliary {
+-                decoder.present(surface_id, auxiliary.data, &[]);
++                let view = PresentedView::Avc444Auxiliary { layout };
++                decoder.present(surface_id, view, auxiliary.data, &auxiliary.rectangles);
+             }
+             return Ok(());
+         }
+diff --git a/crates/ironrdp-egfx/src/decode.rs b/crates/ironrdp-egfx/src/decode.rs
+index b819c605..0f42345b 100644
+--- a/crates/ironrdp-egfx/src/decode.rs
++++ b/crates/ironrdp-egfx/src/decode.rs
+@@ -22,6 +22,8 @@ use core::fmt;
+ 
+ use ironrdp_pdu::geometry::ExclusiveRectangle;
+ 
++pub use crate::avc444::Avc444Layout;
++
+ // ============================================================================
+ // Decoded Frame
+ // ============================================================================
+@@ -279,6 +281,27 @@ pub type DecoderResult<T> = Result<T, DecoderError>;
+ // H.264 Decoder Trait
+ // ============================================================================
+ 
++/// Which picture of an AVC update a [presenting decoder](H264Decoder::presents_frames) is handed.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum PresentedView {
++    /// An AVC420 picture ([MS-RDPEGFX] 2.2.4.4).
++    ///
++    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
++    Avc420,
++    /// The main view of an AVC444 picture ([MS-RDPEGFX] 2.2.4.5 and 2.2.4.6): luma and
++    /// subsampled chroma, an ordinary 4:2:0 picture.
++    ///
++    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
++    Avc444Main {
++        layout: Avc444Layout,
++        /// The auxiliary view of the same update is handed over next.
++        auxiliary_follows: bool,
++    },
++    /// The auxiliary view of an AVC444 picture: the chroma samples the main view leaves out,
++    /// packed as `layout` says.
++    Avc444Auxiliary { layout: Avc444Layout },
++}
++
+ /// Trait for H.264 (AVC) decoders
+ ///
+ /// Implement this trait to provide H.264 decode capability to the
+@@ -350,19 +373,21 @@ pub trait H264Decoder: Send {
+     /// Such a decoder receives every AVC420 frame, and each view of an AVC444 frame, through
+     /// [`Self::present`]. [`Self::decode`] and [`Self::decode_yuv420`] are not called for them,
+     /// and the client-side compositor does not paint their regions. AVC444 is advertised for a
+-    /// presenting decoder too: it shows the main view, an ordinary 4:2:0 picture, and decodes
+-    /// the auxiliary view only to keep the H.264 stream both views share in step.
++    /// presenting decoder too: it may combine both views into a 4:4:4 picture, or show the
++    /// main view, an ordinary 4:2:0 picture, and decode the auxiliary view only to keep the
++    /// H.264 stream both views share in step.
+     fn presents_frames(&self) -> bool {
+         false
+     }
+ 
+-    /// Decodes `data` and shows the picture's `regions` of surface `surface_id`, for a decoder
+-    /// that [presents frames](Self::presents_frames).
++    /// Decodes `data`, the `view` of an update to surface `surface_id`, for a decoder that
++    /// [presents frames](Self::presents_frames). `regions` are the parts of the surface the
++    /// view updates.
+     ///
+-    /// With no regions, the picture is decoded but not shown: an AVC444 auxiliary view, or a
+-    /// main view whose update has no region rectangles.
+-    fn present(&mut self, surface_id: u16, data: &[u8], regions: &[ExclusiveRectangle]) {
+-        let _ = (surface_id, data, regions);
++    /// With no regions, the picture is decoded but updates nothing, such as a main view
++    /// whose update has no region rectangles.
++    fn present(&mut self, surface_id: u16, view: PresentedView, data: &[u8], regions: &[ExclusiveRectangle]) {
++        let _ = (surface_id, view, data, regions);
+     }
+ 
+     /// Reset the decoder state
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/client.rs b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+index 37dbc70b..9024133a 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/client.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+@@ -1,7 +1,7 @@
+ use ironrdp_core::{Decode as _, DecodeErrorKind, Encode, ReadCursor, WriteCursor, encode_vec};
+ use ironrdp_dvc::DvcProcessor as _;
+ use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface};
+-use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
++use ironrdp_egfx::decode::{Avc444Layout, DecodedFrame, DecoderError, DecoderResult, H264Decoder, PresentedView};
+ use ironrdp_egfx::pdu::{
+     Avc420BitmapStream, Avc444BitmapStream, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu,
+     CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags,
+@@ -820,7 +820,7 @@ fn client_skips_avc420_without_decoder() {
+ // Tests: Decoders That Present Frames Themselves
+ // ============================================================================
+ 
+-type Presented = std::sync::Arc<std::sync::Mutex<Vec<(u16, Vec<u8>, Vec<ExclusiveRectangle>)>>>;
++type Presented = std::sync::Arc<std::sync::Mutex<Vec<(u16, PresentedView, Vec<u8>, Vec<ExclusiveRectangle>)>>>;
+ 
+ /// Records what it is asked to present, and fails if it is asked to decode instead.
+ struct PresentingDecoder(Presented);
+@@ -834,17 +834,22 @@ impl H264Decoder for PresentingDecoder {
+         true
+     }
+ 
+-    fn present(&mut self, surface_id: u16, data: &[u8], regions: &[ExclusiveRectangle]) {
++    fn present(&mut self, surface_id: u16, view: PresentedView, data: &[u8], regions: &[ExclusiveRectangle]) {
+         self.0
+             .lock()
+             .expect("presented frames")
+-            .push((surface_id, data.to_vec(), regions.to_vec()));
++            .push((surface_id, view, data.to_vec(), regions.to_vec()));
+     }
+ }
+ 
+ fn presenting_client() -> (GraphicsPipelineClient, Presented) {
+     let presented = Presented::default();
+-    let client = setup_active_client_with_surface(Some(Box::new(PresentingDecoder(presented.clone()))), 1, 64, 64);
++    let client = setup_active_client_with_surface(
++        Some(Box::new(PresentingDecoder(Presented::clone(&presented)))),
++        1,
++        64,
++        64,
++    );
+     (client, presented)
+ }
+ 
+@@ -901,7 +906,7 @@ fn a_presenting_decoder_receives_avc420_frames_with_their_regions() {
+ 
+     assert_eq!(
+         *presented.lock().unwrap(),
+-        [(1, vec![0x00, 0x00, 0x00, 0x01, 0x65], regions)]
++        [(1, PresentedView::Avc420, vec![0x00, 0x00, 0x00, 0x01, 0x65], regions)]
+     );
+ }
+ 
+@@ -919,7 +924,7 @@ fn a_presenting_decoder_receives_the_destination_when_an_update_has_no_regions()
+         .process(0, &encode_for_process(&pdu))
+         .expect("the frame is handed over");
+ 
+-    assert_eq!(presented.lock().unwrap()[0].2, [exclusive(8, 8, 40, 24)]);
++    assert_eq!(presented.lock().unwrap()[0].3, [exclusive(8, 8, 40, 24)]);
+ }
+ 
+ #[test]
+@@ -936,16 +941,17 @@ fn a_presenting_decoder_gets_avc444_advertised() {
+     assert!(versions.contains(&CapabilityVersion::V8_1));
+ }
+ 
+-// oracle: spec MS-RDPEGFX §2.2.4.5 (both views are carried in one H.264 stream)
++// oracle: spec MS-RDPEGFX §2.2.4.5 (both views are carried in one H.264 stream, each with its regionRects)
+ #[test]
+-fn a_presenting_decoder_decodes_both_avc444_views_and_shows_the_main_one() {
++fn a_presenting_decoder_receives_both_avc444_views_with_their_regions() {
+     let (mut client, presented) = presenting_client();
+     let main_regions = vec![exclusive(0, 0, 64, 32)];
++    let auxiliary_regions = vec![exclusive(0, 0, 64, 64)];
+     let stream = Avc444BitmapStream {
+         encoding: Encoding::LUMA_AND_CHROMA,
+         stream1: avc420_stream(main_regions.clone(), &[0x00, 0x00, 0x00, 0x01, 0x65, 0x01]),
+         stream2: Some(avc420_stream(
+-            vec![exclusive(0, 0, 64, 64)],
++            auxiliary_regions.clone(),
+             &[0x00, 0x00, 0x00, 0x01, 0x65, 0x02],
+         )),
+     };
+@@ -962,14 +968,63 @@ fn a_presenting_decoder_decodes_both_avc444_views_and_shows_the_main_one() {
+     assert_eq!(
+         *presented.lock().unwrap(),
+         [
+-            (1, vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x01], main_regions),
+-            (1, vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x02], Vec::new()),
++            (
++                1,
++                PresentedView::Avc444Main {
++                    layout: Avc444Layout::V1,
++                    auxiliary_follows: true
++                },
++                vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x01],
++                main_regions
++            ),
++            (
++                1,
++                PresentedView::Avc444Auxiliary {
++                    layout: Avc444Layout::V1
++                },
++                vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x02],
++                auxiliary_regions
++            ),
+         ]
+     );
+ }
+ 
++// oracle: spec MS-RDPEGFX §2.2.4.5 (LC = 1: stream1 is the luma view and stream2 is absent)
+ #[test]
+-fn a_presenting_decoder_decodes_a_chroma_only_avc444_update_without_showing_it() {
++fn a_presenting_decoder_receives_a_luma_only_avc444v2_update_as_a_lone_main_view() {
++    let (mut client, presented) = presenting_client();
++    let stream = Avc444BitmapStream {
++        encoding: Encoding::LUMA,
++        stream1: avc420_stream(vec![exclusive(0, 0, 16, 16)], &[0x00, 0x00, 0x00, 0x01, 0x41]),
++        stream2: None,
++    };
++    let pdu = wire_to_surface(
++        Codec1Type::Avc444v2,
++        exclusive(0, 0, 64, 64),
++        encode_vec(&stream).expect("encode AVC444"),
++    );
++
++    client
++        .process(0, &encode_for_process(&pdu))
++        .expect("the main view is handed over");
++
++    assert_eq!(
++        *presented.lock().unwrap(),
++        [(
++            1,
++            PresentedView::Avc444Main {
++                layout: Avc444Layout::V2,
++                auxiliary_follows: false
++            },
++            vec![0x00, 0x00, 0x00, 0x01, 0x41],
++            vec![exclusive(0, 0, 16, 16)]
++        )]
++    );
++}
++
++// oracle: spec MS-RDPEGFX §2.2.4.5 (LC = 2: stream1 is the chroma view)
++#[test]
++fn a_presenting_decoder_receives_a_chroma_only_avc444v2_update_as_an_auxiliary_view() {
+     let (mut client, presented) = presenting_client();
+     let stream = Avc444BitmapStream {
+         encoding: Encoding::CHROMA,
+@@ -988,7 +1043,14 @@ fn a_presenting_decoder_decodes_a_chroma_only_avc444_update_without_showing_it()
+ 
+     assert_eq!(
+         *presented.lock().unwrap(),
+-        [(1, vec![0x00, 0x00, 0x00, 0x01, 0x41], Vec::new())]
++        [(
++            1,
++            PresentedView::Avc444Auxiliary {
++                layout: Avc444Layout::V2
++            },
++            vec![0x00, 0x00, 0x00, 0x01, 0x41],
++            vec![exclusive(0, 0, 64, 64)]
++        )]
+     );
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

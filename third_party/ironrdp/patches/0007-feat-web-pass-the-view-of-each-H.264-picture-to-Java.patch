@@ -1,0 +1,130 @@
+From e2496176490f88190e6744d78830e92f0b6f1f39 Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Wed, 28 Oct 2026 09:58:00 -0500
+Subject: [PATCH 07/11] feat(web): pass the view of each H.264 picture to
+ JavaScript
+
+The `h264_frame_callback` receives a fourth argument, `view`: 0 for
+AVC420, 1 for an AVC444 main view and 2 for an auxiliary view, plus 4
+for the AVC444v2 layout and 8 when a main view's auxiliary view follows.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-web/src/session.rs             | 42 +++++++++++++++----
+ .../iron-remote-desktop-rdp/src/main.ts       | 11 +++--
+ 2 files changed, 43 insertions(+), 10 deletions(-)
+
+diff --git a/crates/ironrdp-web/src/session.rs b/crates/ironrdp-web/src/session.rs
+index 14e13c9e..b2233fd4 100644
+--- a/crates/ironrdp-web/src/session.rs
++++ b/crates/ironrdp-web/src/session.rs
+@@ -33,7 +33,7 @@ use ironrdp::session::image::DecodedImage;
+ use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
+ use ironrdp_core::WriteBuf;
+ use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+-use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
++use ironrdp_egfx::decode::{Avc444Layout, DecodedFrame, DecoderError, DecoderResult, H264Decoder, PresentedView};
+ use ironrdp_futures::{FramedWrite, single_sequence_step_read};
+ use rgb::AsPixels as _;
+ use tap::prelude::*;
+@@ -1003,9 +1003,13 @@ impl iron_remote_desktop::Session for Session {
+                     gui.fit(image.width(), image.height());
+                     let data = js_sys::Uint8Array::from(frame.data.as_slice());
+                     let regions = js_sys::Uint16Array::from(frame.regions.as_slice());
+-                    if let Err(error) =
+-                        callback.call3(&JsValue::NULL, &data, &regions, &JsValue::from(frame.surface_id))
+-                    {
++                    if let Err(error) = callback.call4(
++                        &JsValue::NULL,
++                        &data,
++                        &regions,
++                        &JsValue::from(frame.surface_id),
++                        &JsValue::from(frame.view),
++                    ) {
+                         warn!(?error, "H.264 frame callback failed");
+                     }
+                 }
+@@ -2071,14 +2075,31 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
+     value as u16
+ }
+ 
+-/// An H.264 picture for JavaScript to decode and draw: an Annex B access unit and the surface
+-/// regions it updates, as `[x, y, width, height]` quadruples. No regions means decode only.
++/// An H.264 picture for JavaScript to decode and draw: an Annex B access unit, the surface
++/// regions it updates, as `[x, y, width, height]` quadruples, and which view it is (see
++/// [`view_code`]). No regions means decode only.
+ pub(crate) struct H264Frame {
+     surface_id: u16,
++    view: u8,
+     data: Vec<u8>,
+     regions: Vec<u16>,
+ }
+ 
++/// The view of an H.264 picture as JavaScript gets it: 0 for AVC420, 1 for an AVC444 main
++/// view and 2 for an AVC444 auxiliary view, plus 4 for the AVC444v2 layout and 8 when the
++/// auxiliary view of the same update follows a main view.
++fn view_code(view: PresentedView) -> u8 {
++    let layout = |layout| if layout == Avc444Layout::V2 { 4 } else { 0 };
++    match view {
++        PresentedView::Avc420 => 0,
++        PresentedView::Avc444Main {
++            layout: main_layout,
++            auxiliary_follows,
++        } => 1 | layout(main_layout) | if auxiliary_follows { 8 } else { 0 },
++        PresentedView::Avc444Auxiliary { layout: aux_layout } => 2 | layout(aux_layout),
++    }
++}
++
+ /// An H.264 decoder that leaves decoding and drawing to JavaScript: each picture goes to the
+ /// session, which hands it to the `h264_frame_callback`.
+ struct JsPresentedH264 {
+@@ -2095,7 +2116,13 @@ impl H264Decoder for JsPresentedH264 {
+         true
+     }
+ 
+-    fn present(&mut self, surface_id: u16, data: &[u8], regions: &[ironrdp::pdu::geometry::ExclusiveRectangle]) {
++    fn present(
++        &mut self,
++        surface_id: u16,
++        view: PresentedView,
++        data: &[u8],
++        regions: &[ironrdp::pdu::geometry::ExclusiveRectangle],
++    ) {
+         let regions = regions
+             .iter()
+             .flat_map(|region| {
+@@ -2109,6 +2136,7 @@ impl H264Decoder for JsPresentedH264 {
+             .collect();
+         let frame = H264Frame {
+             surface_id,
++            view: view_code(view),
+             data: data.to_vec(),
+             regions,
+         };
+diff --git a/web-client/iron-remote-desktop-rdp/src/main.ts b/web-client/iron-remote-desktop-rdp/src/main.ts
+index 752ced0a..d2763889 100644
+--- a/web-client/iron-remote-desktop-rdp/src/main.ts
++++ b/web-client/iron-remote-desktop-rdp/src/main.ts
+@@ -89,11 +89,16 @@ export function enableEgfx(enable: boolean): Extension {
+  * With `enableEgfx`, hand each H.264 picture to `callback` instead of decoding it.
+  *
+  * `data` is an Annex B access unit and `regions` packs `[x, y, width, height]` for each
+- * updated region of surface `surfaceId`. A picture without regions is to be decoded but not
+- * drawn: it keeps the stream in step (an AVC444 auxiliary view).
++ * region of surface `surfaceId` the picture updates. A picture without regions is to be
++ * decoded but updates nothing: it keeps the stream in step.
++ *
++ * `view` says which picture it is: 0 for AVC420, 1 for the main view of an AVC444 update (an
++ * ordinary 4:2:0 picture) and 2 for its auxiliary view (the remaining chroma), plus 4 when the
++ * auxiliary view uses the AVC444v2 layout and 8 when a main view's auxiliary view follows.
++ * Both views of an AVC444 update come in order through the one H.264 stream.
+  */
+ export function h264FrameCallback(
+-    callback: (data: Uint8Array, regions: Uint16Array, surfaceId: number) => void,
++    callback: (data: Uint8Array, regions: Uint16Array, surfaceId: number, view: number) => void,
+ ): Extension {
+     return new Extension('h264_frame_callback', callback as unknown);
+ }
+-- 
+2.54.0 (Apple Git-157)
+

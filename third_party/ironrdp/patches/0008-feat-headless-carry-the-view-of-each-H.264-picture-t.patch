@@ -1,0 +1,122 @@
+From 4a04e6401484f901b166b5f246bdc31876fa7041 Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Wed, 28 Oct 2026 09:58:00 -0500
+Subject: [PATCH 08/11] feat(headless): carry the view of each H.264 picture to
+ the host
+
+The H.264 event payload gains a view byte after the surface ID, coded as
+the web client's `h264_frame_callback` codes it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-headless/src/lib.rs  |  6 ++--
+ crates/ironrdp-headless/src/wire.rs | 44 +++++++++++++++++++++++++----
+ 2 files changed, 42 insertions(+), 8 deletions(-)
+
+diff --git a/crates/ironrdp-headless/src/lib.rs b/crates/ironrdp-headless/src/lib.rs
+index e05b53ed..220ceb1b 100644
+--- a/crates/ironrdp-headless/src/lib.rs
++++ b/crates/ironrdp-headless/src/lib.rs
+@@ -51,7 +51,7 @@ use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
+ use ironrdp_blocking::Framed;
+ use ironrdp_core::WriteBuf;
+ use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+-use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
++use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder, PresentedView};
+ 
+ use self::wire::{Config, End, Input, Message};
+ 
+@@ -206,8 +206,8 @@ impl H264Decoder for HostPresentedH264 {
+         true
+     }
+ 
+-    fn present(&mut self, surface_id: u16, data: &[u8], regions: &[ExclusiveRectangle]) {
+-        emit(Event::H264, &wire::h264_payload(surface_id, regions, data));
++    fn present(&mut self, surface_id: u16, view: PresentedView, data: &[u8], regions: &[ExclusiveRectangle]) {
++        emit(Event::H264, &wire::h264_payload(surface_id, view, regions, data));
+     }
+ }
+ 
+diff --git a/crates/ironrdp-headless/src/wire.rs b/crates/ironrdp-headless/src/wire.rs
+index 0dbbd94f..56128720 100644
+--- a/crates/ironrdp-headless/src/wire.rs
++++ b/crates/ironrdp-headless/src/wire.rs
+@@ -5,6 +5,7 @@
+ 
+ use ironrdp::input::{MouseButton, MousePosition, Operation, Scancode, WheelRotations};
+ use ironrdp::pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
++use ironrdp_egfx::decode::{Avc444Layout, PresentedView};
+ 
+ /// Bytes from the server.
+ pub const TAG_SERVER_BYTES: u8 = 0;
+@@ -232,10 +233,13 @@ pub fn parse_input(payload: &[u8]) -> Result<Vec<Input>, String> {
+     Ok(inputs)
+ }
+ 
+-/// `[surface u16][region count u16][x, y, width, height u16 each][Annex B data]`.
+-pub fn h264_payload(surface_id: u16, regions: &[ExclusiveRectangle], data: &[u8]) -> Vec<u8> {
+-    let mut payload = Vec::with_capacity(4 + regions.len() * 8 + data.len());
++/// `[surface u16][view u8][region count u16][x, y, width, height u16 each][Annex B data]`, where
++/// `view` is 0 for AVC420, 1 for an AVC444 main view and 2 for an AVC444 auxiliary view, plus 4
++/// for the AVC444v2 layout and 8 when the auxiliary view of the same update follows a main view.
++pub fn h264_payload(surface_id: u16, view: PresentedView, regions: &[ExclusiveRectangle], data: &[u8]) -> Vec<u8> {
++    let mut payload = Vec::with_capacity(5 + regions.len() * 8 + data.len());
+     payload.extend_from_slice(&surface_id.to_le_bytes());
++    payload.push(view_code(view));
+     payload.extend_from_slice(&u16::try_from(regions.len()).unwrap_or(u16::MAX).to_le_bytes());
+     for region in regions.iter().take(usize::from(u16::MAX)) {
+         for value in [
+@@ -251,6 +255,18 @@ pub fn h264_payload(surface_id: u16, regions: &[ExclusiveRectangle], data: &[u8]
+     payload
+ }
+ 
++fn view_code(view: PresentedView) -> u8 {
++    let layout = |layout| if layout == Avc444Layout::V2 { 4 } else { 0 };
++    match view {
++        PresentedView::Avc420 => 0,
++        PresentedView::Avc444Main {
++            layout: main_layout,
++            auxiliary_follows,
++        } => 1 | layout(main_layout) | if auxiliary_follows { 8 } else { 0 },
++        PresentedView::Avc444Auxiliary { layout: aux_layout } => 2 | layout(aux_layout),
++    }
++}
++
+ /// `[x u16][y u16][width u16][height u16][RGBA rows]` for `region` of an RGBA image `image_width`
+ /// pixels wide, or `None` if the region doesn't fit in `image`.
+ pub fn image_payload(image: &[u8], image_width: u16, region: &InclusiveRectangle) -> Option<Vec<u8>> {
+@@ -408,11 +424,29 @@ mod tests {
+             bottom: 8,
+         }];
+         assert_eq!(
+-            h264_payload(7, &regions, &[0, 0, 0, 1, 0x65]),
+-            [7, 0, 1, 0, 2, 0, 3, 0, 10, 0, 5, 0, 0, 0, 0, 1, 0x65]
++            h264_payload(7, PresentedView::Avc420, &regions, &[0, 0, 0, 1, 0x65]),
++            [7, 0, 0, 1, 0, 2, 0, 3, 0, 10, 0, 5, 0, 0, 0, 0, 1, 0x65]
+         );
+     }
+ 
++    #[test]
++    fn encodes_avc444_views() {
++        let main = PresentedView::Avc444Main {
++            layout: Avc444Layout::V2,
++            auxiliary_follows: true,
++        };
++        assert_eq!(h264_payload(1, main, &[], &[])[2], 1 | 4 | 8);
++        let lone_main = PresentedView::Avc444Main {
++            layout: Avc444Layout::V1,
++            auxiliary_follows: false,
++        };
++        assert_eq!(h264_payload(1, lone_main, &[], &[])[2], 1);
++        let auxiliary = PresentedView::Avc444Auxiliary {
++            layout: Avc444Layout::V1,
++        };
++        assert_eq!(h264_payload(1, auxiliary, &[], &[])[2], 2);
++    }
++
+     #[test]
+     fn copies_image_regions() {
+         // A 3x2 RGBA image whose pixels are numbered 0..6.
+-- 
+2.54.0 (Apple Git-157)
+

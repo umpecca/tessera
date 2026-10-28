@@ -120,12 +120,16 @@ type Session struct {
 	closeReason string
 
 	width, height int
-	sessionID     uint32
-	hasSessionID  bool
-	hasCookie     bool
-	endCode       End
-	endReason     string
-	err           error
+	// surfaces holds the latest "surface shown" H.264 event for each surface
+	// the module said is shown, so a viewer attaching later learns where to
+	// draw (see recordSurfaceOutput).
+	surfaces     map[uint16][]byte
+	sessionID    uint32
+	hasSessionID bool
+	hasCookie    bool
+	endCode      End
+	endReason    string
+	err          error
 }
 
 // NewSession returns a session that is not yet connected. onEvent, if set,

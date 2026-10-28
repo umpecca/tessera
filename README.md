@@ -482,6 +482,14 @@ or when the server doesn't send H.264, the pane uses bitmap updates instead.
 This has been tested with Remotr on macOS from iPad Safari. The pane shows the
 browser's own pointer shapes rather than the server's.
 
+Servers may send H.264 in 4:4:4 (AVC444), which keeps colored text and thin
+colored lines sharp. The sign-in dialog's **Full color (4:4:4) when the server
+sends it** combines it into full color with the browser's WebGL2; the toolbar
+then shows **H.264 4:4:4**. Off (the default), the pane shows the same stream
+at 4:2:0, which is lighter on the device. The client can't ask the server for
+one or the other: whether 4:4:4 is sent is the server's choice. The option is
+remembered in this browser and also applies to kept sessions it opens.
+
 #### Kept RDP sessions
 
 With [sign-in](#sign-in) on, and Tessera opened over HTTPS or on loopback, the

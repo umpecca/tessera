@@ -17,8 +17,7 @@ canvas, so H.264 pixels never pass through WebAssembly:
 
 1. `0001` `ironrdp-egfx`: an `H264Decoder` can present frames itself (`presents_frames`,
    `present`). The client hands it each AVC420 frame with its region rectangles, and both views
-   of an AVC444 frame (only the main view to be shown), instead of painting them through the
-   compositor.
+   of an AVC444 frame, instead of painting them through the compositor.
 2. `0002` `ironrdp-web`: the `enable_egfx` and `h264_frame_callback` extensions. The callback
    receives `(data, regions, surfaceId)` for each H.264 picture.
 3. `0003` `iron-remote-desktop-rdp`: the `enableEgfx()` and `h264FrameCallback()` factories.
@@ -29,6 +28,20 @@ canvas, so H.264 pixels never pass through WebAssembly:
    auto-reconnect cookie to rejoin a session. Its byte formats are in `src/wire.rs`, mirrored by
    `internal/rdpsession/wire.go`.
 5. `0005` `ironrdp-headless`: wipe the configuration, which holds the password, once it is read.
+6. `0006` `ironrdp-egfx`: `present` also gets the picture's `PresentedView` (AVC420, or an AVC444
+   main or auxiliary view with its layout and whether the auxiliary view follows), and an
+   auxiliary view keeps its own regions, so the browser can combine AVC444 into 4:4:4 (task 239).
+7. `0007` `ironrdp-web` and `iron-remote-desktop-rdp`: the callback receives
+   `(data, regions, surfaceId, view)`, with `view` coded as `web/rdp-h264.mjs`'s `rdpH264View`.
+8. `0008` `ironrdp-headless`: the H.264 event carries the same view byte.
+9. `0009` `ironrdp-egfx`: the client tracks surfaces holding presented pictures and hands a
+   `SurfaceToSurface` from one of them to the decoder (`present_copy`) instead of the compositor,
+   which has none of their pixels; the decoder also hears where surfaces are shown
+   (`present_output`). Remotr's AVC444 mode decodes into an offscreen surface and copies it to the
+   shown one every frame, which painted the output black without this.
+10. `0010` `ironrdp-web`: those operations reach the callback in order with the pictures, as views
+    16 (surface shown at an origin, or hidden), 17 (copy) and 18 (every surface gone).
+11. `0011` `ironrdp-headless`: the H.264 event carries the same operations.
 
 `0004` and `0005` only add the crate, so `rdp.js` is the same built with or without them.
 

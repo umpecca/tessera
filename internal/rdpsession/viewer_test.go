@@ -171,3 +171,41 @@ func TestALostSessionEndsAtTheIdleLimit(t *testing.T) {
 		t.Fatalf("info = %+v", info)
 	}
 }
+
+func surfaceShown(surface, x, y uint16) []byte {
+	return []byte{byte(surface), byte(surface >> 8), viewSurfaceOutput, 1, 0, byte(x), byte(x >> 8), byte(y), byte(y >> 8), 0, 0, 0, 0}
+}
+
+func TestAViewerLearnsWhereSurfacesAreShownBeforeAnythingElse(t *testing.T) {
+	s, _ := startedSession(t, &scriptRunner{cookie: true}, 0)
+	for _, payload := range [][]byte{
+		surfaceShown(7, 1, 2),
+		{0, 0, viewSurfacesReset, 0, 0}, // forgets surface 7
+		surfaceShown(65532, 5, 5),
+		{0xfc, 0xff, viewSurfaceOutput, 0, 0}, // 65532 no longer shown
+		surfaceShown(3, 10, 20),
+		surfaceShown(1, 0, 0),
+		surfaceShown(3, 30, 40), // replaces the earlier origin
+		{1, 0, 0, 1, 0, 0, 0, 0, 0, 8, 0, 8, 0, 0, 0, 0, 1, 0x65}, // a picture isn't kept
+	} {
+		s.handleEvent(eventH264, payload)
+	}
+	viewer := &recordingViewer{}
+	if _, err := s.Attach(viewer); err != nil {
+		t.Fatal(err)
+	}
+	viewer.mu.Lock()
+	defer viewer.mu.Unlock()
+	if len(viewer.events) < 3 {
+		t.Fatalf("got %d events", len(viewer.events))
+	}
+	want := [][]byte{surfaceShown(1, 0, 0), surfaceShown(3, 30, 40)}
+	for i, payload := range want {
+		if got := viewer.events[i]; got.kind != eventH264 || !bytes.Equal(got.payload, payload) {
+			t.Fatalf("event %d = %d %v, want the surface shown %v", i, got.kind, got.payload, payload)
+		}
+	}
+	if viewer.events[2].kind != eventConnected {
+		t.Fatalf("event 2 = %d, want the desktop size", viewer.events[2].kind)
+	}
+}

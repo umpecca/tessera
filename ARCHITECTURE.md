@@ -227,7 +227,20 @@ Current pane types:
   Graphics Pipeline (MS-RDPEGFX) with H.264: IronRDP hands each H.264 picture
   and its regions to `web/rdp-h264.mjs`, which declares the stream free of
   reordering (`web/rdp-h264-sps.mjs`), decodes it and draws the regions onto
-  the canvas; other updates still go through IronRDP's compositor.
+  the canvas; other updates still go through IronRDP's compositor. Each
+  picture comes with its view: AVC420, or an AVC444 update's main view (a
+  4:2:0 picture, drawn as it is) or auxiliary view (the remaining chroma,
+  otherwise only decoded). With the Full color option, `web/rdp-avc444.mjs`
+  copies both views' planes out of their `VideoFrame`s (I420 or NV12) and
+  combines them with WebGL2 shaders into a persistent 4:4:4 picture
+  (MS-RDPEGFX 3.3.8.3), whose regions are converted to RGB and drawn onto the
+  canvas; its integer math matches IronRDP's CPU reference (`avc444.rs`).
+  Pictures belong to surfaces: the presenter keeps each surface's pixels in
+  an offscreen canvas and draws the surfaces mapped to the output onto the
+  pane, and IronRDP hands it the surface operations it can't do without
+  those pixels (where a surface is shown, and copies from surfaces holding
+  H.264, which Remotr's AVC444 mode sends every frame), in order with the
+  pictures.
 - **Kept RDP sessions:** with sign-in on, over HTTPS or loopback, an RDP pane
   can instead keep its session on the host (`internal/rdpsession`), so it
   outlives the page. The host runs a display-less IronRDP build
@@ -243,7 +256,8 @@ Current pane types:
   rejoin a lost session with the cookie and the password, or end one.
   `/api/rdp-kept/view` is a binary WebSocket for one viewer at a time (a new
   one takes over): the host sends the desktop size, H.264 pictures with their
-  regions, composited image regions and the end reason, and the viewer sends
+  view and regions and the surface operations that go with them (replaying
+  where each surface is shown to a viewer that attaches later), composited image regions and the end reason, and the viewer sends
   input records, resize and refresh requests (`viewer_protocol.go`, mirrored
   by `web/rdp-viewer-wire.mjs`). `web/rdp-viewer.mjs` stands in for IronRDP's
   browser session, so the pane's input, scaling and resize code is shared.

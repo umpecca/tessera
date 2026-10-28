@@ -56,8 +56,9 @@ function setup(options = {}) {
     },
   };
   const presenters = [];
-  const createPresenter = ({ canvas: target }) => {
-    const presenter = { canvas: target, pushed: [], closed: false, push(data, regions) { this.pushed.push({ data, regions }); }, close() { this.closed = true; } };
+  const createPresenter = (options) => {
+    const { canvas: target } = options;
+    const presenter = { canvas: target, options, pushed: [], closed: false, push(data, regions, view, surface) { this.pushed.push({ data, regions, view, surface }); }, close() { this.closed = true; } };
     presenters.push(presenter);
     return presenter;
   };
@@ -106,12 +107,15 @@ test("draws image regions opaque and H.264 pictures through the presenter", asyn
   assert.deepEqual([drawn[0].x, drawn[0].y, drawn[0].image.width, drawn[0].image.height], [4, 6, 1, 1]);
   assert.deepEqual(Array.from(drawn[0].image.data), [10, 20, 30, 255]);
 
-  socket().frame(viewH264, 7, 0, 1, 0, 2, 0, 3, 0, 10, 0, 5, 0, 0, 0, 0, 1, 0x65);
-  socket().frame(viewH264, 7, 0, 0, 0, 0, 0, 0, 1, 0x41);
+  socket().frame(viewH264, 7, 0, 0, 1, 0, 2, 0, 3, 0, 10, 0, 5, 0, 0, 0, 0, 1, 0x65);
+  socket().frame(viewH264, 7, 0, 2 | 4, 0, 0, 0, 0, 0, 1, 0x41);
   assert.equal(presenters.length, 1, "one presenter serves every picture");
   assert.deepEqual(Array.from(presenters[0].pushed[0].regions), [2, 3, 10, 5]);
   assert.deepEqual(Array.from(presenters[0].pushed[0].data), [0, 0, 0, 1, 0x65]);
+  assert.equal(presenters[0].pushed[0].view, 0);
+  assert.equal(presenters[0].pushed[0].surface, 7);
   assert.equal(presenters[0].pushed[1].regions.length, 0);
+  assert.equal(presenters[0].pushed[1].view, 2 | 4, "the view reaches the presenter");
 });
 
 test("sends input, resize, refresh and release-all", async () => {
@@ -169,7 +173,7 @@ test("shutdown closes the socket and the presenter, and run resolves quietly", a
   const { connecting, presenters, socket } = setup();
   socket().frame(...sizeFrame);
   const session = await connecting;
-  socket().frame(viewH264, 7, 0, 0, 0, 0, 1);
+  socket().frame(viewH264, 7, 0, 0, 0, 0, 0, 0, 1);
   session.shutdown();
   assert.equal(socket().closeCode, 1000);
   assert.equal(presenters[0].closed, true);

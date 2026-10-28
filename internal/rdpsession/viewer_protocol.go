@@ -9,7 +9,13 @@ import "errors"
 // Host to viewer:
 //
 //	ViewDesktopSize  [width u16][height u16]
-//	ViewH264         [surface u16][region count u16][x, y, width, height u16 each][Annex B data]
+//	ViewH264         [surface u16][view u8][region count u16][x, y, width, height u16 each][Annex B data]
+//	                 view: 0 AVC420, 1 AVC444 main view, 2 AVC444 auxiliary view,
+//	                 plus 4 for the AVC444v2 layout and 8 when the auxiliary view follows;
+//	                 surface operations, with no data and values four to a region:
+//	                 16 surface shown at [x, y, 0, 0] (no region: not shown),
+//	                 17 copy [x, y, width, height] to [x, y, destination, 0] each,
+//	                 18 every surface gone
 //	ViewImage        [x u16][y u16][width u16][height u16][RGBA rows]
 //	ViewEnded        [End u8][UTF-8 reason]: the session is lost or over
 //	ViewDetached     [UTF-8 reason]: another viewer took over

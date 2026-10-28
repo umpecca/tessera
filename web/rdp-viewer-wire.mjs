@@ -117,13 +117,19 @@ export function parseViewerFrame(buffer) {
       if (length !== 5) return null;
       return { type: "size", width: view.getUint16(1, true), height: view.getUint16(3, true) };
     case viewH264: {
-      if (length < 5) return null;
-      const count = view.getUint16(3, true);
-      const dataStart = 5 + count * 8;
+      if (length < 6) return null;
+      const count = view.getUint16(4, true);
+      const dataStart = 6 + count * 8;
       if (length < dataStart) return null;
       const regions = new Uint16Array(count * 4);
-      for (let i = 0; i < regions.length; i += 1) regions[i] = view.getUint16(5 + i * 2, true);
-      return { type: "h264", surface: view.getUint16(1, true), regions, data: new Uint8Array(buffer, dataStart) };
+      for (let i = 0; i < regions.length; i += 1) regions[i] = view.getUint16(6 + i * 2, true);
+      return {
+        type: "h264",
+        surface: view.getUint16(1, true),
+        view: view.getUint8(3),
+        regions,
+        data: new Uint8Array(buffer, dataStart),
+      };
     }
     case viewImage: {
       if (length < 9) return null;

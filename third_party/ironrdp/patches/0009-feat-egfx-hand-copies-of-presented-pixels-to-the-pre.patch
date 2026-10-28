@@ -1,0 +1,476 @@
+From 76d510a1d8ac863b05e229a5787552dab7a3c08c Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Wed, 28 Oct 2026 11:14:36 -0500
+Subject: [PATCH 09/11] feat(egfx): hand copies of presented pixels to the
+ presenting decoder
+
+A decoder that presents frames keeps the pixels of the surfaces it was
+handed pictures for; the compositor never sees them. A server that decodes
+into an offscreen surface and copies it to the one on the output (Remotr's
+AVC444 mode copies every frame) therefore got its copies composited from
+an empty surface, painting the output black over the video.
+
+The client now tracks which surfaces hold presented pictures, and hands a
+SurfaceToSurface from one of them to the decoder (`present_copy`) instead
+of the compositor; the destination then holds presented pixels too. The
+decoder also hears where each surface is shown (`present_output`, on
+MapSurfaceToOutput and the scaled variant, and `None` when a surface is
+created or deleted), so it can show only surfaces mapped to the output.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-egfx/src/client.rs             |  42 ++++
+ crates/ironrdp-egfx/src/decode.rs             |  22 +-
+ .../tests/egfx/client.rs                      | 231 +++++++++++++++++-
+ 3 files changed, 289 insertions(+), 6 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index a6d4d16f..8f6aa475 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -451,6 +451,9 @@ pub struct GraphicsPipelineClient {
+     /// Combined AVC444 picture of each surface, kept between updates so a luma-only or
+     /// chroma-only update combines with what earlier ones left.
+     avc444_frames: BTreeMap<u16, Yuv444Frame>,
++    /// Surfaces holding pictures a presenting decoder showed instead of the compositor, so
++    /// copies from them are the decoder's too.
++    presented_surfaces: BTreeSet<u16>,
+     /// Built on first use via [`Self::decode_clearcodec`]. `None` means no ClearCodec
+     /// frame has arrived yet, not that the codec is unsupported: keeping the ~1.37 MiB
+     /// V-bar and glyph cache spine (see `ClearCodecDecoder::new`) unallocated saves that
+@@ -496,6 +499,7 @@ impl GraphicsPipelineClient {
+             handler,
+             h264_decoder,
+             avc444_frames: BTreeMap::new(),
++            presented_surfaces: BTreeSet::new(),
+             clearcodec_decoder: None,
+             planar_decoder: BitmapStreamDecoder::default(),
+             progressive_decoder: ProgressiveDecoder::new(),
+@@ -601,6 +605,7 @@ impl GraphicsPipelineClient {
+         if let Some(decoder) = self.h264_decoder.as_mut() {
+             decoder.reset();
+         }
++        self.presented_surfaces.clear();
+         self.current_frame_id = None;
+         // Windows restarts its sent-frame count and rejects ACK counts greater than that value.
+         self.total_frames_decoded = 0;
+@@ -752,6 +757,20 @@ impl GraphicsPipelineClient {
+                     dst = pdu.destination_surface_id,
+                     "SurfaceToSurface"
+                 );
++                // The compositor has no presented pixels: copying them is the decoder's job.
++                if self.presented_surfaces.contains(&pdu.source_surface_id) {
++                    if let Some(decoder) = self.h264_decoder.as_mut().filter(|decoder| decoder.presents_frames()) {
++                        decoder.present_copy(
++                            pdu.source_surface_id,
++                            &pdu.source_rectangle,
++                            pdu.destination_surface_id,
++                            &pdu.destination_points,
++                        );
++                        self.presented_surfaces.insert(pdu.destination_surface_id);
++                        self.handler.on_surface_to_surface(&pdu);
++                        return Ok(vec![]);
++                    }
++                }
+                 self.compositor.surface_to_surface(
+                     pdu.source_surface_id,
+                     pdu.destination_surface_id,
+@@ -929,6 +948,7 @@ impl GraphicsPipelineClient {
+         if let Some(ref mut decoder) = self.h264_decoder {
+             decoder.reset();
+         }
++        self.presented_surfaces.clear();
+         // The Progressive decoder is deliberately NOT reset here either. Its context lifetime
+         // is driven by DeleteEncodingContext and DeleteSurface; MS-RDPEGFX 3.3.5.14 only
+         // resizes the Graphics Output Buffer. Windows establishes a codec context once and
+@@ -971,6 +991,7 @@ impl GraphicsPipelineClient {
+ 
+         debug!(surface_id, width, height, ?pixel_format, "Surface created");
+         self.release_avc444_frame(surface_id);
++        self.forget_presented_surface(surface_id);
+         self.compositor.create_surface(surface_id, width, height);
+         self.handler.on_surface_created(&surface);
+         self.surfaces.insert(surface_id, surface);
+@@ -979,6 +1000,7 @@ impl GraphicsPipelineClient {
+     fn handle_delete_surface(&mut self, surface_id: u16) {
+         self.progressive_decoder.delete_surface(surface_id);
+         self.release_avc444_frame(surface_id);
++        self.forget_presented_surface(surface_id);
+         if self.surfaces.remove(&surface_id).is_some() {
+             self.compositor.delete_surface(surface_id);
+             debug!(surface_id, "Surface deleted");
+@@ -988,6 +1010,21 @@ impl GraphicsPipelineClient {
+         }
+     }
+ 
++    /// Tells a presenting decoder that `surface_id` starts over, unshown and empty.
++    fn forget_presented_surface(&mut self, surface_id: u16) {
++        self.presented_surfaces.remove(&surface_id);
++        if let Some(decoder) = self.h264_decoder.as_mut().filter(|decoder| decoder.presents_frames()) {
++            decoder.present_output(surface_id, None);
++        }
++    }
++
++    /// Tells a presenting decoder where `surface_id` is shown on the output.
++    fn present_surface_output(&mut self, surface_id: u16, origin_x: u32, origin_y: u32) {
++        if let Some(decoder) = self.h264_decoder.as_mut().filter(|decoder| decoder.presents_frames()) {
++            decoder.present_output(surface_id, Some((origin_x, origin_y)));
++        }
++    }
++
+     fn release_avc444_frame(&mut self, surface_id: u16) {
+         if let Some(frame) = self.avc444_frames.remove(&surface_id) {
+             self.compositor.release(frame.allocated_bytes());
+@@ -1000,6 +1037,7 @@ impl GraphicsPipelineClient {
+             surface.output_origin_x = origin_x;
+             surface.output_origin_y = origin_y;
+             self.compositor.map_surface(surface_id, origin_x, origin_y);
++            self.present_surface_output(surface_id, origin_x, origin_y);
+             debug!(surface_id, origin_x, origin_y, "Surface mapped to output");
+             self.handler.on_surface_mapped(surface_id, origin_x, origin_y);
+         } else {
+@@ -1036,6 +1074,8 @@ impl GraphicsPipelineClient {
+                 pdu.target_width,
+                 pdu.target_height,
+             );
++            // UNTESTED: a presenting decoder shows a scaled surface unscaled; Remotr maps 1:1.
++            self.present_surface_output(pdu.surface_id, pdu.output_origin_x, pdu.output_origin_y);
+             debug!(
+                 surface_id = pdu.surface_id,
+                 origin_x = pdu.output_origin_x,
+@@ -1246,6 +1286,7 @@ impl GraphicsPipelineClient {
+                 stream.rectangles.as_slice()
+             };
+             decoder.present(surface_id, PresentedView::Avc420, stream.data, regions);
++            self.presented_surfaces.insert(surface_id);
+             return Ok(());
+         }
+ 
+@@ -1417,6 +1458,7 @@ impl GraphicsPipelineClient {
+                 let view = PresentedView::Avc444Auxiliary { layout };
+                 decoder.present(surface_id, view, auxiliary.data, &auxiliary.rectangles);
+             }
++            self.presented_surfaces.insert(surface_id);
+             return Ok(());
+         }
+         // UNTESTED: that the decoder returns each view for its own sub-stream. Both sub-streams
+diff --git a/crates/ironrdp-egfx/src/decode.rs b/crates/ironrdp-egfx/src/decode.rs
+index 0f42345b..3834ce63 100644
+--- a/crates/ironrdp-egfx/src/decode.rs
++++ b/crates/ironrdp-egfx/src/decode.rs
+@@ -23,6 +23,7 @@ use core::fmt;
+ use ironrdp_pdu::geometry::ExclusiveRectangle;
+ 
+ pub use crate::avc444::Avc444Layout;
++use crate::pdu::Point;
+ 
+ // ============================================================================
+ // Decoded Frame
+@@ -390,9 +391,28 @@ pub trait H264Decoder: Send {
+         let _ = (surface_id, view, data, regions);
+     }
+ 
++    /// Surface `surface_id` is shown on the output with its top-left corner at `origin`, or
++    /// is not shown (`None`): it was created, deleted, or never mapped. For a decoder that
++    /// [presents frames](Self::presents_frames), which keeps each surface's presented pictures
++    /// itself and shows only the surfaces mapped to the output.
++    fn present_output(&mut self, surface_id: u16, origin: Option<(u32, u32)>) {
++        let _ = (surface_id, origin);
++    }
++
++    /// Copies `source_rectangle` of surface `source` to surface `destination`, with its top-left
++    /// corner at each of `points` ([MS-RDPEGFX] 2.2.2.6), for a decoder that
++    /// [presents frames](Self::presents_frames). The client hands over a copy whose source
++    /// holds presented pictures, since only the decoder has their pixels.
++    ///
++    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
++    fn present_copy(&mut self, source: u16, source_rectangle: &ExclusiveRectangle, destination: u16, points: &[Point]) {
++        let _ = (source, source_rectangle, destination, points);
++    }
++
+     /// Reset the decoder state
+     ///
+-    /// Called when surfaces are reset (e.g., on `ResetGraphics`).
++    /// Called when surfaces are reset (e.g., on `ResetGraphics`). A decoder that presents
++    /// frames forgets every surface too.
+     /// The decoder should drop any internal state and prepare for
+     /// a new stream.
+     fn reset(&mut self) {
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/client.rs b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+index 9024133a..c1b70916 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/client.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+@@ -8,7 +8,7 @@ use ironrdp_egfx::pdu::{
+     CapabilitiesV107Flags, CapabilitySet, CapabilityVersion, Codec1Type, Color, CreateSurfacePdu, DeleteSurfacePdu,
+     Encoding, EndFramePdu, GfxPdu, MapSurfaceToOutputPdu, MapSurfaceToScaledWindowPdu, MapSurfaceToWindowPdu,
+     PixelFormat, Point, QuantQuality, RawCapabilitySet, ResetGraphicsPdu, SolidFillPdu, StartFramePdu,
+-    SurfaceToCachePdu, Timestamp, WireToSurface1Pdu,
++    SurfaceToCachePdu, SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu,
+ };
+ use ironrdp_graphics::clearcodec::ClearCodecEncoder;
+ use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
+@@ -822,8 +822,11 @@ fn client_skips_avc420_without_decoder() {
+ 
+ type Presented = std::sync::Arc<std::sync::Mutex<Vec<(u16, PresentedView, Vec<u8>, Vec<ExclusiveRectangle>)>>>;
+ 
+-/// Records what it is asked to present, and fails if it is asked to decode instead.
+-struct PresentingDecoder(Presented);
++type PresentedOps = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
++
++/// Records what it is asked to present and the surface operations it is handed, and fails if
++/// it is asked to decode instead.
++struct PresentingDecoder(Presented, PresentedOps);
+ 
+ impl H264Decoder for PresentingDecoder {
+     fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
+@@ -840,12 +843,34 @@ impl H264Decoder for PresentingDecoder {
+             .expect("presented frames")
+             .push((surface_id, view, data.to_vec(), regions.to_vec()));
+     }
++
++    fn present_output(&mut self, surface_id: u16, origin: Option<(u32, u32)>) {
++        self.1
++            .lock()
++            .expect("operations")
++            .push(format!("output {surface_id} {origin:?}"));
++    }
++
++    fn present_copy(&mut self, source: u16, source_rectangle: &ExclusiveRectangle, destination: u16, points: &[Point]) {
++        let points: Vec<_> = points.iter().map(|point| (point.x, point.y)).collect();
++        self.1.lock().expect("operations").push(format!(
++            "copy {source} ({},{})-({},{}) to {destination} at {points:?}",
++            source_rectangle.left, source_rectangle.top, source_rectangle.right, source_rectangle.bottom
++        ));
++    }
++
++    fn reset(&mut self) {
++        self.1.lock().expect("operations").push("reset".to_owned());
++    }
+ }
+ 
+ fn presenting_client() -> (GraphicsPipelineClient, Presented) {
+     let presented = Presented::default();
+     let client = setup_active_client_with_surface(
+-        Some(Box::new(PresentingDecoder(Presented::clone(&presented)))),
++        Some(Box::new(PresentingDecoder(
++            Presented::clone(&presented),
++            PresentedOps::default(),
++        ))),
+         1,
+         64,
+         64,
+@@ -932,7 +957,7 @@ fn a_presenting_decoder_gets_avc444_advertised() {
+     let presented = Presented::default();
+     let mut client = GraphicsPipelineClient::new(
+         Box::new(TestHandler::new()),
+-        Some(Box::new(PresentingDecoder(presented))),
++        Some(Box::new(PresentingDecoder(presented, PresentedOps::default()))),
+     );
+     let messages = client.start(0).expect("start should succeed");
+     let caps_pdu = decode_caps_from_message(&messages[0]);
+@@ -1054,6 +1079,202 @@ fn a_presenting_decoder_receives_a_chroma_only_avc444v2_update_as_an_auxiliary_v
+     );
+ }
+ 
++fn presenting_client_with_operations() -> (GraphicsPipelineClient, PresentedOps) {
++    let operations = PresentedOps::default();
++    let client = setup_active_client_with_surface(
++        Some(Box::new(PresentingDecoder(
++            Presented::default(),
++            PresentedOps::clone(&operations),
++        ))),
++        1,
++        64,
++        64,
++    );
++    (client, operations)
++}
++
++fn process_all(client: &mut GraphicsPipelineClient, pdus: &[GfxPdu]) {
++    for pdu in pdus {
++        client.process(0, &encode_for_process(pdu)).expect("PDU is processed");
++    }
++}
++
++fn avc420_to(surface_id: u16, rect: ExclusiveRectangle) -> GfxPdu {
++    let stream = avc420_stream(vec![rect.clone()], &[0x00, 0x00, 0x00, 0x01, 0x65]);
++    GfxPdu::WireToSurface1(WireToSurface1Pdu {
++        surface_id,
++        codec_id: Codec1Type::Avc420,
++        pixel_format: PixelFormat::XRgb,
++        destination_rectangle: rect,
++        bitmap_data: encode_vec(&stream).expect("encode AVC420"),
++    })
++}
++
++fn surface_to_surface(source: u16, destination: u16, rect: ExclusiveRectangle, points: Vec<Point>) -> GfxPdu {
++    GfxPdu::SurfaceToSurface(SurfaceToSurfacePdu {
++        source_surface_id: source,
++        destination_surface_id: destination,
++        source_rectangle: rect,
++        destination_points: points,
++    })
++}
++
++/// A 64x64 output showing surface 1, so composited updates reach `drain_output`.
++fn output_with_surface_1() -> [GfxPdu; 3] {
++    [
++        GfxPdu::ResetGraphics(ResetGraphicsPdu {
++            width: 64,
++            height: 64,
++            monitors: Vec::new(),
++        }),
++        create_surface(1, 64, 64),
++        GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
++            surface_id: 1,
++            output_origin_x: 0,
++            output_origin_y: 0,
++        }),
++    ]
++}
++
++// oracle: spec MS-RDPEGFX §2.2.2.6 (SurfaceToSurface copies the source surface's pixels)
++#[test]
++fn a_presenting_decoder_copies_from_surfaces_holding_its_pictures() {
++    let (mut client, operations) = presenting_client_with_operations();
++    process_all(&mut client, &output_with_surface_1());
++    process_all(
++        &mut client,
++        &[
++            create_surface(2, 64, 64),
++            avc420_to(2, exclusive(0, 0, 64, 64)),
++            GfxPdu::EndFrame(EndFramePdu { frame_id: 0 }),
++        ],
++    );
++    let _ = client.drain_output();
++    operations.lock().unwrap().clear();
++    process_all(
++        &mut client,
++        &[
++            surface_to_surface(
++                2,
++                1,
++                exclusive(0, 0, 64, 32),
++                vec![Point { x: 0, y: 0 }, Point { x: 0, y: 32 }],
++            ),
++            GfxPdu::EndFrame(EndFramePdu { frame_id: 0 }),
++        ],
++    );
++
++    assert_eq!(
++        *operations.lock().unwrap(),
++        ["copy 2 (0,0)-(64,32) to 1 at [(0, 0), (0, 32)]"]
++    );
++    assert!(
++        client.drain_output().is_empty(),
++        "the compositor's empty copy of the picture is not painted"
++    );
++}
++
++#[test]
++fn a_presenting_decoder_hears_where_surfaces_are_shown() {
++    let (mut client, operations) = presenting_client_with_operations();
++    operations.lock().unwrap().clear();
++    process_all(&mut client, &output_with_surface_1());
++    assert_eq!(
++        *operations.lock().unwrap(),
++        ["reset", "output 1 None", "output 1 Some((0, 0))"]
++    );
++}
++
++#[test]
++fn copies_onward_from_a_surface_that_received_presented_pixels_stay_with_the_decoder() {
++    let (mut client, operations) = presenting_client_with_operations();
++    process_all(
++        &mut client,
++        &[
++            avc420_to(1, exclusive(0, 0, 16, 16)),
++            create_surface(2, 64, 64),
++            surface_to_surface(1, 2, exclusive(0, 0, 16, 16), vec![Point { x: 8, y: 8 }]),
++            surface_to_surface(2, 1, exclusive(8, 8, 24, 24), vec![Point { x: 32, y: 32 }]),
++        ],
++    );
++    assert_eq!(
++        *operations.lock().unwrap(),
++        [
++            "output 1 None",
++            "output 2 None",
++            "copy 1 (0,0)-(16,16) to 2 at [(8, 8)]",
++            "copy 2 (8,8)-(24,24) to 1 at [(32, 32)]",
++        ]
++    );
++}
++
++#[test]
++fn the_compositor_keeps_copies_from_surfaces_without_presented_pictures() {
++    let (mut client, operations) = presenting_client_with_operations();
++    process_all(&mut client, &output_with_surface_1());
++    process_all(
++        &mut client,
++        &[
++            GfxPdu::SolidFill(SolidFillPdu {
++                surface_id: 1,
++                fill_pixel: Color {
++                    b: 0,
++                    g: 0,
++                    r: 255,
++                    xa: 255,
++                },
++                rectangles: vec![exclusive(0, 0, 8, 8)],
++            }),
++            GfxPdu::EndFrame(EndFramePdu { frame_id: 0 }),
++        ],
++    );
++    let _ = client.drain_output();
++    process_all(
++        &mut client,
++        &[
++            surface_to_surface(1, 1, exclusive(0, 0, 8, 8), vec![Point { x: 16, y: 16 }]),
++            GfxPdu::EndFrame(EndFramePdu { frame_id: 1 }),
++        ],
++    );
++    assert!(
++        operations
++            .lock()
++            .unwrap()
++            .iter()
++            .all(|operation| !operation.starts_with("copy"))
++    );
++    assert!(!client.drain_output().is_empty(), "the compositor paints its own copy");
++}
++
++#[test]
++fn a_presenting_decoder_hears_when_surfaces_start_over_or_go() {
++    let (mut client, operations) = presenting_client_with_operations();
++    process_all(
++        &mut client,
++        &[
++            avc420_to(1, exclusive(0, 0, 16, 16)),
++            GfxPdu::DeleteSurface(DeleteSurfacePdu { surface_id: 1 }),
++            GfxPdu::CreateSurface(CreateSurfacePdu {
++                surface_id: 1,
++                width: 32,
++                height: 32,
++                pixel_format: PixelFormat::XRgb,
++            }),
++            // A new surface 1 holds no presented pictures: the compositor copies from it.
++            surface_to_surface(1, 1, exclusive(0, 0, 8, 8), vec![Point { x: 8, y: 8 }]),
++            GfxPdu::ResetGraphics(ResetGraphicsPdu {
++                width: 64,
++                height: 64,
++                monitors: Vec::new(),
++            }),
++        ],
++    );
++    assert_eq!(
++        *operations.lock().unwrap(),
++        ["output 1 None", "output 1 None", "output 1 None", "reset"]
++    );
++}
++
+ #[test]
+ fn client_frame_ordering_via_process() {
+     let mut client = setup_active_client_with_surface(None, 1, 4, 4);
+-- 
+2.54.0 (Apple Git-157)
+

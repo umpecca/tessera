@@ -1,7 +1,7 @@
 From 17ebae8567998ef1e72e8018b57d6acf3838e880 Mon Sep 17 00:00:00 2001
 From: jaxdad <atxhxag@gmail.com>
 Date: Tue, 27 Oct 2026 16:18:14 -0500
-Subject: [PATCH 5/5] fix(headless): wipe the configuration once it is read
+Subject: [PATCH 05/11] fix(headless): wipe the configuration once it is read
 
 The configuration the host writes into the module's memory holds the
 password. `run` now zeroes that buffer as soon as it is parsed, and its

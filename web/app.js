@@ -103,7 +103,7 @@ import {
   rdpWebSocketURL,
   rdpWindowsKey,
 } from "./rdp-pane.mjs";
-import { createRDPH264Presenter, rdpH264Supported } from "./rdp-h264.mjs";
+import { createRDPH264Presenter, rdpH264Supported, readRDPFullColorPreference, saveRDPFullColorPreference } from "./rdp-h264.mjs";
 import {
   fetchKeptRDPSessions,
   findKeptRDPSession,
@@ -2831,7 +2831,7 @@ function loadRDPModule() {
     // A prebuilt, patched IronRDP (third_party/ironrdp). It inlines its
     // WebAssembly as a data: URL, which the CSP permits (connect-src data:,
     // script-src 'wasm-unsafe-eval').
-    rdpModulePromise = import("./vendor/rdp.js?v=ironrdp-7fc80c4d-tessera.1").then(async (module) => {
+    rdpModulePromise = import("./vendor/rdp.js?v=ironrdp-7fc80c4d-tessera.3").then(async (module) => {
       await module.init("warn");
       return module;
     });
@@ -2874,7 +2874,7 @@ function mountRDPPane(rect) {
   const video = document.createElement("span");
   video.className = "rdp-video";
   video.textContent = "H.264";
-  video.title = "The remote desktop arrives as H.264 video, decoded by this browser";
+  video.title = rdpVideoTitle(false);
   video.hidden = true;
   const keptLabel = document.createElement("span");
   keptLabel.className = "rdp-video";
@@ -2900,7 +2900,7 @@ function mountRDPPane(rect) {
     pane, address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel, message, screen, canvas, dialog,
     module: null, session: null, connecting: false, attempt: 0, dialogResolve: null, intentionalDisconnect: false,
     remoteClipboard: "", lastSentClipboard: "", clipboardRequested: false, resizeTimer: null, resizeObserver: null, canvasObserver: null,
-    pointerFrame: 0, pendingPointer: null, h264: null, h264Drawn: false, kept: false,
+    pointerFrame: 0, pendingPointer: null, h264: null, h264Drawn: false, h264FullColor: false, kept: false,
   };
   rect.rdp = view;
   toolbar.append(address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel);
@@ -3022,6 +3022,8 @@ function updateRDPControls(rect) {
   view.sendClipboard.title = view.kept ? "Clipboard isn't available for sessions kept on the host" : "Send local clipboard to remote";
   view.copyClipboard.disabled = !view.remoteClipboard;
   view.video.hidden = !(connected && view.h264Drawn);
+  view.video.textContent = view.h264FullColor ? "H.264 4:4:4" : "H.264";
+  view.video.title = rdpVideoTitle(view.h264FullColor);
   view.keptLabel.hidden = !(connected && view.kept);
 }
 
@@ -3231,6 +3233,11 @@ async function attachKeptRDP(rect, view, kept, current) {
       view.h264Drawn = true;
       updateRDPControls(rect);
     },
+    fullColor: readRDPFullColorPreference(rdpPreferenceStorage()),
+    onFullColor: () => {
+      view.h264FullColor = true;
+      updateRDPControls(rect);
+    },
   });
   if (!current()) {
     session.shutdown();
@@ -3323,7 +3330,7 @@ async function connectRDPPane(rect) {
       rect.rdpTrustedFingerprint = certificate.fingerprint;
       scheduleWorkspaceSave();
     }
-    const credentials = await askRDPCredentials(rect, { keep: kept.available, idleLimitSeconds: kept.idleLimitSeconds });
+    const credentials = await askRDPCredentials(rect, { keep: kept.available, idleLimitSeconds: kept.idleLimitSeconds, h264: await rdpH264Available() });
     if (!credentials) {
       if (current()) setRDPMessage(rect, "Connection cancelled.");
       return;
@@ -3394,12 +3401,17 @@ async function connectRDPPane(rect) {
           view.h264Drawn = true;
           updateRDPControls(rect);
         },
+        fullColor: credentials.fullColor,
+        onFullColor: () => {
+          view.h264FullColor = true;
+          updateRDPControls(rect);
+        },
       });
       view.h264 = h264;
       // The graphics pipeline only with H.264: its other codecs are decoded
       // in WebAssembly and are slower on iPad than the plain bitmap updates.
       builder.extension(module.enableEgfx(true));
-      builder.extension(module.h264FrameCallback((data, regions) => h264.push(data, regions)));
+      builder.extension(module.h264FrameCallback((data, regions, surfaceId, frameView) => h264.push(data, regions, frameView, surfaceId)));
     }
     const session = await builder.connect();
     if (!current()) {
@@ -3464,6 +3476,7 @@ function closeRDPH264(view) {
   view.h264?.close();
   view.h264 = null;
   view.h264Drawn = false;
+  view.h264FullColor = false;
 }
 
 // IronRDP rejects with an IronError object rather than an Error.
@@ -3555,13 +3568,8 @@ function askRDPCredentials(rect, options = {}) {
     view.dialog.append(title, username, domain, password);
   }
   let keep = null;
-  let storage = null;
+  const storage = rdpPreferenceStorage();
   if (options.keep && !options.rejoin) {
-    try {
-      storage = window.localStorage;
-    } catch {
-      // The choice just isn't remembered.
-    }
     const keepLabel = document.createElement("label");
     keepLabel.className = "rdp-keep";
     keep = document.createElement("input");
@@ -3569,6 +3577,19 @@ function askRDPCredentials(rect, options = {}) {
     keep.checked = readRDPKeepPreference(storage);
     keepLabel.append(keep, document.createTextNode(rdpKeepLabelText(options.idleLimitSeconds)));
     view.dialog.appendChild(keepLabel);
+  }
+  // Full color applies to how this browser shows H.264, so it is offered
+  // only when H.264 is.
+  let fullColor = null;
+  if (options.h264 && !options.rejoin) {
+    const fullColorLabel = document.createElement("label");
+    fullColorLabel.className = "rdp-keep";
+    fullColorLabel.title = "When the server sends H.264 4:4:4 (AVC444), combine it into full color for sharper colored text. Uses more of this device's graphics processor.";
+    fullColor = document.createElement("input");
+    fullColor.type = "checkbox";
+    fullColor.checked = readRDPFullColorPreference(storage);
+    fullColorLabel.append(fullColor, document.createTextNode("Full color (4:4:4) when the server sends it"));
+    view.dialog.appendChild(fullColorLabel);
   }
   if (!rdpTransportIsPrivate(window.location)) {
     const warning = document.createElement("span");
@@ -3584,8 +3605,15 @@ function askRDPCredentials(rect, options = {}) {
   cancel.textContent = "Cancel";
   view.dialog.append(submit, cancel);
   const read = () => {
-    const credentials = { username: username.value.trim(), domain: domain.value.trim(), password: password.value, keep: Boolean(keep?.checked) };
+    const credentials = {
+      username: username.value.trim(),
+      domain: domain.value.trim(),
+      password: password.value,
+      keep: Boolean(keep?.checked),
+      fullColor: fullColor ? fullColor.checked : readRDPFullColorPreference(storage),
+    };
     if (keep) saveRDPKeepPreference(storage, keep.checked);
+    if (fullColor) saveRDPFullColorPreference(storage, fullColor.checked);
     password.value = "";
     return credentials;
   };
@@ -3620,6 +3648,22 @@ function hideRDPDialog(rect) {
   const resolve = view.dialogResolve;
   view.dialogResolve = null;
   resolve?.();
+}
+
+// Where the RDP dialog's choices are remembered, or null when this browser
+// won't store them.
+function rdpPreferenceStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function rdpVideoTitle(fullColor) {
+  return fullColor
+    ? "The remote desktop arrives as H.264 4:4:4 video, decoded and combined into full color by this browser"
+    : "The remote desktop arrives as H.264 video, decoded by this browser";
 }
 
 function rdpTransportIsPrivate(locationLike) {

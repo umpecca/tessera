@@ -1,0 +1,179 @@
+From c05d70c234a502acdf52278e2b61c219ddd9046d Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Wed, 28 Oct 2026 11:14:36 -0500
+Subject: [PATCH 11/11] feat(headless): carry surface operations to the host
+
+The H.264 event also carries the surface operations, coded as the web
+client's callback codes them, so a viewer keeps each surface's pictures
+and shows the surfaces mapped to the output.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-headless/src/lib.rs  |  21 ++++++
+ crates/ironrdp-headless/src/wire.rs | 109 +++++++++++++++++++++++++---
+ 2 files changed, 118 insertions(+), 12 deletions(-)
+
+diff --git a/crates/ironrdp-headless/src/lib.rs b/crates/ironrdp-headless/src/lib.rs
+index 220ceb1b..268ec89e 100644
+--- a/crates/ironrdp-headless/src/lib.rs
++++ b/crates/ironrdp-headless/src/lib.rs
+@@ -209,6 +209,27 @@ impl H264Decoder for HostPresentedH264 {
+     fn present(&mut self, surface_id: u16, view: PresentedView, data: &[u8], regions: &[ExclusiveRectangle]) {
+         emit(Event::H264, &wire::h264_payload(surface_id, view, regions, data));
+     }
++
++    fn present_output(&mut self, surface_id: u16, origin: Option<(u32, u32)>) {
++        emit(Event::H264, &wire::surface_output_payload(surface_id, origin));
++    }
++
++    fn present_copy(
++        &mut self,
++        source: u16,
++        source_rectangle: &ExclusiveRectangle,
++        destination: u16,
++        points: &[ironrdp_egfx::pdu::Point],
++    ) {
++        emit(
++            Event::H264,
++            &wire::surface_copy_payload(source, source_rectangle, destination, points),
++        );
++    }
++
++    fn reset(&mut self) {
++        emit(Event::H264, &wire::surfaces_reset_payload());
++    }
+ }
+ 
+ fn connector_config(config: &Config) -> connector::Config {
+diff --git a/crates/ironrdp-headless/src/wire.rs b/crates/ironrdp-headless/src/wire.rs
+index 56128720..42110415 100644
+--- a/crates/ironrdp-headless/src/wire.rs
++++ b/crates/ironrdp-headless/src/wire.rs
+@@ -236,20 +236,76 @@ pub fn parse_input(payload: &[u8]) -> Result<Vec<Input>, String> {
+ /// `[surface u16][view u8][region count u16][x, y, width, height u16 each][Annex B data]`, where
+ /// `view` is 0 for AVC420, 1 for an AVC444 main view and 2 for an AVC444 auxiliary view, plus 4
+ /// for the AVC444v2 layout and 8 when the auxiliary view of the same update follows a main view.
++///
++/// Surface operations for the viewer travel the same way, so they keep the pictures' order,
++/// with no data and their values packed four to a region: see [`surface_output_payload`],
++/// [`surface_copy_payload`] and [`surfaces_reset_payload`].
+ pub fn h264_payload(surface_id: u16, view: PresentedView, regions: &[ExclusiveRectangle], data: &[u8]) -> Vec<u8> {
+-    let mut payload = Vec::with_capacity(5 + regions.len() * 8 + data.len());
++    let values: Vec<u16> = regions
++        .iter()
++        .flat_map(|region| {
++            [
++                region.left,
++                region.top,
++                region.right.saturating_sub(region.left),
++                region.bottom.saturating_sub(region.top),
++            ]
++        })
++        .collect();
++    picture_payload(surface_id, view_code(view), &values, data)
++}
++
++/// View 16: surface `surface_id` is shown with its top-left corner at `[x, y, 0, 0]`, or not
++/// shown, with no regions.
++pub fn surface_output_payload(surface_id: u16, origin: Option<(u32, u32)>) -> Vec<u8> {
++    let values = origin
++        .map(|(x, y)| vec![saturating_u16(x), saturating_u16(y), 0, 0])
++        .unwrap_or_default();
++    picture_payload(surface_id, VIEW_SURFACE_OUTPUT, &values, &[])
++}
++
++/// View 17: `[x, y, width, height]` of surface `source`, then `[x, y, destination, 0]` for each
++/// point it is copied to.
++pub fn surface_copy_payload(
++    source: u16,
++    rect: &ExclusiveRectangle,
++    destination: u16,
++    points: &[ironrdp_egfx::pdu::Point],
++) -> Vec<u8> {
++    let mut values = vec![
++        rect.left,
++        rect.top,
++        rect.right.saturating_sub(rect.left),
++        rect.bottom.saturating_sub(rect.top),
++    ];
++    for point in points {
++        values.extend_from_slice(&[point.x, point.y, destination, 0]);
++    }
++    picture_payload(source, VIEW_SURFACE_COPY, &values, &[])
++}
++
++/// View 18: every surface is gone.
++pub fn surfaces_reset_payload() -> Vec<u8> {
++    picture_payload(0, VIEW_SURFACES_RESET, &[], &[])
++}
++
++const VIEW_SURFACE_OUTPUT: u8 = 16;
++const VIEW_SURFACE_COPY: u8 = 17;
++const VIEW_SURFACES_RESET: u8 = 18;
++
++fn saturating_u16(value: u32) -> u16 {
++    u16::try_from(value).unwrap_or(u16::MAX)
++}
++
++/// `values` holds whole regions, four values each.
++fn picture_payload(surface_id: u16, view: u8, values: &[u16], data: &[u8]) -> Vec<u8> {
++    let regions = (values.len() / 4).min(usize::from(u16::MAX));
++    let mut payload = Vec::with_capacity(5 + regions * 8 + data.len());
+     payload.extend_from_slice(&surface_id.to_le_bytes());
+-    payload.push(view_code(view));
+-    payload.extend_from_slice(&u16::try_from(regions.len()).unwrap_or(u16::MAX).to_le_bytes());
+-    for region in regions.iter().take(usize::from(u16::MAX)) {
+-        for value in [
+-            region.left,
+-            region.top,
+-            region.right.saturating_sub(region.left),
+-            region.bottom.saturating_sub(region.top),
+-        ] {
+-            payload.extend_from_slice(&value.to_le_bytes());
+-        }
++    payload.push(view);
++    payload.extend_from_slice(&u16::try_from(regions).unwrap_or(u16::MAX).to_le_bytes());
++    for value in &values[..regions * 4] {
++        payload.extend_from_slice(&value.to_le_bytes());
+     }
+     payload.extend_from_slice(data);
+     payload
+@@ -429,6 +485,35 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn encodes_surface_operations() {
++        assert_eq!(
++            surface_output_payload(3, Some((10, 70_000))),
++            [3, 0, 16, 1, 0, 10, 0, 0xff, 0xff, 0, 0, 0, 0]
++        );
++        assert_eq!(surface_output_payload(3, None), [3, 0, 16, 0, 0]);
++        let rect = ExclusiveRectangle {
++            left: 1,
++            top: 2,
++            right: 11,
++            bottom: 7,
++        };
++        let points = [
++            ironrdp_egfx::pdu::Point { x: 4, y: 5 },
++            ironrdp_egfx::pdu::Point { x: 6, y: 7 },
++        ];
++        assert_eq!(
++            surface_copy_payload(65532, &rect, 0, &points),
++            [
++                0xfc, 0xff, 17, 3, 0, //
++                1, 0, 2, 0, 10, 0, 5, 0, //
++                4, 0, 5, 0, 0, 0, 0, 0, //
++                6, 0, 7, 0, 0, 0, 0, 0,
++            ]
++        );
++        assert_eq!(surfaces_reset_payload(), [0, 0, 18, 0, 0]);
++    }
++
+     #[test]
+     fn encodes_avc444_views() {
+         let main = PresentedView::Avc444Main {
+-- 
+2.54.0 (Apple Git-157)
+

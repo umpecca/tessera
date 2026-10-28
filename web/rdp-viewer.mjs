@@ -69,6 +69,8 @@ export function connectRDPViewer({
   ImageDataImpl = globalThis.ImageData,
   createPresenter = createRDPH264Presenter,
   onFirstPicture,
+  fullColor = false,
+  onFullColor,
   timeoutMs = openTimeoutMs,
 }) {
   // An opaque context composites faster, and the host's pixels have no alpha.
@@ -132,8 +134,8 @@ export function connectRDPViewer({
         if (canvas.height !== frame.height) canvas.height = frame.height;
         break;
       case "h264":
-        presenter ||= createPresenter({ canvas, onFirstPicture });
-        presenter.push(frame.data, frame.regions);
+        presenter ||= createPresenter({ canvas, onFirstPicture, fullColor, onFullColor });
+        presenter.push(frame.data, frame.regions, frame.view, frame.surface);
         break;
       case "image": {
         // The composited image's alpha isn't reliable, so make it opaque.

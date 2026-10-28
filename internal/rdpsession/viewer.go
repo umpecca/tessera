@@ -61,6 +61,11 @@ func (s *Session) Attach(v Viewer) (detach func(), err error) {
 	s.stopIdleLocked()
 	size := binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, uint16(s.width)), uint16(s.height))
 	conn := s.conn
+	// Before any event the module sends from here on, which goes to v: where
+	// each surface is shown. Viewers' Event doesn't block.
+	for _, event := range s.surfaceOutputsLocked() {
+		v.Event(eventH264, event)
+	}
 	s.mu.Unlock()
 
 	if previous != nil {
