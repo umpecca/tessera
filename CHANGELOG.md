@@ -27,6 +27,10 @@
   default, which shows the same stream at 4:2:0 as before. Remembered in the
   browser, and used for kept sessions too.
 
+- Tab and Shift+Tab move through every field and button of the RDP and VNC
+  sign-in dialogs and wrap around inside them, in every browser, instead of
+  leaving the dialog for the toolbar behind it.
+
 - RDP sessions can stay open on the Tessera host. With sign-in on, over HTTPS
   or loopback, check **Keep this session on the Tessera host** when you
   connect: closing the tab, reloading or switching workspace leaves the

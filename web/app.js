@@ -2532,6 +2532,7 @@ function mountVNCPane(rect) {
   const dialog = document.createElement("form");
   dialog.className = "vnc-dialog";
   dialog.hidden = true;
+  dialog.addEventListener("keydown", (event) => cyclePaneDialogFocus(dialog, event));
 
   rect.vnc = {
     pane, address, connect, ctrlAltDelete, scale, viewOnly, sendClipboard, copyClipboard,
@@ -2895,6 +2896,7 @@ function mountRDPPane(rect) {
   const dialog = document.createElement("form");
   dialog.className = "rdp-dialog";
   dialog.hidden = true;
+  dialog.addEventListener("keydown", (event) => cyclePaneDialogFocus(dialog, event));
 
   const view = {
     pane, address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel, message, screen, canvas, dialog,
@@ -3618,6 +3620,24 @@ function askRDPCredentials(rect, options = {}) {
     return credentials;
   };
   return showRDPDialog(rect, cancel, read, null, username.value || options.rejoin ? password : username);
+}
+
+// Moves Tab and Shift+Tab through every control of a VNC or RDP pane's
+// dialog, wrapping around inside it. Browsers would otherwise leave the
+// dialog for the toolbar behind it, and Safari by default moves only between
+// text fields.
+function cyclePaneDialogFocus(dialog, event) {
+  if (event.key !== "Tab" || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  const controls = [...dialog.querySelectorAll("input, select, textarea, button")]
+    .filter((control) => !control.disabled && control.type !== "hidden" && control.getClientRects().length > 0);
+  if (!controls.length) return;
+  const current = controls.indexOf(document.activeElement);
+  const next = event.shiftKey
+    ? (current <= 0 ? controls.length - 1 : current - 1)
+    : (current + 1) % controls.length;
+  event.preventDefault();
+  event.stopPropagation();
+  controls[next].focus();
 }
 
 // Resolves with onSubmit()'s value, or cancelValue when the dialog is
