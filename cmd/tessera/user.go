@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,11 +14,14 @@ import (
 	"golang.org/x/term"
 
 	"tessera/internal/auth"
+	"tessera/internal/server"
+	"tessera/internal/store"
 )
 
-const userUsage = `usage: tessera user <command> [-auth-file path] [name]
+const userUsage = `usage: tessera user <command> [-db path] [name]
 
-Manage accounts for -auth=file. Changes apply to a running server at once.
+Manage accounts for -auth=file, kept in Tessera's database. Changes apply to
+a running server at once. Pass the server's -db when it uses another one.
 
 commands:
   add <name>      create an account (prompts for a password); -admin makes
@@ -40,7 +44,8 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 	command := args[0]
 	flags := flag.NewFlagSet("tessera user "+command, flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	path := flags.String("auth-file", auth.DefaultCredentialsPath(), "credentials file")
+	dbPath := flags.String("db", server.DefaultDBPath(), "SQLite database path")
+	legacyFile := flags.String("auth-file", auth.DefaultCredentialsPath(), "credentials file from before accounts were kept in the database; its accounts are imported once")
 	fromStdin := flags.Bool("password-stdin", false, "read the password from the first line of standard input")
 	makeAdmin := flags.Bool("admin", false, "with add: make the account an admin")
 	revoke := flags.Bool("revoke", false, "with admin: stop the account being an admin")
@@ -49,15 +54,16 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 	}
 	rest := flags.Args()
 
-	accounts, err := auth.ReadCredentialsFile(*path)
-	if errors.Is(err, os.ErrNotExist) {
-		accounts, err = nil, nil
-	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, *dbPath)
 	if err != nil {
 		return err
 	}
-	index := func(name string) int {
-		return slices.IndexFunc(accounts, func(a auth.Account) bool { return a.Name == name })
+	defer st.Close()
+	server.ImportAccountsFile(ctx, st, *legacyFile)
+	accounts, err := st.Accounts(ctx)
+	if err != nil {
+		return err
 	}
 
 	if command == "list" {
@@ -82,14 +88,22 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 		return err
 	}
 
+	// change runs against the accounts as they are when it is saved, so it
+	// checks again what was checked before prompting for a password.
+	var change func(at int, accounts []auth.Account) ([]auth.Account, error)
 	switch command {
 	case "add", "passwd":
-		at := index(name)
-		if command == "add" && at >= 0 {
-			return fmt.Errorf("%w: %s", auth.ErrAccountExists, name)
+		check := func(at int) error {
+			if command == "add" && at >= 0 {
+				return fmt.Errorf("%w: %s", auth.ErrAccountExists, name)
+			}
+			if command == "passwd" && at < 0 {
+				return fmt.Errorf("%w: %s", auth.ErrNoAccount, name)
+			}
+			return nil
 		}
-		if command == "passwd" && at < 0 {
-			return fmt.Errorf("%w: %s", auth.ErrNoAccount, name)
+		if err := check(accountIndex(accounts, name)); err != nil {
+			return err
 		}
 		password, err := readNewPassword(*fromStdin, stdin, stderr, readHidden)
 		if err != nil {
@@ -100,37 +114,47 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 		if err != nil {
 			return err
 		}
-		if at >= 0 {
-			accounts[at].Hash = hash
-		} else {
-			accounts = append(accounts, auth.Account{Name: name, Hash: hash, Admin: *makeAdmin || len(accounts) == 0})
+		change = func(at int, accounts []auth.Account) ([]auth.Account, error) {
+			if err := check(at); err != nil {
+				return nil, err
+			}
+			if at >= 0 {
+				accounts[at].Hash = hash
+				return accounts, nil
+			}
+			return append(accounts, auth.Account{Name: name, Hash: hash, Admin: *makeAdmin || len(accounts) == 0}), nil
 		}
-	case "admin":
-		at := index(name)
-		if at < 0 {
-			return fmt.Errorf("%w: %s", auth.ErrNoAccount, name)
+	case "admin", "remove":
+		change = func(at int, accounts []auth.Account) ([]auth.Account, error) {
+			if at < 0 {
+				return nil, fmt.Errorf("%w: %s", auth.ErrNoAccount, name)
+			}
+			if command == "remove" {
+				return slices.Delete(accounts, at, at+1), nil
+			}
+			accounts[at].Admin = !*revoke
+			return accounts, nil
 		}
-		accounts[at].Admin = !*revoke
-	case "remove":
-		at := index(name)
-		if at < 0 {
-			return fmt.Errorf("%w: %s", auth.ErrNoAccount, name)
-		}
-		accounts = slices.Delete(accounts, at, at+1)
 	default:
 		fmt.Fprint(stderr, userUsage)
 		return fmt.Errorf("unknown command %q", command)
 	}
-	if err := auth.WriteCredentialsFile(*path, accounts); err != nil {
+	var saved []auth.Account
+	err = st.UpdateAccounts(ctx, func(accounts []auth.Account) ([]auth.Account, error) {
+		var err error
+		saved, err = change(accountIndex(accounts, name), accounts)
+		return saved, err
+	})
+	if err != nil {
 		return err
 	}
 	switch command {
 	case "add":
 		role := ""
-		if accounts[len(accounts)-1].Admin {
+		if saved[len(saved)-1].Admin {
 			role = " as an admin"
 		}
-		fmt.Fprintf(stdout, "Added %s%s to %s\n", name, role, *path)
+		fmt.Fprintf(stdout, "Added %s%s to %s\n", name, role, *dbPath)
 	case "admin":
 		if *revoke {
 			fmt.Fprintf(stdout, "%s is no longer an admin\n", name)
@@ -143,6 +167,10 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 		fmt.Fprintf(stdout, "Removed %s; its sign-ins have ended (its workspaces are kept)\n", name)
 	}
 	return nil
+}
+
+func accountIndex(accounts []auth.Account, name string) int {
+	return slices.IndexFunc(accounts, func(a auth.Account) bool { return a.Name == name })
 }
 
 func readNewPassword(fromStdin bool, stdin io.Reader, stderr io.Writer, readHidden func() ([]byte, error)) ([]byte, error) {

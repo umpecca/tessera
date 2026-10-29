@@ -2,24 +2,27 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"tessera/internal/auth"
+	"tessera/internal/store"
 )
 
 func runUser(t *testing.T, path, stdin string, hidden func() ([]byte, error), args ...string) (string, error) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	full := append([]string{args[0], "-auth-file", path}, args[1:]...)
+	full := append([]string{args[0], "-db", path, "-auth-file="}, args[1:]...)
 	err := runUserCommand(full, strings.NewReader(stdin), &stdout, &stderr, hidden)
 	return stdout.String(), err
 }
 
 func TestUserCommands(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "Tessera", "credentials")
+	path := filepath.Join(t.TempDir(), "Tessera", "tessera.sqlite3")
 	if _, err := runUser(t, path, "first secret\n", nil, "add", "-password-stdin", "alice"); err != nil {
 		t.Fatal(err)
 	}
@@ -31,9 +34,9 @@ func TestUserCommands(t *testing.T) {
 	if _, err := runUser(t, path, "", hidden, "add", "bob"); err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := auth.ReadCredentialsFile(path)
-	if err != nil || len(accounts) != 2 {
-		t.Fatalf("accounts = %v, %v", accounts, err)
+	accounts := readAccounts(t, path)
+	if len(accounts) != 2 {
+		t.Fatalf("accounts = %v", accounts)
 	}
 	if ok, _ := auth.VerifyPassword(accounts[0].Hash, []byte("first secret")); !ok {
 		t.Fatal("stdin password was not stored")
@@ -81,7 +84,7 @@ func TestUserCommands(t *testing.T) {
 }
 
 func TestUserCommandRejections(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "credentials")
+	path := filepath.Join(t.TempDir(), "tessera.sqlite3")
 	mismatch := [][]byte{[]byte("one"), []byte("two")}
 	hidden := func() ([]byte, error) { next := mismatch[0]; mismatch = mismatch[1:]; return next, nil }
 	cases := []struct {
@@ -105,13 +108,23 @@ func TestUserCommandRejections(t *testing.T) {
 	}
 }
 
-func mustLookup(t *testing.T, path, name string) auth.Account {
+func readAccounts(t *testing.T, path string) []auth.Account {
 	t.Helper()
-	accounts, err := auth.ReadCredentialsFile(path)
+	st, err := store.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, account := range accounts {
+	defer st.Close()
+	accounts, err := st.Accounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return accounts
+}
+
+func mustLookup(t *testing.T, path, name string) auth.Account {
+	t.Helper()
+	for _, account := range readAccounts(t, path) {
 		if account.Name == name {
 			return account
 		}
@@ -120,34 +133,40 @@ func mustLookup(t *testing.T, path, name string) auth.Account {
 	return auth.Account{}
 }
 
+// The first `tessera user` after upgrading brings the accounts of the old
+// credentials file along.
+func TestUserCommandImportsCredentialsFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "credentials")
+	if err := os.WriteFile(file, []byte("alice:$argon2id$a:admin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := runUserCommand([]string{"list", "-db", filepath.Join(dir, "tessera.sqlite3"), "-auth-file", file}, strings.NewReader(""), &stdout, &stderr, nil)
+	if err != nil || stdout.String() != "alice (admin)\n" {
+		t.Fatalf("list = %q, %v", stdout.String(), err)
+	}
+}
+
 func TestAuthOptionsFromFlags(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "credentials")
-	if options, err := authOptionsFromFlags("off", path, []string{"a"}, false, 1, 1); err != nil || options.Mode != "off" {
+	if options, err := authOptionsFromFlags("off", []string{"a"}, false, 1, 1); err != nil || options.Mode != "off" {
 		t.Fatalf("off: %v", err)
 	}
 	// Without -auth the mode comes from Settings, so nothing is checked yet.
-	if options, err := authOptionsFromFlags("", path, []string{"a"}, false, 1, 1); err != nil || options.ModeLocked || options.Credentials == nil || !options.MultiUser {
+	if options, err := authOptionsFromFlags("", []string{"a"}, false, 1, 1); err != nil || options.ModeLocked || !options.MultiUser {
 		t.Fatalf("unset: %#v, %v", options, err)
 	}
-	// No accounts yet still starts: nobody can sign in until one is added.
-	if options, err := authOptionsFromFlags("file", path, nil, false, 1, 1); err != nil || options.AccountsProblem() == nil ||
-		!strings.Contains(options.AccountsProblem().Error(), "tessera user add") {
-		t.Fatalf("missing file: %v", err)
-	}
-	if _, err := runUser(t, path, "pw\n", nil, "add", "-password-stdin", "alice"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := authOptionsFromFlags("file", path, []string{"bob"}, false, 1, 1); err == nil {
+	if _, err := authOptionsFromFlags("file", []string{"bob"}, false, 1, 1); err == nil {
 		t.Fatal("-users with -auth=file accepted")
 	}
-	if options, err := authOptionsFromFlags("file", path, nil, true, 1, 1); err != nil || options.Credentials == nil || !options.AllowHTTPSignIn {
+	if options, err := authOptionsFromFlags("file", nil, true, 1, 1); err != nil || !options.AllowHTTPSignIn {
 		t.Fatalf("file: %#v, %v", options, err)
 	}
-	if _, err := authOptionsFromFlags("ldap", path, nil, false, 1, 1); err == nil {
+	if _, err := authOptionsFromFlags("ldap", nil, false, 1, 1); err == nil {
 		t.Fatal("unknown mode accepted")
 	}
 	// The host account is one identity; -users stays a workspace picker.
-	system, err := authOptionsFromFlags("system", path, []string{"a", "b"}, false, 1, 1)
+	system, err := authOptionsFromFlags("system", []string{"a", "b"}, false, 1, 1)
 	if err != nil || system.SystemAccount == "" || system.VerifySystem == nil {
 		t.Fatalf("system: %#v, %v", system, err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,15 +12,17 @@ import (
 	"net/http"
 	"time"
 
-	"tessera/internal/auth"
+	"tessera/internal/server"
+	"tessera/internal/store"
 )
 
 // hostRequest calls a running server's loopback-only recovery endpoint with
-// the host recovery token, which proves the caller is the service account.
-func hostRequest(addr, tokenPath, path string, body any) (map[string]any, string, error) {
-	token, err := auth.ReadToken(tokenPath)
+// the host recovery token from its database, which only the service account
+// can read.
+func hostRequest(addr, dbPath, path string, body any) (map[string]any, string, error) {
+	token, err := readRecoveryToken(dbPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("read recovery token (is the server running with -auth?): %w", err)
+		return nil, "", fmt.Errorf("read the recovery token from %s (pass the server's -db): %w", dbPath, err)
 	}
 	base, err := loopbackBase(addr)
 	if err != nil {
@@ -46,6 +49,16 @@ func hostRequest(addr, tokenPath, path string, body any) (map[string]any, string
 	return result, base, nil
 }
 
+func readRecoveryToken(dbPath string) (string, error) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		return "", err
+	}
+	defer st.Close()
+	return st.RecoveryToken(ctx)
+}
+
 // loopbackBase turns a listen address into a URL on this machine; wildcard
 // binds are reached through 127.0.0.1.
 func loopbackBase(addr string) (string, error) {
@@ -63,7 +76,7 @@ func runLoginCommand(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("tessera login", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	addr := flags.String("addr", "127.0.0.1:7331", "the server's listen address")
-	tokenPath := flags.String("auth-token", auth.DefaultTokenPath(), "host recovery token")
+	dbPath := flags.String("db", server.DefaultDBPath(), "the server's SQLite database")
 	account := flags.String("account", "", "account to sign in as (with -auth=file)")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -71,7 +84,7 @@ func runLoginCommand(args []string, stdout, stderr io.Writer) error {
 	if flags.NArg() != 0 {
 		return errors.New("login takes no arguments")
 	}
-	result, base, err := hostRequest(*addr, *tokenPath, "/api/auth/recovery-link", map[string]string{"account": *account})
+	result, base, err := hostRequest(*addr, *dbPath, "/api/auth/recovery-link", map[string]string{"account": *account})
 	if err != nil {
 		return err
 	}
@@ -86,15 +99,15 @@ func runLogoutCommand(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("tessera logout", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	addr := flags.String("addr", "127.0.0.1:7331", "the server's listen address")
-	tokenPath := flags.String("auth-token", auth.DefaultTokenPath(), "host recovery token")
+	dbPath := flags.String("db", server.DefaultDBPath(), "the server's SQLite database")
 	all := flags.Bool("all", false, "end every sign-in on every device")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if !*all || flags.NArg() != 0 {
-		return errors.New("usage: tessera logout -all [-addr host:port]")
+		return errors.New("usage: tessera logout -all [-addr host:port] [-db path]")
 	}
-	result, _, err := hostRequest(*addr, *tokenPath, "/api/auth/revoke-all", struct{}{})
+	result, _, err := hostRequest(*addr, *dbPath, "/api/auth/revoke-all", struct{}{})
 	if err != nil {
 		return err
 	}

@@ -34,11 +34,10 @@ type API struct {
 	// MaxUploadBytes limits one streamed terminal file upload. Values at or below
 	// zero use DefaultMaxUploadBytes.
 	MaxUploadBytes int64
-	// HTTPSDefaultAddress and HTTPSPKIDir back the host-level Local HTTPS
-	// settings endpoint. RequestRestart applies saved listener changes without
-	// requiring service-manager privileges.
+	// HTTPSDefaultAddress backs the host-level Local HTTPS settings endpoint.
+	// RequestRestart applies saved listener changes without requiring
+	// service-manager privileges.
 	HTTPSDefaultAddress string
-	HTTPSPKIDir         string
 	RequestRestart      func(localhttps.Config)
 	// RDPSessions keeps RDP sessions on the host while no browser shows them
 	// (task 238). Nil turns the kept-session endpoints off.

@@ -374,7 +374,7 @@ async function renderAccounts(section, options, refresh) {
       remove,
     ]));
   }
-  section.appendChild(settingsRow(doc, "New account", "Accounts are kept in the credentials file on the host.",
+  section.appendChild(settingsRow(doc, "New account", "Accounts are kept in Tessera's database on the host.",
     [button(doc, "Add Account...", () => openAddAccountDialog(options, refresh))]));
 }
 

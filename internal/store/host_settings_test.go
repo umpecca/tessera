@@ -59,3 +59,25 @@ func TestSignInModePersists(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveryTokenIsMadeOnce(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tessera.sqlite3")
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.RecoveryToken(ctx)
+	if err != nil || len(first) != 64 {
+		t.Fatalf("token = %q, %v", first, err)
+	}
+	st.Close()
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if again, err := reopened.RecoveryToken(ctx); err != nil || again != first {
+		t.Fatalf("token after reopening = %q, %v", again, err)
+	}
+}

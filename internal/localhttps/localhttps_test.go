@@ -48,7 +48,7 @@ func TestMigrateSeparateListenersUsesLegacyEnrollmentPort(t *testing.T) {
 }
 
 func TestEnsurePreservesRootAndRenewsLeafForNames(t *testing.T) {
-	directory := t.TempDir()
+	directory := Dir(t.TempDir())
 	config := testConfig()
 	first, err := Ensure(directory, config)
 	if err != nil {
@@ -80,19 +80,19 @@ func TestEnsurePreservesRootAndRenewsLeafForNames(t *testing.T) {
 		t.Fatalf("renewed certificate missing workspace.local: %v", err)
 	}
 	if runtime.GOOS != "windows" {
-		if mode := fileMode(t, filepath.Join(directory, rootKeyName)); mode.Perm()&0o077 != 0 {
+		if mode := fileMode(t, filepath.Join(string(directory), rootKeyName)); mode.Perm()&0o077 != 0 {
 			t.Fatalf("root key mode = %o, want owner-only", mode.Perm())
 		}
 	}
 }
 
 func TestEnsureRenamesLegacyRootForCurrentHostname(t *testing.T) {
-	directory := t.TempDir()
+	directory := Dir(t.TempDir())
 	config := testConfig()
 	if _, err := Ensure(directory, config); err != nil {
 		t.Fatal(err)
 	}
-	keyBlock, _ := pem.Decode(mustRead(t, filepath.Join(directory, rootKeyName)))
+	keyBlock, _ := pem.Decode(mustRead(t, filepath.Join(string(directory), rootKeyName)))
 	if keyBlock == nil {
 		t.Fatal("missing root key PEM")
 	}
@@ -104,7 +104,7 @@ func TestEnsureRenamesLegacyRootForCurrentHostname(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeProtected(filepath.Join(directory, rootCertName), legacyPEM, 0o644); err != nil {
+	if err := directory.WriteFile(rootCertName, legacyPEM); err != nil {
 		t.Fatal(err)
 	}
 	if err := createServerCertificate(directory, legacyRoot, key, config); err != nil {
@@ -128,12 +128,12 @@ func TestEnsureRenamesLegacyRootForCurrentHostname(t *testing.T) {
 }
 
 func TestEnsureRegeneratesMissingServerKeyWithoutReplacingRoot(t *testing.T) {
-	directory := t.TempDir()
+	directory := Dir(t.TempDir())
 	first, err := Ensure(directory, testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(directory, serverKeyName)); err != nil {
+	if err := os.Remove(filepath.Join(string(directory), serverKeyName)); err != nil {
 		t.Fatal(err)
 	}
 	second, err := Ensure(directory, testConfig())
@@ -143,13 +143,13 @@ func TestEnsureRegeneratesMissingServerKeyWithoutReplacingRoot(t *testing.T) {
 	if first.Fingerprint != second.Fingerprint {
 		t.Fatal("missing server key replaced the root CA")
 	}
-	if _, err := tls.X509KeyPair(mustRead(t, filepath.Join(directory, serverCertName)), mustRead(t, filepath.Join(directory, serverKeyName))); err != nil {
+	if _, err := tls.X509KeyPair(mustRead(t, filepath.Join(string(directory), serverCertName)), mustRead(t, filepath.Join(string(directory), serverKeyName))); err != nil {
 		t.Fatalf("regenerated key pair: %v", err)
 	}
 }
 
 func TestEnrollmentHandlerServesOnlyPublicRootAndInstructions(t *testing.T) {
-	material, err := Ensure(t.TempDir(), testConfig())
+	material, err := Ensure(Dir(t.TempDir()), testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,4 +196,27 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestImportKeepsTheRootDevicesTrust(t *testing.T) {
+	old := Dir(t.TempDir())
+	first, err := Ensure(old, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := Dir(t.TempDir())
+	if copied, err := Import(old, moved); err != nil || !copied {
+		t.Fatalf("import = %v, %v", copied, err)
+	}
+	second, err := Ensure(moved, testConfig())
+	if err != nil || second.Fingerprint != first.Fingerprint {
+		t.Fatalf("root changed: %v", err)
+	}
+	// A root already there is never replaced.
+	if copied, err := Import(Dir(t.TempDir()), moved); err != nil || copied {
+		t.Fatalf("empty import = %v, %v", copied, err)
+	}
+	if copied, err := Import(Dir(t.TempDir()), Dir(t.TempDir())); err != nil || copied {
+		t.Fatalf("nothing to import = %v, %v", copied, err)
+	}
 }

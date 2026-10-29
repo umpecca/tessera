@@ -24,10 +24,9 @@ Tessera with `-auth=system` or `-auth=file`.
   can't change it while the flag is given. Drop the flag and the mode stays
   as it set it, now changeable in Settings again. So `-auth=off` once turns
   sign-in off for good, for instance when nobody can sign in any more.
-- With Tessera accounts but no usable credentials file (missing, empty, or
-  readable by other users), Tessera still starts and still requires sign-in,
-  but nobody can sign in; the log and the login page say why. Fixing it on
-  the host, such as with `tessera user add`, works without a restart.
+- With Tessera accounts but no accounts yet, Tessera still starts and still
+  requires sign-in, but nobody can sign in; the log and the login page say
+  why. `tessera user add` on the host fixes it without a restart.
 - Host account sign-in that can't work, because Tessera can't tell which
   account it runs as, stops Tessera from starting; start it with `-auth=off`.
 
@@ -56,8 +55,8 @@ single-user workspaces stay as they are. Passwords are checked without cgo:
 
 ## Getting in without a password
 
-Every sign-in mode keeps a private recovery token beside the credentials file
-(`-auth-token`). Someone on the host, as the account Tessera runs as, can:
+Every sign-in mode keeps a recovery token in Tessera's database. Someone on
+the host who can read the database, as the account Tessera runs as, can:
 
 ```sh
 tessera login -addr 127.0.0.1:7331             # prints a one-time link, valid 2 minutes
@@ -66,13 +65,13 @@ tessera logout -all -addr 127.0.0.1:7331       # ends every sign-in everywhere
 ```
 
 Pass the server's `-addr` (a `0.0.0.0` address is reached through
-`127.0.0.1`). These only work from the host itself.
+`127.0.0.1`), and its `-db` when it isn't the default. These only work from
+the host itself.
 
 ## Tessera accounts (`-auth=file`)
 
-Accounts live in a credentials file that only the host account can read (default
-`<user config dir>/Tessera/credentials`; `~/Library/Application
-Support/Tessera/credentials` on macOS). Manage them with:
+Accounts live in Tessera's database (`-db`), which Tessera makes readable
+only by the account it runs as. Manage them in Settings or with:
 
 ```sh
 tessera user add alice        # prompts for a password twice; the first account is an admin
@@ -84,11 +83,14 @@ tessera user list
 printf '%s\n' "$PASSWORD" | tessera user add -password-stdin bob
 ```
 
-Pass `-auth-file` to the commands and the server when the file lives
-elsewhere. Changes apply to a running server without a restart. Passwords are
-stored as argon2id hashes and are never accepted as command arguments. Admin
-accounts are marked `:admin` after the hash, which Tessera versions before
-admins can't read, so an older version refuses to sign admins in.
+Pass the server's `-db` to the commands when it isn't the default. Changes
+apply to a running server without a restart. Passwords are stored as argon2id
+hashes and are never accepted as command arguments.
+
+Earlier versions kept accounts in a credentials file
+(`<user config dir>/Tessera/credentials`, or `-auth-file`). The server and
+`tessera user` import its accounts once, into a database without accounts,
+and don't use the file after that.
 
 ```sh
 tessera -addr 0.0.0.0:7331 -auth=file

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"tessera/internal/app"
+	"tessera/internal/auth"
 	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
 	"tessera/internal/rdpsession"
@@ -59,12 +60,15 @@ type Options struct {
 	// RDPIdleLimit is how long a kept RDP session lasts with no browser
 	// attached; zero selects rdpsession.DefaultIdleLimit.
 	RDPIdleLimit time.Duration
-	// PKIDir overrides the directory beside DBPath used for Local HTTPS keys.
-	// It is primarily useful for tests and portable deployments.
+	// PKIDir is where Local HTTPS keys were kept before they moved into the
+	// database, beside DBPath unless set. They are imported once.
 	PKIDir         string
 	RequestRestart func(localhttps.Config)
 	// Auth configures sign-in; the zero value leaves it off.
 	Auth httpapi.AuthOptions
+	// AccountsFile is the credentials file accounts were kept in before
+	// they moved into the database. Its accounts are imported once.
+	AccountsFile string
 }
 
 const DefaultMaxUploadBytes int64 = httpapi.DefaultMaxUploadBytes
@@ -80,7 +84,6 @@ type Server struct {
 	listenerMu     sync.Mutex
 	handler        http.Handler
 	defaultAddress string
-	pkiDir         string
 	store          *store.Store
 	terminals      *terminal.Manager
 	rdpSessions    *rdpsession.Manager
@@ -125,6 +128,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		_ = st.Close()
 		return nil, err
 	}
+	ImportAccountsFile(ctx, st, opts.AccountsFile)
 	if err := resolveSignIn(ctx, st, &opts.Auth); err != nil {
 		_ = st.Close()
 		return nil, err
@@ -132,6 +136,11 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	pkiDir := opts.PKIDir
 	if pkiDir == "" {
 		pkiDir = filepath.Join(filepath.Dir(opts.DBPath), "pki")
+	}
+	if imported, err := localhttps.Import(localhttps.Dir(pkiDir), st.PKIFiles()); err != nil {
+		log.Printf("Local HTTPS keys in %s were not imported: %v", pkiDir, err)
+	} else if imported {
+		log.Printf("Imported the Local HTTPS keys from %s, which is no longer used and can be deleted", pkiDir)
 	}
 	// RDP sessions kept on the host (task 238); the module compiles on the
 	// first one, and its compiled code is cached beside the database.
@@ -165,7 +174,6 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			AuditRetention: auditRetention,
 		},
 		HTTPSDefaultAddress: opts.Addr,
-		HTTPSPKIDir:         pkiDir,
 		RequestRestart:      opts.RequestRestart,
 		RDPSessions:         rdpSessions,
 	}
@@ -173,7 +181,6 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	srv := &Server{
 		handler:        application.Handler(),
 		defaultAddress: opts.Addr,
-		pkiDir:         pkiDir,
 		store:          st,
 		terminals:      terminalManager,
 		rdpSessions:    rdpSessions,
@@ -213,7 +220,7 @@ func (s *Server) startListenersLocked(config localhttps.Config) error {
 			_ = httpListener.Close()
 			return fmt.Errorf("local HTTPS settings: %w", err)
 		}
-		material, ensureErr := localhttps.Ensure(s.pkiDir, config)
+		material, ensureErr := localhttps.Ensure(s.store.PKIFiles(), config)
 		if ensureErr != nil {
 			_ = httpListener.Close()
 			return fmt.Errorf("prepare local HTTPS: %w", ensureErr)
@@ -342,6 +349,28 @@ func DefaultDBPath() string {
 	return filepath.Join(cwd, "tessera.sqlite3")
 }
 
+// ImportAccountsFile moves the accounts of a credentials file from before
+// accounts were kept in the database into it, once. The file is left alone.
+func ImportAccountsFile(ctx context.Context, st *store.Store, path string) {
+	if path == "" {
+		return
+	}
+	accounts, err := auth.ReadCredentialsFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		log.Printf("accounts in %s were not imported: %v", path, err)
+		return
+	}
+	imported, err := st.ImportAccounts(ctx, accounts)
+	if err != nil {
+		log.Printf("accounts in %s were not imported: %v", path, err)
+	} else if imported {
+		log.Printf("Imported %d accounts from %s, which is no longer used and can be deleted", len(accounts), path)
+	}
+}
+
 // resolveSignIn picks the sign-in mode: -auth when given, which is also
 // saved so it lasts once the flag is dropped, otherwise the one chosen in
 // Settings. A mode that can never work stops the server rather than leaving
@@ -364,8 +393,8 @@ func resolveSignIn(ctx context.Context, st *store.Store, options *httpapi.AuthOp
 	}
 	switch options.Mode {
 	case httpapi.AuthFile:
-		log.Printf("Sign-in required; accounts from %s", options.Credentials.Path())
-		if err := options.AccountsProblem(); err != nil {
+		log.Printf("Sign-in required with a Tessera account")
+		if err := httpapi.AccountsProblem(ctx, st); err != nil {
 			log.Printf("Nobody can sign in until this is fixed: %v", err)
 		}
 	case httpapi.AuthSystem:

@@ -62,8 +62,8 @@ serve:
 	auditRetention := flag.Int("audit-retention-days", 30, "audit-event retention in days when -audit-log is enabled; negative disables")
 	maxUploadSize := flag.Int64("max-upload-size", server.DefaultMaxUploadBytes, "maximum bytes per terminal file upload")
 	authMode := flag.String("auth", "", "sign-in: off, system (this host account's password), or file (accounts managed with `tessera user`); saved, and locked in Settings while given; without it, as set in Settings, off at first")
-	authToken := flag.String("auth-token", auth.DefaultTokenPath(), "host recovery token for `tessera login` and `tessera logout`")
-	authFile := flag.String("auth-file", auth.DefaultCredentialsPath(), "credentials file for -auth=file")
+	flag.String("auth-token", "", "no longer used: the host recovery token is kept in the database")
+	authFile := flag.String("auth-file", auth.DefaultCredentialsPath(), "credentials file from before accounts were kept in the database; its accounts are imported once")
 	allowHTTPSignIn := flag.Bool("allow-http-sign-in", false, "accept passwords over plain HTTP from other devices; only for already-encrypted links such as Tailscale or a VPN")
 	signInIdle := flag.Duration("signin-idle", httpapi.DefaultRememberIdle, "how long a remembered sign-in lasts without use")
 	signInMax := flag.Duration("signin-max", httpapi.DefaultRememberMax, "longest a remembered sign-in lasts")
@@ -83,15 +83,9 @@ serve:
 		log.Fatalf("%v", err)
 	}
 	users := parseUsers(*usersFlag)
-	authOptions, err := authOptionsFromFlags(*authMode, *authFile, users, *allowHTTPSignIn, *signInIdle, *signInMax)
+	authOptions, err := authOptionsFromFlags(*authMode, users, *allowHTTPSignIn, *signInIdle, *signInMax)
 	if err != nil {
 		log.Fatalf("%v", err)
-	}
-	// Settings can turn sign-in on later, so the token is made either way.
-	if _, err := auth.EnsureToken(*authToken); err != nil {
-		log.Printf("host recovery token unavailable, so `tessera login` will not work: %v", err)
-	} else {
-		authOptions.TokenPath = *authToken
 	}
 	useTray := *tray && desktop.TraySupported()
 	if *tray && !desktop.TraySupported() {
@@ -128,6 +122,7 @@ serve:
 		RDPIdleLimit:       *rdpIdleLimit,
 		RequestRestart:     requestLocalRestart,
 		Auth:               authOptions,
+		AccountsFile:       *authFile,
 	})
 	if err := controller.Start(context.Background()); err != nil {
 		if signalErr := update.SignalReplacementFailure(err); signalErr != nil {
@@ -327,11 +322,10 @@ func checkRDPIdleLimit(limit time.Duration) error {
 // authOptionsFromFlags validates the sign-in flags. An empty mode means
 // -auth was not given: the server uses the mode chosen in Settings, which can
 // then be changed there. Both kinds of sign-in are prepared either way.
-func authOptionsFromFlags(mode, file string, users []string, allowHTTP bool, idle, maxAge time.Duration) (httpapi.AuthOptions, error) {
+func authOptionsFromFlags(mode string, users []string, allowHTTP bool, idle, maxAge time.Duration) (httpapi.AuthOptions, error) {
 	options := httpapi.AuthOptions{
 		Mode: mode, ModeLocked: mode != "", MultiUser: len(users) > 0,
 		AllowHTTPSignIn: allowHTTP, RememberIdle: idle, RememberMax: maxAge,
-		Credentials: auth.NewCredentials(file),
 	}
 	if idle <= 0 || maxAge <= 0 {
 		return options, errors.New("-signin-idle and -signin-max must be positive")

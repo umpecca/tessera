@@ -19,7 +19,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"tessera/internal/auth"
 	"tessera/internal/rdpsession"
 	"tessera/internal/store"
 )
@@ -45,8 +44,7 @@ func newKeptHarness(t *testing.T) *keptHarness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	path := filepath.Join(t.TempDir(), "credentials")
-	writeAccounts(t, path, map[string]string{"alice": "alice-password", "bob": "bob-password"})
+	writeAccounts(t, st, map[string]string{"alice": "alice-password", "bob": "bob-password"})
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -68,7 +66,7 @@ func newKeptHarness(t *testing.T) *keptHarness {
 	api := &API{Store: st, AuthMode: AuthFile, RDPSessions: h.manager}
 	mux := http.NewServeMux()
 	api.Register(mux)
-	gate := NewAuthHandler(mux, st, AuthOptions{Mode: AuthFile, Credentials: auth.NewCredentials(path)})
+	gate := NewAuthHandler(mux, st, AuthOptions{Mode: AuthFile})
 	h.server = httptest.NewServer(NewSecurityHandler(gate, st, SecurityOptions{ConnectionLog: io.Discard}))
 	t.Cleanup(h.server.Close)
 

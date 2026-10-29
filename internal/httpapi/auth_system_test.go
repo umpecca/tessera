@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"tessera/internal/auth"
 	"tessera/internal/store"
 )
 
@@ -34,17 +33,13 @@ func newSystemFixture(t *testing.T, users []string) (*authFixture, *authGate) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	tokenPath := filepath.Join(t.TempDir(), "auth-token")
-	if _, err := auth.EnsureToken(tokenPath); err != nil {
-		t.Fatal(err)
-	}
-	options := AuthOptions{Mode: AuthSystem, SystemAccount: "hostuser", VerifySystem: fakeSystemVerify, TokenPath: tokenPath}
+	options := AuthOptions{Mode: AuthSystem, SystemAccount: "hostuser", VerifySystem: fakeSystemVerify}
 	api := &API{Store: st, AuthMode: AuthSystem, Users: users}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	gate := NewAuthHandler(mux, st, options).(*authGate)
 	handler := NewSecurityHandler(gate, st, SecurityOptions{ConnectionLog: io.Discard, AllowedHosts: []string{"example.com"}})
-	return &authFixture{t: t, handler: handler}, gate
+	return &authFixture{t: t, handler: handler, store: st}, gate
 }
 
 func TestSystemSignIn(t *testing.T) {
@@ -91,7 +86,7 @@ func (f *authFixture) hostPost(path, token, body string, mutate func(*http.Reque
 
 func TestRecoveryLinks(t *testing.T) {
 	f, gate := newSystemFixture(t, nil)
-	token, _ := auth.ReadToken(gate.opts.TokenPath)
+	token, _ := f.store.RecoveryToken(context.Background())
 	for name, response := range map[string]*httptest.ResponseRecorder{
 		"no token":    f.hostPost("/api/auth/recovery-link", "", "", nil),
 		"wrong token": f.hostPost("/api/auth/recovery-link", strings.Repeat("0", 64), "", nil),
@@ -144,9 +139,8 @@ func TestRecoveryLinks(t *testing.T) {
 }
 
 func TestFileModeRecoveryLinkNeedsAnAccount(t *testing.T) {
-	tokenPath := filepath.Join(t.TempDir(), "auth-token")
-	token, _ := auth.EnsureToken(tokenPath)
-	f := newAuthFixture(t, func(o *AuthOptions) { o.TokenPath = tokenPath })
+	f := newAuthFixture(t, nil)
+	token, _ := f.store.RecoveryToken(context.Background())
 	if code := f.hostPost("/api/auth/recovery-link", token, `{"account":"ghost"}`, nil).Code; code != http.StatusBadRequest {
 		t.Fatalf("unknown account = %d", code)
 	}

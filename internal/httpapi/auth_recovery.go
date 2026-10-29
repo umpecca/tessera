@@ -39,8 +39,9 @@ func (g *authGate) hostCaller(w http.ResponseWriter, r *http.Request) bool {
 		writeError(w, http.StatusForbidden, "only available from the host itself")
 		return false
 	}
-	want, err := auth.ReadToken(g.opts.TokenPath)
-	if g.opts.TokenPath == "" || err != nil {
+	want, err := g.store.RecoveryToken(r.Context())
+	if err != nil {
+		log.Printf("host recovery token: %v", err)
 		writeError(w, http.StatusServiceUnavailable, "host recovery token is unavailable")
 		return false
 	}
@@ -68,7 +69,7 @@ func (g *authGate) issueLink(w http.ResponseWriter, r *http.Request) {
 	case AuthSystem:
 		account = g.opts.SystemAccount
 	case AuthFile:
-		if _, ok := g.opts.Credentials.Lookup(account); !ok {
+		if _, ok := g.account(r.Context(), account); !ok {
 			writeError(w, http.StatusBadRequest, "name an existing account with -account")
 			return
 		}
@@ -125,7 +126,7 @@ func (g *authGate) redeemLink(w http.ResponseWriter, r *http.Request) {
 	}
 	tag := ""
 	if mode == AuthFile {
-		account, ok := g.opts.Credentials.Lookup(link.account)
+		account, ok := g.account(r.Context(), link.account)
 		if !ok {
 			view.Error = "That account no longer exists."
 			g.renderLogin(w, http.StatusUnauthorized, view)

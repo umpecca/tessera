@@ -105,8 +105,7 @@ Useful flags:
 -tray bool      enable native tray controls when supported
 -users string   comma-separated local workspace roster
 -auth string    sign-in: off (default), system, or file
--auth-file string             credentials file for -auth=file
--auth-token string            host recovery token for `tessera login` / `logout`
+-auth-file string             accounts file from older versions, imported once
 -allow-http-sign-in bool      accept passwords over plain HTTP from other devices
 -signin-idle duration         unused time before a remembered sign-in ends (default 720h)
 -signin-max duration          longest a remembered sign-in lasts (default 2160h)

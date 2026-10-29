@@ -57,9 +57,6 @@ type AuthOptions struct {
 	// ListenAddress is the main listener, used to warn before sign-in is
 	// turned off on a server other devices can reach.
 	ListenAddress string
-	// Credentials holds the accounts for AuthFile. It is set whatever the
-	// starting mode, so Settings can switch to accounts later.
-	Credentials *auth.Credentials
 	// SystemAccount and VerifySystem serve AuthSystem. VerifySystem returns
 	// nil for the correct password, ErrSystemAuthUnavailable when it cannot
 	// check, and any other error for an incorrect one.
@@ -72,16 +69,13 @@ type AuthOptions struct {
 	// AuditRetention, when positive, records sign-ins that end while their
 	// connections are open (expiry, password change) in the audit log.
 	AuditRetention time.Duration
-	// TokenPath is the host recovery token used by `tessera login` and
-	// `tessera logout --all` over loopback.
-	TokenPath    string
-	RememberIdle time.Duration
-	RememberMax  time.Duration
+	RememberIdle   time.Duration
+	RememberMax    time.Duration
 }
 
 // CheckMode reports why the server could not start with a sign-in mode.
-// Unusable accounts are not such a reason: the server starts with nobody
-// able to sign in, and AccountsProblem says why until the file is fixed.
+// Missing accounts are not such a reason: the server starts with nobody
+// able to sign in, and AccountsProblem says why until there are some.
 func (o AuthOptions) CheckMode(mode string) error {
 	switch mode {
 	case AuthOff:
@@ -93,28 +87,22 @@ func (o AuthOptions) CheckMode(mode string) error {
 		return nil
 	case AuthFile:
 		if o.MultiUser {
-			return errors.New("-users cannot be combined with -auth=file: each account in the credentials file is a user")
-		}
-		if o.Credentials == nil {
-			return errors.New("no credentials file is configured")
+			return errors.New("-users cannot be combined with -auth=file: each Tessera account is a user")
 		}
 		return nil
 	}
 	return fmt.Errorf("-auth must be off, system or file, not %q", mode)
 }
 
-// AccountsProblem reports why nobody can sign in with Tessera accounts: no
-// credentials file, no accounts in it, or a file Tessera won't read.
-func (o AuthOptions) AccountsProblem() error {
-	if o.Credentials == nil {
-		return errors.New("no credentials file is configured")
-	}
-	accounts, err := o.Credentials.Accounts()
-	if errors.Is(err, os.ErrNotExist) || (err == nil && len(accounts) == 0) {
-		return fmt.Errorf("there are no accounts in %s; on the host, run: tessera user add <name>", o.Credentials.Path())
-	}
+// AccountsProblem reports why nobody can sign in with Tessera accounts:
+// there are none yet, or they can't be read.
+func AccountsProblem(ctx context.Context, st *store.Store) error {
+	accounts, err := st.Accounts(ctx)
 	if err != nil {
-		return fmt.Errorf("the credentials file can't be used: %w", err)
+		return fmt.Errorf("the accounts can't be read: %w", err)
+	}
+	if len(accounts) == 0 {
+		return errors.New("there are no accounts yet; on the host, run: tessera user add <name>")
 	}
 	return nil
 }
@@ -285,7 +273,7 @@ func (g *authGate) currentSignIn(w http.ResponseWriter, r *http.Request) (store.
 		}
 		return store.SignIn{}, false
 	}
-	if !g.accountCurrent(signIn) {
+	if !g.accountCurrent(r.Context(), signIn) {
 		return store.SignIn{}, false
 	}
 	if now.Unix()-signIn.LastSeenAt >= int64(signInTouchInterval/time.Second) {
@@ -302,15 +290,25 @@ func (g *authGate) currentSignIn(w http.ResponseWriter, r *http.Request) (store.
 // accountCurrent ends sign-ins whose account was removed or whose password
 // changed since they were made. Only file sign-ins carry a credential tag,
 // so a sign-in never outlives a change between modes.
-func (g *authGate) accountCurrent(signIn store.SignIn) bool {
+func (g *authGate) accountCurrent(ctx context.Context, signIn store.SignIn) bool {
 	switch g.mode() {
 	case AuthFile:
-		account, ok := g.opts.Credentials.Lookup(signIn.Account)
+		account, ok := g.account(ctx, signIn.Account)
 		return ok && signIn.CredentialTag != "" && auth.CredentialTag(account.Hash) == signIn.CredentialTag
 	case AuthSystem:
 		return signIn.Account == g.opts.SystemAccount && signIn.CredentialTag == ""
 	}
 	return false
+}
+
+// account looks up one of Tessera's own accounts. One that can't be read
+// is not found, so nobody signs in as it.
+func (g *authGate) account(ctx context.Context, name string) (auth.Account, bool) {
+	account, ok, err := g.store.Account(ctx, name)
+	if err != nil {
+		log.Printf("read account: %v", err)
+	}
+	return account, ok
 }
 
 const unavailableMessage = "This host could not check its account password. On the host, run `tessera login` for a one-time sign-in link, or start Tessera with -auth=file."
@@ -330,7 +328,7 @@ func (g *authGate) login(w http.ResponseWriter, r *http.Request) {
 			view.Unavailable = unavailableMessage
 		}
 	case AuthFile:
-		if err := g.opts.AccountsProblem(); err != nil {
+		if err := AccountsProblem(r.Context(), g.store); err != nil {
 			view.Unavailable = "Nobody can sign in: " + err.Error() + ". Reload this page once that is done."
 		}
 	}
@@ -481,7 +479,7 @@ func (g *authGate) verify(ctx context.Context, mode, name string, password []byt
 	}
 	switch mode {
 	case AuthFile:
-		account, found := g.opts.Credentials.Lookup(name)
+		account, found := g.account(ctx, name)
 		hash := g.dummyHash
 		if found {
 			hash = account.Hash

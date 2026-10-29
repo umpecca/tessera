@@ -25,8 +25,8 @@ var (
 )
 
 // authAdmin reports whether a sign-in may manage accounts and sign-in.
-func (g *authGate) authAdmin(signIn store.SignIn) bool {
-	return g.adminLocked(signIn, g.mode())
+func (g *authGate) authAdmin(ctx context.Context, signIn store.SignIn) bool {
+	return g.adminLocked(ctx, signIn, g.mode())
 }
 
 // workspaceOwner is whose workspaces the person at the keyboard sees in a
@@ -53,7 +53,6 @@ type authSettingsView struct {
 	CanMove         bool   `json:"canMoveWorkspaces"`
 	Exposed         bool   `json:"exposed"`
 	NoAdmins        bool   `json:"noAdmins"`
-	CredentialsPath string `json:"credentialsPath"`
 }
 
 // settingsAPI shows and changes the sign-in mode: GET and PUT
@@ -65,19 +64,16 @@ func (g *authGate) settingsAPI(w http.ResponseWriter, r *http.Request, signIn st
 		mode := g.mode()
 		view := authSettingsView{
 			Mode: mode, Locked: g.opts.ModeLocked, Account: signIn.Account,
-			CanManage:       mode == AuthOff || g.authAdmin(signIn),
+			CanManage:       mode == AuthOff || g.authAdmin(r.Context(), signIn),
 			SystemAccount:   g.opts.SystemAccount,
 			SystemAvailable: g.opts.SystemAccount != "" && g.opts.VerifySystem != nil,
-			FileAvailable:   g.opts.Credentials != nil && !g.opts.MultiUser,
+			FileAvailable:   !g.opts.MultiUser,
 			CanMove:         !g.opts.MultiUser,
 			Exposed:         listensBeyondHost(g.opts.ListenAddress),
 		}
-		if g.opts.Credentials != nil {
-			view.CredentialsPath = g.opts.Credentials.Path()
-			if mode == AuthFile {
-				accounts, _ := g.opts.Credentials.Accounts()
-				view.NoAdmins = !slices.ContainsFunc(accounts, func(a auth.Account) bool { return a.Admin })
-			}
+		if mode == AuthFile {
+			accounts, _ := g.store.Accounts(r.Context())
+			view.NoAdmins = !slices.ContainsFunc(accounts, func(a auth.Account) bool { return a.Admin })
 		}
 		writeJSON(w, http.StatusOK, view)
 	case http.MethodPut:
@@ -120,7 +116,7 @@ func (g *authGate) changeMode(w http.ResponseWriter, r *http.Request, signIn sto
 	case g.opts.ModeLocked:
 		writeError(w, http.StatusConflict, "Sign-in is set with -auth when Tessera starts.")
 		return
-	case from != AuthOff && !g.adminLocked(signIn, from):
+	case from != AuthOff && !g.adminLocked(r.Context(), signIn, from):
 		writeError(w, http.StatusForbidden, "Only an admin can change sign-in.")
 		return
 	case request.Mode == from:
@@ -152,7 +148,7 @@ func (g *authGate) changeMode(w http.ResponseWriter, r *http.Request, signIn sto
 		}
 		account = g.opts.SystemAccount
 	case AuthFile:
-		if g.opts.Credentials == nil || g.opts.MultiUser {
+		if g.opts.MultiUser {
 			writeError(w, http.StatusConflict, "Tessera accounts can't be combined with -users.")
 			return
 		}
@@ -165,7 +161,7 @@ func (g *authGate) changeMode(w http.ResponseWriter, r *http.Request, signIn sto
 			return
 		}
 		var err error
-		tag, err = g.adoptAdmin(request.Account, password)
+		tag, err = g.adoptAdmin(r.Context(), request.Account, password)
 		if errors.Is(err, errWrongPassword) {
 			g.passwordCheckFailed(w, r, err, "That account exists, and this isn't its password.")
 			return
@@ -227,12 +223,12 @@ func (g *authGate) changeMode(w http.ResponseWriter, r *http.Request, signIn sto
 
 // adminLocked is authAdmin for a caller already holding modeMu. The host
 // account is the only identity in system mode, so it always may.
-func (g *authGate) adminLocked(signIn store.SignIn, mode string) bool {
+func (g *authGate) adminLocked(ctx context.Context, signIn store.SignIn, mode string) bool {
 	switch mode {
 	case AuthSystem:
 		return signIn.Account != ""
 	case AuthFile:
-		account, ok := g.opts.Credentials.Lookup(signIn.Account)
+		account, ok := g.account(ctx, signIn.Account)
 		return ok && account.Admin
 	}
 	return false
@@ -241,11 +237,11 @@ func (g *authGate) adminLocked(signIn store.SignIn, mode string) bool {
 // adoptAdmin makes name an admin account to sign in with: a new account
 // with password, or an existing one whose password it is. It returns the
 // sign-in's credential tag.
-func (g *authGate) adoptAdmin(name string, password []byte) (string, error) {
+func (g *authGate) adoptAdmin(ctx context.Context, name string, password []byte) (string, error) {
 	g.accountMu.Lock()
 	defer g.accountMu.Unlock()
 	var tag string
-	err := g.opts.Credentials.Update(func(accounts []auth.Account) ([]auth.Account, error) {
+	err := g.store.UpdateAccounts(ctx, func(accounts []auth.Account) ([]auth.Account, error) {
 		at := slices.IndexFunc(accounts, func(a auth.Account) bool { return a.Name == name })
 		if at >= 0 {
 			if ok, err := auth.VerifyPassword(accounts[at].Hash, password); err != nil || !ok {
@@ -314,14 +310,14 @@ func (g *authGate) accountsAPI(w http.ResponseWriter, r *http.Request, signIn st
 		writeError(w, http.StatusConflict, "Tessera accounts are not in use.")
 		return
 	}
-	if !g.authAdmin(signIn) {
+	if !g.authAdmin(r.Context(), signIn) {
 		writeError(w, http.StatusForbidden, "Only an admin can manage accounts.")
 		return
 	}
 	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/auth/accounts"), "/")
 	switch {
 	case name == "" && r.Method == http.MethodGet:
-		accounts, err := g.opts.Credentials.Accounts()
+		accounts, err := g.store.Accounts(r.Context())
 		if err != nil {
 			log.Printf("read accounts: %v", err)
 			writeError(w, http.StatusInternalServerError, "could not read accounts")
@@ -377,7 +373,7 @@ func (g *authGate) addAccount(w http.ResponseWriter, r *http.Request, signIn sto
 		return
 	}
 	g.accountMu.Lock()
-	err = g.opts.Credentials.Update(func(accounts []auth.Account) ([]auth.Account, error) {
+	err = g.store.UpdateAccounts(r.Context(), func(accounts []auth.Account) ([]auth.Account, error) {
 		if slices.ContainsFunc(accounts, func(a auth.Account) bool { return a.Name == request.Name }) {
 			return nil, auth.ErrAccountExists
 		}
@@ -419,7 +415,7 @@ func (g *authGate) changeAccount(w http.ResponseWriter, r *http.Request, signIn 
 	}
 	var updated auth.Account
 	g.accountMu.Lock()
-	err := g.opts.Credentials.Update(func(accounts []auth.Account) ([]auth.Account, error) {
+	err := g.store.UpdateAccounts(r.Context(), func(accounts []auth.Account) ([]auth.Account, error) {
 		at := slices.IndexFunc(accounts, func(a auth.Account) bool { return a.Name == name })
 		if at < 0 {
 			return nil, auth.ErrNoAccount
@@ -469,7 +465,7 @@ func (g *authGate) removeAccount(w http.ResponseWriter, r *http.Request, signIn 
 		return
 	}
 	g.accountMu.Lock()
-	err := g.opts.Credentials.Update(func(accounts []auth.Account) ([]auth.Account, error) {
+	err := g.store.UpdateAccounts(r.Context(), func(accounts []auth.Account) ([]auth.Account, error) {
 		at := slices.IndexFunc(accounts, func(a auth.Account) bool { return a.Name == name })
 		if at < 0 {
 			return nil, auth.ErrNoAccount

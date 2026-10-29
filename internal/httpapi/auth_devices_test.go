@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"tessera/internal/auth"
 	"tessera/internal/store"
 )
 
@@ -130,12 +129,11 @@ func TestSignInAuditEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	path := filepath.Join(t.TempDir(), "credentials")
-	writeAccounts(t, path, map[string]string{"alice": "alice-password"})
+	writeAccounts(t, st, map[string]string{"alice": "alice-password"})
 	mux := http.NewServeMux()
 	(&API{Store: st, AuthMode: AuthFile}).Register(mux)
-	gate := NewAuthHandler(mux, st, AuthOptions{Mode: AuthFile, Credentials: auth.NewCredentials(path)})
-	f := &authFixture{t: t, handler: NewSecurityHandler(gate, st, SecurityOptions{ConnectionLog: io.Discard,
+	gate := NewAuthHandler(mux, st, AuthOptions{Mode: AuthFile})
+	f := &authFixture{t: t, store: st, handler: NewSecurityHandler(gate, st, SecurityOptions{ConnectionLog: io.Discard,
 		AllowedHosts: []string{"example.com"}, AuditEnabled: true, AuditRetention: 24 * time.Hour})}
 
 	f.signIn("alice", "wrong", false)

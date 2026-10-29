@@ -13,7 +13,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"tessera/internal/auth"
 	"tessera/internal/store"
 )
 
@@ -26,8 +25,7 @@ func TestLiveSocketsCloseWhenSignInEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	path := filepath.Join(t.TempDir(), "credentials")
-	writeAccounts(t, path, map[string]string{"alice": "alice-password", "bob": "bob-password"})
+	writeAccounts(t, st, map[string]string{"alice": "alice-password", "bob": "bob-password"})
 	mux := http.NewServeMux()
 	upgrader := websocket.Upgrader{}
 	mux.HandleFunc("/api/socket", func(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +41,7 @@ func TestLiveSocketsCloseWhenSignInEnds(t *testing.T) {
 			}
 		}
 	})
-	gate := NewAuthHandler(mux, st, AuthOptions{Mode: AuthFile, Credentials: auth.NewCredentials(path)})
+	gate := NewAuthHandler(mux, st, AuthOptions{Mode: AuthFile})
 	server := httptest.NewServer(NewSecurityHandler(gate, st, SecurityOptions{ConnectionLog: io.Discard}))
 	defer server.Close()
 
@@ -90,7 +88,7 @@ func TestLiveSocketsCloseWhenSignInEnds(t *testing.T) {
 		t.Fatalf("signed-out socket closed with %d", code)
 	}
 	// Bob's socket is untouched until his password changes on disk.
-	editAccounts(t, path, "bob", "new-password")
+	editAccounts(t, st, "bob", "new-password")
 	if code := closeCode(bobSocket); code != signInEndedCloseCode {
 		t.Fatalf("password-changed socket closed with %d", code)
 	}

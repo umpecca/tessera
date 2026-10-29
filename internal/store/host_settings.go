@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,4 +84,35 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 		return fmt.Errorf("save sign-in settings: %w", err)
 	}
 	return nil
+}
+
+const recoveryTokenKey = "recovery_token"
+
+// RecoveryToken returns the host recovery token, creating it on first use.
+// It lets someone on the host who can read the database, as the account
+// Tessera runs as, sign in without a password (`tessera login`) or end
+// every sign-in.
+func (s *Store) RecoveryToken(ctx context.Context) (string, error) {
+	var token string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM host_settings WHERE key = ?`, recoveryTokenKey).Scan(&token)
+	if err == nil {
+		return token, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("load recovery token: %w", err)
+	}
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	// Another process may create it first; whichever is stored wins.
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO host_settings (key, value, updated_at) VALUES (?, ?, ?)
+ON CONFLICT(key) DO NOTHING`, recoveryTokenKey, hex.EncodeToString(raw[:]), nowText()); err != nil {
+		return "", fmt.Errorf("save recovery token: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM host_settings WHERE key = ?`, recoveryTokenKey).Scan(&token); err != nil {
+		return "", fmt.Errorf("load recovery token: %w", err)
+	}
+	return token, nil
 }

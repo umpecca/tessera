@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,7 +87,7 @@ func TestStartUsesPersistedLocalHTTPSConfiguration(t *testing.T) {
 	if httpResponse.StatusCode != http.StatusOK {
 		t.Fatalf("HTTP health status = %d, want 200", httpResponse.StatusCode)
 	}
-	rootPEM, err := localhttps.ReadRootPEM(filepath.Join(directory, "pki"))
+	rootPEM, err := localhttps.ReadRootPEM(srv.store.PKIFiles())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +146,7 @@ func TestReloadLocalHTTPSPreservesTerminalManager(t *testing.T) {
 		t.Fatalf("server URLs = HTTP %q, HTTPS %q", srv.URL, srv.HTTPSURL)
 	}
 
-	rootPEM, err := localhttps.ReadRootPEM(filepath.Join(directory, "pki"))
+	rootPEM, err := localhttps.ReadRootPEM(srv.store.PKIFiles())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,8 +217,7 @@ func TestResolveSignInUsesSettingsUnlessFlagged(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	credentials := auth.NewCredentials(filepath.Join(t.TempDir(), "credentials"))
-	unset := httpapi.AuthOptions{Credentials: credentials}
+	unset := httpapi.AuthOptions{}
 	if err := resolveSignIn(ctx, st, &unset); err != nil || unset.Mode != httpapi.AuthOff {
 		t.Fatalf("nothing saved: %q, %v", unset.Mode, err)
 	}
@@ -226,25 +226,88 @@ func TestResolveSignInUsesSettingsUnlessFlagged(t *testing.T) {
 	}
 	// Saved accounts mode with no accounts left starts, still requiring
 	// sign-in, rather than refusing to start or starting open.
-	saved := httpapi.AuthOptions{Credentials: credentials}
-	if err := resolveSignIn(ctx, st, &saved); err != nil || saved.Mode != httpapi.AuthFile || saved.AccountsProblem() == nil {
+	saved := httpapi.AuthOptions{}
+	if err := resolveSignIn(ctx, st, &saved); err != nil || saved.Mode != httpapi.AuthFile || httpapi.AccountsProblem(ctx, st) == nil {
 		t.Fatalf("saved file mode without accounts: %q, %v", saved.Mode, err)
 	}
 	// A saved mode that can never work still stops the server.
 	if err := st.SaveSignInMode(ctx, httpapi.AuthSystem); err != nil {
 		t.Fatal(err)
 	}
-	noHost := httpapi.AuthOptions{Credentials: credentials}
+	noHost := httpapi.AuthOptions{}
 	if err := resolveSignIn(ctx, st, &noHost); err == nil || !strings.Contains(err.Error(), "-auth=off") {
 		t.Fatalf("saved system mode without a host account: %v", err)
 	}
 	// -auth is saved, so it lasts once the flag is dropped.
-	flagged := httpapi.AuthOptions{Mode: httpapi.AuthOff, ModeLocked: true, Credentials: credentials}
+	flagged := httpapi.AuthOptions{Mode: httpapi.AuthOff, ModeLocked: true}
 	if err := resolveSignIn(ctx, st, &flagged); err != nil || flagged.Mode != httpapi.AuthOff {
 		t.Fatalf("flag: %q, %v", flagged.Mode, err)
 	}
-	after := httpapi.AuthOptions{Credentials: credentials}
+	after := httpapi.AuthOptions{}
 	if err := resolveSignIn(ctx, st, &after); err != nil || after.Mode != httpapi.AuthOff || after.ModeLocked {
 		t.Fatalf("after dropping the flag: %q, %v", after.Mode, err)
+	}
+}
+
+func TestImportAccountsFileOnce(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// A missing file is no reason not to import one that turns up later.
+	ImportAccountsFile(ctx, st, filepath.Join(t.TempDir(), "missing"))
+	path := filepath.Join(t.TempDir(), "credentials")
+	if err := os.WriteFile(path, []byte("alice:$argon2id$a:admin\nbob:$argon2id$b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ImportAccountsFile(ctx, st, path)
+	accounts, err := st.Accounts(ctx)
+	if err != nil || len(accounts) != 2 || accounts[0] != (auth.Account{Name: "alice", Hash: "$argon2id$a", Admin: true}) || accounts[1].Name != "bob" {
+		t.Fatalf("imported = %#v, %v", accounts, err)
+	}
+	// Accounts removed since don't come back from the file.
+	if err := st.UpdateAccounts(ctx, func([]auth.Account) ([]auth.Account, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	ImportAccountsFile(ctx, st, path)
+	if accounts, _ := st.Accounts(ctx); len(accounts) != 0 {
+		t.Fatalf("imported again: %#v", accounts)
+	}
+}
+
+// Devices that trust the root made before keys moved into the database
+// keep trusting the server.
+func TestStartImportsLocalHTTPSKeys(t *testing.T) {
+	directory := t.TempDir()
+	config := localhttps.Config{
+		Enabled: true, HTTPSAddress: "127.0.0.1:0",
+		DNSNames: []string{"localhost"}, IPAddresses: []string{"127.0.0.1"},
+	}
+	old, err := localhttps.Ensure(localhttps.Dir(filepath.Join(directory, "pki")), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(directory, "tessera.sqlite3")
+	st, err := store.Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveLocalHTTPSConfig(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	srv, err := Start(context.Background(), Options{Addr: "127.0.0.1:0", DBPath: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(context.Background())
+	if _, _, _, err := localhttps.Status(srv.store.PKIFiles()); err != nil {
+		t.Fatal(err)
+	}
+	material, err := localhttps.Ensure(srv.store.PKIFiles(), config)
+	if err != nil || material.Fingerprint != old.Fingerprint {
+		t.Fatalf("root after import: %v", err)
 	}
 }

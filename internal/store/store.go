@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,7 +53,23 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if path != ":memory:" {
+		restrictToOwner(path)
+	}
 	return store, nil
+}
+
+// restrictToOwner keeps other local users from reading the database, which
+// holds password hashes. SQLite gives its journal the same mode. A database
+// owned by another account is left as it is.
+func restrictToOwner(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm()&0o077 == 0 {
+		return
+	}
+	if err := os.Chmod(path, info.Mode().Perm()&0o700); err != nil {
+		log.Printf("make %s private: %v", path, err)
+	}
 }
 
 func (s *Store) Close() error {

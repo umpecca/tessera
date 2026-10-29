@@ -107,10 +107,13 @@ General > About > Certificate Trust Settings** and enable full trust for
 **Tessera &lt;hostname&gt; Root CA**. Verify the SHA-256 fingerprint against the value
 shown in Tessera before enabling trust.
 
-Local HTTPS settings are host-wide and persist in Tessera's SQLite database.
-Certificate material is stored in a protected `pki` directory beside the
-database. The Ubuntu service therefore keeps its database and CA under
-`/var/lib/tessera` across daemon restarts and binary upgrades. Tessera renews
+Local HTTPS settings and certificate material, including the root CA's
+private key, are host-wide and persist in Tessera's SQLite database, which
+only the account Tessera runs as can read. Earlier versions kept the
+certificates in a `pki` directory beside the database; Tessera imports them
+once, keeping the same root CA, and no longer uses the directory. The Ubuntu
+service keeps its database under `/var/lib/tessera` across daemon restarts
+and binary upgrades. Tessera renews
 the server certificate when its configured names change or it approaches
 expiration; it does not silently replace the root CA.
 

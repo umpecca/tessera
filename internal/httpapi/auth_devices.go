@@ -39,7 +39,7 @@ func (g *authGate) signInsAPI(w http.ResponseWriter, r *http.Request, current st
 		}
 		views := make([]signInView, 0, len(signIns))
 		for _, signIn := range signIns {
-			if !g.accountCurrent(signIn) {
+			if !g.accountCurrent(r.Context(), signIn) {
 				continue
 			}
 			views = append(views, signInView{

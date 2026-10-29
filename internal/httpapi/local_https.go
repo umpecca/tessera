@@ -56,7 +56,7 @@ func (a *API) localHTTPSSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if config.Enabled {
-			if _, err := localhttps.Ensure(a.HTTPSPKIDir, config); err != nil {
+			if _, err := localhttps.Ensure(a.Store.PKIFiles(), config); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -78,7 +78,7 @@ func (a *API) localHTTPSSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) writeLocalHTTPSResponse(w http.ResponseWriter, config localhttps.Config, restarting bool) bool {
-	fingerprint, rootName, hasCA, err := localhttps.Status(a.HTTPSPKIDir)
+	fingerprint, rootName, hasCA, err := localhttps.Status(a.Store.PKIFiles())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return false
@@ -109,7 +109,7 @@ func (a *API) localHTTPSEnrollment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	material, err := localhttps.Ensure(a.HTTPSPKIDir, config)
+	material, err := localhttps.Ensure(a.Store.PKIFiles(), config)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -140,7 +140,7 @@ func (a *API) localHTTPSRootCertificate(w http.ResponseWriter, r *http.Request) 
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	root, err := localhttps.ReadRootPEM(a.HTTPSPKIDir)
+	root, err := localhttps.ReadRootPEM(a.Store.PKIFiles())
 	if errors.Is(err, os.ErrNotExist) {
 		writeError(w, http.StatusNotFound, "Local HTTPS has not created a root certificate")
 		return

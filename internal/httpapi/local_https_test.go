@@ -25,7 +25,6 @@ func TestLocalHTTPSSettingsAPIValidatesPersistsAndRequestsRestart(t *testing.T) 
 	api := &API{
 		Store:               st,
 		HTTPSDefaultAddress: "127.0.0.1:7331",
-		HTTPSPKIDir:         filepath.Join(directory, "pki"),
 		RequestRestart:      func(localhttps.Config) { restarted <- struct{}{} },
 	}
 	mux := http.NewServeMux()

@@ -10,6 +10,22 @@
   password. `-auth` still works: it saves the mode, and locks it in Settings
   while given.
 
+- Tessera accounts are kept in Tessera's database instead of a separate
+  credentials file, so turning on accounts in Settings works wherever the
+  database can be written. The accounts of an existing credentials file
+  (`-auth-file`) are imported the first time the server or `tessera user`
+  runs, and the file is no longer used. `tessera user` takes `-db` to name
+  the server's database. The database is now readable only by the account
+  Tessera runs as.
+
+- The host recovery token for `tessera login` and `tessera logout -all`, and
+  the Local HTTPS certificates and keys, are kept in the database as well,
+  so Tessera's state is the database alone. `tessera login` and `logout`
+  take `-db` instead of `-auth-token`, which the server accepts and ignores.
+  Certificates in the old `pki` directory beside the database are imported
+  once, keeping the root CA devices already trust. A token made by an
+  earlier version is replaced by a new one.
+
 - With `-auth=file` and no accounts yet, Tessera now starts, requiring
   sign-in that nobody can complete until `tessera user add`, which applies
   without a restart. It used to refuse to start.

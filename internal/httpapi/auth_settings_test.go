@@ -17,8 +17,6 @@ import (
 
 type settingsFixture struct {
 	*authFixture
-	store       *store.Store
-	credentials *auth.Credentials
 	// ended counts connections closed by the gate; see watchPath.
 	ended chan struct{}
 }
@@ -34,13 +32,11 @@ func newSettingsFixture(t *testing.T, mode string, mutate func(*AuthOptions)) *s
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	path := filepath.Join(t.TempDir(), "credentials")
-	credentials := auth.NewCredentials(path)
 	if mode == AuthFile {
-		writeAccounts(t, path, map[string]string{"alice": "alice-password", "bob": "bob-password"})
-		setAdmin(t, credentials, "alice", true)
+		writeAccounts(t, st, map[string]string{"alice": "alice-password", "bob": "bob-password"})
+		setAdmin(t, st, "alice", true)
 	}
-	options := AuthOptions{Mode: mode, Credentials: credentials}
+	options := AuthOptions{Mode: mode}
 	if mutate != nil {
 		mutate(&options)
 	}
@@ -53,12 +49,12 @@ func newSettingsFixture(t *testing.T, mode string, mutate func(*AuthOptions)) *s
 		w.WriteHeader(http.StatusNoContent)
 	})
 	handler := NewSecurityHandler(NewAuthHandler(mux, st, options), st, SecurityOptions{ConnectionLog: io.Discard, AllowedHosts: []string{"example.com"}})
-	return &settingsFixture{authFixture: &authFixture{t: t, handler: handler, path: path}, store: st, credentials: credentials, ended: ended}
+	return &settingsFixture{authFixture: &authFixture{t: t, handler: handler, store: st}, ended: ended}
 }
 
-func setAdmin(t *testing.T, credentials *auth.Credentials, name string, admin bool) {
+func setAdmin(t *testing.T, st *store.Store, name string, admin bool) {
 	t.Helper()
-	err := credentials.Update(func(accounts []auth.Account) ([]auth.Account, error) {
+	err := st.UpdateAccounts(context.Background(), func(accounts []auth.Account) ([]auth.Account, error) {
 		for i := range accounts {
 			if accounts[i].Name == name {
 				accounts[i].Admin = admin
@@ -127,7 +123,7 @@ func TestTurningSignInOnFromSettings(t *testing.T) {
 	}
 	carol := signInCookieFrom(t, on)
 	f.expectEnded(1)
-	if account, ok := f.credentials.Lookup("carol"); !ok || !account.Admin {
+	if account, ok, _ := f.store.Account(ctx, "carol"); !ok || !account.Admin {
 		t.Fatalf("carol = %#v, %v", account, ok)
 	}
 	if mode, _ := f.store.LoadSignInMode(ctx); mode != AuthFile {
@@ -306,7 +302,7 @@ func TestListensBeyondHost(t *testing.T) {
 
 func TestAccountsModeWithoutAccountsWaitsForOne(t *testing.T) {
 	f := newSettingsFixture(t, AuthFile, nil)
-	if err := f.credentials.Update(func([]auth.Account) ([]auth.Account, error) { return nil, nil }); err != nil {
+	if err := f.store.UpdateAccounts(context.Background(), func([]auth.Account) ([]auth.Account, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
 	login := f.do(http.MethodGet, "/login", "", "", "")
@@ -317,7 +313,7 @@ func TestAccountsModeWithoutAccountsWaitsForOne(t *testing.T) {
 		t.Fatalf("signed out = %d", code)
 	}
 	// `tessera user add` on the host applies without a restart.
-	writeAccounts(t, f.path, map[string]string{"alice": "alice-password"})
+	writeAccounts(t, f.store, map[string]string{"alice": "alice-password"})
 	if value, _ := f.signIn("alice", "alice-password", false); value == "" {
 		t.Fatal("added account can't sign in")
 	}

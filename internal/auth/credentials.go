@@ -1,5 +1,5 @@
-// Package auth holds Tessera's own accounts: the credentials file, password
-// hashing, and sign-in throttling. Sign-ins themselves live in the store.
+// Package auth holds what Tessera's own accounts need: password hashing,
+// the credentials file of older versions, and sign-in throttling.
 package auth
 
 import (
@@ -14,10 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
-	"time"
 	"unicode"
 
 	"golang.org/x/crypto/argon2"
@@ -117,7 +114,8 @@ func CredentialTag(hash string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// DefaultCredentialsPath sits beside the default database.
+// DefaultCredentialsPath is where accounts were kept before they moved into
+// the database; a file there is imported once.
 func DefaultCredentialsPath() string {
 	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
 		return filepath.Join(dir, "Tessera", "credentials")
@@ -150,19 +148,6 @@ func ParseCredentials(data []byte) ([]Account, error) {
 	return accounts, scanner.Err()
 }
 
-func FormatCredentials(accounts []Account) []byte {
-	var out bytes.Buffer
-	out.WriteString("# Tessera accounts. Manage with `tessera user add|passwd|admin|remove|list`.\n")
-	for _, account := range accounts {
-		role := ""
-		if account.Admin {
-			role = ":admin"
-		}
-		fmt.Fprintf(&out, "%s:%s%s\n", account.Name, account.Hash, role)
-	}
-	return out.Bytes()
-}
-
 // ReadCredentialsFile loads a credentials file after checking that only the
 // service account can read or change it.
 func ReadCredentialsFile(path string) ([]Account, error) {
@@ -178,119 +163,4 @@ func ReadCredentialsFile(path string) ([]Account, error) {
 		return nil, err
 	}
 	return ParseCredentials(data)
-}
-
-// WriteCredentialsFile replaces the file atomically with mode 0600 in a
-// directory created with mode 0700.
-func WriteCredentialsFile(path string, accounts []Account) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	temp, err := os.CreateTemp(dir, ".credentials-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(temp.Name())
-	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
-		return err
-	}
-	if _, err := temp.Write(FormatCredentials(accounts)); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temp.Name(), path)
-}
-
-// Credentials serves the accounts in a file to a running server, reloading
-// whenever the file changes so `tessera user` edits apply without a restart.
-type Credentials struct {
-	path    string
-	mu      sync.Mutex
-	modTime time.Time
-	size    int64
-	loaded  bool
-	list    []Account
-	err     error
-}
-
-func NewCredentials(path string) *Credentials {
-	return &Credentials{path: path}
-}
-
-func (c *Credentials) Path() string { return c.path }
-
-// Accounts returns the current accounts. A file that becomes unreadable or
-// invalid yields its error and no accounts, so nobody signs in against a
-// stale copy.
-func (c *Credentials) Accounts() ([]Account, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	info, err := os.Stat(c.path)
-	if err != nil {
-		c.loaded, c.list, c.err = false, nil, err
-		return nil, err
-	}
-	// A file that failed to load is read again each time: fixing its
-	// permissions changes neither its time nor its size.
-	if !c.loaded || c.err != nil || !info.ModTime().Equal(c.modTime) || info.Size() != c.size {
-		c.list, c.err = ReadCredentialsFile(c.path)
-		c.modTime, c.size, c.loaded = info.ModTime(), info.Size(), true
-	}
-	return c.list, c.err
-}
-
-// Update applies change to the current accounts and writes the result, so
-// edits from Settings don't race each other. A missing file starts empty.
-func (c *Credentials) Update(change func([]Account) ([]Account, error)) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	accounts, err := ReadCredentialsFile(c.path)
-	if errors.Is(err, os.ErrNotExist) {
-		accounts, err = nil, nil
-	}
-	if err != nil {
-		return err
-	}
-	accounts, err = change(slices.Clone(accounts))
-	if err != nil {
-		return err
-	}
-	if err := WriteCredentialsFile(c.path, accounts); err != nil {
-		return err
-	}
-	// Keep what was written rather than trusting the modification time,
-	// which may not change between two quick writes of the same size.
-	c.list, c.err, c.loaded = accounts, nil, true
-	if info, err := os.Stat(c.path); err == nil {
-		c.modTime, c.size = info.ModTime(), info.Size()
-	}
-	return nil
-}
-
-func (c *Credentials) Lookup(name string) (Account, bool) {
-	accounts, _ := c.Accounts()
-	for _, account := range accounts {
-		if account.Name == name {
-			return account, true
-		}
-	}
-	return Account{}, false
-}
-
-func (c *Credentials) Names() []string {
-	accounts, _ := c.Accounts()
-	names := make([]string, len(accounts))
-	for i, account := range accounts {
-		names[i] = account.Name
-	}
-	return names
 }

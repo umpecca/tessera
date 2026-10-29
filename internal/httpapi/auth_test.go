@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,7 +18,7 @@ import (
 type authFixture struct {
 	t       *testing.T
 	handler http.Handler
-	path    string
+	store   *store.Store
 }
 
 func newAuthFixture(t *testing.T, mutate func(*AuthOptions)) *authFixture {
@@ -29,9 +28,8 @@ func newAuthFixture(t *testing.T, mutate func(*AuthOptions)) *authFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	path := filepath.Join(t.TempDir(), "credentials")
-	writeAccounts(t, path, map[string]string{"alice": "alice-password", "bob": "bob-password"})
-	options := AuthOptions{Mode: AuthFile, Credentials: auth.NewCredentials(path)}
+	writeAccounts(t, st, map[string]string{"alice": "alice-password", "bob": "bob-password"})
+	options := AuthOptions{Mode: AuthFile}
 	if mutate != nil {
 		mutate(&options)
 	}
@@ -39,10 +37,11 @@ func newAuthFixture(t *testing.T, mutate func(*AuthOptions)) *authFixture {
 	mux := http.NewServeMux()
 	api.Register(mux)
 	handler := NewSecurityHandler(NewAuthHandler(mux, st, options), st, SecurityOptions{ConnectionLog: io.Discard, AllowedHosts: []string{"example.com"}})
-	return &authFixture{t: t, handler: handler, path: path}
+	return &authFixture{t: t, handler: handler, store: st}
 }
 
-func writeAccounts(t *testing.T, path string, passwords map[string]string) {
+// writeAccounts replaces every account with these.
+func writeAccounts(t *testing.T, st *store.Store, passwords map[string]string) {
 	t.Helper()
 	var accounts []auth.Account
 	for _, name := range []string{"alice", "bob"} {
@@ -54,35 +53,31 @@ func writeAccounts(t *testing.T, path string, passwords map[string]string) {
 			accounts = append(accounts, auth.Account{Name: name, Hash: hash})
 		}
 	}
-	if err := auth.WriteCredentialsFile(path, accounts); err != nil {
-		t.Fatal(err)
-	}
-	later := time.Now().Add(time.Duration(len(passwords)) * time.Second)
-	_ = os.Chtimes(path, later, later)
-}
-
-// editAccounts changes one account and keeps the others' hashes, as
-// `tessera user passwd` and `remove` do.
-func editAccounts(t *testing.T, path, name, password string) {
-	t.Helper()
-	accounts, err := auth.ReadCredentialsFile(path)
+	err := st.UpdateAccounts(context.Background(), func([]auth.Account) ([]auth.Account, error) { return accounts, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	var kept []auth.Account
-	for _, account := range accounts {
-		if account.Name != name {
-			kept = append(kept, account)
-		} else if password != "" {
-			hash, _ := auth.HashPassword([]byte(password))
-			kept = append(kept, auth.Account{Name: name, Hash: hash})
+}
+
+// editAccounts sets one account's password, or removes it when password is
+// "", as `tessera user passwd` and `remove` do.
+func editAccounts(t *testing.T, st *store.Store, name, password string) {
+	t.Helper()
+	err := st.UpdateAccounts(context.Background(), func(accounts []auth.Account) ([]auth.Account, error) {
+		var kept []auth.Account
+		for _, account := range accounts {
+			if account.Name != name {
+				kept = append(kept, account)
+			} else if password != "" {
+				account.Hash, _ = auth.HashPassword([]byte(password))
+				kept = append(kept, account)
+			}
 		}
-	}
-	if err := auth.WriteCredentialsFile(path, kept); err != nil {
+		return kept, nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	later := time.Now().Add(time.Duration(len(kept)+5) * time.Second)
-	_ = os.Chtimes(path, later, later)
 }
 
 func (f *authFixture) do(method, target, body, cookie, remote string) *httptest.ResponseRecorder {
@@ -195,7 +190,7 @@ func TestSignInsEndOnPasswordChangeRemovalAndSignOut(t *testing.T) {
 	f := newAuthFixture(t, nil)
 	alice, _ := f.signIn("alice", "alice-password", false)
 	bob, _ := f.signIn("bob", "bob-password", false)
-	editAccounts(t, f.path, "alice", "new-password")
+	editAccounts(t, f.store, "alice", "new-password")
 	if code := f.do(http.MethodGet, "/api/users", "", alice, "").Code; code != http.StatusUnauthorized {
 		t.Fatalf("after password change = %d", code)
 	}
@@ -210,7 +205,7 @@ func TestSignInsEndOnPasswordChangeRemovalAndSignOut(t *testing.T) {
 		t.Fatalf("after sign-out = %d", code)
 	}
 	carol, _ := f.signIn("alice", "new-password", false)
-	editAccounts(t, f.path, "alice", "")
+	editAccounts(t, f.store, "alice", "")
 	if code := f.do(http.MethodGet, "/api/users", "", carol, "").Code; code != http.StatusUnauthorized {
 		t.Fatalf("after removal = %d", code)
 	}

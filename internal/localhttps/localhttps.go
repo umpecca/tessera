@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"math/big"
 	"net"
 	"net/http"
@@ -31,6 +32,66 @@ const (
 	serverCertName = "server.crt"
 	serverKeyName  = "server.key"
 )
+
+// Files holds the certificate authority's PEM files by name. ReadFile
+// returns an error matching fs.ErrNotExist for a file it doesn't have.
+type Files interface {
+	ReadFile(name string) ([]byte, error)
+	WriteFile(name string, data []byte) error
+}
+
+// Dir keeps the files in a directory, as Tessera did before they moved into
+// its database. Keys are readable only by their owner.
+type Dir string
+
+func (d Dir) ReadFile(name string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(string(d), name))
+}
+
+func (d Dir) WriteFile(name string, data []byte) error {
+	if err := os.MkdirAll(string(d), 0o700); err != nil {
+		return fmt.Errorf("create PKI directory: %w", err)
+	}
+	mode := os.FileMode(0o644)
+	if strings.HasSuffix(name, ".key") {
+		mode = 0o600
+	}
+	path := filepath.Join(string(d), name)
+	if err := os.WriteFile(path, data, mode); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("protect %s: %w", name, err)
+	}
+	return nil
+}
+
+// Import copies the files in from into to, unless to already has a root
+// certificate, so devices that trust the old root keep trusting this one.
+// It reports whether it copied them.
+func Import(from, to Files) (bool, error) {
+	if _, err := to.ReadFile(rootCertName); !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	if _, err := from.ReadFile(rootCertName); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	// The root goes last: a copy cut short leaves to without one, to be
+	// tried again.
+	for _, name := range []string{serverCertName, serverKeyName, rootKeyName, rootCertName} {
+		data, err := from.ReadFile(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if err := to.WriteFile(name, data); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
 
 type Config struct {
 	Enabled      bool     `json:"enabled"`
@@ -215,7 +276,7 @@ func appendUnique(values []string, value string) []string {
 	return append(values, value)
 }
 
-func Ensure(directory string, config Config) (*Material, error) {
+func Ensure(files Files, config Config) (*Material, error) {
 	config, err := NormalizeConfig(config)
 	if err != nil {
 		return nil, err
@@ -223,23 +284,17 @@ func Ensure(directory string, config Config) (*Material, error) {
 	if !config.Enabled {
 		return nil, errors.New("local HTTPS is disabled")
 	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, fmt.Errorf("create PKI directory: %w", err)
-	}
-	if err := os.Chmod(directory, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
-		return nil, fmt.Errorf("protect PKI directory: %w", err)
-	}
 
-	root, rootKey, rootPEM, err := loadOrCreateRoot(directory)
+	root, rootKey, rootPEM, err := loadOrCreateRoot(files)
 	if err != nil {
 		return nil, err
 	}
-	if !serverCertificateCurrent(directory, root, config) {
-		if err := createServerCertificate(directory, root, rootKey, config); err != nil {
+	if !serverCertificateCurrent(files, root, config) {
+		if err := createServerCertificate(files, root, rootKey, config); err != nil {
 			return nil, err
 		}
 	}
-	certificate, err := tls.LoadX509KeyPair(filepath.Join(directory, serverCertName), filepath.Join(directory, serverKeyName))
+	certificate, err := loadServerPair(files)
 	if err != nil {
 		return nil, fmt.Errorf("load server certificate: %w", err)
 	}
@@ -252,8 +307,8 @@ func Ensure(directory string, config Config) (*Material, error) {
 	}, nil
 }
 
-func Status(directory string) (fingerprint, rootName string, hasCA bool, err error) {
-	data, err := ReadRootPEM(directory)
+func Status(files Files) (fingerprint, rootName string, hasCA bool, err error) {
+	data, err := ReadRootPEM(files)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", "", false, nil
 	}
@@ -272,8 +327,20 @@ func Status(directory string) (fingerprint, rootName string, hasCA bool, err err
 	return strings.ToUpper(strings.Join(groupHex(hex.EncodeToString(digest[:])), ":")), cert.Subject.CommonName, true, nil
 }
 
-func ReadRootPEM(directory string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(directory, rootCertName))
+func ReadRootPEM(files Files) ([]byte, error) {
+	return files.ReadFile(rootCertName)
+}
+
+func loadServerPair(files Files) (tls.Certificate, error) {
+	certPEM, err := files.ReadFile(serverCertName)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyPEM, err := files.ReadFile(serverKeyName)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
 func groupHex(value string) []string {
@@ -285,11 +352,9 @@ func groupHex(value string) []string {
 	return groups
 }
 
-func loadOrCreateRoot(directory string) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
-	certPath := filepath.Join(directory, rootCertName)
-	keyPath := filepath.Join(directory, rootKeyName)
-	certPEM, certErr := os.ReadFile(certPath)
-	keyPEM, keyErr := os.ReadFile(keyPath)
+func loadOrCreateRoot(files Files) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
+	certPEM, certErr := files.ReadFile(rootCertName)
+	keyPEM, keyErr := files.ReadFile(rootKeyName)
 	if certErr == nil && keyErr == nil {
 		certBlock, _ := pem.Decode(certPEM)
 		keyBlock, _ := pem.Decode(keyPEM)
@@ -311,13 +376,13 @@ func loadOrCreateRoot(directory string) (*x509.Certificate, *ecdsa.PrivateKey, [
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		if err := writeProtected(certPath, certPEM, 0o644); err != nil {
+		if err := files.WriteFile(rootCertName, certPEM); err != nil {
 			return nil, nil, nil, err
 		}
 		return cert, key, certPEM, nil
 	}
-	if !errors.Is(certErr, os.ErrNotExist) || !errors.Is(keyErr, os.ErrNotExist) {
-		return nil, nil, nil, errors.New("Tessera root CA is incomplete; restore or explicitly reset the PKI directory")
+	if !errors.Is(certErr, fs.ErrNotExist) || !errors.Is(keyErr, fs.ErrNotExist) {
+		return nil, nil, nil, errors.New("Tessera root CA is incomplete; restore or explicitly reset it")
 	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -333,10 +398,11 @@ func loadOrCreateRoot(directory string) (*x509.Certificate, *ecdsa.PrivateKey, [
 		return nil, nil, nil, fmt.Errorf("marshal root key: %w", err)
 	}
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	if err := writeProtected(certPath, certPEM, 0o644); err != nil {
+	// The key goes first: a root certificate without its key can't be used.
+	if err := files.WriteFile(rootKeyName, keyPEM); err != nil {
 		return nil, nil, nil, err
 	}
-	if err := writeProtected(keyPath, keyPEM, 0o600); err != nil {
+	if err := files.WriteFile(rootCertName, certPEM); err != nil {
 		return nil, nil, nil, err
 	}
 	return cert, key, certPEM, nil
@@ -378,8 +444,8 @@ func createRootCertificate(key *ecdsa.PrivateKey, commonName string) (*x509.Cert
 	return cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
 }
 
-func serverCertificateCurrent(directory string, root *x509.Certificate, config Config) bool {
-	pair, err := tls.LoadX509KeyPair(filepath.Join(directory, serverCertName), filepath.Join(directory, serverKeyName))
+func serverCertificateCurrent(files Files, root *x509.Certificate, config Config) bool {
+	pair, err := loadServerPair(files)
 	if err != nil {
 		return false
 	}
@@ -416,7 +482,7 @@ func slicesEqual(left, right []string) bool {
 	return true
 }
 
-func createServerCertificate(directory string, root *x509.Certificate, rootKey *ecdsa.PrivateKey, config Config) error {
+func createServerCertificate(files Files, root *x509.Certificate, rootKey *ecdsa.PrivateKey, config Config) error {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return fmt.Errorf("generate server key: %w", err)
@@ -454,10 +520,10 @@ func createServerCertificate(directory string, root *x509.Certificate, rootKey *
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	if err := writeProtected(filepath.Join(directory, serverCertName), certPEM, 0o644); err != nil {
+	if err := files.WriteFile(serverKeyName, keyPEM); err != nil {
 		return err
 	}
-	return writeProtected(filepath.Join(directory, serverKeyName), keyPEM, 0o600)
+	return files.WriteFile(serverCertName, certPEM)
 }
 
 func randomSerial() (*big.Int, error) {
@@ -467,16 +533,6 @@ func randomSerial() (*big.Int, error) {
 		return nil, fmt.Errorf("generate certificate serial: %w", err)
 	}
 	return serial, nil
-}
-
-func writeProtected(path string, data []byte, mode os.FileMode) error {
-	if err := os.WriteFile(path, data, mode); err != nil {
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		return fmt.Errorf("protect %s: %w", filepath.Base(path), err)
-	}
-	return nil
 }
 
 func PublicURL(config Config, actualAddress string) string {

@@ -150,8 +150,9 @@ func (g *authGate) checkWatched() {
 		for _, id := range ids {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			signIn, err := g.store.SignInByID(ctx, id, g.now())
+			current := err == nil && g.accountCurrent(ctx, signIn)
 			cancel()
-			if err != nil || !g.accountCurrent(signIn) {
+			if !current {
 				ended = append(ended, id)
 			}
 		}

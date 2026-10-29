@@ -23,7 +23,6 @@ type App struct {
 	Updater             *update.Updater
 	MaxUploadBytes      int64
 	HTTPSDefaultAddress string
-	HTTPSPKIDir         string
 	RequestRestart      func(localhttps.Config)
 	// Auth configures sign-in; the zero value leaves it off.
 	Auth httpapi.AuthOptions
@@ -51,7 +50,6 @@ func (a *App) Handler() http.Handler {
 		Updater:             a.Updater,
 		MaxUploadBytes:      a.MaxUploadBytes,
 		HTTPSDefaultAddress: a.HTTPSDefaultAddress,
-		HTTPSPKIDir:         a.HTTPSPKIDir,
 		RequestRestart:      a.RequestRestart,
 		RDPSessions:         a.RDPSessions,
 	}
