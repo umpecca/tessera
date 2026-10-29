@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -46,12 +47,23 @@ const (
 var ErrSystemAuthUnavailable = errors.New("system password verification is unavailable")
 
 type AuthOptions struct {
-	Mode string
-	// Credentials holds the accounts for AuthFile.
+	// Mode is the sign-in mode Tessera starts with. Admins can change it in
+	// Settings unless ModeLocked, which -auth sets.
+	Mode       string
+	ModeLocked bool
+	// MultiUser is set by -users, which keeps workspaces per roster name and
+	// so cannot be combined with AuthFile.
+	MultiUser bool
+	// ListenAddress is the main listener, used to warn before sign-in is
+	// turned off on a server other devices can reach.
+	ListenAddress string
+	// Credentials holds the accounts for AuthFile. It is set whatever the
+	// starting mode, so Settings can switch to accounts later.
 	Credentials *auth.Credentials
 	// SystemAccount and VerifySystem serve AuthSystem. VerifySystem returns
 	// nil for the correct password, ErrSystemAuthUnavailable when it cannot
 	// check, and any other error for an incorrect one.
+	// SystemAccount is "" when the host account could not be found.
 	SystemAccount string
 	VerifySystem  func(ctx context.Context, password []byte) error
 	// AllowHTTPSignIn accepts passwords over plain HTTP from other devices,
@@ -67,15 +79,60 @@ type AuthOptions struct {
 	RememberMax  time.Duration
 }
 
+// CheckMode reports why the server could not start with a sign-in mode.
+// Unusable accounts are not such a reason: the server starts with nobody
+// able to sign in, and AccountsProblem says why until the file is fixed.
+func (o AuthOptions) CheckMode(mode string) error {
+	switch mode {
+	case AuthOff:
+		return nil
+	case AuthSystem:
+		if o.SystemAccount == "" {
+			return errors.New("the account Tessera runs as could not be found")
+		}
+		return nil
+	case AuthFile:
+		if o.MultiUser {
+			return errors.New("-users cannot be combined with -auth=file: each account in the credentials file is a user")
+		}
+		if o.Credentials == nil {
+			return errors.New("no credentials file is configured")
+		}
+		return nil
+	}
+	return fmt.Errorf("-auth must be off, system or file, not %q", mode)
+}
+
+// AccountsProblem reports why nobody can sign in with Tessera accounts: no
+// credentials file, no accounts in it, or a file Tessera won't read.
+func (o AuthOptions) AccountsProblem() error {
+	if o.Credentials == nil {
+		return errors.New("no credentials file is configured")
+	}
+	accounts, err := o.Credentials.Accounts()
+	if errors.Is(err, os.ErrNotExist) || (err == nil && len(accounts) == 0) {
+		return fmt.Errorf("there are no accounts in %s; on the host, run: tessera user add <name>", o.Credentials.Path())
+	}
+	if err != nil {
+		return fmt.Errorf("the credentials file can't be used: %w", err)
+	}
+	return nil
+}
+
 //go:embed login.html
 var loginPageSource string
 
 var loginPage = template.Must(template.New("login").Parse(loginPageSource))
 
 type authGate struct {
-	next      http.Handler
-	store     *store.Store
-	opts      AuthOptions
+	next  http.Handler
+	store *store.Store
+	opts  AuthOptions
+	// modeMu guards the current mode, which starts as opts.Mode. Changes
+	// hold it for writing until their sign-ins are in place.
+	modeMu    sync.RWMutex
+	current   string
+	accountMu sync.Mutex
 	throttle  *auth.Throttle
 	verifyMu  sync.Mutex
 	dummyHash string
@@ -103,10 +160,11 @@ func SignedInAccount(ctx context.Context) string {
 }
 
 // NewAuthHandler requires a sign-in for everything except the login page and
-// the few resources reachable before it. With AuthOff it returns next as is.
+// the few resources reachable before it. With AuthOff it passes requests on
+// untouched, apart from the sign-in settings, until Settings turns it on.
 func NewAuthHandler(next http.Handler, st *store.Store, opts AuthOptions) http.Handler {
-	if opts.Mode == "" || opts.Mode == AuthOff {
-		return next
+	if opts.Mode == "" {
+		opts.Mode = AuthOff
 	}
 	if opts.RememberIdle <= 0 {
 		opts.RememberIdle = DefaultRememberIdle
@@ -121,11 +179,31 @@ func NewAuthHandler(next http.Handler, st *store.Store, opts AuthOptions) http.H
 	if err != nil {
 		panic(err)
 	}
-	return &authGate{next: next, store: st, opts: opts, throttle: auth.NewThrottle(), dummyHash: dummy, host: host, now: time.Now,
+	return &authGate{next: next, store: st, opts: opts, current: opts.Mode, throttle: auth.NewThrottle(), dummyHash: dummy, host: host, now: time.Now,
 		links: map[string]recoveryLink{}, watches: map[string]map[*signInWatch]struct{}{}}
 }
 
+func (g *authGate) mode() string {
+	g.modeMu.RLock()
+	defer g.modeMu.RUnlock()
+	return g.current
+}
+
 func (g *authGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if g.mode() == AuthOff {
+		if r.URL.Path == "/api/auth/settings" {
+			if stateChangingMethod(r.Method) && !requestOriginAllowed(r) {
+				writeError(w, http.StatusForbidden, "request origin is not allowed")
+				return
+			}
+			g.settingsAPI(w, r, store.SignIn{})
+			return
+		}
+		// The gate rides along so connections opened now can be closed if
+		// sign-in is turned on.
+		g.next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), gateKey{}, g)))
+		return
+	}
 	switch r.URL.Path {
 	case "/login":
 		g.login(w, r)
@@ -150,12 +228,20 @@ func (g *authGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	signIn, ok := g.currentSignIn(w, r)
 	if ok {
 		g.noteAudit(r, signIn.ID, "")
-		if r.URL.Path == "/api/auth/sign-ins" || strings.HasPrefix(r.URL.Path, "/api/auth/sign-ins/") {
+		if path := r.URL.Path; path == "/api/auth/sign-ins" || strings.HasPrefix(path, "/api/auth/sign-ins/") ||
+			path == "/api/auth/settings" || path == "/api/auth/accounts" || strings.HasPrefix(path, "/api/auth/accounts/") {
 			if stateChangingMethod(r.Method) && !requestOriginAllowed(r) {
 				writeError(w, http.StatusForbidden, "request origin is not allowed")
 				return
 			}
-			g.signInsAPI(w, r, signIn)
+			switch {
+			case strings.HasPrefix(path, "/api/auth/sign-ins"):
+				g.signInsAPI(w, r, signIn)
+			case path == "/api/auth/settings":
+				g.settingsAPI(w, r, signIn)
+			default:
+				g.accountsAPI(w, r, signIn)
+			}
 			return
 		}
 		ctx := context.WithValue(context.WithValue(r.Context(), signInKey{}, signIn), gateKey{}, g)
@@ -214,14 +300,15 @@ func (g *authGate) currentSignIn(w http.ResponseWriter, r *http.Request) (store.
 }
 
 // accountCurrent ends sign-ins whose account was removed or whose password
-// changed since they were made.
+// changed since they were made. Only file sign-ins carry a credential tag,
+// so a sign-in never outlives a change between modes.
 func (g *authGate) accountCurrent(signIn store.SignIn) bool {
-	switch g.opts.Mode {
+	switch g.mode() {
 	case AuthFile:
 		account, ok := g.opts.Credentials.Lookup(signIn.Account)
-		return ok && auth.CredentialTag(account.Hash) == signIn.CredentialTag
+		return ok && signIn.CredentialTag != "" && auth.CredentialTag(account.Hash) == signIn.CredentialTag
 	case AuthSystem:
-		return signIn.Account == g.opts.SystemAccount
+		return signIn.Account == g.opts.SystemAccount && signIn.CredentialTag == ""
 	}
 	return false
 }
@@ -236,10 +323,15 @@ type loginView struct {
 
 func (g *authGate) login(w http.ResponseWriter, r *http.Request) {
 	view := loginView{Host: g.host, Next: safeNext(r.URL.Query().Get("next"))}
-	if g.opts.Mode == AuthSystem {
+	switch g.mode() {
+	case AuthSystem:
 		view.FixedAccount = g.opts.SystemAccount
 		if g.opts.VerifySystem == nil {
 			view.Unavailable = unavailableMessage
+		}
+	case AuthFile:
+		if err := g.opts.AccountsProblem(); err != nil {
+			view.Unavailable = "Nobody can sign in: " + err.Error() + ". Reload this page once that is done."
 		}
 	}
 	view.HTTPBlocked = !g.passwordTransportAllowed(r)
@@ -341,7 +433,8 @@ func (g *authGate) attemptSignIn(w http.ResponseWriter, r *http.Request, name st
 	if !g.passwordTransportAllowed(r) {
 		return signInAttempt{status: http.StatusForbidden, message: "Signing in from another device needs HTTPS."}
 	}
-	if g.opts.Mode == AuthSystem {
+	mode := g.mode()
+	if mode == AuthSystem {
 		if g.opts.VerifySystem == nil {
 			return signInAttempt{status: http.StatusServiceUnavailable, message: unavailableMessage}
 		}
@@ -355,14 +448,14 @@ func (g *authGate) attemptSignIn(w http.ResponseWriter, r *http.Request, name st
 		return signInAttempt{status: http.StatusTooManyRequests, retryAfter: seconds,
 			message: "Too many attempts. Try again in " + formatWait(seconds) + "."}
 	}
-	tag, err := g.verify(r.Context(), name, password)
+	tag, err := g.verify(r.Context(), mode, name, password)
 	if errors.Is(err, ErrSystemAuthUnavailable) {
 		return signInAttempt{status: http.StatusServiceUnavailable, message: unavailableMessage}
 	}
 	if err != nil {
 		g.throttle.Failure(client, g.now())
 		message := "Incorrect name or password."
-		if g.opts.Mode == AuthSystem {
+		if mode == AuthSystem {
 			message = "Incorrect password."
 		}
 		return signInAttempt{status: http.StatusUnauthorized, message: message}
@@ -378,15 +471,15 @@ func (g *authGate) attemptSignIn(w http.ResponseWriter, r *http.Request, name st
 	return signInAttempt{status: http.StatusSeeOther, account: name}
 }
 
-// verify checks one password at a time and returns the credential tag the new
-// sign-in should carry.
-func (g *authGate) verify(ctx context.Context, name string, password []byte) (string, error) {
+// verify checks one password at a time against mode's accounts and returns
+// the credential tag the new sign-in should carry.
+func (g *authGate) verify(ctx context.Context, mode, name string, password []byte) (string, error) {
 	g.verifyMu.Lock()
 	defer g.verifyMu.Unlock()
 	if auth.ValidatePassword(password) != nil {
 		return "", errors.New("incorrect")
 	}
-	switch g.opts.Mode {
+	switch mode {
 	case AuthFile:
 		account, found := g.opts.Credentials.Lookup(name)
 		hash := g.dummyHash
@@ -399,6 +492,9 @@ func (g *authGate) verify(ctx context.Context, name string, password []byte) (st
 		}
 		return auth.CredentialTag(account.Hash), nil
 	case AuthSystem:
+		if g.opts.VerifySystem == nil {
+			return "", ErrSystemAuthUnavailable
+		}
 		verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		if err := g.opts.VerifySystem(verifyCtx, password); err != nil {

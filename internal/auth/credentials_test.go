@@ -51,11 +51,15 @@ func TestValidateName(t *testing.T) {
 }
 
 func TestParseCredentials(t *testing.T) {
-	accounts, err := ParseCredentials([]byte("# comment\n\nalice:$argon2id$x\n bob:$argon2id$y \n"))
-	if err != nil || len(accounts) != 2 || accounts[1].Name != "bob" || accounts[1].Hash != "$argon2id$y" {
+	accounts, err := ParseCredentials([]byte("# comment\n\nalice:$argon2id$x:admin\n bob:$argon2id$y \n"))
+	if err != nil || len(accounts) != 2 || accounts[1].Name != "bob" || accounts[1].Hash != "$argon2id$y" ||
+		!accounts[0].Admin || accounts[0].Hash != "$argon2id$x" || accounts[1].Admin {
 		t.Fatalf("accounts = %#v, %v", accounts, err)
 	}
-	for _, bad := range []string{"alice", "alice:plain", "a b:$argon2id$x", "a:$argon2id$x\na:$argon2id$y"} {
+	if got := string(FormatCredentials(accounts)); !strings.HasSuffix(got, "alice:$argon2id$x:admin\nbob:$argon2id$y\n") {
+		t.Fatalf("formatted = %q", got)
+	}
+	for _, bad := range []string{"alice", "alice:plain", "a b:$argon2id$x", "a:$argon2id$x\na:$argon2id$y", "a:$argon2id$x:root"} {
 		if _, err := ParseCredentials([]byte(bad)); err == nil {
 			t.Fatalf("accepted %q", bad)
 		}
@@ -64,7 +68,7 @@ func TestParseCredentials(t *testing.T) {
 
 func TestCredentialsFileRoundTripAndReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conf", "credentials")
-	if err := WriteCredentialsFile(path, []Account{{"alice", "$argon2id$a"}}); err != nil {
+	if err := WriteCredentialsFile(path, []Account{{Name: "alice", Hash: "$argon2id$a"}}); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
@@ -78,14 +82,27 @@ func TestCredentialsFileRoundTripAndReload(t *testing.T) {
 	if names := credentials.Names(); len(names) != 1 || names[0] != "alice" {
 		t.Fatalf("names = %v", names)
 	}
-	if err := WriteCredentialsFile(path, []Account{{"alice", "$argon2id$a"}, {"bob", "$argon2id$b"}}); err != nil {
+	if err := WriteCredentialsFile(path, []Account{{Name: "alice", Hash: "$argon2id$a"}, {Name: "bob", Hash: "$argon2id$b", Admin: true}}); err != nil {
 		t.Fatal(err)
 	}
 	// Force a different modification time even on coarse filesystems.
 	later := time.Now().Add(2 * time.Second)
 	_ = os.Chtimes(path, later, later)
-	if account, ok := credentials.Lookup("bob"); !ok || account.Hash != "$argon2id$b" {
+	if account, ok := credentials.Lookup("bob"); !ok || account.Hash != "$argon2id$b" || !account.Admin {
 		t.Fatal("reload did not pick up bob")
+	}
+	// Update writes through and is seen at once, whatever the file's times.
+	err := credentials.Update(func(accounts []Account) ([]Account, error) {
+		return append(accounts[:1], Account{Name: "carol", Hash: "$argon2id$c"}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := credentials.Names(); len(names) != 2 || names[1] != "carol" {
+		t.Fatalf("names after update = %v", names)
+	}
+	if onDisk, _ := ReadCredentialsFile(path); len(onDisk) != 2 || onDisk[1].Name != "carol" {
+		t.Fatalf("file after update = %v", onDisk)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
@@ -108,6 +125,17 @@ func TestReadCredentialsFileRejectsSharedFile(t *testing.T) {
 	}
 	if _, err := ReadCredentialsFile(path); err == nil || !strings.Contains(err.Error(), "chmod 600") {
 		t.Fatalf("err = %v", err)
+	}
+	// Fixing the permissions changes neither time nor size; it still counts.
+	credentials := NewCredentials(path)
+	if _, err := credentials.Accounts(); err == nil {
+		t.Fatal("shared file accepted")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := credentials.Lookup("alice"); !ok {
+		t.Fatal("fixed file not read again")
 	}
 }
 

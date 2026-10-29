@@ -43,3 +43,43 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 	}
 	return nil
 }
+
+const signInSettingsKey = "sign_in"
+
+// LoadSignInMode returns the sign-in mode chosen in Settings, or "" when none
+// was chosen there.
+func (s *Store) LoadSignInMode(ctx context.Context) (string, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM host_settings WHERE key = ?`, signInSettingsKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load sign-in settings: %w", err)
+	}
+	var settings struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return "", fmt.Errorf("decode sign-in settings: %w", err)
+	}
+	return settings.Mode, nil
+}
+
+func (s *Store) SaveSignInMode(ctx context.Context, mode string) error {
+	raw, err := json.Marshal(struct {
+		Mode string `json:"mode"`
+	}{mode})
+	if err != nil {
+		return fmt.Errorf("encode sign-in settings: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO host_settings (key, value, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		signInSettingsKey, string(raw), nowText())
+	if err != nil {
+		return fmt.Errorf("save sign-in settings: %w", err)
+	}
+	return nil
+}

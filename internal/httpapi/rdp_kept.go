@@ -80,7 +80,7 @@ func (a *API) rdpKeptOwner(w http.ResponseWriter, r *http.Request) (string, bool
 		return "", false
 	}
 	owner := SignedInAccount(r.Context())
-	if a.AuthMode == "" || a.AuthMode == AuthOff || owner == "" {
+	if a.authMode(r.Context()) == AuthOff || owner == "" {
 		writeError(w, http.StatusForbidden, "keeping RDP sessions needs Tessera sign-in")
 		return "", false
 	}

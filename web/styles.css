@@ -4342,6 +4342,13 @@ input {
   gap: 6px;
 }
 
+.sign-in-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .sign-in-error:empty {
   display: none;
 }

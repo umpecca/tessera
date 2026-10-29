@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -121,6 +122,10 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	}
 	httpsConfig, err := st.LoadLocalHTTPSConfig(ctx, opts.Addr)
 	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	if err := resolveSignIn(ctx, st, &opts.Auth); err != nil {
 		_ = st.Close()
 		return nil, err
 	}
@@ -335,4 +340,36 @@ func DefaultDBPath() string {
 		return "tessera.sqlite3"
 	}
 	return filepath.Join(cwd, "tessera.sqlite3")
+}
+
+// resolveSignIn picks the sign-in mode: -auth when given, which is also
+// saved so it lasts once the flag is dropped, otherwise the one chosen in
+// Settings. A mode that can never work stops the server rather than leaving
+// it open; unusable accounts only stop anyone signing in until they're fixed.
+func resolveSignIn(ctx context.Context, st *store.Store, options *httpapi.AuthOptions) error {
+	if options.Mode == "" {
+		mode, err := st.LoadSignInMode(ctx)
+		if err != nil {
+			return err
+		}
+		if mode == "" {
+			mode = httpapi.AuthOff
+		}
+		if err := options.CheckMode(mode); err != nil {
+			return fmt.Errorf("sign-in is set to %s in Settings, but %w; start with -auth=off to turn it off", mode, err)
+		}
+		options.Mode = mode
+	} else if err := st.SaveSignInMode(ctx, options.Mode); err != nil {
+		return err
+	}
+	switch options.Mode {
+	case httpapi.AuthFile:
+		log.Printf("Sign-in required; accounts from %s", options.Credentials.Path())
+		if err := options.AccountsProblem(); err != nil {
+			log.Printf("Nobody can sign in until this is fixed: %v", err)
+		}
+	case httpapi.AuthSystem:
+		log.Printf("Sign-in required with the password of %s", options.SystemAccount)
+	}
+	return nil
 }

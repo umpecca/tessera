@@ -34,6 +34,8 @@ export class SignInRecovery {
     this.config = config;
     this.pending = null;
     this.originalFetch = null;
+    this.leaving = false;
+    this.held = null;
   }
 
   // install wraps fetch: an API call refused for want of a sign-in waits for
@@ -44,19 +46,51 @@ export class SignInRecovery {
     this.target.fetch = async (input, init) => {
       const url = requestURL(input, this.target.location);
       const guarded = url && url.origin === this.target.location.origin && url.pathname.startsWith("/api/")
-        && url.pathname !== "/api/auth/login" && this.config().mode !== "off";
+        && url.pathname !== "/api/auth/login";
       const retry = guarded && typeof input?.clone === "function" ? input.clone() : input;
       const response = await original(input, init);
       if (!guarded || response.status !== 401) return response;
+      if (this.config().mode === "off") {
+        this.signInTurnedOn();
+        return response;
+      }
       await this.ensureSignedIn();
       return replayable(init) ? original(retry, init) : response;
     };
   }
 
+  // hold makes ended sign-ins wait while this page changes sign-in itself
+  // (Settings → Sign-in); after a change succeeds the page starts afresh,
+  // so they need no dialog. promise resolves to { ok }.
+  hold(promise) {
+    this.held = promise;
+    const release = () => {
+      if (this.held === promise) this.held = null;
+    };
+    promise.then(release, release);
+  }
+
+  // signInTurnedOn handles a sign-in demand on a page that loaded while
+  // sign-in was off: Settings elsewhere turned it on, so the page goes to
+  // the login page and comes back.
+  signInTurnedOn() {
+    if (this.leaving) return;
+    this.leaving = true;
+    Promise.resolve(this.held).then(result => {
+      if (!result?.ok) this.target.location.assign(signInURL(this.target.location));
+    });
+  }
+
   // ensureSignedIn shows one dialog however many requests are waiting, and
   // resolves when the user has signed in again.
   ensureSignedIn() {
-    if (this.config().mode === "off") return Promise.resolve();
+    if (this.held) {
+      return this.held.then(result => (result?.ok ? new Promise(() => {}) : this.ensureSignedIn()));
+    }
+    if (this.config().mode === "off") {
+      this.signInTurnedOn();
+      return new Promise(() => {});
+    }
     this.pending ??= new Promise(resolve => this.showDialog(() => {
       this.pending = null;
       resolve();

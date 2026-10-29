@@ -22,20 +22,29 @@ var signInWatchInterval = 30 * time.Second
 
 type gateKey struct{}
 
+// unsignedWatch collects connections opened while sign-in was off, which
+// close when it is turned on.
+const unsignedWatch = "(no sign-in)"
+
 type signInWatch struct {
+	// id is the sign-in the connection belongs to; it changes when the
+	// sign-in is replaced, as when its account's password changes.
+	id  string
 	end func()
 }
 
 // WatchSignIn runs end once if the request's sign-in ends while a long-lived
 // connection is open. The returned stop must be called when the connection
-// closes. Without sign-in it does nothing.
+// closes. Without the sign-in gate it does nothing.
 func WatchSignIn(ctx context.Context, end func()) (stop func()) {
 	gate, _ := ctx.Value(gateKey{}).(*authGate)
-	signIn, ok := ctx.Value(signInKey{}).(store.SignIn)
-	if gate == nil || !ok {
+	if gate == nil {
 		return func() {}
 	}
-	return gate.watch(signIn.ID, end)
+	if signIn, ok := ctx.Value(signInKey{}).(store.SignIn); ok {
+		return gate.watch(signIn.ID, end)
+	}
+	return gate.watch(unsignedWatch, end)
 }
 
 // closeOnSignInEnd closes a websocket with signInEndedCloseCode when the
@@ -53,7 +62,7 @@ func (g *authGate) watch(id string, end func()) func() {
 	if id == "" {
 		return func() {}
 	}
-	entry := &signInWatch{end: end}
+	entry := &signInWatch{id: id, end: end}
 	g.watchMu.Lock()
 	if g.watches[id] == nil {
 		g.watches[id] = map[*signInWatch]struct{}{}
@@ -66,12 +75,27 @@ func (g *authGate) watch(id string, end func()) func() {
 	g.watchMu.Unlock()
 	return func() {
 		g.watchMu.Lock()
-		delete(g.watches[id], entry)
-		if len(g.watches[id]) == 0 {
-			delete(g.watches, id)
+		delete(g.watches[entry.id], entry)
+		if len(g.watches[entry.id]) == 0 {
+			delete(g.watches, entry.id)
 		}
 		g.watchMu.Unlock()
 	}
+}
+
+// moveWatches hands one sign-in's open connections to its replacement, so
+// they stay open when the old one ends.
+func (g *authGate) moveWatches(from, to string) {
+	g.watchMu.Lock()
+	defer g.watchMu.Unlock()
+	for entry := range g.watches[from] {
+		entry.id = to
+		if g.watches[to] == nil {
+			g.watches[to] = map[*signInWatch]struct{}{}
+		}
+		g.watches[to][entry] = struct{}{}
+	}
+	delete(g.watches, from)
 }
 
 // endSignIns closes every connection opened under the given sign-ins.
@@ -102,7 +126,8 @@ func (g *authGate) endAllWatched() {
 
 // checkWatched re-validates sign-ins with open connections, catching expiry
 // and password changes or removals made with `tessera user` while the
-// server ran. It stops when nothing is watched.
+// server ran. While sign-in is off every connection may stay. It stops when
+// nothing is watched.
 func (g *authGate) checkWatched() {
 	ticker := time.NewTicker(signInWatchInterval)
 	defer ticker.Stop()
@@ -118,6 +143,9 @@ func (g *authGate) checkWatched() {
 			ids = append(ids, id)
 		}
 		g.watchMu.Unlock()
+		if g.mode() == AuthOff {
+			continue
+		}
 		var ended []string
 		for _, id := range ids {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

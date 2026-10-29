@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"tessera/internal/auth"
+	"tessera/internal/httpapi"
 	"tessera/internal/localhttps"
 	"tessera/internal/rdpsession"
 	"tessera/internal/store"
@@ -204,5 +206,45 @@ func TestStartWiresRDPIdleLimit(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("RDPIdleLimit %s: manager idle limit = %s, want %s", tc.limit, got, tc.want)
 		}
+	}
+}
+
+func TestResolveSignInUsesSettingsUnlessFlagged(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	credentials := auth.NewCredentials(filepath.Join(t.TempDir(), "credentials"))
+	unset := httpapi.AuthOptions{Credentials: credentials}
+	if err := resolveSignIn(ctx, st, &unset); err != nil || unset.Mode != httpapi.AuthOff {
+		t.Fatalf("nothing saved: %q, %v", unset.Mode, err)
+	}
+	if err := st.SaveSignInMode(ctx, httpapi.AuthFile); err != nil {
+		t.Fatal(err)
+	}
+	// Saved accounts mode with no accounts left starts, still requiring
+	// sign-in, rather than refusing to start or starting open.
+	saved := httpapi.AuthOptions{Credentials: credentials}
+	if err := resolveSignIn(ctx, st, &saved); err != nil || saved.Mode != httpapi.AuthFile || saved.AccountsProblem() == nil {
+		t.Fatalf("saved file mode without accounts: %q, %v", saved.Mode, err)
+	}
+	// A saved mode that can never work still stops the server.
+	if err := st.SaveSignInMode(ctx, httpapi.AuthSystem); err != nil {
+		t.Fatal(err)
+	}
+	noHost := httpapi.AuthOptions{Credentials: credentials}
+	if err := resolveSignIn(ctx, st, &noHost); err == nil || !strings.Contains(err.Error(), "-auth=off") {
+		t.Fatalf("saved system mode without a host account: %v", err)
+	}
+	// -auth is saved, so it lasts once the flag is dropped.
+	flagged := httpapi.AuthOptions{Mode: httpapi.AuthOff, ModeLocked: true, Credentials: credentials}
+	if err := resolveSignIn(ctx, st, &flagged); err != nil || flagged.Mode != httpapi.AuthOff {
+		t.Fatalf("flag: %q, %v", flagged.Mode, err)
+	}
+	after := httpapi.AuthOptions{Credentials: credentials}
+	if err := resolveSignIn(ctx, st, &after); err != nil || after.Mode != httpapi.AuthOff || after.ModeLocked {
+		t.Fatalf("after dropping the flag: %q, %v", after.Mode, err)
 	}
 }

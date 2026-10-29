@@ -75,3 +75,34 @@ test("describes when a device was last active", () => {
   assert.equal(describeLastActive(1000, 1000 + 7200), "2 hours ago");
   assert.equal(describeLastActive(1000, 1000 + 86400 * 3), "3 days ago");
 });
+
+test("a page loaded with sign-in off goes to the login page once sign-in is required", async () => {
+  const { target } = fakeTarget([401, 401]);
+  const visited = [];
+  target.location.assign = url => visited.push(url);
+  const { shown } = recovery(target, "off");
+  assert.equal((await target.fetch("/api/users")).status, 401);
+  await target.fetch("/api/workspace/a");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(shown.length, 0);
+  assert.deepEqual(visited, ["/login?next=%2Fu%2Falice%2Fs1%3Fx%3D1"]);
+});
+
+test("a sign-in change made on this page holds the sign-in dialog", async () => {
+  const { target } = fakeTarget([]);
+  const { instance, shown } = recovery(target);
+  let settle;
+  instance.hold(new Promise(resolve => { settle = resolve; }));
+  let resolved = false;
+  void instance.ensureSignedIn().then(() => { resolved = true; });
+  settle({ ok: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(shown.length, 0, "the page starts afresh instead");
+  assert.equal(resolved, false);
+
+  // A refused change leaves the usual dialog.
+  instance.hold(Promise.resolve({ ok: false }));
+  void instance.ensureSignedIn();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(shown.length, 1);
+});

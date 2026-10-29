@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Settings → Sign-in** turns sign-in on or off, and chooses Tessera
+  accounts or the host account, without restarting. With Tessera accounts,
+  admins add and remove accounts, set passwords and grant admin there.
+  Accounts can now be admins (`tessera user add -admin`, `tessera user
+  admin`); the first account is one. Turning sign-in off asks for your
+  password. `-auth` still works: it saves the mode, and locks it in Settings
+  while given.
+
+- With `-auth=file` and no accounts yet, Tessera now starts, requiring
+  sign-in that nobody can complete until `tessera user add`, which applies
+  without a restart. It used to refuse to start.
+
 - RDP windows: **New RDP** (command palette `NR`, desktop menu or window
   type menu) opens a remote desktop to an existing RDP server, such as
   Windows Remote Desktop, through the Tessera host. Tessera shows the

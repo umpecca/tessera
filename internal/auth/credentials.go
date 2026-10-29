@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,8 @@ const (
 type Account struct {
 	Name string
 	Hash string
+	// Admin accounts can manage accounts and sign-in from Settings.
+	Admin bool
 }
 
 var (
@@ -122,7 +125,8 @@ func DefaultCredentialsPath() string {
 	return "tessera-credentials"
 }
 
-// ParseCredentials reads `name:hash` lines, ignoring blanks and # comments.
+// ParseCredentials reads `name:hash` lines, or `name:hash:admin` for admin
+// accounts, ignoring blanks and # comments. Hashes never contain ':'.
 func ParseCredentials(data []byte) ([]Account, error) {
 	var accounts []Account
 	seen := map[string]bool{}
@@ -133,23 +137,28 @@ func ParseCredentials(data []byte) ([]Account, error) {
 			continue
 		}
 		name, hash, ok := strings.Cut(text, ":")
-		if !ok || ValidateName(name) != nil || !strings.HasPrefix(hash, "$argon2id$") {
-			return nil, fmt.Errorf("credentials line %d is not name:argon2id-hash", line)
+		hash, role, hasRole := strings.Cut(hash, ":")
+		if !ok || ValidateName(name) != nil || !strings.HasPrefix(hash, "$argon2id$") || (hasRole && role != "admin") {
+			return nil, fmt.Errorf("credentials line %d is not name:argon2id-hash[:admin]", line)
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("credentials line %d repeats account %q", line, name)
 		}
 		seen[name] = true
-		accounts = append(accounts, Account{Name: name, Hash: hash})
+		accounts = append(accounts, Account{Name: name, Hash: hash, Admin: hasRole})
 	}
 	return accounts, scanner.Err()
 }
 
 func FormatCredentials(accounts []Account) []byte {
 	var out bytes.Buffer
-	out.WriteString("# Tessera accounts. Manage with `tessera user add|passwd|remove|list`.\n")
+	out.WriteString("# Tessera accounts. Manage with `tessera user add|passwd|admin|remove|list`.\n")
 	for _, account := range accounts {
-		fmt.Fprintf(&out, "%s:%s\n", account.Name, account.Hash)
+		role := ""
+		if account.Admin {
+			role = ":admin"
+		}
+		fmt.Fprintf(&out, "%s:%s%s\n", account.Name, account.Hash, role)
 	}
 	return out.Bytes()
 }
@@ -230,11 +239,41 @@ func (c *Credentials) Accounts() ([]Account, error) {
 		c.loaded, c.list, c.err = false, nil, err
 		return nil, err
 	}
-	if !c.loaded || !info.ModTime().Equal(c.modTime) || info.Size() != c.size {
+	// A file that failed to load is read again each time: fixing its
+	// permissions changes neither its time nor its size.
+	if !c.loaded || c.err != nil || !info.ModTime().Equal(c.modTime) || info.Size() != c.size {
 		c.list, c.err = ReadCredentialsFile(c.path)
 		c.modTime, c.size, c.loaded = info.ModTime(), info.Size(), true
 	}
 	return c.list, c.err
+}
+
+// Update applies change to the current accounts and writes the result, so
+// edits from Settings don't race each other. A missing file starts empty.
+func (c *Credentials) Update(change func([]Account) ([]Account, error)) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	accounts, err := ReadCredentialsFile(c.path)
+	if errors.Is(err, os.ErrNotExist) {
+		accounts, err = nil, nil
+	}
+	if err != nil {
+		return err
+	}
+	accounts, err = change(slices.Clone(accounts))
+	if err != nil {
+		return err
+	}
+	if err := WriteCredentialsFile(c.path, accounts); err != nil {
+		return err
+	}
+	// Keep what was written rather than trusting the modification time,
+	// which may not change between two quick writes of the same size.
+	c.list, c.err, c.loaded = accounts, nil, true
+	if info, err := os.Stat(c.path); err == nil {
+		c.modTime, c.size = info.ModTime(), info.Size()
+	}
+	return nil
 }
 
 func (c *Credentials) Lookup(name string) (Account, bool) {

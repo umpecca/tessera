@@ -61,7 +61,7 @@ serve:
 	auditLog := flag.Bool("audit-log", false, "persist redacted security audit events")
 	auditRetention := flag.Int("audit-retention-days", 30, "audit-event retention in days when -audit-log is enabled; negative disables")
 	maxUploadSize := flag.Int64("max-upload-size", server.DefaultMaxUploadBytes, "maximum bytes per terminal file upload")
-	authMode := flag.String("auth", httpapi.AuthOff, "sign-in: off, system (this host account's password), or file (accounts managed with `tessera user`)")
+	authMode := flag.String("auth", "", "sign-in: off, system (this host account's password), or file (accounts managed with `tessera user`); saved, and locked in Settings while given; without it, as set in Settings, off at first")
 	authToken := flag.String("auth-token", auth.DefaultTokenPath(), "host recovery token for `tessera login` and `tessera logout`")
 	authFile := flag.String("auth-file", auth.DefaultCredentialsPath(), "credentials file for -auth=file")
 	allowHTTPSignIn := flag.Bool("allow-http-sign-in", false, "accept passwords over plain HTTP from other devices; only for already-encrypted links such as Tailscale or a VPN")
@@ -87,12 +87,11 @@ serve:
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	if authOptions.Mode != httpapi.AuthOff {
-		if _, err := auth.EnsureToken(*authToken); err != nil {
-			log.Printf("host recovery token unavailable, so `tessera login` will not work: %v", err)
-		} else {
-			authOptions.TokenPath = *authToken
-		}
+	// Settings can turn sign-in on later, so the token is made either way.
+	if _, err := auth.EnsureToken(*authToken); err != nil {
+		log.Printf("host recovery token unavailable, so `tessera login` will not work: %v", err)
+	} else {
+		authOptions.TokenPath = *authToken
 	}
 	useTray := *tray && desktop.TraySupported()
 	if *tray && !desktop.TraySupported() {
@@ -144,12 +143,6 @@ serve:
 	log.Printf("SQLite database: %s", *dbPath)
 	if len(users) > 0 {
 		log.Printf("Multi-user mode: %s", strings.Join(users, ", "))
-	}
-	switch authOptions.Mode {
-	case httpapi.AuthFile:
-		log.Printf("Sign-in required; accounts from %s", *authFile)
-	case httpapi.AuthSystem:
-		log.Printf("Sign-in required with the password of %s", authOptions.SystemAccount)
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -331,22 +324,24 @@ func checkRDPIdleLimit(limit time.Duration) error {
 	return nil
 }
 
-// authOptionsFromFlags validates the sign-in flags. With -auth=file the
-// accounts are the users, so -users would be a second, conflicting roster.
+// authOptionsFromFlags validates the sign-in flags. An empty mode means
+// -auth was not given: the server uses the mode chosen in Settings, which can
+// then be changed there. Both kinds of sign-in are prepared either way.
 func authOptionsFromFlags(mode, file string, users []string, allowHTTP bool, idle, maxAge time.Duration) (httpapi.AuthOptions, error) {
-	options := httpapi.AuthOptions{Mode: mode, AllowHTTPSignIn: allowHTTP, RememberIdle: idle, RememberMax: maxAge}
-	switch mode {
-	case httpapi.AuthOff:
-		return options, nil
-	case httpapi.AuthFile:
-	case httpapi.AuthSystem:
-		if idle <= 0 || maxAge <= 0 {
-			return options, errors.New("-signin-idle and -signin-max must be positive")
-		}
-		account, err := sysauth.Account()
-		if err != nil {
+	options := httpapi.AuthOptions{
+		Mode: mode, ModeLocked: mode != "", MultiUser: len(users) > 0,
+		AllowHTTPSignIn: allowHTTP, RememberIdle: idle, RememberMax: maxAge,
+		Credentials: auth.NewCredentials(file),
+	}
+	if idle <= 0 || maxAge <= 0 {
+		return options, errors.New("-signin-idle and -signin-max must be positive")
+	}
+	if account, err := sysauth.Account(); err != nil {
+		if mode == httpapi.AuthSystem {
 			return options, fmt.Errorf("find the account Tessera runs as: %w", err)
 		}
+		log.Printf("host account sign-in unavailable: %v", err)
+	} else {
 		options.SystemAccount = account
 		options.VerifySystem = func(ctx context.Context, password []byte) error {
 			err := sysauth.Verify(ctx, account, password)
@@ -357,23 +352,11 @@ func authOptionsFromFlags(mode, file string, users []string, allowHTTP bool, idl
 			}
 			return err
 		}
-		return options, nil
-	default:
-		return options, fmt.Errorf("-auth must be off, system or file, not %q", mode)
 	}
-	if len(users) > 0 {
-		return options, errors.New("-users cannot be combined with -auth=file: each account in the credentials file is a user")
+	if mode != "" {
+		if err := options.CheckMode(mode); err != nil {
+			return options, err
+		}
 	}
-	if idle <= 0 || maxAge <= 0 {
-		return options, errors.New("-signin-idle and -signin-max must be positive")
-	}
-	accounts, err := auth.ReadCredentialsFile(file)
-	if errors.Is(err, os.ErrNotExist) || (err == nil && len(accounts) == 0) {
-		return options, fmt.Errorf("-auth=file needs at least one account in %s; create one with: tessera user add <name>", file)
-	}
-	if err != nil {
-		return options, fmt.Errorf("read credentials: %w", err)
-	}
-	options.Credentials = auth.NewCredentials(file)
 	return options, nil
 }

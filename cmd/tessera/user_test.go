@@ -50,13 +50,32 @@ func TestUserCommands(t *testing.T) {
 	if mustLookup(t, path, "bob").Hash != accounts[1].Hash {
 		t.Fatal("passwd changed another account")
 	}
-	if out, err := runUser(t, path, "", nil, "list"); err != nil || out != "alice\nbob\n" {
+	// The first account is an admin; later ones only when asked.
+	if out, err := runUser(t, path, "", nil, "list"); err != nil || out != "alice (admin)\nbob\n" {
 		t.Fatalf("list = %q, %v", out, err)
+	}
+	if _, err := runUser(t, path, "", nil, "admin", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runUser(t, path, "", nil, "admin", "-revoke", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := runUser(t, path, "", nil, "list"); out != "alice\nbob (admin)\n" {
+		t.Fatalf("after admin = %q", out)
+	}
+	if mustLookup(t, path, "bob").Hash != accounts[1].Hash {
+		t.Fatal("admin changed the password")
+	}
+	if _, err := runUser(t, path, "pw\n", nil, "add", "-password-stdin", "-admin", "carol"); err != nil || !mustLookup(t, path, "carol").Admin {
+		t.Fatalf("add -admin: %v", err)
+	}
+	if _, err := runUser(t, path, "", nil, "remove", "carol"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := runUser(t, path, "", nil, "remove", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if out, _ := runUser(t, path, "", nil, "list"); out != "bob\n" {
+	if out, _ := runUser(t, path, "", nil, "list"); out != "bob (admin)\n" {
 		t.Fatalf("after remove = %q", out)
 	}
 }
@@ -76,6 +95,7 @@ func TestUserCommandRejections(t *testing.T) {
 		{"empty stdin password", nil, "\n", []string{"add", "-password-stdin", "alice"}},
 		{"bad name", nil, "x\n", []string{"add", "-password-stdin", "a:b"}},
 		{"missing account", nil, "x\n", []string{"passwd", "-password-stdin", "ghost"}},
+		{"admin of a missing account", nil, "", []string{"admin", "ghost"}},
 		{"unknown command", nil, "", []string{"rename", "alice"}},
 	}
 	for _, c := range cases {
@@ -105,7 +125,13 @@ func TestAuthOptionsFromFlags(t *testing.T) {
 	if options, err := authOptionsFromFlags("off", path, []string{"a"}, false, 1, 1); err != nil || options.Mode != "off" {
 		t.Fatalf("off: %v", err)
 	}
-	if _, err := authOptionsFromFlags("file", path, nil, false, 1, 1); err == nil || !strings.Contains(err.Error(), "tessera user add") {
+	// Without -auth the mode comes from Settings, so nothing is checked yet.
+	if options, err := authOptionsFromFlags("", path, []string{"a"}, false, 1, 1); err != nil || options.ModeLocked || options.Credentials == nil || !options.MultiUser {
+		t.Fatalf("unset: %#v, %v", options, err)
+	}
+	// No accounts yet still starts: nobody can sign in until one is added.
+	if options, err := authOptionsFromFlags("file", path, nil, false, 1, 1); err != nil || options.AccountsProblem() == nil ||
+		!strings.Contains(options.AccountsProblem().Error(), "tessera user add") {
 		t.Fatalf("missing file: %v", err)
 	}
 	if _, err := runUser(t, path, "pw\n", nil, "add", "-password-stdin", "alice"); err != nil {

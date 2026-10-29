@@ -16,6 +16,7 @@ import { normalizePredictionMode } from "./terminal-prediction.mjs";
 import { KeyReadout, keyReadoutShouldPreventKeydown } from "./key-readout.mjs";
 import { offerLoginToBrowser } from "./password-manager.mjs";
 import { renderSignedInDevices, SignInRecovery, signInEndedCloseCode, signOut } from "./sign-in.mjs";
+import { renderSignInSettings } from "./sign-in-settings.mjs";
 import { localHTTPSConfigWithCurrentHostname, localHTTPSDraft, localHTTPSNextURL, validateLocalHTTPSDraft } from "./local-https-settings.mjs";
 import { shouldShowIPadHTTPGuidance } from "./ipad-http-guidance.mjs";
 import {
@@ -8087,6 +8088,9 @@ function renderSettingsModal() {
   ]));
   content.appendChild(renderSettingsSection("Clipboard", [renderSettingsClipboardRow()]));
   content.appendChild(renderSettingsSection("Performance", [renderSettingsPerformanceRow()]));
+  const signInSection = renderSettingsSection("Sign-in", []);
+  void renderSignInSettings(signInSection, { recovery: signInRecovery });
+  content.appendChild(signInSection);
   if (authMode !== "off") {
     const devices = renderSettingsSection("Signed-in devices", []);
     void renderSignedInDevices(devices);

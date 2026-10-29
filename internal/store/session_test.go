@@ -288,3 +288,47 @@ VALUES ('alice', 'alice', 18, 'studio', 'hacker', '2026-01-01', '2026-01-02');`)
 		t.Fatalf("migrated settings = %+v", settings)
 	}
 }
+
+func TestMoveUserData(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace, err := st.EnsureUserDefaultSession(ctx, DefaultWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := st.LoadUserSettings(ctx, DefaultWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.DefaultTheme = "moved-theme"
+	if err := st.SaveUserSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	// Reading alice's settings first makes a row the move must replace.
+	if _, err := st.LoadUserSettings(ctx, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := st.MoveUserData(ctx, DefaultWorkspaceID, "alice"); err != nil || !moved {
+		t.Fatalf("move = %v, %v", moved, err)
+	}
+	if owner, err := st.SessionOwner(ctx, workspace.ID); err != nil || owner != "alice" {
+		t.Fatalf("owner = %q, %v", owner, err)
+	}
+	if loaded, err := st.LoadUserSettings(ctx, "alice"); err != nil || loaded.DefaultTheme != "moved-theme" {
+		t.Fatalf("alice settings = %+v, %v", loaded, err)
+	}
+	// Someone with workspaces of their own keeps them, and gets nothing.
+	if _, err := st.EnsureUserDefaultSession(ctx, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := st.MoveUserData(ctx, "alice", "bob"); err != nil || moved {
+		t.Fatalf("move to bob = %v, %v", moved, err)
+	}
+	if owner, _ := st.SessionOwner(ctx, workspace.ID); owner != "alice" {
+		t.Fatalf("owner after refused move = %q", owner)
+	}
+}

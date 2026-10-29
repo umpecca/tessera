@@ -20,8 +20,11 @@ const userUsage = `usage: tessera user <command> [-auth-file path] [name]
 Manage accounts for -auth=file. Changes apply to a running server at once.
 
 commands:
-  add <name>      create an account (prompts for a password)
+  add <name>      create an account (prompts for a password); -admin makes
+                  it an admin, as the first account always is
   passwd <name>   change a password; ends that account's sign-ins
+  admin <name>    let an account manage accounts and sign-in in Settings;
+                  -revoke takes that away
   remove <name>   delete an account; ends its sign-ins
   list            show account names
 `
@@ -39,6 +42,8 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 	flags.SetOutput(stderr)
 	path := flags.String("auth-file", auth.DefaultCredentialsPath(), "credentials file")
 	fromStdin := flags.Bool("password-stdin", false, "read the password from the first line of standard input")
+	makeAdmin := flags.Bool("admin", false, "with add: make the account an admin")
+	revoke := flags.Bool("revoke", false, "with admin: stop the account being an admin")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -60,7 +65,11 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 			return errors.New("list takes no arguments")
 		}
 		for _, account := range accounts {
-			fmt.Fprintln(stdout, account.Name)
+			if account.Admin {
+				fmt.Fprintln(stdout, account.Name, "(admin)")
+			} else {
+				fmt.Fprintln(stdout, account.Name)
+			}
 		}
 		return nil
 	}
@@ -94,8 +103,14 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 		if at >= 0 {
 			accounts[at].Hash = hash
 		} else {
-			accounts = append(accounts, auth.Account{Name: name, Hash: hash})
+			accounts = append(accounts, auth.Account{Name: name, Hash: hash, Admin: *makeAdmin || len(accounts) == 0})
 		}
+	case "admin":
+		at := index(name)
+		if at < 0 {
+			return fmt.Errorf("%w: %s", auth.ErrNoAccount, name)
+		}
+		accounts[at].Admin = !*revoke
 	case "remove":
 		at := index(name)
 		if at < 0 {
@@ -111,7 +126,17 @@ func runUserCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, re
 	}
 	switch command {
 	case "add":
-		fmt.Fprintf(stdout, "Added %s to %s\n", name, *path)
+		role := ""
+		if accounts[len(accounts)-1].Admin {
+			role = " as an admin"
+		}
+		fmt.Fprintf(stdout, "Added %s%s to %s\n", name, role, *path)
+	case "admin":
+		if *revoke {
+			fmt.Fprintf(stdout, "%s is no longer an admin\n", name)
+		} else {
+			fmt.Fprintf(stdout, "%s is now an admin\n", name)
+		}
 	case "passwd":
 		fmt.Fprintf(stdout, "Changed the password for %s; its existing sign-ins have ended\n", name)
 	case "remove":

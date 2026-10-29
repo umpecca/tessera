@@ -1,6 +1,41 @@
 # Sign-in
 
-Sign-in is off unless you start Tessera with `-auth=system` or `-auth=file`.
+Sign-in is off until you turn it on in **Settings → Sign-in**, or start
+Tessera with `-auth=system` or `-auth=file`.
+
+## Settings → Sign-in
+
+**Require sign-in** offers Off, Tessera accounts (`file`) and Host account
+(`system`). The choice is saved in the database and applies at once:
+
+- While sign-in is off, anyone who can open Tessera may turn it on. Choosing
+  Tessera accounts asks for an admin account: a new one is created, or an
+  existing one is used if you enter its password. Choosing Host account asks
+  for that account's password.
+- Once it is on, only admins can change it. Turning it off asks for your
+  password and warns when Tessera can be reached from other devices.
+- Every change ends all earlier sign-ins. Turning sign-in on also closes
+  connections opened without one, and other open pages go to the login page.
+- Tessera accounts keep workspaces per account, while Off and Host account
+  share one set. When a change moves you between them, **Bring my
+  workspaces, settings and shortcuts along** moves yours, unless the other
+  side already has workspaces.
+- Starting Tessera with `-auth` sets the mode and saves it, and Settings
+  can't change it while the flag is given. Drop the flag and the mode stays
+  as it set it, now changeable in Settings again. So `-auth=off` once turns
+  sign-in off for good, for instance when nobody can sign in any more.
+- With Tessera accounts but no usable credentials file (missing, empty, or
+  readable by other users), Tessera still starts and still requires sign-in,
+  but nobody can sign in; the log and the login page say why. Fixing it on
+  the host, such as with `tessera user add`, works without a restart.
+- Host account sign-in that can't work, because Tessera can't tell which
+  account it runs as, stops Tessera from starting; start it with `-auth=off`.
+
+With Tessera accounts, admins also see the accounts in this section: **Add
+Account...**, **Password...** (ends that account's sign-ins; your own device
+stays signed in), **Make Admin** / **Remove Admin**, and **Remove**. There is
+always at least one admin, and you can't remove the account you're signed in
+as. Setting passwords from another device needs HTTPS, as signing in does.
 
 ## The host account (`-auth=system`)
 
@@ -40,8 +75,10 @@ Accounts live in a credentials file that only the host account can read (default
 Support/Tessera/credentials` on macOS). Manage them with:
 
 ```sh
-tessera user add alice        # prompts for a password twice
+tessera user add alice        # prompts for a password twice; the first account is an admin
+tessera user add -admin carol # another admin
 tessera user passwd alice     # ends alice's existing sign-ins
+tessera user admin bob        # bob can manage accounts in Settings (-revoke undoes it)
 tessera user remove alice     # ends alice's sign-ins; keeps her workspaces
 tessera user list
 printf '%s\n' "$PASSWORD" | tessera user add -password-stdin bob
@@ -49,7 +86,9 @@ printf '%s\n' "$PASSWORD" | tessera user add -password-stdin bob
 
 Pass `-auth-file` to the commands and the server when the file lives
 elsewhere. Changes apply to a running server without a restart. Passwords are
-stored as argon2id hashes and are never accepted as command arguments.
+stored as argon2id hashes and are never accepted as command arguments. Admin
+accounts are marked `:admin` after the hash, which Tessera versions before
+admins can't read, so an older version refuses to sign admins in.
 
 ```sh
 tessera -addr 0.0.0.0:7331 -auth=file

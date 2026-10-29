@@ -441,3 +441,41 @@ WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? 
 	settings.AlternateRevision = ""
 	return nil
 }
+
+// MoveUserData gives one user's workspaces, settings, shortcuts and snippets
+// to another, as when sign-in starts or stops and the person at the keyboard
+// becomes a different user. It does nothing, and reports false, when the
+// recipient already has workspaces of its own.
+func (s *Store) MoveUserData(ctx context.Context, from, to string) (bool, error) {
+	if from == to {
+		return false, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin move user data: %w", err)
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspaces WHERE owner_id = ?`, to).Scan(&count); err != nil {
+		return false, fmt.Errorf("count sessions: %w", err)
+	}
+	if count > 0 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE workspaces SET owner_id = ? WHERE owner_id = ?`, to, from); err != nil {
+		return false, fmt.Errorf("move sessions: %w", err)
+	}
+	// The recipient's rows, if any, were made by reads and never used.
+	for _, table := range []string{"user_settings", "user_shortcuts", "user_snippets"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE user_id = ? AND EXISTS (SELECT 1 FROM `+table+` WHERE user_id = ?)`, to, from); err != nil {
+			return false, fmt.Errorf("move %s: %w", table, err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET user_id = ? WHERE user_id = ?`, to, from); err != nil {
+			return false, fmt.Errorf("move %s: %w", table, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit move user data: %w", err)
+	}
+	return true, nil
+}

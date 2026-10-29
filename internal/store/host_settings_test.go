@@ -39,3 +39,23 @@ func TestLocalHTTPSConfigPersistsAcrossStoreRestart(t *testing.T) {
 		t.Fatalf("loaded config = %+v, want %+v", loaded, config)
 	}
 }
+
+func TestSignInModePersists(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "tessera.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if mode, err := st.LoadSignInMode(ctx); err != nil || mode != "" {
+		t.Fatalf("unset mode = %q, %v", mode, err)
+	}
+	for _, want := range []string{"file", "off"} {
+		if err := st.SaveSignInMode(ctx, want); err != nil {
+			t.Fatal(err)
+		}
+		if mode, err := st.LoadSignInMode(ctx); err != nil || mode != want {
+			t.Fatalf("mode = %q, %v, want %q", mode, err, want)
+		}
+	}
+}

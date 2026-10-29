@@ -64,7 +64,7 @@ func (g *authGate) issueLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	account := request.Account
-	switch g.opts.Mode {
+	switch g.mode() {
 	case AuthSystem:
 		account = g.opts.SystemAccount
 	case AuthFile:
@@ -103,7 +103,8 @@ func (g *authGate) redeemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view := loginView{Host: g.host, Next: "/"}
-	if g.opts.Mode == AuthSystem {
+	mode := g.mode()
+	if mode == AuthSystem {
 		view.FixedAccount = g.opts.SystemAccount
 	}
 	// The code is as good as a password, so it obeys the same transport rule.
@@ -123,7 +124,7 @@ func (g *authGate) redeemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tag := ""
-	if g.opts.Mode == AuthFile {
+	if mode == AuthFile {
 		account, ok := g.opts.Credentials.Lookup(link.account)
 		if !ok {
 			view.Error = "That account no longer exists."

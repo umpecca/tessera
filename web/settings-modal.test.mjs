@@ -83,7 +83,7 @@ function fixture() {
   const frames = [], metrics = [], intervals = new Set();
   let diagnosticsCreated = 0, paneFocusCount = 0;
   const context = vm.createContext({
-    authMode: "off", document, settingsModal, deskbarButton,
+    authMode: "off", document, settingsModal, deskbarButton, signInRecovery: {}, renderSignInSettings: async () => {},
     commandPalette: { hidden: true }, commandWheel: { hidden: true }, windowList: { hidden: true },
     compatibilityUpdateTimer: null, settingsReturnFocus: null,
     defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,
@@ -168,7 +168,7 @@ test("Settings leads with everyday preferences and hides technical controls by d
   f.flush();
   const content = f.settingsModal.querySelector(".settings-content");
   assert.deepEqual(content.children.map(child => child.children[0].textContent), [
-    "Font size", "Theme", "Terminal", "Scroll wheel", "Shortcuts", "Background", "Clipboard", "Performance", "Advanced", "Diagnostics",
+    "Font size", "Theme", "Terminal", "Scroll wheel", "Shortcuts", "Background", "Clipboard", "Performance", "Sign-in", "Advanced", "Diagnostics",
   ]);
   const advanced = f.settingsModal.querySelector("#settings-advanced");
   assert.equal(advanced.open, false);

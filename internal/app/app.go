@@ -48,7 +48,6 @@ func (a *App) Handler() http.Handler {
 		Terminals:           terminalManager,
 		WebFS:               webFS,
 		Users:               a.Users,
-		AuthMode:            a.Auth.Mode,
 		Updater:             a.Updater,
 		MaxUploadBytes:      a.MaxUploadBytes,
 		HTTPSDefaultAddress: a.HTTPSDefaultAddress,
@@ -61,6 +60,7 @@ func (a *App) Handler() http.Handler {
 	// Sign-in runs inside the security handler, which resolves the client
 	// address and scheme it relies on.
 	authOptions := a.Auth
+	authOptions.ListenAddress = a.Security.DefaultAddress
 	if a.Security.AuditEnabled {
 		authOptions.AuditRetention = a.Security.AuditRetention
 	}

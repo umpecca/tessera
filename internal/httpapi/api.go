@@ -25,7 +25,8 @@ type API struct {
 	// single-user mode with just the default workspace.
 	Users []string
 	// AuthMode is AuthOff, AuthFile or AuthSystem. With AuthFile the signed-in
-	// account is the only user a request may reach.
+	// account is the only user a request may reach. Requests that passed the
+	// sign-in gate use its current mode instead, which Settings can change.
 	AuthMode string
 	// Updater enables the self-update endpoint; nil makes /api/update report
 	// the feature as unavailable.
@@ -109,22 +110,28 @@ func (a *API) users(w http.ResponseWriter, r *http.Request) {
 	if roster == nil {
 		roster = []string{}
 	}
-	mode := a.AuthMode
-	if mode == "" {
-		mode = AuthOff
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":  len(roster) > 0,
 		"users":    roster,
-		"auth":     mode,
+		"auth":     a.authMode(r.Context()),
 		"signedIn": SignedInAccount(r.Context()),
 	})
+}
+
+func (a *API) authMode(ctx context.Context) string {
+	if gate, ok := ctx.Value(gateKey{}).(*authGate); ok {
+		return gate.mode()
+	}
+	if a.AuthMode == "" {
+		return AuthOff
+	}
+	return a.AuthMode
 }
 
 // roster is the users a request may reach: the signed-in account with file
 // sign-in, otherwise the configured -users roster.
 func (a *API) roster(ctx context.Context) []string {
-	if a.AuthMode == AuthFile {
+	if a.authMode(ctx) == AuthFile {
 		if account := SignedInAccount(ctx); account != "" {
 			return []string{account}
 		}
@@ -138,7 +145,7 @@ func (a *API) roster(ctx context.Context) []string {
 func (a *API) userAllowed(ctx context.Context, id string) bool {
 	roster := a.roster(ctx)
 	if len(roster) == 0 {
-		return a.AuthMode != AuthFile && (id == "" || id == store.DefaultWorkspaceID)
+		return a.authMode(ctx) != AuthFile && (id == "" || id == store.DefaultWorkspaceID)
 	}
 	for _, user := range roster {
 		if user == id {
