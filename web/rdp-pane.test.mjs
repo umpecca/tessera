@@ -3,16 +3,21 @@ import test from "node:test";
 
 import {
   formatRDPFingerprint,
+  normalizeRDPResolution,
   normalizeRDPScaleMode,
   normalizeRDPTarget,
+  parseRDPResolution,
   rdpCanvasDisplaySize,
   rdpCanvasPoint,
   rdpCertificateTrust,
   rdpClipboardText,
   rdpDesktopSize,
+  rdpFollowsWindow,
   rdpErrorMessage,
+  rdpResolutions,
   rdpScanCode,
   rdpWebSocketURL,
+  rdpWigglePoints,
 } from "./rdp-pane.mjs";
 
 test("normalizes RDP host, port, and IPv6 targets", () => {
@@ -31,6 +36,10 @@ test("rejects malformed RDP targets and embedded credentials", () => {
 
 test("normalizes scale modes", () => {
   assert.equal(normalizeRDPScaleMode("resize"), "resize");
+  assert.equal(normalizeRDPScaleMode("resize-2x"), "resize-2x");
+  assert.equal(rdpFollowsWindow("resize"), true);
+  assert.equal(rdpFollowsWindow("resize-2x"), true);
+  assert.equal(rdpFollowsWindow("fit"), false);
   assert.equal(normalizeRDPScaleMode("one-to-one"), "one-to-one");
   assert.equal(normalizeRDPScaleMode("other"), "fit");
 });
@@ -181,4 +190,30 @@ test("splits a target into its host and port", async () => {
   assert.deepEqual(splitRDPTarget(normalizeRDPTarget("Mac.local:3390")), { host: "mac.local", port: "3390" });
   assert.deepEqual(splitRDPTarget(normalizeRDPTarget("[fd7a::4a3a]:3389")), { host: "fd7a::4a3a", port: "3389" });
   assert.deepEqual(splitRDPTarget("odd"), { host: "odd", port: "" });
+});
+
+test("wiggles the remote pointer a pixel aside and back", () => {
+  assert.deepEqual(rdpWigglePoints({ x: 100, y: 40 }, 1920, 1080), [{ x: 101, y: 40 }, { x: 100, y: 40 }]);
+  // At the right edge it steps left instead.
+  assert.deepEqual(rdpWigglePoints({ x: 1919, y: 0 }, 1920, 1080), [{ x: 1918, y: 0 }, { x: 1919, y: 0 }]);
+  // A pointer left outside a desktop that has since shrunk comes back inside.
+  assert.deepEqual(rdpWigglePoints({ x: 3000, y: 2000 }, 1280, 720), [{ x: 1278, y: 719 }, { x: 1279, y: 719 }]);
+});
+
+test("wiggles around the centre when the pointer was never placed", () => {
+  assert.deepEqual(rdpWigglePoints(null, 1920, 1080), [{ x: 961, y: 540 }, { x: 960, y: 540 }]);
+});
+
+test("keeps RDP resolutions to sizes the desktop takes as they are", () => {
+  assert.equal(normalizeRDPResolution(""), "");
+  assert.equal(normalizeRDPResolution("1920x1080"), "1920x1080");
+  assert.equal(normalizeRDPResolution("1921x1080"), "");
+  assert.equal(normalizeRDPResolution("100x100"), "");
+  assert.equal(normalizeRDPResolution("9000x1000"), "");
+  assert.equal(normalizeRDPResolution("1920 x 1080"), "");
+  assert.deepEqual(parseRDPResolution("1366x768"), { width: 1366, height: 768 });
+  assert.equal(parseRDPResolution("bogus"), null);
+  for (const value of rdpResolutions) {
+    assert.equal(normalizeRDPResolution(value), value);
+  }
 });

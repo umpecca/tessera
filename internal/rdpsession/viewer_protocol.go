@@ -26,6 +26,8 @@ import "errors"
 //	ViewResize       [width u16][height u16], optionally [scale u16]: the
 //	                 desktop scale factor in percent, 100 to 500
 //	ViewRefresh      (no payload)
+//	ViewWiggle       [flags u8]: 1 the window wants the mouse wiggler, 2 the
+//	                 window is in use (see wiggle.go)
 const (
 	ViewDesktopSize = 1
 	ViewH264        = 2
@@ -36,6 +38,7 @@ const (
 	ViewInput   = 1
 	ViewResize  = 2
 	ViewRefresh = 3
+	ViewWiggle  = 4
 )
 
 // Bounds on a resize request: RDP allows 200 to 8192 pixels each way.

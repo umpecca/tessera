@@ -175,10 +175,13 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 		RDPTarget:             "windows.example:3390",
 		RDPUsername:           "jax",
 		RDPDomain:             "LAB",
-		RDPScaleMode:          "resize",
+		RDPScaleMode:          "resize-2x",
 		RDPTrustedTarget:      "windows.example:3390",
 		RDPTrustedFingerprint: "ab12",
 		RDPFullSize:           true,
+		RDPWiggle:             true,
+		RDPWiggleAlways:       true,
+		RDPResolution:         "1920x1080",
 		Minimized:             true,
 		X:                     11,
 		Y:                     22,
@@ -238,7 +241,7 @@ func TestDefaultWorkspaceRoundTrip(t *testing.T) {
 	if loaded.Panes[0].VNCTarget != "desktop.example:5901" || !loaded.Panes[0].VNCViewOnly || loaded.Panes[0].VNCScaleMode != "one-to-one" {
 		t.Fatalf("first pane VNC settings were not persisted: %+v", loaded.Panes[0])
 	}
-	if first := loaded.Panes[0]; first.RDPTarget != "windows.example:3390" || first.RDPUsername != "jax" || first.RDPDomain != "LAB" || first.RDPScaleMode != "resize" || first.RDPTrustedTarget != "windows.example:3390" || first.RDPTrustedFingerprint != "ab12" || !first.RDPFullSize {
+	if first := loaded.Panes[0]; first.RDPTarget != "windows.example:3390" || first.RDPUsername != "jax" || first.RDPDomain != "LAB" || first.RDPScaleMode != "resize-2x" || first.RDPTrustedTarget != "windows.example:3390" || first.RDPTrustedFingerprint != "ab12" || !first.RDPFullSize || !first.RDPWiggle || !first.RDPWiggleAlways || first.RDPResolution != "1920x1080" {
 		t.Fatalf("first pane RDP settings were not persisted: %+v", first)
 	}
 	if second := loaded.Panes[1]; second.RDPScaleMode != "fit" || second.RDPTarget != "" {

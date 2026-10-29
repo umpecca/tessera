@@ -17,6 +17,7 @@ func (s *Session) HandleViewerMessage(message []byte) error {
 		if len(payload)+1 > recvCapacity || !validInput(payload) {
 			return ErrViewerMessage
 		}
+		s.notePointer(payload)
 		s.Post(append([]byte{tagInput}, payload...))
 	case ViewResize:
 		if len(payload) != 4 && len(payload) != 6 {
@@ -41,6 +42,11 @@ func (s *Session) HandleViewerMessage(message []byte) error {
 			return ErrViewerMessage
 		}
 		s.Post([]byte{tagRefresh})
+	case ViewWiggle:
+		if len(payload) != 1 || payload[0]&^(wiggleOn|wiggleInUse) != 0 {
+			return ErrViewerMessage
+		}
+		s.setWiggle(payload[0]&wiggleOn != 0, payload[0]&wiggleInUse != 0)
 	default:
 		return ErrViewerMessage
 	}

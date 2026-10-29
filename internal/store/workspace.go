@@ -66,16 +66,24 @@ type Pane struct {
 	RDPTrustedFingerprint string `json:"rdpTrustedFingerprint"`
 	// RDPFullSize keeps the server's interface full size in sharp mode, with
 	// a 2x scaled layout within Remotr's limits.
-	RDPFullSize bool   `json:"rdpFullSize"`
-	IsFull      bool   `json:"isFull"`
-	RestoreBox  string `json:"restoreBox"`
-	Minimized   bool   `json:"minimized"`
-	X           int    `json:"x"`
-	Y           int    `json:"y"`
-	Width       int    `json:"width"`
-	Height      int    `json:"height"`
-	ZIndex      int    `json:"zIndex"`
-	Position    int    `json:"position"`
+	RDPFullSize bool `json:"rdpFullSize"`
+	// RDPWiggle nudges the remote pointer while the pane isn't in use, so
+	// the remote session doesn't go idle.
+	RDPWiggle bool `json:"rdpWiggle"`
+	// RDPWiggleAlways wiggles even while the pane is in use.
+	RDPWiggleAlways bool `json:"rdpWiggleAlways"`
+	// RDPResolution is the desktop size asked for, as "1920x1080", or empty
+	// for the pane's own size.
+	RDPResolution string `json:"rdpResolution"`
+	IsFull        bool   `json:"isFull"`
+	RestoreBox    string `json:"restoreBox"`
+	Minimized     bool   `json:"minimized"`
+	X             int    `json:"x"`
+	Y             int    `json:"y"`
+	Width         int    `json:"width"`
+	Height        int    `json:"height"`
+	ZIndex        int    `json:"zIndex"`
+	Position      int    `json:"position"`
 	// BufferTextUnchanged and EditorTabsUnchanged let a save skip resending a
 	// pane's documents: the stored copy is kept and BufferText/EditorTabs above
 	// are ignored. They are request-only, so a loaded workspace never sets them.
@@ -110,13 +118,16 @@ type paneRDPSettings struct {
 	TrustedTarget      string `json:"trustedTarget,omitempty"`
 	TrustedFingerprint string `json:"trustedFingerprint,omitempty"`
 	FullSize           bool   `json:"fullSize,omitempty"`
+	Wiggle             bool   `json:"wiggle,omitempty"`
+	WiggleAlways       bool   `json:"wiggleAlways,omitempty"`
+	Resolution         string `json:"resolution,omitempty"`
 }
 
 func paneRDPSettingsJSON(pane Pane) string {
 	settings, _ := json.Marshal(paneRDPSettings{
 		Target: pane.RDPTarget, Username: pane.RDPUsername, Domain: pane.RDPDomain, ScaleMode: pane.RDPScaleMode,
 		TrustedTarget: pane.RDPTrustedTarget, TrustedFingerprint: pane.RDPTrustedFingerprint,
-		FullSize: pane.RDPFullSize,
+		FullSize: pane.RDPFullSize, Wiggle: pane.RDPWiggle, WiggleAlways: pane.RDPWiggleAlways, Resolution: pane.RDPResolution,
 	})
 	return string(settings)
 }
@@ -131,6 +142,9 @@ func applyPaneRDPSettings(pane *Pane, raw string) {
 	pane.RDPTrustedTarget = settings.TrustedTarget
 	pane.RDPTrustedFingerprint = settings.TrustedFingerprint
 	pane.RDPFullSize = settings.FullSize
+	pane.RDPWiggle = settings.Wiggle
+	pane.RDPWiggleAlways = settings.WiggleAlways
+	pane.RDPResolution = settings.Resolution
 }
 
 // normalizePaneDisplayModes keeps the VNC and RDP scale modes to the values
@@ -139,7 +153,9 @@ func normalizePaneDisplayModes(pane *Pane) {
 	if pane.VNCScaleMode != "one-to-one" {
 		pane.VNCScaleMode = "fit"
 	}
-	if pane.RDPScaleMode != "one-to-one" && pane.RDPScaleMode != "resize" {
+	switch pane.RDPScaleMode {
+	case "one-to-one", "resize", "resize-2x":
+	default:
 		pane.RDPScaleMode = "fit"
 	}
 }

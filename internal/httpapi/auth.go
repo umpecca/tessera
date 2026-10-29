@@ -250,14 +250,15 @@ func (g *authGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // publicPath lists what a signed-out browser may load: health checks, the
 // Local HTTPS enrollment it needs before it can sign in safely, static assets
 // for the login page and home-screen icon, and Browser pane traffic, whose
-// unguessable proxy ID is its capability and whose cookies are stripped.
+// unguessable proxy ID is its capability and whose cookies are stripped, with
+// its site data (browser_site_data.go).
 func publicPath(path string) bool {
 	switch path {
 	case "/api/health", "/api/host/https/ca", "/manifest.webmanifest":
 		return true
 	}
 	return strings.HasPrefix(path, "/local-https/") || strings.HasPrefix(path, "/assets/") ||
-		strings.HasPrefix(path, browserProxyPrefix)
+		strings.HasPrefix(path, browserProxyPrefix) || strings.HasPrefix(path, browserProxyStatePrefix)
 }
 
 func (g *authGate) currentSignIn(w http.ResponseWriter, r *http.Request) (store.SignIn, bool) {

@@ -45,10 +45,13 @@ type API struct {
 
 	browserProxyOnce sync.Once
 	browserProxy     *browserProxyManager
-	vncProxyOnce     sync.Once
-	vncProxy         *vncProxyManager
-	rdpProxyOnce     sync.Once
-	rdpProxy         *rdpProxyManager
+
+	browserSiteDataOnce sync.Once
+	browserSiteData     *browserSiteData
+	vncProxyOnce        sync.Once
+	vncProxy            *vncProxyManager
+	rdpProxyOnce        sync.Once
+	rdpProxy            *rdpProxyManager
 
 	hostClipboardMu   sync.Mutex
 	hostClipboardLast *hostClipboardWrite
@@ -82,6 +85,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/browser-proxy", a.browserProxyControl)
 	mux.HandleFunc("/api/browser-proxy/", a.browserProxyControl)
 	mux.HandleFunc("/browser-proxy/", a.browserProxyRequest)
+	mux.HandleFunc(browserProxyStatePrefix, a.browserProxyState)
 	mux.HandleFunc("/api/vnc-proxy", a.vncProxyCreate)
 	mux.HandleFunc("/api/vnc-proxy/connect", a.vncProxyConnect)
 	mux.HandleFunc("/api/rdp-proxy", a.rdpProxyCreate)

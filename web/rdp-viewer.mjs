@@ -9,6 +9,7 @@ import {
   parseViewerFrame,
   refreshMessage,
   resizeMessage,
+  wiggleMessage,
 } from "./rdp-viewer-wire.mjs";
 
 // A viewer for an RDP session kept on the host (task 238). It attaches to the
@@ -111,6 +112,10 @@ export function connectRDPViewer({
     },
     refresh() {
       if (socket.readyState === 1) socket.send(refreshMessage());
+    },
+    // The host runs the mouse wiggler for kept sessions.
+    setWiggle(on, inUse) {
+      if (socket.readyState === 1) socket.send(wiggleMessage(on, inUse));
     },
     releaseAllInputs() {
       if (socket.readyState === 1) socket.send(inputMessage([inputRecords.releaseAll()]));

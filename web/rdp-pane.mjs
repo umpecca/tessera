@@ -1,6 +1,6 @@
 export const defaultRDPPort = 3389;
 export const defaultRDPScaleMode = "fit";
-const rdpScaleModes = new Set(["fit", "one-to-one", "resize"]);
+const rdpScaleModes = new Set(["fit", "one-to-one", "resize", "resize-2x"]);
 
 export function normalizeRDPTarget(value) {
   let raw = String(value || "").trim();
@@ -37,6 +37,16 @@ export function normalizeRDPScaleMode(value) {
   return rdpScaleModes.has(value) ? value : defaultRDPScaleMode;
 }
 
+// Whether the remote desktop follows the window's size in this scale mode:
+// Resize at the window's size, Resize ×2 at half of it, shown doubled so the
+// remote text keeps its size in a large window.
+export function rdpFollowsWindow(mode) {
+  return mode === "resize" || mode === "resize-2x";
+}
+
+// Desktop pixels per CSS pixel in Resize ×2 mode.
+export const rdpDoubledRatio = 0.5;
+
 export function rdpWebSocketURL(path, locationLike) {
   const protocol = locationLike.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${locationLike.host}${path}`;
@@ -62,6 +72,30 @@ export function rdpDesktopSize(width, height) {
   return { width: clamp(width), height: clamp(height) };
 }
 
+// The fixed desktop sizes the sign-in dialog offers, besides the window's own
+// size ("").
+export const rdpResolutions = [
+  "1280x720", "1280x800", "1366x768", "1440x900", "1600x900", "1680x1050",
+  "1920x1080", "1920x1200", "2560x1440", "2560x1600", "3840x2160",
+];
+
+// A fixed desktop size as "WIDTHxHEIGHT", or "" for the window's own size.
+// The size must be one RDP takes as it is (see rdpDesktopSize).
+export function normalizeRDPResolution(value) {
+  const match = /^(\d{3,4})x(\d{3,4})$/.exec(String(value || ""));
+  if (!match) return "";
+  const size = rdpDesktopSize(match[1], match[2]);
+  return size.width === Number(match[1]) && size.height === Number(match[2]) ? `${size.width}x${size.height}` : "";
+}
+
+// The width and height of a fixed desktop size, or null for the window's own.
+export function parseRDPResolution(value) {
+  const normalized = normalizeRDPResolution(value);
+  if (!normalized) return null;
+  const [width, height] = normalized.split("x").map(Number);
+  return { width, height };
+}
+
 // Maps a pointer position on the displayed canvas to remote desktop pixels.
 export function rdpCanvasPoint(clientX, clientY, box, desktopWidth, desktopHeight) {
   if (!box.width || !box.height) {
@@ -73,6 +107,24 @@ export function rdpCanvasPoint(clientX, clientY, box, desktopWidth, desktopHeigh
     x: Math.min(Math.max(x, 0), Math.max(desktopWidth - 1, 0)),
     y: Math.min(Math.max(y, 0), Math.max(desktopHeight - 1, 0)),
   };
+}
+
+// The mouse wiggler nudges the remote pointer this often while its window
+// isn't the one in use, well inside the usual idle and screen-lock timeouts.
+// A hidden tab's timers can be held to once a minute, which this still meets.
+export const rdpWiggleIntervalMs = 60 * 1000;
+
+// The two pointer positions of one wiggle: a desktop pixel aside and back to
+// where the pointer last was, or around the desktop's centre if this page
+// never placed it. The centre keeps clear of a Mac's hot corners.
+export function rdpWigglePoints(last, desktopWidth, desktopHeight) {
+  const width = Math.max(Number(desktopWidth) || 0, 2);
+  const height = Math.max(Number(desktopHeight) || 0, 1);
+  const clamp = (value, size) => Math.min(Math.max(Math.round(Number(value) || 0), 0), size - 1);
+  const x = last ? clamp(last.x, width) : Math.floor(width / 2);
+  const y = last ? clamp(last.y, height) : Math.floor(height / 2);
+  const aside = x + 1 < width ? x + 1 : x - 1;
+  return [{ x: aside, y }, { x, y }];
 }
 
 // The CSS size of the canvas in a screen of the given size: "fit" scales the

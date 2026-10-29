@@ -154,6 +154,15 @@ type Session struct {
 	// closeReason replaces the end reason of a session closed by the idle limit.
 	closeReason string
 
+	// The mouse wiggler (see wiggle.go): whether the window asks for it,
+	// whether the attached viewer is in use, its clock, and where a viewer
+	// last put the pointer.
+	wiggle             bool
+	viewerInUse        bool
+	wiggleTimer        *time.Timer
+	pointerX, pointerY int
+	hasPointer         bool
+
 	width, height int
 	// surfaces holds the latest "surface shown" H.264 event for each surface
 	// the module said is shown, so a viewer attaching later learns where to

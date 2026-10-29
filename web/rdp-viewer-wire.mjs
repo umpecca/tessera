@@ -11,6 +11,7 @@ export const viewDetached = 5;
 export const viewInput = 1;
 export const viewResize = 2;
 export const viewRefresh = 3;
+export const viewWiggle = 4;
 
 // How a session ended (rdpsession.End).
 export const endQuit = 0;
@@ -106,6 +107,12 @@ export function resizeMessage(width, height, scale = 0) {
 
 export function refreshMessage() {
   return Uint8Array.of(viewRefresh);
+}
+
+// Whether the window wants the host to wiggle the mouse, and whether it is the
+// one in use: the host wiggles only while it isn't, or nobody is attached.
+export function wiggleMessage(on, inUse) {
+  return Uint8Array.of(viewWiggle, (on ? 1 : 0) | (inUse ? 2 : 0));
 }
 
 const decoder = new TextDecoder();

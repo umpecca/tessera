@@ -140,6 +140,7 @@ func (s *Session) finish(end End, err error, dialFailedWhileRejoining bool) {
 	switch s.state {
 	case StateEnded:
 		s.stopIdleLocked()
+		s.stopWiggleLocked()
 	case StateLost:
 		if s.viewer == nil {
 			s.armIdleLocked(false)
@@ -343,6 +344,7 @@ func (s *Session) Close() {
 	s.mu.Lock()
 	s.closing = true
 	s.stopIdleLocked()
+	s.stopWiggleLocked()
 	conn, finished, state := s.conn, s.finished, s.state
 	if state == StateLost {
 		s.state = StateEnded

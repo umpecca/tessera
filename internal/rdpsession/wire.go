@@ -111,33 +111,55 @@ const (
 // viewer's input must be checked before it is forwarded.
 func validInput(records []byte) bool {
 	for len(records) > 0 {
-		var size int
-		switch records[0] {
-		case inputMouseMove:
-			size = 5
-		case inputMouseButton:
-			size = 3
-			if len(records) >= 2 && records[1] > 4 {
-				return false
-			}
-		case inputWheel:
-			size = 4
-		case inputKey:
-			size = 4
-		case inputUnicode:
-			size = 6
-			if len(records) >= size && !utf8.ValidRune(rune(binary.LittleEndian.Uint32(records[1:5]))) {
-				return false
-			}
-		case inputReleaseAll:
-			size = 1
-		default:
+		size := inputRecordSize(records[0])
+		if size == 0 || len(records) < size {
 			return false
 		}
-		if len(records) < size {
-			return false
+		switch records[0] {
+		case inputMouseButton:
+			if records[1] > 4 {
+				return false
+			}
+		case inputUnicode:
+			if !utf8.ValidRune(rune(binary.LittleEndian.Uint32(records[1:5]))) {
+				return false
+			}
 		}
 		records = records[size:]
 	}
 	return true
+}
+
+// inputRecordSize is the length of an input record of the given kind, or 0
+// for a kind the module doesn't know.
+func inputRecordSize(kind byte) int {
+	switch kind {
+	case inputMouseMove:
+		return 5
+	case inputMouseButton:
+		return 3
+	case inputWheel, inputKey:
+		return 4
+	case inputUnicode:
+		return 6
+	case inputReleaseAll:
+		return 1
+	}
+	return 0
+}
+
+// lastMouseMove is the position of the last mouse move in valid input
+// records, if there is one.
+func lastMouseMove(records []byte) (x, y int, ok bool) {
+	for len(records) > 0 {
+		size := inputRecordSize(records[0])
+		if size == 0 || len(records) < size {
+			break
+		}
+		if records[0] == inputMouseMove {
+			x, y, ok = int(binary.LittleEndian.Uint16(records[1:])), int(binary.LittleEndian.Uint16(records[3:])), true
+		}
+		records = records[size:]
+	}
+	return x, y, ok
 }

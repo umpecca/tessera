@@ -44,10 +44,18 @@ gateway can reach any TCP destination, so the same trusted-users rule applies.
 **Fit** scales the remote desktop into the window, **1:1** shows native pixels
 with scrolling, and **Resize** asks the server to change its resolution to
 match the window (servers without the Display Control channel keep their
-size). **CAD** sends Ctrl+Alt+Del and **Win** the Windows key; the Command key
+size). **Resize ×2** does the same at half the window's size and shows the
+desktop doubled, so in a large window the remote text and windows keep their
+usual size, a little softer, with a quarter of the pixels to send. **CAD** sends Ctrl+Alt+Del and **Win** the Windows key; the Command key
 on a Mac is sent as the Windows key. Clipboard text works as in VNC panes:
 the up-arrow sends local text and the down-arrow copies the remote text.
-Audio, drive and printer redirection, RD Gateway and Kerberos are not
+**Wiggle when away**, remembered per window, moves the remote mouse a pixel
+and back once a minute while the window isn't the one you're using (another
+window is active, or the browser isn't in front), so the remote session
+doesn't go idle or lock; **Wiggle always** does so even while you are using
+it, for a remote desktop you watch without touching. For a [kept session](#kept-rdp-sessions) the Tessera host does
+the wiggling, so it goes on with the page closed or paused in a background
+tab; otherwise the page does it and needs to stay open. Audio, drive and printer redirection, RD Gateway and Kerberos are not
 included, and a pane that isn't [kept on the host](#kept-rdp-sessions) doesn't
 reconnect by itself.
 
@@ -69,6 +77,14 @@ then shows **H.264 4:4:4**. Off (the default), the pane shows the same stream
 at 4:2:0, which is lighter on the device. The client can't ask the server for
 one or the other: whether 4:4:4 is sent is the server's choice. The option is
 remembered in this browser and also applies to kept sessions it opens.
+
+The sign-in dialog's **Resolution**, remembered per window, asks for the
+desktop at the window's own size (the default) or at a fixed size such as
+1920 × 1080. A fixed size stays as chosen: **Fit** scales it into the window
+and **1:1** shows it with scrolling. Connecting at a fixed size switches a
+window in **Resize** or **Resize ×2** mode to **Fit**; choosing either again
+afterwards makes the desktop follow the window once more. Sharp mode isn't
+offered with a fixed size or in **Resize ×2**.
 
 On a Retina or other high-resolution screen, the sign-in dialog also offers
 **Sharp on this high-resolution screen**. It asks for the desktop at the

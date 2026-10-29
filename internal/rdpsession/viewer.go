@@ -59,6 +59,8 @@ func (s *Session) Attach(v Viewer) (detach func(), err error) {
 	s.attachID++
 	id := s.attachID
 	s.stopIdleLocked()
+	// In use until the viewer says otherwise.
+	s.viewerInUse = true
 	size := binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, uint16(s.width)), uint16(s.height))
 	conn := s.conn
 	// Before any event the module sends from here on, which goes to v: where

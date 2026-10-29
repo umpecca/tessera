@@ -52,10 +52,23 @@ type browserProxySession struct {
 	target    *url.URL
 	createdAt time.Time
 	proxy     *httputil.ReverseProxy
+	// sites keeps the site data for site (browser_site_data.go); without it,
+	// as in tests, cookies are only stripped.
+	sites *browserSiteData
+	site  browserSite
 }
 
 type browserProxyCreateRequest struct {
 	Target string `json:"target"`
+	// Pane is the Browser pane's ID, which keeps its sessionStorage.
+	Pane string `json:"pane"`
+}
+
+func (s *browserProxySession) cookieJar() *browserCookieJar {
+	if s.sites == nil {
+		return nil
+	}
+	return s.sites.jar(s.site)
 }
 
 func (a *API) proxyManager() *browserProxyManager {
@@ -87,11 +100,18 @@ func (a *API) browserProxyControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if len(request.Pane) > 128 {
+			writeError(w, http.StatusBadRequest, "invalid browser pane")
+			return
+		}
 		session, err := newBrowserProxySession(target)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not create browser proxy")
 			return
 		}
+		session.sites = a.siteData()
+		session.site.account = SignedInAccount(r.Context())
+		session.site.pane = request.Pane
 		manager.add(session)
 		path := browserProxyPrefix + session.id + target.EscapedPath()
 		if target.RawQuery != "" {
@@ -105,13 +125,28 @@ func (a *API) browserProxyControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := strings.TrimPrefix(r.URL.Path, "/api/browser-proxy/")
-	if id == "" || strings.Contains(id, "/") {
+	id, part, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/api/browser-proxy/"), "/")
+	if id == "" || (part != "" && part != "site-data") {
 		writeError(w, http.StatusNotFound, "unknown browser proxy")
 		return
 	}
 	if r.Method != http.MethodDelete {
 		methodNotAllowed(w, http.MethodDelete)
+		return
+	}
+	if part == "site-data" {
+		// Clear site data: the pane's development server's localStorage and
+		// cookies, and the pane's sessionStorage.
+		session := manager.get(id)
+		if session == nil || session.sites == nil || session.site.account != SignedInAccount(r.Context()) {
+			writeError(w, http.StatusNotFound, "unknown browser proxy")
+			return
+		}
+		if err := session.sites.clear(r.Context(), session.site, time.Now()); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not clear site data")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	manager.remove(id)
@@ -205,6 +240,7 @@ func newBrowserProxySession(requested *url.URL) (*browserProxySession, error) {
 		id:        hex.EncodeToString(token[:]),
 		target:    target,
 		createdAt: time.Now(),
+		site:      browserSite{origin: strings.ToLower(target.Scheme + "://" + target.Host), host: target.Hostname()},
 	}
 	transport := &http.Transport{
 		Proxy:                 nil,
@@ -223,7 +259,13 @@ func newBrowserProxySession(requested *url.URL) (*browserProxySession, error) {
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(target)
 			request.Out.Host = target.Host
+			// The browser's cookies are Tessera's; the server gets its own jar's.
 			request.Out.Header.Del("Cookie")
+			if jar := session.cookieJar(); jar != nil {
+				if cookies := jar.requestHeader(request.Out.URL.Path, time.Now()); cookies != "" {
+					request.Out.Header.Set("Cookie", cookies)
+				}
+			}
 			request.Out.Header.Del("Accept-Encoding")
 			request.Out.Header.Set("Origin", target.Scheme+"://"+target.Host)
 			if request.Out.Header.Get("Referer") != "" {
@@ -231,7 +273,21 @@ func newBrowserProxySession(requested *url.URL) (*browserProxySession, error) {
 			}
 		},
 		ModifyResponse: func(response *http.Response) error {
-			return rewriteBrowserProxyResponse(response, prefix, target)
+			changed := false
+			if jar := session.cookieJar(); jar != nil {
+				now := time.Now()
+				for _, line := range response.Header.Values("Set-Cookie") {
+					changed = jar.setFromResponse(response.Request.URL.Path, line, now) || changed
+				}
+			}
+			if err := rewriteBrowserProxyResponse(response, prefix, target); err != nil {
+				return err
+			}
+			if changed {
+				// The page's document.cookie copy is out of date.
+				response.Header.Set("X-Tessera-Cookies", "stale")
+			}
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			clearProxySecurityHeaders(w.Header())
@@ -326,7 +382,11 @@ func rewriteBrowserHTML(body []byte, prefix string, target *url.URL) []byte {
 	// No <base> is injected: every proxied document's URL is already under
 	// prefix + "/", so relative URLs resolve correctly against it, and a base
 	// would break fragment links and override the page's own <base>.
-	bootstrap := []byte(`<script>(function(){
+	stateJSON, _ := json.Marshal(browserProxyStatePrefix + strings.TrimPrefix(prefix, browserProxyPrefix))
+	// The site data stand-ins come first, so they see the browser's own fetch
+	// and XMLHttpRequest and the page sees theirs.
+	siteData := strings.TrimSpace(browserSiteDataScript) + "(" + string(stateJSON) + "," + string(prefixJSON) + ");\n"
+	bootstrap := []byte(`<script>` + siteData + `(function(){
 const prefix=` + string(prefixJSON) + `, targetOrigin=` + string(targetJSON) + `;
 const proxyURL=(value)=>{const u=new URL(String(value),location.href);if(u.origin===targetOrigin||u.origin===location.origin&&!u.pathname.startsWith(prefix+"/")){u.protocol=location.protocol;u.host=location.host;u.pathname=prefix+(u.pathname.startsWith("/")?u.pathname:"/"+u.pathname);}return u.href;};
 const originalFetch=window.fetch;window.fetch=(input,init)=>originalFetch(input instanceof Request?new Request(proxyURL(input.url),input):proxyURL(input),init);
@@ -339,6 +399,7 @@ addEventListener("message",event=>{if(event.source!==parent)return;if(event.data
 addEventListener("popstate",report);addEventListener("hashchange",report);addEventListener("load",report);
 const relayKeys=new Set(["[","]","BracketLeft","BracketRight","k","K","l","L",";","Semicolon","F7","F9","F10"]);
 addEventListener("keydown",event=>{const primary=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey;const alt=event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const reorder=(event.ctrlKey||event.metaKey)&&event.shiftKey&&!event.altKey&&(event.key==="ArrowUp"||event.key==="ArrowDown");if(!primary&&!alt&&!reorder)return;if(!reorder&&!relayKeys.has(event.key)&&!relayKeys.has(event.code))return;event.preventDefault();parent.postMessage({type:"tessera-browser-key",key:event.key,code:event.code,ctrlKey:event.ctrlKey,metaKey:event.metaKey,altKey:event.altKey,shiftKey:event.shiftKey},"*");},true);
+addEventListener("keyup",event=>{if(event.key==="Control"||event.key==="Meta")parent.postMessage({type:"tessera-browser-keyup",key:event.key},"*");},true);
 let drawPointer=null;
 const relayDraw=(event,phase)=>parent.postMessage({type:"tessera-browser-draw",phase,pointerId:event.pointerId,clientX:event.clientX,clientY:event.clientY,shiftKey:event.shiftKey},"*");
 const cancelDraw=()=>{if(drawPointer===null)return;const pointerId=drawPointer;drawPointer=null;relayDraw({pointerId,clientX:0,clientY:0},"cancel");if(document.documentElement.hasPointerCapture(pointerId))document.documentElement.releasePointerCapture(pointerId);};
@@ -411,6 +472,7 @@ func writeBrowserProxyEscape(w http.ResponseWriter, r *http.Request) {
 
 func setBrowserProxyResponseHeaders(header http.Header) {
 	header.Set("Access-Control-Allow-Origin", "null")
+	header.Set("Access-Control-Expose-Headers", "X-Tessera-Cookies")
 	header.Set("Cross-Origin-Resource-Policy", "cross-origin")
 	// The sandbox directive mirrors the pane iframe's sandbox attribute so proxied
 	// pages keep an opaque origin even when opened outside the iframe (for

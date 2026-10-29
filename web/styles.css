@@ -1594,6 +1594,13 @@ input {
   gap: 8px;
 }
 
+.rdp-resolution {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 /* An option that applies only with the one above it. */
 .rdp-keep-sub {
   padding-left: 22px;

@@ -8,6 +8,7 @@ import {
   maxViewerMessageBytes,
   parseViewerFrame,
   refreshMessage,
+  wiggleMessage,
   resizeMessage,
   viewDetached,
   viewEnded,
@@ -47,6 +48,9 @@ test("builds viewer messages", () => {
   assert.deepEqual(bytes(...resizeMessage(1216, 640, 200)), [2, 0xc0, 0x04, 0x80, 0x02, 200, 0]);
   assert.deepEqual(bytes(...resizeMessage(1216, 640, 50)), [2, 0xc0, 0x04, 0x80, 0x02], "no scale below 100%");
   assert.deepEqual(bytes(...refreshMessage()), [3]);
+  assert.deepEqual(bytes(...wiggleMessage(true, false)), [4, 1]);
+  assert.deepEqual(bytes(...wiggleMessage(true, true)), [4, 3]);
+  assert.deepEqual(bytes(...wiggleMessage(false, true)), [4, 2]);
 });
 
 test("parses frames from the host", () => {
