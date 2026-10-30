@@ -13,6 +13,8 @@ func TestBrowserStorageQuotaIsolationAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Windows can't remove the temporary directory while the database is open.
+	defer st.Close()
 	const origin = "http://localhost:8080"
 	if err := st.ApplyBrowserStorage(ctx, "alice", origin, []BrowserStorageOp{
 		{Op: "set", Key: "a", Value: "1"}, {Op: "set", Key: "b", Value: "2"}, {Op: "remove", Key: "a"}, {Op: "set", Key: "b", Value: "3"},
