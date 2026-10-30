@@ -64,3 +64,56 @@ func TestSettingsFinalSaveOrdering(t *testing.T) {
 		})
 	}
 }
+
+func TestPhoneSettingsStayApartFromDesktop(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "settings.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	desktop, err := st.LoadUserSettings(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktop.DeskbarButtonEnabled = false
+	desktop.ThemeID = "hacker"
+	desktop.Phone = nil
+	if err := st.SaveUserSettings(ctx, desktop); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := st.LoadUserSettings(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A phone starts from the defaults, not the desktop's choices.
+	if loaded.Phone == nil || !loaded.Phone.DeskbarButtonEnabled || loaded.Phone.ThemeID != defaultThemeID {
+		t.Fatalf("new phone settings = %+v", loaded.Phone)
+	}
+
+	loaded.Phone.ThemeID = "oled-terminal"
+	loaded.Phone.TerminalFont = "fira-code"
+	if err := st.SaveUserSettings(ctx, loaded); err != nil {
+		t.Fatal(err)
+	}
+	// A page that predates phone settings saves without them.
+	older, err := st.LoadUserSettings(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	older.Phone = nil
+	older.ThemeID = "studio"
+	if err := st.SaveUserSettings(ctx, older); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.LoadUserSettings(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ThemeID != "studio" || got.DeskbarButtonEnabled {
+		t.Fatalf("desktop settings = %+v", got)
+	}
+	if got.Phone.ThemeID != "oled-terminal" || got.Phone.TerminalFont != "fira-code" || !got.Phone.DeskbarButtonEnabled {
+		t.Fatalf("phone settings = %+v", got.Phone)
+	}
+}

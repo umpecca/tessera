@@ -120,6 +120,7 @@ function fixture() {
     renderSettingsFontRow: label => row(`${label} font size`, "button"),
     renderCurrentPaneFontRow: () => row("Current font size", "button"),
     renderSettingsThemeRow: label => row(`${label} theme`),
+    displaySettingsScope: () => "on desktops and iPads",
     renderSettingsOLEDWindowBorderRow: () => row("OLED border", "button"),
     renderSettingsTerminalFontRow: () => row("Terminal font"),
     renderSettingsTerminalRowSpacingRow: () => row("Terminal row spacing"),

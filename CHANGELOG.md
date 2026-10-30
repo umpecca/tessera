@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Phones keep their own display settings: theme, font size, Deskbar
+  button, OLED border, terminal font, row spacing, terminal colors and wheel
+  speed. Desktops and iPads share the account's settings as before, and a
+  phone starts from the defaults. A Deskbar hidden on a desktop no longer
+  strands a phone that switched to the desktop view.
+
+- The Window list (the Deskbar button) has **Phone View**, a way back to
+  the phone view that a phone can tap.
+
+- Two fingers dragged up or down scroll a terminal on a touch screen: the
+  scrollback follows the fingers, and a full-screen program hears the wheel
+  or arrow keys, as with a mouse wheel.
+
 - **Settings → Sign-in** turns sign-in on or off, and chooses Tessera
   accounts or the host account, without restarting. With Tessera accounts,
   admins add and remove accounts, set passwords and grant admin there.

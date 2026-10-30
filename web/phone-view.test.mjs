@@ -10,6 +10,7 @@ import {
   phoneViewPathOverride,
   readingLines,
   shortenDirectory,
+  isPhoneDevice,
   shouldUsePhoneView,
   sortTerminalCards,
   terminalCardStatus,
@@ -416,4 +417,12 @@ test("the view menu shows the shell's size and switches screen, text, zoom and f
   fresh.open("a");
   assert.equal(fresh.readingView.hidden, false, "text is the default");
   fresh.leave();
+});
+
+test("a phone is a touch screen under 600 points on its shorter side", () => {
+  assert.equal(isPhoneDevice({ coarsePointer: true, screenWidth: 390, screenHeight: 844 }), true);
+  assert.equal(isPhoneDevice({ coarsePointer: true, screenWidth: 844, screenHeight: 390 }), true, "turned sideways");
+  assert.equal(isPhoneDevice({ coarsePointer: true, screenWidth: 820, screenHeight: 1180 }), false, "an iPad");
+  assert.equal(isPhoneDevice({ coarsePointer: false, screenWidth: 390, screenHeight: 844 }), false, "a small desktop screen");
+  assert.equal(isPhoneDevice({ coarsePointer: true, screenWidth: 0, screenHeight: 0 }), false, "no screen size");
 });

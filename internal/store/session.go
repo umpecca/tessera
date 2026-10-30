@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -45,6 +46,47 @@ type UserSettings struct {
 	// Off rather than on, so a save from a page that predates the setting
 	// leaves it on.
 	TerminalShellIntegrationOff bool `json:"terminalShellIntegrationOff"`
+	// Phones show their own display settings; the fields above serve
+	// desktops and iPads. A save without them keeps the phones' as they are.
+	Phone *DisplaySettings `json:"phone,omitempty"`
+}
+
+// DisplaySettings are the settings that suit one kind of screen. What fits
+// a desktop, such as a hidden Deskbar button, can leave a phone stuck.
+type DisplaySettings struct {
+	DefaultPaneFontSize      int     `json:"defaultPaneFontSize"`
+	DefaultTheme             string  `json:"defaultTheme"`
+	ThemeID                  string  `json:"themeId"`
+	DeskbarButtonEnabled     bool    `json:"deskbarButtonEnabled"`
+	TerminalWheelSensitivity float64 `json:"terminalWheelSensitivity"`
+	OLEDWindowBorderSize     int     `json:"oledWindowBorderSize"`
+	TerminalFont             string  `json:"terminalFont"`
+	TerminalRowSpacing       string  `json:"terminalRowSpacing"`
+	TerminalColorMode        string  `json:"terminalColorMode"`
+}
+
+func (d *DisplaySettings) normalize() {
+	d.DefaultPaneFontSize = normalizeDefaultPaneFontSize(d.DefaultPaneFontSize)
+	d.DefaultTheme = normalizeThemeID(d.DefaultTheme)
+	d.ThemeID = normalizeThemeID(d.ThemeID)
+	d.TerminalWheelSensitivity = normalizeWheelSensitivity(d.TerminalWheelSensitivity)
+	d.OLEDWindowBorderSize = normalizeOLEDWindowBorderSize(d.OLEDWindowBorderSize)
+	d.TerminalFont = NormalizeTerminalFont(d.TerminalFont)
+	d.TerminalRowSpacing = NormalizeTerminalRowSpacing(d.TerminalRowSpacing)
+	d.TerminalColorMode = NormalizeTerminalColorMode(d.TerminalColorMode)
+}
+
+// decodePhoneSettings reads the stored phone settings. Phones start from the
+// defaults rather than a desktop's choices.
+func decodePhoneSettings(stored string) *DisplaySettings {
+	phone := &DisplaySettings{DeskbarButtonEnabled: true}
+	if stored != "" {
+		if err := json.Unmarshal([]byte(stored), phone); err != nil {
+			phone = &DisplaySettings{DeskbarButtonEnabled: true}
+		}
+	}
+	phone.normalize()
+	return phone
 }
 
 const defaultWheelSensitivity = 1.5
@@ -325,11 +367,12 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 		userID = DefaultWorkspaceID
 	}
 	var settings UserSettings
+	var phoneSettings string
 	err := s.db.QueryRowContext(ctx, `
 SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled,
        terminal_wheel_sensitivity, oled_window_border_size,
        terminal_term, terminal_font, terminal_row_spacing, terminal_color_mode, older_mac_mode,
-       terminal_shell_integration_off, revision
+       terminal_shell_integration_off, phone_settings, revision
 FROM user_settings
 WHERE user_id = ?`, userID).Scan(
 		&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme,
@@ -337,7 +380,7 @@ WHERE user_id = ?`, userID).Scan(
 		&settings.TerminalWheelSensitivity,
 		&settings.OLEDWindowBorderSize, &settings.TerminalTERM, &settings.TerminalFont,
 		&settings.TerminalRowSpacing,
-		&settings.TerminalColorMode, &settings.OlderMacMode, &settings.TerminalShellIntegrationOff, &settings.Revision)
+		&settings.TerminalColorMode, &settings.OlderMacMode, &settings.TerminalShellIntegrationOff, &phoneSettings, &settings.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		now := nowText()
 		if _, err := s.db.ExecContext(ctx, `
@@ -364,6 +407,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSi
 	settings.TerminalFont = NormalizeTerminalFont(settings.TerminalFont)
 	settings.TerminalRowSpacing = NormalizeTerminalRowSpacing(settings.TerminalRowSpacing)
 	settings.TerminalColorMode = NormalizeTerminalColorMode(settings.TerminalColorMode)
+	settings.Phone = decodePhoneSettings(phoneSettings)
 	return &settings, nil
 }
 
@@ -394,6 +438,15 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 	settings.TerminalFont = NormalizeTerminalFont(settings.TerminalFont)
 	settings.TerminalRowSpacing = NormalizeTerminalRowSpacing(settings.TerminalRowSpacing)
 	settings.TerminalColorMode = NormalizeTerminalColorMode(settings.TerminalColorMode)
+	phoneSettings := ""
+	if settings.Phone != nil {
+		settings.Phone.normalize()
+		encoded, err := json.Marshal(settings.Phone)
+		if err != nil {
+			return fmt.Errorf("encode phone settings: %w", err)
+		}
+		phoneSettings = string(encoded)
+	}
 	now := nowText()
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO user_settings (
@@ -401,9 +454,9 @@ INSERT INTO user_settings (
   deskbar_button_enabled, terminal_wheel_sensitivity,
   oled_window_border_size, terminal_term, terminal_font,
   terminal_row_spacing, terminal_color_mode, older_mac_mode, terminal_shell_integration_off,
-  created_at, updated_at, revision
+  phone_settings, created_at, updated_at, revision
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
   default_theme = excluded.default_theme,
@@ -417,6 +470,7 @@ ON CONFLICT(user_id) DO UPDATE SET
   terminal_color_mode = excluded.terminal_color_mode,
   older_mac_mode = excluded.older_mac_mode,
   terminal_shell_integration_off = excluded.terminal_shell_integration_off,
+  phone_settings = CASE excluded.phone_settings WHEN '' THEN user_settings.phone_settings ELSE excluded.phone_settings END,
   updated_at = excluded.updated_at,
   revision = excluded.revision
 WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? <> '')`, settings.UserID, settings.DefaultPaneFontSize,
@@ -424,7 +478,7 @@ WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? 
 		settings.TerminalWheelSensitivity,
 		settings.OLEDWindowBorderSize, settings.TerminalTERM, settings.TerminalFont,
 		settings.TerminalRowSpacing,
-		settings.TerminalColorMode, settings.OlderMacMode, settings.TerminalShellIntegrationOff, now, now, nextRevision,
+		settings.TerminalColorMode, settings.OlderMacMode, settings.TerminalShellIntegrationOff, phoneSettings, now, now, nextRevision,
 		settings.Revision, settings.Revision, settings.AlternateRevision, settings.AlternateRevision)
 	if err != nil {
 		return fmt.Errorf("save user settings: %w", err)

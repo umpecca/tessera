@@ -75,6 +75,14 @@ export function shouldUsePhoneView({ width, coarsePointer, override }) {
   return Boolean(coarsePointer) && Number(width) > 0 && Number(width) < phoneViewMaxWidth;
 }
 
+// Whether this device is a phone, whichever view it shows: its screen's
+// shorter side, unlike the window, stays put through rotation and resizing.
+// A phone keeps display settings apart from desktops and iPads.
+export function isPhoneDevice({ coarsePointer, screenWidth, screenHeight }) {
+  const shorter = Math.min(Number(screenWidth), Number(screenHeight));
+  return Boolean(coarsePointer) && shorter > 0 && shorter < phoneViewMaxWidth;
+}
+
 // "~/src/tessera" for a path in the host account's home folder.
 export function shortenDirectory(path, home) {
   if (typeof path !== "string" || !path) return "";

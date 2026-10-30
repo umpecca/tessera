@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { readFileSync } from "node:fs";
 import { TerminalScroll, installTerminalScrollRenderer, terminalScrollMouseEvent } from "./terminal-scroll.mjs";
 import { wheelDeltaUnits } from "./wheel-sensitivity.mjs";
+import { TerminalTouchScroll } from "./terminal-touch-scroll.mjs";
 
 function fixture() {
   let clock = 0, history = 500, alternate = false;
@@ -147,7 +148,7 @@ function wheelBridge(speed = 1.5) {
     input(value) { inputs.push(value); }, attachCustomWheelEventHandler(handler) { wheel = handler; } };
   const bridge = vm.runInNewContext(`(${source.slice(start, end)})`, {
     TerminalMousePress: class {}, TerminalMouseHover: class {}, TerminalContextMenuFallback: class {},
-    terminalWheelSensitivity: speed, wheelDeltaUnits,
+    TerminalTouchScroll, terminalWheelSensitivity: speed, wheelDeltaUnits,
     terminalShouldReportMouse: () => reporting, terminalMousePosition: () => ({ col: 1, row: 1 }),
     terminalMouseEventCode: code => code, sendTerminalMouseSequence(_socket, code) { reports.push(code); },
   })({ terminalContainer: { addEventListener() {}, removeEventListener() {} } }, term, {});
@@ -173,4 +174,82 @@ test("TUI wheel input accumulates tiny deltas instead of flooding or dropping ge
   for (let i = 0; i < 34; i++) a.wheel(-1);
   assert.deepEqual(a.inputs, ["\x1B[A"]);
   assert.deepEqual(a.movements, []);
+});
+
+function touchBridge() {
+  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const start = source.indexOf("function attachTerminalMouseBridge(");
+  const end = source.indexOf("\nfunction terminalShouldReportMouse", start);
+  let reporting = false, alternate = false, selection = false, pressed = null;
+  const movements = [], inputs = [], reports = [], listeners = {};
+  const term = { rows: 24, wasmTerm: { isAlternateScreen: () => alternate },
+    renderer: { getMetrics: () => ({ height: 20 }) }, scrollWheelLines(value) { movements.push(value); },
+    input(value) { inputs.push(value); }, attachCustomWheelEventHandler() {}, focus() {},
+    hasSelection: () => selection, clearSelection() { selection = false; } };
+  const container = { addEventListener(type, handler) { listeners[type] = handler; }, removeEventListener() {},
+    setPointerCapture() {}, hasPointerCapture: () => false };
+  vm.runInNewContext(`(${source.slice(start, end)})`, {
+    TerminalMousePress: class {
+      begin(pointerID, buttonCode, position) { pressed = { pointerID, buttonCode, position }; }
+      matches(pointerID) { return pressed?.pointerID === pointerID; }
+      finish(pointerID) {
+        if (!pressed || (pointerID !== null && pointerID !== pressed.pointerID)) return null;
+        const release = pressed; pressed = null; return release;
+      }
+    },
+    TerminalMouseHover: class { reset() {} }, TerminalContextMenuFallback: class { notePress() {} },
+    TerminalTouchScroll, terminalWheelSensitivity: 1.5, wheelDeltaUnits, appleKeyboardLayout: false,
+    isTerminalContextMenuGesture: () => false, terminalMouseButtonCode: button => button,
+    terminalShouldReportMouse: () => reporting, terminalMousePosition: () => ({ col: 1, row: 1 }),
+    terminalMouseEventCode: code => code,
+    sendTerminalMouseSequence(_socket, code, _position, kind) { reports.push(`${code}${kind}`); },
+    clearTerminalSelectionStartedDuringGesture(t, had) { if (had === false && t.hasSelection()) t.clearSelection(); },
+    stopTerminalMouseEvent() {}, hideFloatingMenus() {}, setActivePane() {},
+  })({ terminalContainer: container }, term, {});
+  const event = (pointerId, clientY) => ({ pointerType: "touch", pointerId, clientY, button: 0, buttons: 1 });
+  return {
+    movements, inputs, reports,
+    down(id, y) { listeners.pointerdown(event(id, y)); },
+    move(id, y) { listeners.pointermove(event(id, y)); },
+    up(id, y) { listeners.pointerup(event(id, y)); },
+    reporting() { reporting = true; }, alternate() { alternate = true; },
+    select() { selection = true; }, get selection() { return selection; },
+  };
+}
+
+test("two fingers scroll the scrollback with the content under them", () => {
+  const f = touchBridge();
+  f.down(1, 200); f.down(2, 200);
+  f.move(1, 160); f.move(2, 160);
+  assert.deepEqual(f.movements, [1, 1], "fingers moving up show newer lines");
+  f.move(1, 240); f.move(2, 240);
+  assert.deepEqual(f.movements, [1, 1, -2, -2]);
+  f.up(1, 240); f.move(2, 300); f.up(2, 300);
+  assert.equal(f.movements.length, 4, "the finger left behind does nothing");
+});
+
+test("two fingers send a full-screen program a wheel step or arrow per line", () => {
+  const program = touchBridge(); program.reporting();
+  program.down(1, 200);
+  assert.deepEqual(program.reports, ["0M"], "one finger is a press");
+  program.down(2, 200);
+  assert.deepEqual(program.reports, ["0M", "0m"], "the second finger releases it");
+  program.move(1, 170); program.move(2, 170);
+  assert.deepEqual(program.reports, ["0M", "0m", "65M"], "30 pixels is a line and a half");
+  program.move(1, 230); program.move(2, 230);
+  assert.deepEqual(program.reports.slice(3), ["64M", "64M"]);
+
+  const pager = touchBridge(); pager.alternate();
+  pager.down(1, 0); pager.down(2, 0); pager.move(1, -40); pager.move(2, -40);
+  assert.deepEqual(pager.inputs, ["\x1B[B", "\x1B[B"]);
+  assert.deepEqual(pager.movements, []);
+});
+
+test("a selection the first finger began goes when the second lands", () => {
+  const f = touchBridge();
+  f.down(1, 100); f.select(); f.down(2, 100);
+  assert.equal(f.selection, false);
+  const kept = touchBridge();
+  kept.select(); kept.down(1, 100); kept.down(2, 100);
+  assert.equal(kept.selection, true, "one made before the touch stays");
 });

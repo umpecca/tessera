@@ -5,6 +5,7 @@ import {
 } from "./clipboard-bridge.mjs";
 import { compatibilityDiagnostics, detectCompatibility } from "./compatibility.mjs";
 import { CommandWheel } from "./command-wheel.mjs";
+import { TerminalTouchScroll } from "./terminal-touch-scroll.mjs";
 import { TerminalAudioPlayer, terminalAudioMuteKey } from "./terminal-audio.mjs";
 import { TerminalFiles } from "./terminal-files.mjs";
 import { ShortcutsModal } from "./shortcuts.mjs";
@@ -45,6 +46,7 @@ import {
   readingLines,
   phoneViewPathOverride,
   phoneViewStorageKey,
+  isPhoneDevice,
   shouldUsePhoneView,
 } from "./phone-view.mjs";
 import {
@@ -273,6 +275,12 @@ if (phoneViewPathOverride(window.location.pathname)) {
   window.history.replaceState(window.history.state, "", "/");
 }
 const coarsePointer = window.matchMedia("(pointer: coarse)");
+// A phone shows its own theme, Deskbar button and other display settings,
+// and keeps the desktop's to send back when it saves.
+const phoneDevice = isPhoneDevice({
+  coarsePointer: coarsePointer.matches, screenWidth: window.screen.width, screenHeight: window.screen.height,
+});
+let otherDisplaySettings = null;
 const phoneViewRoot = document.createElement("div");
 document.body.appendChild(phoneViewRoot);
 const phoneView = new PhoneView(phoneViewRoot, {
@@ -935,21 +943,23 @@ async function fetchUserSettings(user) {
 function applyUserSettings(settings) {
   userSettingsRevision = settings.revision || "";
   userSettingsDirty = false;
-  defaultPaneFontSize = normalizePaneFontSize(settings.defaultPaneFontSize);
-  defaultTheme = themes[settings.defaultTheme] ? settings.defaultTheme : defaultThemeID;
-  deskbarButtonEnabled = settings.deskbarButtonEnabled !== false;
-  terminalWheelSensitivity = normalizeWheelSensitivity(settings.terminalWheelSensitivity);
+  const display = phoneDevice && settings.phone ? settings.phone : settings;
+  otherDisplaySettings = phoneDevice ? displaySettingsOf(settings) : settings.phone || null;
+  defaultPaneFontSize = normalizePaneFontSize(display.defaultPaneFontSize);
+  defaultTheme = themes[display.defaultTheme] ? display.defaultTheme : defaultThemeID;
+  deskbarButtonEnabled = display.deskbarButtonEnabled !== false;
+  terminalWheelSensitivity = normalizeWheelSensitivity(display.terminalWheelSensitivity);
   terminalTerm = normalizeTerminalTERM(settings.terminalTerm);
   terminalShellIntegration = settings.terminalShellIntegrationOff !== true;
-  terminalFont = normalizeTerminalFont(settings.terminalFont);
-  terminalRowSpacing = normalizeTerminalRowSpacing(settings.terminalRowSpacing);
-  terminalColorMode = normalizeTerminalColorMode(settings.terminalColorMode);
+  terminalFont = normalizeTerminalFont(display.terminalFont);
+  terminalRowSpacing = normalizeTerminalRowSpacing(display.terminalRowSpacing);
+  terminalColorMode = normalizeTerminalColorMode(display.terminalColorMode);
   // Performance capabilities belong to this browser and device. Ignore the
   // legacy account setting so an Older Mac cap cannot follow the user to a
   // newer computer.
   setOlderMacMode(olderMacMode, { save: false });
-  setOLEDWindowBorderSize(settings.oledWindowBorderSize, { save: false });
-  applyTheme(settings.themeId || defaultTheme, { save: false });
+  setOLEDWindowBorderSize(display.oledWindowBorderSize, { save: false });
+  applyTheme(display.themeId || defaultTheme, { save: false });
   updateDeskbar();
 }
 
@@ -5027,20 +5037,38 @@ function scheduleUserSettingsSave() {
   }, 250);
 }
 
+// The settings that suit one kind of screen; phones keep their own.
+function displaySettingsOf(settings) {
+  return {
+    defaultPaneFontSize: settings.defaultPaneFontSize,
+    defaultTheme: settings.defaultTheme,
+    themeId: settings.themeId,
+    deskbarButtonEnabled: settings.deskbarButtonEnabled,
+    terminalWheelSensitivity: settings.terminalWheelSensitivity,
+    oledWindowBorderSize: settings.oledWindowBorderSize,
+    terminalFont: settings.terminalFont,
+    terminalRowSpacing: settings.terminalRowSpacing,
+    terminalColorMode: settings.terminalColorMode,
+  };
+}
+
+// Which devices share the display settings this one shows.
+function displaySettingsScope() {
+  return phoneDevice ? "on phones" : "on desktops and iPads";
+}
+
 function userSettingsPayload() {
+  const display = displaySettingsOf({
+    defaultPaneFontSize, defaultTheme, themeId: themeID, deskbarButtonEnabled, terminalWheelSensitivity,
+    oledWindowBorderSize, terminalFont, terminalRowSpacing, terminalColorMode,
+  });
   return {
       revision: userSettingsRevision,
-      defaultPaneFontSize,
-      defaultTheme,
-      themeId: themeID,
-      deskbarButtonEnabled,
-      terminalWheelSensitivity,
-      oledWindowBorderSize,
+      ...(phoneDevice ? otherDisplaySettings : display),
+      // Left out, the host keeps the phones' settings as they are.
+      phone: phoneDevice ? display : otherDisplaySettings || undefined,
       terminalTerm,
       terminalShellIntegrationOff: !terminalShellIntegration,
-      terminalFont,
-      terminalRowSpacing,
-      terminalColorMode,
       // Clear the legacy account-wide value when settings are next saved.
       olderMacMode: false,
   };
@@ -6553,6 +6581,9 @@ function attachTerminalMouseBridge(rect, term, socket) {
   let controlPress = false;
   let wheelRemainder = 0;
   let wheelDirection = 0;
+  const touchScroll = new TerminalTouchScroll();
+  let touchRemainder = 0;
+  let selectionAtTouch = null;
 
   const scaledDiscreteWheelSteps = (baseSteps, direction) => {
     if (direction !== wheelDirection) {
@@ -6570,7 +6601,63 @@ function attachTerminalMouseBridge(rect, term, socket) {
   const reportsMacControl = (event) => appleKeyboardLayout && event.ctrlKey
     && terminalShouldReportMouse(term, event, { allowControl: true });
 
+  // The second finger turns the first one's press into a scroll: the
+  // program hears it released where it was, and a selection it began goes.
+  const beginTouchScroll = (event) => {
+    stopTerminalMouseEvent(event);
+    touchRemainder = 0;
+    const release = activePress.finish(null);
+    if (release) {
+      sendTerminalMouseSequence(socket, terminalMouseEventCode(release.buttonCode, event), release.position, "m");
+      if (container.hasPointerCapture?.(release.pointerID)) {
+        container.releasePointerCapture(release.pointerID);
+      }
+    }
+    clearTerminalSelectionStartedDuringGesture(term, selectionAtTouch);
+    selectionAtTouch = null;
+  };
+
+  // Two fingers carry the content with them: the scrollback a line per line
+  // of travel, and a full-screen program a wheel step or arrow key per line.
+  const scrollByTouch = (deltaY, event) => {
+    const lineHeight = term.renderer?.getMetrics?.().height || 20;
+    const reporting = terminalShouldReportMouse(term, event);
+    if (!reporting && !term.wasmTerm?.isAlternateScreen?.()) {
+      touchRemainder = 0;
+      term.scrollWheelLines(deltaY / lineHeight);
+      return;
+    }
+    touchRemainder += deltaY / lineHeight;
+    const steps = Math.trunc(touchRemainder);
+    if (steps === 0) {
+      return;
+    }
+    touchRemainder -= steps;
+    const position = reporting ? terminalMousePosition(term, container, event) : null;
+    if (reporting && !position) {
+      return;
+    }
+    for (let index = 0; index < Math.abs(steps); index += 1) {
+      if (reporting) {
+        sendTerminalMouseSequence(socket, terminalMouseEventCode(steps < 0 ? 64 : 65, event), position, "M");
+      } else {
+        term.input(steps < 0 ? "\x1B[A" : "\x1B[B", true);
+      }
+    }
+  };
+
   const onPointerDown = (event) => {
+    if (touchScroll.down(event)) {
+      beginTouchScroll(event);
+      return;
+    }
+    if (event.pointerType === "touch") {
+      try {
+        selectionAtTouch = Boolean(term.hasSelection?.());
+      } catch {
+        selectionAtTouch = null;
+      }
+    }
     selectionAtReportedPress = null;
     controlPress = appleKeyboardLayout && event.button === 0 && event.ctrlKey;
     const reportControl = reportsMacControl(event);
@@ -6669,6 +6756,12 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 
   const onPointerMove = (event) => {
+    const moved = touchScroll.move(event);
+    if (moved !== null) {
+      stopTerminalMouseEvent(event);
+      if (moved) scrollByTouch(-moved, event);
+      return;
+    }
     if (!activePress.matches(event.pointerId)) {
       reportHover(event);
       return;
@@ -6695,10 +6788,18 @@ function attachTerminalMouseBridge(rect, term, socket) {
   };
 
   const onPointerUp = (event) => {
+    if (touchScroll.up(event)) {
+      stopTerminalMouseEvent(event);
+      return;
+    }
     finishTerminalPointer(event);
   };
 
   const onPointerCancel = (event) => {
+    if (touchScroll.up(event)) {
+      stopTerminalMouseEvent(event);
+      return;
+    }
     finishTerminalPointer(event);
   };
 
@@ -7571,6 +7672,17 @@ function renderDeskbar() {
   sessionsButton.textContent = currentSessionName ? `Sessions (${currentSessionName})...` : "Sessions...";
   sessionsButton.addEventListener("click", () => void openSessionsModal());
   deskbarPanel.appendChild(sessionsButton);
+  // A phone that chose the desktop view needs a way back it can tap: the
+  // palette wants a keyboard and the workspace menu a right-click.
+  const phoneViewButton = document.createElement("button");
+  phoneViewButton.type = "button";
+  phoneViewButton.className = "deskbar-settings";
+  phoneViewButton.textContent = "Phone View";
+  phoneViewButton.addEventListener("click", () => {
+    hideDeskbar();
+    setPhoneViewOverride("phone");
+  });
+  deskbarPanel.appendChild(phoneViewButton);
   const settingsButton = document.createElement("button");
   settingsButton.type = "button";
   settingsButton.className = "deskbar-settings";
@@ -8284,8 +8396,8 @@ function renderSettingsModal() {
     renderCurrentPaneFontRow(),
   ]));
   content.appendChild(renderSettingsSection("Theme", [
-    renderSettingsThemeRow("Default", "Used for new windows in all of this user's sessions.", defaultTheme, (next) => setDefaultTheme(next)),
-    renderSettingsThemeRow("Current", "Applied across this user's sessions immediately.", themeID, (next) => applyTheme(next)),
+    renderSettingsThemeRow("Default", `Used for new windows in all of this user's sessions, ${displaySettingsScope()}.`, defaultTheme, (next) => setDefaultTheme(next)),
+    renderSettingsThemeRow("Current", `Applied across this user's sessions immediately, ${displaySettingsScope()}.`, themeID, (next) => applyTheme(next)),
     renderSettingsOLEDWindowBorderRow(),
     renderSettingsToggleRow("Wobbly windows", "Gentle elasticity when dragging Operator windows. Applies to this browser; reduced motion and Older Mac mode disable the effect.", windowWobbleEnabled, setWindowWobbleEnabled),
   ]));

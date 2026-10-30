@@ -8,6 +8,7 @@ import {
   TerminalContextMenuFallback, TerminalMouseHover, TerminalMousePress, terminalHoverButtonCode,
   clearTerminalSelectionStartedDuringGesture, isTerminalContextMenuGesture,
 } from "./terminal-input.mjs";
+import { TerminalTouchScroll } from "./terminal-touch-scroll.mjs";
 
 const upstream = readFileSync(new URL("../node_modules/ghostty-web/dist/ghostty-web.js", import.meta.url), "utf8");
 const first = upstream.indexOf("const L = class Y {");
@@ -301,7 +302,7 @@ function attachBridge(f, appleKeyboardLayout) {
   const bridge = appFunction("attachTerminalMouseBridge", {
     appleKeyboardLayout, isTerminalContextMenuGesture,
     TerminalContextMenuFallback, TerminalMousePress, clearTerminalSelectionStartedDuringGesture,
-    TerminalMouseHover, terminalHoverButtonCode,
+    TerminalMouseHover, TerminalTouchScroll, terminalHoverButtonCode,
     terminalShouldReportMouse: appFunction("terminalShouldReportMouse"),
     terminalReportsMotion: appFunction("terminalReportsMotion"),
     terminalMouseButtonCode: appFunction("terminalMouseButtonCode"),
