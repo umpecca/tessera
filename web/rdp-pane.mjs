@@ -114,6 +114,10 @@ export function rdpCanvasPoint(clientX, clientY, box, desktopWidth, desktopHeigh
 // A hidden tab's timers can be held to once a minute, which this still meets.
 export const rdpWiggleIntervalMs = 60 * 1000;
 
+// How long a kept session's window stays minimized or covered before the
+// host is told it can't be seen (task 243).
+export const rdpHideDelayMs = 2000;
+
 // The two pointer positions of one wiggle: a desktop pixel aside and back to
 // where the pointer last was, or around the desktop's centre if this page
 // never placed it. The centre keeps clear of a Mac's hot corners.

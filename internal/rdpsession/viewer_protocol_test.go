@@ -85,6 +85,9 @@ func TestViewerMessagesAreValidated(t *testing.T) {
 		{ViewResize, 0x00, 0x05, 0xd0, 0x02, 50, 0}, // scale below 100%
 		{ViewResize, 0x00, 0x05, 0xd0, 0x02, 200},   // half a scale
 		{ViewRefresh, 1},
+		{ViewShown},
+		{ViewShown, 2},
+		{ViewShown, 1, 0},
 	} {
 		if err := s.HandleViewerMessage(message); !errors.Is(err, ErrViewerMessage) {
 			t.Errorf("%v: err = %v, want ErrViewerMessage", message[:min(len(message), 8)], err)

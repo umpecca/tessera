@@ -12,6 +12,7 @@ export const viewInput = 1;
 export const viewResize = 2;
 export const viewRefresh = 3;
 export const viewWiggle = 4;
+export const viewShown = 5;
 
 // How a session ended (rdpsession.End).
 export const endQuit = 0;
@@ -113,6 +114,12 @@ export function refreshMessage() {
 // one in use: the host wiggles only while it isn't, or nobody is attached.
 export function wiggleMessage(on, inUse) {
   return Uint8Array.of(viewWiggle, (on ? 1 : 0) | (inUse ? 2 : 0));
+}
+
+// Whether the window can be seen: while it can't, the host pauses the
+// server's display updates.
+export function shownMessage(shown) {
+  return Uint8Array.of(viewShown, shown ? 1 : 0);
 }
 
 const decoder = new TextDecoder();

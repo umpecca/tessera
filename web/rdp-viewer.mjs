@@ -9,6 +9,7 @@ import {
   parseViewerFrame,
   refreshMessage,
   resizeMessage,
+  shownMessage,
   wiggleMessage,
 } from "./rdp-viewer-wire.mjs";
 
@@ -116,6 +117,10 @@ export function connectRDPViewer({
     // The host runs the mouse wiggler for kept sessions.
     setWiggle(on, inUse) {
       if (socket.readyState === 1) socket.send(wiggleMessage(on, inUse));
+    },
+    // The host pauses the server's display updates while the window can't be seen.
+    setShown(shown) {
+      if (socket.readyState === 1) socket.send(shownMessage(shown));
     },
     releaseAllInputs() {
       if (socket.readyState === 1) socket.send(inputMessage([inputRecords.releaseAll()]));

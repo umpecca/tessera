@@ -63,7 +63,7 @@ function fixture() {
     WebSocket: Socket, Uint8Array, URLSearchParams, document, rectangles: [rect], activeRect: rect, workspaceID: "workspace",
     activePaneID: rect.id, board: { dataset: {} }, scheduleWorkspaceSave() {}, updateDeskbar() {}, phoneView: { active: false, openPaneID: "" }, phoneViewWanted: () => false,
     terminalIsCovered, terminalBacklogCloseCode, terminalCloseOutcome, terminalConnectingStatus, terminalShouldRetry,
-    ghosttyModulePromise: null, terminalOutputCoalescing: false, authMode: "off", signInEndedCloseCode: 4401, terminalColorMode: "dark", serverConnectionModal: { hidden: true },
+    rdpHideDelayMs: 2000, ghosttyModulePromise: null, terminalOutputCoalescing: false, authMode: "off", signInEndedCloseCode: 4401, terminalColorMode: "dark", serverConnectionModal: { hidden: true },
     window: { location: { protocol: "http:", host: "localhost:7331" }, setTimeout: schedule, clearTimeout: cancel },
     attachTerminalMouseBridge: () => ({ dispose() {} }), setPaneCwd() {}, sendTerminalGridSize() {}, browserInUse: () => true,
     terminalAudioPlayer: { receive: (key, event) => audio.push([key, event]), disconnect: key => audio.push([key, "disconnect"]),
@@ -81,7 +81,7 @@ function fixture() {
     showSystemNotification: (_, text) => systemNotifications.push(text),
   });
   for (const name of ["setActivePane", "clearActivePane", "clearActivePaneClass", "setTerminalCursorBlink",
-    "updateTerminalRenderState", "setTerminalOutputPaused", "updateTerminalDocumentVisibility", "connectTerminalSocket",
+    "paneUnseen", "updatePaneRenderState", "syncRDPShown", "updateTerminalRenderState", "setTerminalOutputPaused", "updateTerminalDocumentVisibility", "connectTerminalSocket",
     "applyTerminalTextMessage", "handleTerminalAudioMessage", "handleTerminalSocketClose", "retryTerminalNow", "resumeTerminalConnections", "terminalWebSocketURL",
     "terminalPaneFocused", "updateTerminalFocus", "handleTerminalAlert", "sendTerminalAlertSeen", "clearTerminalAttention", "renderTerminalAttention",
     "applyTerminalProgress"]) {
@@ -688,4 +688,39 @@ test("alerts mark a pane nobody is looking at until it is shown, once each", () 
   assert.equal(f.rect.element.dataset.attention, undefined);
   assert.deepEqual(sentOfType(socket, "alert-seen").at(-1), { type: "alert-seen", epoch: "shell", alert: 4 });
   assert.deepEqual(f.notices.at(-1), ["dismiss", "pane"]);
+});
+
+test("a kept RDP window tells the host when it can't be seen: late for minimized or covered, at once for a hidden page", () => {
+  const f = fixture();
+  const sent = [];
+  const view = { session: { setShown: shown => sent.push(shown) }, shownSent: true, hideTimer: null };
+  const rdp = { id: "rdp", kind: "rdp", rdp: view, x: 200, y: 200, width: 100, height: 100, zIndex: 1 };
+  f.context.rectangles.push(rdp);
+  f.context.syncRDPWiggle = () => {};
+  const run = () => { const callbacks = [...f.timers.values()]; f.timers.clear(); callbacks.forEach(callback => callback()); };
+
+  rdp.minimized = true; f.context.updatePaneRenderState(rdp);
+  f.context.updatePaneRenderState(rdp);
+  assert.deepEqual(sent, [], "minimizing waits");
+  assert.equal(f.timers.size, 1, "one wait, however often it is checked");
+  rdp.minimized = false; f.context.updatePaneRenderState(rdp);
+  run();
+  assert.deepEqual(sent, [], "restored in time, nothing is sent");
+
+  const cover = { kind: "worksheet", x: 150, y: 150, width: 200, height: 200, zIndex: 2 };
+  f.context.rectangles.push(cover); f.context.updatePaneRenderState(rdp);
+  run();
+  assert.deepEqual(sent, [false], "covered past the wait");
+  cover.minimized = true; f.context.updatePaneRenderState(rdp);
+  assert.deepEqual(sent, [false, true], "shown again at once");
+
+  f.document.hidden = true; f.context.updateTerminalDocumentVisibility();
+  assert.deepEqual(sent, [false, true, false], "a hidden page says so at once");
+  f.document.hidden = false; f.context.updateTerminalDocumentVisibility();
+  assert.deepEqual(sent, [false, true, false, true]);
+
+  rdp.minimized = true; f.context.updatePaneRenderState(rdp);
+  view.session = { setShown: shown => sent.push(["other", shown]) };
+  run();
+  assert.deepEqual(sent, [false, true, false, true], "a wait doesn't outlast its session");
 });

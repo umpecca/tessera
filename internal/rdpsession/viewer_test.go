@@ -291,3 +291,50 @@ func TestAStuckScaledLayoutFallsBackToThePlainOne(t *testing.T) {
 		t.Fatalf("fell back %d times", n)
 	}
 }
+
+func TestAViewerOutOfSightPausesTheDisplay(t *testing.T) {
+	runner := &scriptRunner{cookie: true}
+	s, _ := startedSession(t, runner, 0)
+	detach, err := s.Attach(&recordingViewer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the resume request", func() bool { return runner.count(suppressMessage(true)) == 1 })
+	for _, message := range [][]byte{{ViewShown, 0}, {ViewShown, 0}} {
+		if err := s.HandleViewerMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eventually(t, "the pause request", func() bool { return runner.count(suppressMessage(false)) == 1 })
+	if err := s.HandleViewerMessage([]byte{ViewShown, 1}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the second resume request", func() bool { return runner.count(suppressMessage(true)) == 2 })
+	if err := s.HandleViewerMessage([]byte{ViewShown, 0}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the second pause request", func() bool { return runner.count(suppressMessage(false)) == 2 })
+
+	// Detaching an unseen viewer leaves the display paused; a new viewer
+	// starts out shown.
+	detach()
+	time.Sleep(50 * time.Millisecond)
+	if runner.count(suppressMessage(false)) != 2 {
+		t.Fatal("detaching an unseen viewer paused the display again")
+	}
+	detach, err = s.Attach(&recordingViewer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the new viewer's resume request", func() bool { return runner.count(suppressMessage(true)) == 3 })
+	detach()
+	eventually(t, "the new viewer's pause request", func() bool { return runner.count(suppressMessage(false)) == 3 })
+	// Nobody attached: nothing to show or hide.
+	if err := s.HandleViewerMessage([]byte{ViewShown, 1}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if runner.count(suppressMessage(true)) != 3 {
+		t.Fatal("a message with no viewer attached resumed the display")
+	}
+}

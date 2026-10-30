@@ -59,8 +59,9 @@ func (s *Session) Attach(v Viewer) (detach func(), err error) {
 	s.attachID++
 	id := s.attachID
 	s.stopIdleLocked()
-	// In use until the viewer says otherwise.
+	// In use and shown until the viewer says otherwise.
 	s.viewerInUse = true
+	s.viewerShown = true
 	size := binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, uint16(s.width)), uint16(s.height))
 	conn := s.conn
 	// Before any event the module sends from here on, which goes to v: where
@@ -87,11 +88,28 @@ func (s *Session) detach(id uint64) {
 		return
 	}
 	s.viewer = nil
-	conn, active := s.conn, s.state == StateActive
+	conn, active, shown := s.conn, s.state == StateActive, s.viewerShown
 	s.armIdleLocked(true)
 	s.mu.Unlock()
-	if active && conn != nil {
+	if active && conn != nil && shown {
 		conn.post(suppressMessage(false))
+	}
+}
+
+// setShown pauses the server's display updates while the attached viewer's
+// window can't be seen, and resumes them, with the whole screen sent again,
+// once it can.
+func (s *Session) setShown(shown bool) {
+	s.mu.Lock()
+	if s.viewer == nil || s.viewerShown == shown {
+		s.mu.Unlock()
+		return
+	}
+	s.viewerShown = shown
+	conn, active := s.conn, s.state == StateActive
+	s.mu.Unlock()
+	if active && conn != nil {
+		conn.post(suppressMessage(shown))
 	}
 }
 

@@ -16,7 +16,8 @@ and short-lived one-use connection tokens are defense in depth, not user
 authentication or a destination firewall.
 
 Use **Fit** to scale the remote desktop into its window or **1:1** for native
-pixels with scrolling. **View only** suppresses remote input. Clipboard text is
+pixels with scrolling. When the server sends no cursor shape, as macOS Screen
+Sharing does, the pointer is shown as a small dot. **View only** suppresses remote input. Clipboard text is
 never moved automatically: the up-arrow sends local clipboard text and the
 down-arrow copies the most recently received remote text. A visible text field
 is offered when the browser refuses clipboard access.
@@ -126,6 +127,12 @@ this browser.
   cookie. The server's certificate must still be the one you trusted.
 - One browser shows a session at a time; opening it in another takes it over,
   and the first shows that it was taken over.
+- While the window can't be seen (minimized or fully covered for 2 seconds,
+  the tab in the background, or the phone view showing), the server stops
+  sending video, which saves the host's and the browser's work and an
+  iPad's battery. The window keeps its last picture, and the server sends
+  the whole screen again once it can be seen. The session itself, the
+  mouse wiggler included, carries on.
 - Only the account that kept a session can see or end it. Signing out closes
   the view but leaves the session running until it is ended or idles out.
 - Clipboard text isn't available in kept sessions yet.

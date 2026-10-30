@@ -47,6 +47,11 @@ func (s *Session) HandleViewerMessage(message []byte) error {
 			return ErrViewerMessage
 		}
 		s.setWiggle(payload[0]&wiggleOn != 0, payload[0]&wiggleInUse != 0)
+	case ViewShown:
+		if len(payload) != 1 || payload[0] > 1 {
+			return ErrViewerMessage
+		}
+		s.setShown(payload[0] == 1)
 	default:
 		return ErrViewerMessage
 	}

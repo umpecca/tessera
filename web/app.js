@@ -120,6 +120,7 @@ import {
   rdpErrorMessage,
   rdpScanCode,
   rdpWebSocketURL,
+  rdpHideDelayMs,
   rdpWiggleIntervalMs,
   rdpWigglePoints,
   rdpWindowsKey,
@@ -2683,6 +2684,9 @@ function applyVNCPreferences(rect) {
     return;
   }
   rfb.viewOnly = rect.vncViewOnly;
+  // A server that sends no cursor shape, such as macOS Screen Sharing,
+  // leaves noVNC's cursor invisible; show a dot instead.
+  rfb.showDotCursor = true;
   rfb.scaleViewport = rect.vncScaleMode === "fit";
   rfb.clipViewport = rect.vncScaleMode === "one-to-one";
   rfb.resizeSession = false;
@@ -2990,7 +2994,7 @@ function mountRDPPane(rect) {
     pane, address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel, message, screen, canvas, dialog,
     module: null, session: null, connecting: false, attempt: 0, dialogResolve: null, intentionalDisconnect: false,
     remoteClipboard: "", lastSentClipboard: "", clipboardRequested: false, resizeTimer: null, resizeObserver: null, canvasObserver: null,
-    pointerFrame: 0, pendingPointer: null, wiggleTimer: null, wiggleSent: "",
+    pointerFrame: 0, pendingPointer: null, wiggleTimer: null, wiggleSent: "", shownSent: true, hideTimer: null,
     // Where this page last put the remote pointer, in desktop pixels.
     lastPointer: null,
     h264: null, h264Drawn: false, h264FullColor: false, kept: false,
@@ -3266,6 +3270,40 @@ function syncRDPWiggle(rect) {
   view.session.setWiggle(rect.rdpWiggle, inUse);
 }
 
+// Tells the host keeping this window's session whether the window can be
+// seen; while it can't, the server's video pauses. A minimized or covered
+// window waits rdpHideDelayMs first, so a window dragged across, or minimized
+// and restored, doesn't stop the stream only to ask for the whole screen
+// again. A hidden page says so at once: its timers may never run (iPad
+// suspends it).
+function syncRDPShown(rect) {
+  const view = rect.rdp;
+  const session = view?.session;
+  if (!session?.setShown) return;
+  if (!paneUnseen(rect)) {
+    window.clearTimeout(view.hideTimer);
+    view.hideTimer = null;
+    if (!view.shownSent) {
+      view.shownSent = true;
+      session.setShown(true);
+    }
+    return;
+  }
+  if (!view.shownSent) return;
+  const hide = () => {
+    view.hideTimer = null;
+    if (view.session !== session || !view.shownSent || !paneUnseen(rect)) return;
+    view.shownSent = false;
+    session.setShown(false);
+  };
+  if (document.hidden) {
+    window.clearTimeout(view.hideTimer);
+    hide();
+  } else if (view.hideTimer === null) {
+    view.hideTimer = window.setTimeout(hide, rdpHideDelayMs);
+  }
+}
+
 // Whether the wiggler counts the window as in use, and so leaves it be. A
 // window that wiggles always never is.
 function rdpWiggleInUse(rect) {
@@ -3371,6 +3409,11 @@ function activateRDPSession(rect, view, session) {
   view.session = session;
   view.wiggleSent = "";
   syncRDPWiggle(rect);
+  // A viewer attaches shown.
+  window.clearTimeout(view.hideTimer);
+  view.hideTimer = null;
+  view.shownSent = true;
+  syncRDPShown(rect);
   const desktop = session.desktopSize();
   view.canvas.width = desktop.width;
   view.canvas.height = desktop.height;
@@ -4140,6 +4183,7 @@ function disposeRDPPane(rect) {
   hideRDPDialog(rect);
   window.clearTimeout(view.resizeTimer);
   window.clearInterval(view.wiggleTimer);
+  window.clearTimeout(view.hideTimer);
   view.resizeObserver?.disconnect();
   view.canvasObserver?.disconnect();
   cancelRDPPointerMove(view);
@@ -4485,13 +4529,25 @@ function setTerminalCursorBlink(rect, blink) {
   }
 }
 
+// Whether nobody can see the pane: the page is hidden, the pane is minimized
+// or covered, or the phone view shows another pane.
+function paneUnseen(rect) {
+  return phoneView.active ? document.hidden || phoneView.openPaneID !== rect.id
+    : document.hidden || Boolean(rect.minimized) || terminalIsCovered(rect, rectangles);
+}
+
+// Pauses what a pane draws while nobody can see it.
+function updatePaneRenderState(rect) {
+  updateTerminalRenderState(rect);
+  syncRDPShown(rect);
+}
+
 function updateTerminalRenderState(rect) {
   const term = rect?.kind === "terminal" ? rect.terminal?.term : null;
   if (!term) {
     return;
   }
-  const paused = phoneView.active ? document.hidden || phoneView.openPaneID !== rect.id
-    : document.hidden || Boolean(rect.minimized) || terminalIsCovered(rect, rectangles);
+  const paused = paneUnseen(rect);
   const wasPaused = term.renderPaused;
   term.setRenderPaused?.(paused);
   rect.terminal.output?.setActive?.(!paused && activeRect === rect);
@@ -4550,7 +4606,7 @@ function scheduleTerminalVisibilityUpdate() {
   if (terminalVisibilityFrame !== null) return;
   terminalVisibilityFrame = window.requestAnimationFrame(() => {
     terminalVisibilityFrame = null;
-    for (const rect of rectangles) updateTerminalRenderState(rect);
+    for (const rect of rectangles) updatePaneRenderState(rect);
   });
 }
 
@@ -4660,7 +4716,7 @@ function updateWakeRecoveryStatus() {
 
 function updateTerminalDocumentVisibility() {
   // Do this synchronously: a hidden document can throttle both timers and RAF.
-  for (const rect of rectangles) updateTerminalRenderState(rect);
+  for (const rect of rectangles) updatePaneRenderState(rect);
   if (!ghosttyModulePromise) {
     return;
   }
@@ -11116,7 +11172,7 @@ function setMinimized(rect, on) {
   rect.minimized = next;
   rect.element.classList.toggle("is-minimized", next);
   scheduleTerminalVisibilityUpdate();
-  updateTerminalRenderState(rect);
+  updatePaneRenderState(rect);
   if (next) {
     rect.element.setAttribute("aria-hidden", "true");
   } else {
