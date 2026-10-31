@@ -146,6 +146,13 @@ test("Ctrl applies to the next key or typed character, once", () => {
   assert.equal(input.field.dispatch("beforeinput", { inputType: "insertText", data: "x" }), false, "Ctrl was used up");
 });
 
+test("the compose field leaves what's typed as typed", () => {
+  const { input } = setup();
+  for (const name of ["autocorrect", "autocapitalize", "autocomplete"]) assert.equal(input.field.getAttribute(name), "off", name);
+  assert.equal(input.field.getAttribute("writingsuggestions"), "false");
+  assert.equal(input.field.spellcheck, false);
+});
+
 test("quick replies show while a program waits, and on request", () => {
   const { input, sent } = setup();
   input.attach("a");
@@ -170,6 +177,38 @@ test("quick replies show while a program waits, and on request", () => {
   input.sendButton.click();
   input.update({ running: false, outputSecondsAgo: 9999 }, 0);
   assert.equal(input.replies.hidden, true, "answered");
+});
+
+test("quick replies don't come and go with a waiting program's odd redraw", (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const { input } = setup();
+  input.attach("a");
+  input.update({ running: true, outputSecondsAgo: 4 }, 0);
+  assert.equal(input.replies.hidden, false);
+  input.update({ running: true, outputSecondsAgo: 0 }, 0);
+  assert.equal(input.replies.hidden, false, "one redraw");
+  t.mock.timers.tick(4000);
+  input.update({ running: true, outputSecondsAgo: 4 }, 0);
+  for (let second = 0; second < 9; second += 1) {
+    t.mock.timers.tick(1000);
+    input.update({ running: true, outputSecondsAgo: 0 }, 0);
+  }
+  assert.equal(input.replies.hidden, false, "printing for 9 s");
+  t.mock.timers.tick(2000);
+  input.update({ running: true, outputSecondsAgo: 0 }, 0);
+  assert.equal(input.replies.hidden, true, "busy for over 10 s");
+
+  input.update({ running: true, outputSecondsAgo: 5 }, 0);
+  assert.equal(input.replies.hidden, false);
+  input.replies.button("y").click();
+  assert.equal(input.replies.hidden, true, "answered");
+  t.mock.timers.tick(3000);
+  input.update({ running: true, outputSecondsAgo: 5 }, 3);
+  assert.equal(input.replies.hidden, true, "nothing printed since the answer");
+  input.update({ running: true, outputSecondsAgo: 0 }, 0);
+  t.mock.timers.tick(3000);
+  input.update({ running: true, outputSecondsAgo: 3 }, 0);
+  assert.equal(input.replies.hidden, false, "printed, then waiting again");
 });
 
 test("the keys button types straight into the terminal instead", () => {
@@ -309,4 +348,29 @@ test("picked and pasted images are kept on the host, their paths put in the fiel
   assert.equal(input.noticeText.textContent, "huge.heic wasn't sent: it is larger than the host accepts");
   t.mock.timers.tick(10000);
   assert.equal(input.notice.hidden, true, "the notice goes after a while");
+});
+
+test("Select asks for the terminal as text, and shows whether it is", () => {
+  const asked = [];
+  const { input } = setup({ select: (on) => asked.push(on) });
+  input.attach("a");
+  const select = input.selectButton;
+  select.click();
+  assert.deepEqual(asked, [true]);
+  input.showSelecting(true);
+  assert.equal(select.getAttribute("aria-pressed"), "true");
+  select.click();
+  assert.deepEqual(asked, [true, false], "a second tap goes back");
+});
+
+test("the hide key puts the keyboard away from whatever has it, and stops typing directly", () => {
+  const { input, document } = setup();
+  input.attach("a");
+  input.directButton.click();
+  const focused = { blurred: false, blur() { this.blurred = true; } };
+  document.activeElement = focused;
+  input.hideKeyboardButton.click();
+  assert.equal(focused.blurred, true);
+  assert.equal(input.direct, false);
+  assert.equal(input.compose.hidden, false, "the compose field is back");
 });

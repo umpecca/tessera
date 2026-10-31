@@ -1453,7 +1453,7 @@ input {
 }
 
 .vnc-toggle {
-  display: inline-flex;
+  display: inline-block;
   flex: 0 0 auto;
   align-items: center;
   gap: 3px;
@@ -1637,6 +1637,17 @@ input {
 .terminal-container textarea {
   user-select: text;
   -webkit-user-select: text;
+}
+
+/* iOS zooms the page when an editable element under 16px takes focus, and
+   doesn't zoom back out when the keyboard goes: the terminal container is
+   editable, and so is ghostty-web's input textarea. The canvas draws the
+   text, so neither font shows. */
+@media (pointer: coarse) {
+  .terminal-container,
+  .terminal-container textarea {
+    font-size: 16px;
+  }
 }
 
 /* Shown when a terminal's socket closes. It floats over the pane rather
@@ -4419,6 +4430,14 @@ input {
   color: var(--text);
 }
 
+/* iOS ignores the viewport's no-zoom request, and a double-tap on a gap
+   between buttons or a pinch zooms the page: the fixed bars go out of reach
+   and the terminal, which takes the touches, can't zoom it back. The phone
+   view only pans; Aa sizes its text. */
+html[data-phone-view] {
+  touch-action: pan-x pan-y;
+}
+
 html[data-phone-view] .deskbar-button,
 html[data-phone-view] .deskbar-panel,
 html[data-phone-view] .palette-fab,
@@ -4671,8 +4690,14 @@ html[data-phone-view="inbox"] .rectangle {
   border-bottom: 1px solid var(--divider);
 }
 
+/* The whole height of the header and wider than the other buttons: it's the
+   way out, so it should be hard to miss. */
 .phone-back {
-  font-size: 30px;
+  flex: none;
+  min-width: 64px;
+  min-height: var(--phone-header-height, 48px);
+  padding: 0 14px 4px;
+  font-size: 40px;
 }
 
 .phone-terminal-heading {
@@ -4735,7 +4760,7 @@ html[data-phone-view="inbox"] .rectangle {
 
 html[data-phone-view="terminal"] .rectangle.is-phone-open {
   position: fixed;
-  inset: calc(var(--phone-header-height, 48px) + 1px + env(safe-area-inset-top)) env(safe-area-inset-right) calc(var(--phone-keyboard-inset, 0px) + var(--phone-input-height, 0px)) env(safe-area-inset-left);
+  inset: var(--phone-terminal-top, calc(var(--phone-header-height, 48px) + 1px + env(safe-area-inset-top))) env(safe-area-inset-right) calc(var(--phone-keyboard-inset, 0px) + var(--phone-input-height, 0px)) env(safe-area-inset-left);
   width: auto !important;
   height: auto !important;
   border: 0;
@@ -4768,6 +4793,7 @@ html[data-phone-view="inbox"] .terminal-notices {
   left: 0;
   z-index: 80000;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   padding: 6px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--divider);
@@ -4777,6 +4803,44 @@ html[data-phone-view="inbox"] .terminal-notices {
 
 html[data-phone-view="inbox"] .phone-input {
   display: none;
+}
+
+/* The open terminal's buttons at the ends of the key row, which leaves the
+   top of the screen to the terminal. */
+html[data-phone-bar] {
+  --phone-terminal-top: env(safe-area-inset-top);
+}
+
+/* A grid item is never narrower than its content unless told so, and the
+   keys can only scroll if the bar stays the width of the screen. */
+.phone-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.phone-bar > .phone-keys {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.phone-bar-end {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.phone-bar .phone-icon-button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 6px;
+}
+
+.phone-bar .phone-back {
+  min-width: 56px;
+  padding: 0 10px 4px;
+  font-size: 36px;
 }
 
 .phone-replies,
@@ -4814,6 +4878,15 @@ html[data-phone-view="inbox"] .phone-input {
   border-color: var(--accent-border);
   background: var(--accent-strong-bg);
   color: var(--accent-strong-text);
+}
+
+.phone-key-hide {
+  display: none;
+  font-size: 20px;
+}
+
+html[data-phone-keyboard="open"] .phone-key-hide {
+  display: inline-block;
 }
 
 .phone-key-mode {
@@ -4879,7 +4952,7 @@ html[data-phone-view="inbox"] .phone-input {
 
 .phone-sheet {
   position: fixed;
-  inset: calc(var(--phone-header-height, 48px) + env(safe-area-inset-top)) 0 var(--phone-keyboard-inset, 0px) 0;
+  inset: var(--phone-terminal-top, calc(var(--phone-header-height, 48px) + env(safe-area-inset-top))) 0 var(--phone-keyboard-inset, 0px) 0;
   z-index: 80002;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -5033,7 +5106,7 @@ html[data-phone-view="terminal"] .rectangle.is-phone-open .terminal-container ca
 /* Text view: what the terminal holds as text, rewrapped to the phone. */
 .phone-reading {
   position: fixed;
-  inset: calc(var(--phone-header-height, 48px) + 1px + env(safe-area-inset-top)) 0 calc(var(--phone-keyboard-inset, 0px) + var(--phone-input-height, 0px)) 0;
+  inset: var(--phone-terminal-top, calc(var(--phone-header-height, 48px) + 1px + env(safe-area-inset-top))) 0 calc(var(--phone-keyboard-inset, 0px) + var(--phone-input-height, 0px)) 0;
   z-index: 79999;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -5051,6 +5124,12 @@ html[data-phone-view="terminal"] .rectangle.is-phone-open .terminal-container ca
 
 html[data-phone-view="inbox"] .phone-reading {
   display: none;
+}
+
+/* Select: over the terminal, and over the text view's live copy. */
+.phone-copy {
+  z-index: 79999;
+  -webkit-touch-callout: default;
 }
 
 .phone-view-button {

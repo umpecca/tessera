@@ -15,7 +15,8 @@ profile.
 
 ## Phone view
 
-On a phone (a touch screen narrower than 600 points), Tessera shows the
+On a phone (a touch screen under 600 points on its shorter side, held either
+way, or any touch screen in a window narrower than that), Tessera shows the
 session's terminals as a list rather than as windows. Each card names the
 window and says what its shell is doing: running a command (and for how
 long), at the prompt, a long command that failed or finished, or a bell or
@@ -23,8 +24,11 @@ notification nobody has seen yet, which sort to the top. It also shows the
 shell's folder, any progress bar, and the last lines of output. The list
 updates as things change while the page is open, holding one request open on
 the host rather than connecting to every terminal. Tap a card to use that
-terminal full screen; **‹** goes back to the list. **⋯** on a card or the open
-terminal sends `Ctrl+C`, renames the window or closes it, **+** starts a new
+terminal full screen. Its buttons sit at the ends of the key row under it, so
+the terminal reaches the top of the screen: **‹** goes back to the list, and
+**Aa** and **⋯** are at the right. **⋯** on a card or the open terminal sends
+`Ctrl+C`, renames the window or closes it (for the open terminal it is headed
+by the window's name and what its shell is doing), **+** starts a new
 terminal, and the session name at the top switches sessions. Browser, VNC and
 RDP windows stay on the desktop view.
 
@@ -39,7 +43,11 @@ Enter. They reach the terminal as key events, so full-screen programs and
 the Kitty keyboard protocol get what a keyboard would send. **Ctrl** applies
 to the next key, from the row or typed in the field (Ctrl then `r` searches
 shell history), and is never a window shortcut. **Type** switches to typing
-into the terminal itself, for Vim or `less`.
+into the terminal itself, for Vim or `less`; only it opens the keyboard, so
+tapping or scrolling the terminal doesn't. While the keyboard is up, **⌄** at
+the start of the row puts it away and stops typing directly. **Select** lays the terminal's
+text over it, still, to select with the phone's own handles and copy (a
+full-screen program's screen as it stands); tap it again to go back.
 
 When a running program has printed nothing for a few seconds, or rang or
 notified before you opened it, as Claude Code does when it asks for
@@ -61,17 +69,20 @@ prompt marks, so they need shell integration, and leave out lines the shell
 reported only in part (a second line, or past 200 characters).
 
 Opening a terminal on the phone does not move, resize or raise its window,
-and does not save the workspace, so the desk's layout is left as it was. Nor
-does the phone resize the shell: loading, opening, typing and tapping leave
-it at the size the desk gave it, so programs there never reflow because you
-looked in. The open terminal shows as **Text** by default: what it holds,
-with lines the terminal wrapped joined again and rewrapped to the phone,
-following new output unless you scroll up. **Aa** switches to **Screen**,
-the terminal itself at the shell's own size in a font small enough to fit
+and does not save the workspace, so the desk's layout is left as it was.
+The open terminal shows as **Screen** by default. **Aa** switches to
+**Text**: what it holds, with lines the terminal wrapped joined again and
+rewrapped to the phone, following new output unless you scroll up. Without
+Fit, the screen is the terminal itself at the shell's own size in a font small enough to fit
 the phone's width (at most down to 4 points; wider terminals scroll
 sideways), with **Larger** and **Smaller**. A full-screen program such as
-Vim or `htop` always shows as the screen. **Fit to this phone** resizes the
-shell to the phone while it stays open there; going back to the list,
+Vim or `htop` always shows as the screen. A terminal opened on the phone is
+**Fit to this phone**: the shell takes the phone's size while it stays open
+there (turn it off in **Aa** to look in at the desk's size). The fitted
+screen and the text view use a font size each terminal keeps on the phone,
+apart from the desk's: **Larger** and **Smaller** change it a pixel at a
+time, starting from the phone's default font size, and the phone's browser
+remembers it. Going back to the list,
 putting the phone away or losing the connection gives the shell its earlier
 size again, unless a desktop browser has resized it in the meantime. The
 **Aa** menu says the shell's size and whose it is. Before the phone adds, renames or closes a window it loads

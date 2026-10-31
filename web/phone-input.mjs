@@ -1,5 +1,5 @@
 // Typing into a terminal from a phone: a compose field with the phone's own
-// dictation and correction that sends whole lines, a row of the keys a phone
+// dictation that sends whole lines, a row of the keys a phone
 // keyboard lacks, one-tap answers when a program is waiting, a sheet of
 // recent commands and saved snippets, and images from the phone, kept on the
 // host with their path put in the field for a program such as Claude Code. Keys go to the terminal as key events,
@@ -8,6 +8,8 @@
 export const phoneDraftStoragePrefix = "tessera.phone-draft.v1:";
 const longPressMs = 500;
 const awaitingAfterSeconds = 3;
+// Printing this long without a pause means the program is busy, not asking.
+const repliesBusyMs = 10000;
 const maximumComposeHeight = 132;
 const attachmentNoticeMs = 10000;
 
@@ -100,6 +102,17 @@ export function terminalAwaitsReply(summary, elapsedSeconds = 0, alerted = false
   return summary.outputSecondsAgo + Math.max(0, elapsedSeconds) >= awaitingAfterSeconds;
 }
 
+// Commands, paths and flags aren't prose: the phone mustn't correct,
+// capitalize or suggest replacements for them.
+function plainTextField(field) {
+  field.spellcheck = false;
+  field.setAttribute("autocorrect", "off");
+  field.setAttribute("autocapitalize", "off");
+  field.setAttribute("autocomplete", "off");
+  field.setAttribute("writingsuggestions", "false");
+  return field;
+}
+
 function element(document, tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -122,6 +135,7 @@ function button(document, className, label, name) {
 //   sendText(paneID, text, { enter })   paste text, then Enter if asked
 //   sendKey(paneID, init)               a key event for the terminal
 //   typeDirectly(paneID)                focus the terminal itself
+//   select(on)                          show the terminal as text to select
 //   loadSnippets(), saveSnippets(doc)   the account's snippets
 //   attachFile(file)                    keep a file on the host: { path }
 //   pasteImage(paneID, file)            paste an image into the program
@@ -158,6 +172,10 @@ export class PhoneInput {
     this.keys = element(doc, "div", "phone-keys");
     this.keys.setAttribute("role", "toolbar");
     this.keys.setAttribute("aria-label", "Keys");
+    // Shown while the keyboard is up: a way to put it away that doesn't
+    // depend on what has the focus or on the bar iOS adds above it.
+    this.hideKeyboardButton = button(doc, "phone-key phone-key-hide", "⌄", "Hide the keyboard");
+    this.hideKeyboardButton.addEventListener("click", () => this.hideKeyboard());
     this.directButton = button(doc, "phone-key phone-key-mode", "Type", "Type directly into the terminal");
     this.directButton.setAttribute("aria-pressed", "false");
     this.directButton.addEventListener("click", () => this.setDirect(!this.direct));
@@ -167,7 +185,10 @@ export class PhoneInput {
       this.forceReplies = !this.forceReplies;
       this.renderReplies();
     });
-    this.keys.append(this.directButton, this.repliesButton);
+    this.selectButton = button(doc, "phone-key phone-key-mode", "Select", "Select text to copy");
+    this.selectButton.setAttribute("aria-pressed", "false");
+    this.selectButton.addEventListener("click", () => this.options.select?.(this.selectButton.getAttribute("aria-pressed") !== "true"));
+    this.keys.append(this.hideKeyboardButton, this.directButton, this.repliesButton, this.selectButton);
     for (const definition of phoneKeys) {
       const node = button(doc, "phone-key", definition.label, definition.name);
       if (definition.sticky) {
@@ -195,11 +216,10 @@ export class PhoneInput {
     });
     this.attachButton = button(doc, "phone-compose-button", "📎", "Attach a photo or image");
     this.attachButton.addEventListener("click", () => this.picker.click());
-    this.field = element(doc, "textarea", "phone-compose-field");
+    this.field = plainTextField(element(doc, "textarea", "phone-compose-field"));
     this.field.rows = 1;
     this.field.placeholder = "Command or message";
     this.field.setAttribute("aria-label", "Text to send to the terminal");
-    this.field.setAttribute("autocapitalize", "off");
     this.field.setAttribute("enterkeyhint", "enter");
     this.field.addEventListener("input", () => {
       this.saveDraft();
@@ -257,7 +277,13 @@ export class PhoneInput {
     this.sheet.setAttribute("role", "dialog");
     this.sheet.setAttribute("aria-label", "Recent commands and snippets");
 
-    this.element.append(this.notice, this.replies, this.keys, this.compose, this.sheet);
+    // The keys scroll sideways between ends that stay put, where the phone
+    // view puts its back, view and actions buttons.
+    this.bar = element(doc, "div", "phone-bar");
+    this.barStart = element(doc, "div", "phone-bar-end");
+    this.barEnd = element(doc, "div", "phone-bar-end");
+    this.bar.append(this.barStart, this.keys, this.barEnd);
+    this.element.append(this.notice, this.replies, this.bar, this.compose, this.sheet);
   }
 
   attach(paneID, { alerted = false } = {}) {
@@ -266,6 +292,9 @@ export class PhoneInput {
     this.openedAt = Date.now();
     this.summary = null;
     this.forceReplies = false;
+    this.offering = false;
+    this.busySince = 0;
+    this.answeredAt = 0;
     this.setCtrl(false);
     this.setDirect(false, { focus: false });
     this.closeSheet();
@@ -298,11 +327,45 @@ export class PhoneInput {
     return this.openedAt ? (Date.now() - this.openedAt) / 1000 : Infinity;
   }
 
+  // A waiting program can still print now and then (a redraw, a clock), and
+  // replies that came and went with each print would make the terminal above
+  // jump. Once offered they stay until the program stops, an answer goes, or
+  // it prints without a pause for a while. After an answer they come back
+  // only once the program has printed since and gone quiet again.
   renderReplies() {
-    const waiting = terminalAwaitsReply(this.summary, this.elapsed, this.alerted);
-    this.replies.hidden = !(waiting || this.forceReplies);
+    const quiet = this.summary?.outputSecondsAgo >= 0 ? this.summary.outputSecondsAgo + Math.max(0, this.elapsed || 0) : -1;
+    const sinceAnswer = this.answeredAt ? (Date.now() - this.answeredAt) / 1000 : Infinity;
+    const waiting = terminalAwaitsReply(this.summary, this.elapsed, this.alerted) && (this.alerted || quiet < sinceAnswer);
+    const running = this.alerted || Boolean(this.summary?.running && !this.summary.exited);
+    if (waiting) {
+      this.offering = true;
+      this.busySince = 0;
+    } else if (!running) {
+      this.offering = false;
+    } else if (this.offering) {
+      this.busySince ||= Date.now();
+      if (Date.now() - this.busySince >= repliesBusyMs) this.offering = false;
+    }
+    this.replies.hidden = !(this.offering || this.forceReplies);
     this.repliesButton.setAttribute("aria-pressed", String(!this.replies.hidden));
-    this.element.dataset.waiting = String(waiting);
+    this.element.dataset.waiting = String(this.offering);
+  }
+
+  answered() {
+    this.alerted = false;
+    this.offering = false;
+    this.busySince = 0;
+    this.answeredAt = Date.now();
+    this.renderReplies();
+  }
+
+  hideKeyboard() {
+    if (this.direct) this.setDirect(false, { focus: false });
+    this.document.activeElement?.blur?.();
+  }
+
+  showSelecting(on) {
+    this.selectButton.setAttribute("aria-pressed", String(on));
   }
 
   setCtrl(on) {
@@ -323,7 +386,9 @@ export class PhoneInput {
     if (!this.paneID) return;
     const init = phoneKeyInit(definition, { ctrl: this.ctrl });
     this.setCtrl(false);
-    if (init) this.options.sendKey(this.paneID, init);
+    if (!init) return;
+    this.options.sendKey(this.paneID, init);
+    this.answered();
   }
 
   // With Ctrl held, the next character typed is a control key for the
@@ -346,8 +411,7 @@ export class PhoneInput {
     this.field.value = "";
     this.options.storage?.remove(phoneDraftStoragePrefix + this.paneID);
     this.fitField();
-    this.alerted = false;
-    this.renderReplies();
+    this.answered();
   }
 
   // Keeps each image on the host and puts its path in the field. One image
@@ -527,10 +591,9 @@ export class PhoneInput {
     name.maxLength = 80;
     nameLabel.append(name);
     const textLabel = element(doc, "label", "phone-field-label", "Text");
-    const text = element(doc, "textarea", "phone-field phone-snippet-text");
+    const text = plainTextField(element(doc, "textarea", "phone-field phone-snippet-text"));
     text.value = this.editing.text;
     text.rows = 5;
-    text.setAttribute("autocapitalize", "off");
     textLabel.append(text);
     const error = element(doc, "p", "phone-sheet-note phone-sheet-error", this.editError || "");
     error.hidden = !this.editError;

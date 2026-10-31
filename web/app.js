@@ -312,9 +312,11 @@ const phoneView = new PhoneView(phoneViewRoot, {
   onDesktop: () => setPhoneViewOverride("desktop"),
   terminalView: (paneID) => phoneTerminalView(paneID),
   setZoom: (paneID, factor) => setPhoneTerminalZoom(paneID, factor),
+  stepFontSize: (paneID, step) => stepPhoneTerminalFontSize(paneID, step),
   setFit: (paneID, on) => setPhoneTerminalFit(paneID, on),
   refreshTerminal: (paneID) => applyPhoneTerminalFont(rectangles.find((candidate) => candidate.id === paneID)),
   readingText: (paneID) => phoneReadingText(paneID),
+  selectText: (paneID) => phoneSelectText(paneID),
   storage: {
     get(key) { try { return window.localStorage.getItem(key); } catch { return null; } },
     set(key, value) { try { window.localStorage.setItem(key, value); } catch { /* the choice lasts until reload */ } },
@@ -5632,6 +5634,8 @@ async function startTerminal(rect) {
       onPending: count => { rect.filePendingCount = count; updateDeskbar(); requestTerminalFit(rect); },
     });
     updateTerminalRenderState(rect);
+    // A terminal opened on a phone before it had started fits it too.
+    if (phoneView.active && phoneView.openPaneID === rect.id) setPhoneTerminalFit(rect.id, true);
     connectTerminalSocket(rect);
     requestTerminalFit(rect);
   } catch (error) {
@@ -5912,7 +5916,7 @@ function setPhoneViewOverride(value) {
 // The phone view follows the screen unless this browser chose a view.
 function updatePhoneView() {
   if (!currentUser) return;
-  const wanted = shouldUsePhoneView({ width: window.innerWidth, coarsePointer: coarsePointer.matches, override: phoneViewOverride });
+  const wanted = shouldUsePhoneView({ width: window.innerWidth, coarsePointer: coarsePointer.matches, override: phoneViewOverride, phone: phoneDevice });
   if (wanted === phoneView.active) return;
   hideAllMenus();
   if (wanted) {
@@ -5974,6 +5978,7 @@ function showPhoneTerminal(paneID) {
   window.requestAnimationFrame(() => {
     if (phoneView.openPaneID !== rect.id) return;
     if (rect.kind === "terminal") {
+      setPhoneTerminalFit(rect.id, true);
       requestTerminalFit(rect);
       applyPhoneTerminalFont(rect);
     }
@@ -5982,12 +5987,12 @@ function showPhoneTerminal(paneID) {
   });
 }
 
-// On a phone a terminal shows the shell at whatever size it has, so looking
-// in from away never reflows what the desk shows. The phone takes the size
-// only when asked (Fit to this phone), for as long as it shows the
-// terminal, and the host gives it back after.
+// A terminal opened on a phone takes the phone's size (Fit to this phone)
+// for as long as it shows the terminal, and the host gives it back after.
+// Turned off, the phone shows the shell at whatever size it has, so looking
+// in never reflows what the desk shows.
 function phoneViewWanted() {
-  return Boolean(currentUser) && shouldUsePhoneView({ width: window.innerWidth, coarsePointer: coarsePointer.matches, override: phoneViewOverride });
+  return Boolean(currentUser) && shouldUsePhoneView({ width: window.innerWidth, coarsePointer: coarsePointer.matches, override: phoneViewOverride, phone: phoneDevice });
 }
 
 function terminalWatchesSize(state) {
@@ -6002,8 +6007,9 @@ function applyPhoneTerminalFont(rect) {
   const term = state?.term;
   if (!term || phoneView.openPaneID !== rect.id) return;
   if (state.phoneFit) {
-    if (term.options.fontSize !== rect.fontSize) {
-      term.options.fontSize = rect.fontSize;
+    const size = phoneTerminalFontSize(rect);
+    if (term.options.fontSize !== size) {
+      term.options.fontSize = size;
       requestTerminalFit(rect);
     }
     return;
@@ -6049,6 +6055,28 @@ function shrinkPhoneTerminalFont(rect, key, width, steps = 0) {
   });
 }
 
+// Each terminal has a font size of its own on this phone, for the fitted
+// screen and the text view, apart from the desk's. It starts at the phone's
+// default and lives in this browser.
+const phoneFontStoragePrefix = "tessera.phone-font.v1:";
+const minimumPhoneFontSize = 6;
+const maximumPhoneFontSize = 32;
+
+function phoneTerminalFontSize(rect) {
+  let stored = null;
+  try { stored = window.localStorage.getItem(`${phoneFontStoragePrefix}${workspaceID}:${rect.id}`); } catch { /* the default */ }
+  const size = Number(stored);
+  return stored && Number.isFinite(size) ? Math.max(minimumPhoneFontSize, Math.min(maximumPhoneFontSize, Math.round(size))) : defaultPaneFontSize;
+}
+
+function stepPhoneTerminalFontSize(paneID, step) {
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  if (rect?.kind !== "terminal") return;
+  const size = Math.max(minimumPhoneFontSize, Math.min(maximumPhoneFontSize, phoneTerminalFontSize(rect) + step));
+  try { window.localStorage.setItem(`${phoneFontStoragePrefix}${workspaceID}:${rect.id}`, String(size)); } catch { /* lasts for this view */ }
+  applyPhoneTerminalFont(rect);
+}
+
 function phoneTerminalView(paneID) {
   const rect = rectangles.find((candidate) => candidate.id === paneID);
   const term = rect?.kind === "terminal" ? rect.terminal?.term : null;
@@ -6056,6 +6084,7 @@ function phoneTerminalView(paneID) {
   return {
     cols: term.cols, rows: term.rows,
     fitted: Boolean(rect.terminal.phoneFit),
+    fontSize: phoneTerminalFontSize(rect),
     zoom: rect.terminal.phoneZoom || 1,
     alternate: term.buffer?.active?.type === "alternate",
   };
@@ -6106,6 +6135,21 @@ function phoneReadingText(paneID) {
   const rows = [];
   for (let index = Math.max(0, buffer.length - phoneReadingRows); index < buffer.length; index++) {
     rows.push({ text: buffer.getLine(index)?.translateToString(false) ?? "", continues: Boolean((marks[index] ?? 0) & 8) });
+  }
+  return readingLines(rows);
+}
+
+// Text to select on the phone: what the text view shows, or a full-screen
+// program's screen, row for row.
+function phoneSelectText(paneID) {
+  const lines = phoneReadingText(paneID);
+  if (lines) return lines;
+  const rect = rectangles.find((candidate) => candidate.id === paneID);
+  const buffer = rect?.kind === "terminal" ? rect.terminal?.term?.buffer?.active : null;
+  if (!buffer) return null;
+  const rows = [];
+  for (let index = 0; index < buffer.length; index++) {
+    rows.push({ text: buffer.getLine(index)?.translateToString(true) ?? "", continues: false });
   }
   return readingLines(rows);
 }
@@ -6568,6 +6612,12 @@ function attachTerminalPasteBridge(rect, term) {
   };
 }
 
+// In the phone view, whether the Type button has this terminal typing
+// straight into it.
+function phoneTypingInto(rect) {
+  return phoneView.active && phoneView.openPaneID === rect.id && Boolean(phoneView.input?.direct);
+}
+
 function attachTerminalMouseBridge(rect, term, socket) {
   const container = rect.terminalContainer;
   if (!container) {
@@ -6644,6 +6694,27 @@ function attachTerminalMouseBridge(rect, term, socket) {
         term.input(steps < 0 ? "\x1B[A" : "\x1B[B", true);
       }
     }
+  };
+
+  // ghostty-web focuses its input textarea whenever a touch ends on the
+  // canvas, which opens a phone's keyboard. Fingers lifting from a two-finger
+  // scroll aren't a tap, so their touchend stops here, and in the phone view
+  // every touchend does: the keyboard opens from the Type button. With Type
+  // on, a tap gives the terminal itself the keyboard back; ghostty-web's
+  // textarea is out of sight, and iOS offers no way to dismiss a keyboard it
+  // opened. Pointer events come first, so the scroll has ended by the last
+  // touchend: count touches here.
+  let multiTouch = false;
+  const onTouchStart = (event) => {
+    if (event.touches.length > 1) multiTouch = true;
+  };
+  const onTouchEnd = (event) => {
+    const scrolled = multiTouch;
+    if (event.touches.length === 0) multiTouch = false;
+    if (!scrolled && !phoneView.active) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!scrolled && event.touches.length === 0 && phoneTypingInto(rect) && document.activeElement !== container) term.focus();
   };
 
   const onPointerDown = (event) => {
@@ -6897,6 +6968,9 @@ function attachTerminalMouseBridge(rect, term, socket) {
   container.addEventListener("lostpointercapture", onLostPointerCapture, { capture: true });
   container.addEventListener("contextmenu", onContextMenu, { capture: true });
   container.addEventListener("click", onClick, { capture: true });
+  container.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+  container.addEventListener("touchend", onTouchEnd, { capture: true, passive: false });
+  container.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: false });
   term.attachCustomWheelEventHandler?.(onWheel);
 
   return {
@@ -6910,6 +6984,9 @@ function attachTerminalMouseBridge(rect, term, socket) {
       container.removeEventListener("lostpointercapture", onLostPointerCapture, { capture: true });
       container.removeEventListener("contextmenu", onContextMenu, { capture: true });
       container.removeEventListener("click", onClick, { capture: true });
+      container.removeEventListener("touchstart", onTouchStart, { capture: true });
+      container.removeEventListener("touchend", onTouchEnd, { capture: true });
+      container.removeEventListener("touchcancel", onTouchEnd, { capture: true });
       term.attachCustomWheelEventHandler?.(null);
     },
   };

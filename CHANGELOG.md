@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- A terminal opened in the phone view shows the screen (not the text view)
+  and fits the shell to the phone by default (**Fit to this phone**); turn it off in **Aa** to look in at the
+  desk's size. The host gives the earlier size back when the phone leaves.
+  Each terminal keeps its own font size on the phone, apart from the
+  desk's, for the fitted screen and the text view (**Aa → Larger /
+  Smaller**).
+
+- The phone view's open terminal has no bar across the top: **‹**, **Aa**
+  and **⋯** sit at the ends of the key row, the terminal takes the top of
+  the screen, and the window's name and state head the **⋯** menu. The
+  back button is larger.
+
+- **Select** in the phone view's key row shows the terminal's text, still,
+  to select with the phone's own handles and copy, without pressing or
+  scrolling the program.
+
+- Phone view fixes: turning the phone sideways keeps the phone view, wider,
+  instead of switching to the desktop view and back to the list; tapping or scrolling a terminal no longer opens the
+  keyboard (the **Type** button does); the terminal returns to full height
+  when the keyboard closes, and neither focusing it, a double-tap nor
+  a pinch zooms the phone view (Aa sizes its text); the
+  quick replies no longer flash on and off while a program redraws; the
+  compose field doesn't autocorrect.
+
 - Phones keep their own display settings: theme, font size, Deskbar
   button, OLED border, terminal font, row spacing, terminal colors and wheel
   speed. Desktops and iPads share the account's settings as before, and a

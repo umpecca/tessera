@@ -15,6 +15,10 @@ const clockTickMs = 10000;
 // An open terminal's quick replies follow its quiet seconds more closely.
 const openClockTickMs = 2000;
 const readingRefreshMs = 1000;
+// Two taps closer than this are a double-tap, which iOS takes as zoom.
+const doubleTapMs = 350;
+// Longer than the keyboard takes to slide in or out.
+const viewportFollowMs = 1000;
 export const phoneReadingStorageKey = "tessera.phone-reading.v1";
 
 // The font size at which the shell's columns fill width, given the cell
@@ -69,9 +73,12 @@ export function phoneViewPathOverride(pathname) {
   return /^\/m\/?$/.test(pathname || "") ? "phone" : "";
 }
 
-export function shouldUsePhoneView({ width, coarsePointer, override }) {
+// A phone shows the phone view whichever way it is turned, wider in
+// landscape; other touch screens show it in a narrow window.
+export function shouldUsePhoneView({ width, coarsePointer, override, phone = false }) {
   const chosen = normalizePhoneViewOverride(override);
   if (chosen) return chosen === "phone";
+  if (phone) return true;
   return Boolean(coarsePointer) && Number(width) > 0 && Number(width) < phoneViewMaxWidth;
 }
 
@@ -204,8 +211,10 @@ function element(document, tag, className, text) {
 //   input              PhoneInput's options, for typing into the open terminal
 //   terminalView(id)   { cols, rows, fitted, zoom, alternate } for the open one
 //   setZoom(id, factor), setFit(id, on)
+//   stepFontSize(id, step) this phone's font size for the terminal, a point at a time
 //   refreshTerminal(id) the open terminal is on screen; keep its view current
 //   readingText(id)    its lines of text, or null for a full-screen program
+//   selectText(id)     its lines of text, a full-screen program's screen too
 //   storage            { get(key), set(key, value) }, for the chosen view
 
 export class PhoneView {
@@ -224,9 +233,9 @@ export class PhoneView {
     this.clock = null;
     this.menu = null;
     this.mismatch = "";
-    // Text unless this browser chose the screen: a desk's terminal is too wide
-    // to read as a screen at a phone's width.
-    this.reading = this.options.storage?.get?.(phoneReadingStorageKey) !== "screen";
+    // The screen unless this browser chose text: a terminal opened on the
+    // phone fits the shell to it, so the screen reads at the phone's width.
+    this.reading = this.options.storage?.get?.(phoneReadingStorageKey) === "text";
     this.readingTimer = null;
     this.build();
   }
@@ -283,15 +292,31 @@ export class PhoneView {
       event.stopPropagation();
       this.showMenu(this.openPaneID, more);
     });
-    this.terminalHeader.append(back, heading, view, more);
+    this.terminalHeader.append(heading);
 
     this.readingView = element(doc, "div", "phone-reading");
     this.readingView.hidden = true;
     this.readingView.setAttribute("role", "log");
     this.readingView.setAttribute("aria-label", "Terminal output as text");
 
-    this.input = this.options.input ? new PhoneInput(doc, this.options.input) : null;
-    this.root.append(this.inbox, this.terminalHeader, this.readingView, ...(this.input ? [this.input.element] : []));
+    // Select: the terminal's text as a still page over it, for the phone's
+    // own selection handles and Copy. One finger scrolls it, and nothing
+    // reaches the terminal, so selecting can't press or scroll the program.
+    this.copyView = element(doc, "div", "phone-reading phone-copy");
+    this.copyView.hidden = true;
+    this.copyView.setAttribute("aria-label", "Terminal text to select");
+
+    this.input = this.options.input ? new PhoneInput(doc, { ...this.options.input, select: (on) => this.setSelecting(on) }) : null;
+    // With the input area, the open terminal's buttons sit at the ends of its
+    // key row and the terminal takes the top of the screen; the title and
+    // state head the actions menu. Without it, they head the screen.
+    if (this.input) {
+      this.input.barStart.append(back);
+      this.input.barEnd.append(view, more);
+    } else {
+      this.terminalHeader.replaceChildren(back, heading, view, more);
+    }
+    this.root.append(this.inbox, this.terminalHeader, this.readingView, this.copyView, ...(this.input ? [this.input.element] : []));
     this.onVisibility = () => {
       if (!this.active) return;
       if (this.document.hidden) this.stopPolling();
@@ -300,7 +325,21 @@ export class PhoneView {
     this.onOutsidePointer = (event) => {
       if (this.menu && !this.menu.contains(event.target)) this.hideMenu();
     };
-    this.onViewport = () => this.measure();
+    this.onViewport = () => this.followViewport();
+    // iOS can zoom the page despite touch-action (see styles.css), so its
+    // pinch events are refused, and so is the second tap of a double-tap
+    // that lands on nothing that takes taps. Buttons, fields and terminals
+    // get every tap: two quick presses of a key are two keys.
+    this.onGesture = (event) => event.preventDefault();
+    this.onTouchEnd = (event) => {
+      const now = Date.now();
+      const quick = this.lastTouchEnd !== undefined && now - this.lastTouchEnd < doubleTapMs;
+      this.lastTouchEnd = now;
+      if (!quick || event.touches?.length) return;
+      const target = event.target;
+      if (target?.closest?.("button, a, input, textarea, select, label, [contenteditable], .terminal-container, .phone-reading")) return;
+      event.preventDefault();
+    };
     if (this.input && typeof globalThis.ResizeObserver === "function") {
       new globalThis.ResizeObserver(this.onViewport).observe(this.input.element);
     }
@@ -314,9 +353,30 @@ export class PhoneView {
     if (!style?.setProperty) return;
     const viewport = globalThis.visualViewport;
     const keyboard = viewport ? Math.max(0, Math.round(globalThis.innerHeight - viewport.height - viewport.offsetTop)) : 0;
-    style.setProperty("--phone-keyboard-inset", `${keyboard}px`);
     const input = this.input && !this.input.element.hidden ? this.input.element.offsetHeight || 0 : 0;
+    if (keyboard === this.keyboardInset && input === this.inputHeight) return;
+    this.keyboardInset = keyboard;
+    this.inputHeight = input;
+    // More than iPadOS's shortcut bar for a hardware keyboard.
+    if (keyboard > 80) this.document.documentElement.dataset.phoneKeyboard = "open";
+    else delete this.document.documentElement.dataset.phoneKeyboard;
+    style.setProperty("--phone-keyboard-inset", `${keyboard}px`);
     style.setProperty("--phone-input-height", `${input}px`);
+  }
+
+  // iOS can report the viewport before the keyboard has finished coming or
+  // going, and sends nothing once it has, leaving the terminal short. So
+  // after any change, measure every frame for a while.
+  followViewport() {
+    this.measure();
+    this.followUntil = Date.now() + viewportFollowMs;
+    if (this.followFrame || typeof globalThis.requestAnimationFrame !== "function") return;
+    const step = () => {
+      this.followFrame = 0;
+      this.measure();
+      if (this.active && Date.now() < this.followUntil) this.followFrame = globalThis.requestAnimationFrame(step);
+    };
+    this.followFrame = globalThis.requestAnimationFrame(step);
   }
 
   enter() {
@@ -324,10 +384,17 @@ export class PhoneView {
     this.active = true;
     this.root.hidden = false;
     this.document.documentElement.dataset.phoneView = this.openPaneID ? "terminal" : "inbox";
+    if (this.input) this.document.documentElement.dataset.phoneBar = "bottom";
     this.document.addEventListener("visibilitychange", this.onVisibility);
     this.document.addEventListener("pointerdown", this.onOutsidePointer, true);
     globalThis.visualViewport?.addEventListener("resize", this.onViewport);
     globalThis.visualViewport?.addEventListener("scroll", this.onViewport);
+    globalThis.addEventListener?.("resize", this.onViewport);
+    this.document.addEventListener("gesturestart", this.onGesture, { passive: false });
+    this.document.addEventListener("gesturechange", this.onGesture, { passive: false });
+    this.document.addEventListener("touchend", this.onTouchEnd, { passive: false });
+    this.document.addEventListener("focusin", this.onViewport);
+    this.document.addEventListener("focusout", this.onViewport);
     this.startClock();
     this.render();
     this.startPolling({ fresh: true });
@@ -340,10 +407,20 @@ export class PhoneView {
     this.active = false;
     this.root.hidden = true;
     delete this.document.documentElement.dataset.phoneView;
+    delete this.document.documentElement.dataset.phoneKeyboard;
+    delete this.document.documentElement.dataset.phoneBar;
     this.document.removeEventListener("visibilitychange", this.onVisibility);
     this.document.removeEventListener("pointerdown", this.onOutsidePointer, true);
     globalThis.visualViewport?.removeEventListener("resize", this.onViewport);
     globalThis.visualViewport?.removeEventListener("scroll", this.onViewport);
+    globalThis.removeEventListener?.("resize", this.onViewport);
+    this.document.removeEventListener("gesturestart", this.onGesture);
+    this.document.removeEventListener("gesturechange", this.onGesture);
+    this.document.removeEventListener("touchend", this.onTouchEnd);
+    this.document.removeEventListener("focusin", this.onViewport);
+    this.document.removeEventListener("focusout", this.onViewport);
+    globalThis.cancelAnimationFrame?.(this.followFrame);
+    this.followFrame = 0;
     globalThis.clearInterval(this.clock);
     this.clock = null;
     this.stopPolling();
@@ -373,8 +450,9 @@ export class PhoneView {
     this.openPaneID = paneID;
     this.document.documentElement.dataset.phoneView = "terminal";
     this.inbox.hidden = true;
-    this.terminalHeader.hidden = false;
+    this.terminalHeader.hidden = Boolean(this.input);
     const card = this.cards().terminals.find((candidate) => candidate.id === paneID);
+    this.setSelecting(false);
     this.input?.attach(paneID, { alerted: Boolean(card?.summary?.alert) });
     this.measure();
     this.renderTerminalHeader();
@@ -397,6 +475,7 @@ export class PhoneView {
 
   showInbox() {
     this.hideMenu();
+    this.setSelecting(false);
     this.input?.detach();
     this.readingView.hidden = true;
     globalThis.clearInterval(this.readingTimer);
@@ -406,6 +485,30 @@ export class PhoneView {
     if (this.active) this.document.documentElement.dataset.phoneView = "inbox";
     this.inbox.hidden = false;
     this.terminalHeader.hidden = true;
+  }
+
+  // The text is taken once, so new output doesn't move a selection. It
+  // opens at the end, where the terminal was.
+  setSelecting(on) {
+    const lines = on && this.openPaneID ? this.options.selectText?.(this.openPaneID) : null;
+    const view = this.copyView;
+    this.input?.showSelecting(Boolean(lines));
+    if (!lines) {
+      view.hidden = true;
+      view.textContent = "";
+      return;
+    }
+    // The keyboard would leave little room to select in.
+    this.document.activeElement?.blur?.();
+    this.applyFontSize(view);
+    view.textContent = lines.join("\n");
+    view.hidden = false;
+    view.scrollTop = view.scrollHeight;
+  }
+
+  applyFontSize(view) {
+    const size = this.openPaneID ? this.options.terminalView?.(this.openPaneID)?.fontSize : 0;
+    view.style.fontSize = size ? `${size}px` : "";
   }
 
   setReading(on) {
@@ -429,6 +532,7 @@ export class PhoneView {
     }
     const view = this.readingView;
     const atEnd = follow || view.hidden || view.scrollHeight - view.scrollTop - view.clientHeight < 48;
+    this.applyFontSize(view);
     const text = lines.join("\n");
     if (text !== this.readingTextShown || view.hidden) {
       view.textContent = text;
@@ -531,7 +635,10 @@ export class PhoneView {
 
   showMenu(paneID, anchor) {
     if (!paneID) return;
+    const open = this.openPaneID === paneID;
+    const heading = [this.terminalTitle.textContent, this.terminalState.textContent].filter(Boolean).join(" · ");
     this.showItems(anchor, [
+      ...(open && this.input && heading ? [{ note: heading }] : []),
       ...(this.openPaneID === paneID ? [] : [{ label: "Open", run: () => this.open(paneID) }]),
       { label: "Interrupt (Ctrl+C)", run: () => this.options.onInterrupt?.(paneID) },
       { label: "Rename…", run: () => this.options.onRename?.(paneID) },
@@ -547,15 +654,26 @@ export class PhoneView {
     const view = this.options.terminalView?.(paneID);
     if (!view) return;
     const text = this.reading && !view.alternate;
-    const size = `Shell ${view.cols}×${view.rows} · ${view.fitted ? "fitted to this phone" : "its own size"}`;
+    // The text view and the fitted screen use the terminal's own font size
+    // on this phone; the unfitted screen fits its font to the width and
+    // zooms from there.
+    const sized = text || view.fitted;
+    const size = `Shell ${view.cols}×${view.rows} · ${view.fitted ? "fitted to this phone" : "its own size"}${sized && view.fontSize ? ` · ${view.fontSize}px` : ""}`;
+    const larger = () => (sized ? this.stepFontSize(paneID, 1) : this.options.setZoom?.(paneID, 1.25));
+    const smaller = () => (sized ? this.stepFontSize(paneID, -1) : this.options.setZoom?.(paneID, 0.8));
     this.showItems(anchor, [
       { note: size },
       { label: "Screen", checked: !text, run: () => this.setReading(false) },
       { label: view.alternate ? "Text (not for full-screen programs)" : "Text", checked: text, disabled: view.alternate, run: () => this.setReading(true) },
-      { label: "Larger", disabled: text || view.fitted, run: () => this.options.setZoom?.(paneID, 1.25) },
-      { label: "Smaller", disabled: text || view.fitted || view.zoom <= 1, run: () => this.options.setZoom?.(paneID, 0.8) },
+      { label: "Larger", run: larger },
+      { label: "Smaller", disabled: !sized && view.zoom <= 1, run: smaller },
       { label: "Fit to this phone", checked: view.fitted, run: () => this.options.setFit?.(paneID, !view.fitted) },
     ], "phone-view-menu");
+  }
+
+  stepFontSize(paneID, step) {
+    this.options.stepFontSize?.(paneID, step);
+    this.renderReading();
   }
 
   showItems(anchor, items, className = "") {
@@ -580,8 +698,11 @@ export class PhoneView {
       });
       menu.append(button);
     }
+    // Below its button, or above one in the lower half of the screen.
     const box = anchor.getBoundingClientRect();
-    menu.style.top = `${Math.round(box.bottom + 4)}px`;
+    const height = doc.documentElement.clientHeight;
+    if (height && box.top > height / 2) menu.style.bottom = `${Math.round(height - box.top + 4)}px`;
+    else menu.style.top = `${Math.round(box.bottom + 4)}px`;
     menu.style.right = `${Math.max(8, Math.round(doc.documentElement.clientWidth - box.right))}px`;
     this.root.append(menu);
     this.menu = menu;

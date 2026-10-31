@@ -20,6 +20,8 @@ test("the phone view follows the screen unless this browser chose a view", () =>
   assert.equal(shouldUsePhoneView({ width: 390, coarsePointer: true, override: "" }), true);
   assert.equal(shouldUsePhoneView({ width: 390, coarsePointer: false, override: "" }), false, "a narrow desktop window");
   assert.equal(shouldUsePhoneView({ width: 820, coarsePointer: true, override: "" }), false, "an iPad");
+  assert.equal(shouldUsePhoneView({ width: 844, coarsePointer: true, override: "", phone: true }), true, "a phone turned sideways");
+  assert.equal(shouldUsePhoneView({ width: 844, coarsePointer: true, override: "desktop", phone: true }), false, "unless it chose the desktop view");
   assert.equal(shouldUsePhoneView({ width: 390, coarsePointer: true, override: "desktop" }), false);
   assert.equal(shouldUsePhoneView({ width: 1440, coarsePointer: false, override: "phone" }), true);
   assert.equal(shouldUsePhoneView({ width: 390, coarsePointer: true, override: "tablet" }), true, "an unknown choice is no choice");
@@ -129,6 +131,7 @@ class FakeElement {
   replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this); this.parent = null; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] ?? null; }
   addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
   removeEventListener(type, listener) { this.listeners[type] = (this.listeners[type] || []).filter((l) => l !== listener); }
   dispatch(type, event = {}) { for (const listener of this.listeners[type] || []) listener({ stopPropagation() {}, target: this, ...event }); }
@@ -363,6 +366,7 @@ test("the view menu shows the shell's size and switches screen, text, zoom and f
     fetch: () => new Promise(() => {}),
     terminalView: () => view,
     setZoom: (id, factor) => calls.push(["zoom", id, factor]),
+    stepFontSize: (id, step) => calls.push(["font", id, step]),
     setFit: (id, on) => calls.push(["fit", id, on]),
     refreshTerminal: (id) => calls.push(["refresh", id]),
     readingText: () => (view.alternate ? null : lines),
@@ -396,10 +400,13 @@ test("the view menu shows the shell's size and switches screen, text, zoom and f
   viewButton.click();
   assert.deepEqual(items()[2], ["Text (not for full-screen programs)", "false", true]);
 
-  view = { cols: 45, rows: 30, fitted: true, zoom: 1, alternate: false };
+  view = { cols: 45, rows: 30, fitted: true, zoom: 1, alternate: false, fontSize: 13 };
   viewButton.click();
-  assert.deepEqual(items()[0], ["Shell 45×30 · fitted to this phone", "", false]);
-  assert.equal(items()[3][2], true, "no zoom while fitted");
+  assert.deepEqual(items()[0], ["Shell 45×30 · fitted to this phone · 13px", "", false]);
+  assert.deepEqual(items().slice(3, 5).map(([, , disabled]) => disabled), [false, false], "the terminal's own font size on this phone");
+  root.byClass("phone-menu")[0].children[4].click();
+  assert.deepEqual(calls.at(-1), ["font", "a", -1]);
+  viewButton.click();
   root.byClass("phone-menu")[0].children[5].click();
   assert.deepEqual(calls.at(-1), ["fit", "a", false]);
   view$.back();
@@ -415,7 +422,7 @@ test("the view menu shows the shell's size and switches screen, text, zoom and f
   });
   fresh.enter();
   fresh.open("a");
-  assert.equal(fresh.readingView.hidden, false, "text is the default");
+  assert.equal(fresh.readingView.hidden, true, "the screen is the default");
   fresh.leave();
 });
 
@@ -425,4 +432,118 @@ test("a phone is a touch screen under 600 points on its shorter side", () => {
   assert.equal(isPhoneDevice({ coarsePointer: true, screenWidth: 820, screenHeight: 1180 }), false, "an iPad");
   assert.equal(isPhoneDevice({ coarsePointer: false, screenWidth: 390, screenHeight: 844 }), false, "a small desktop screen");
   assert.equal(isPhoneDevice({ coarsePointer: true, screenWidth: 0, screenHeight: 0 }), false, "no screen size");
+});
+
+test("the keyboard inset follows the viewport for a while after each change", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval", "setTimeout"] });
+  const saved = { innerHeight: globalThis.innerHeight, visualViewport: globalThis.visualViewport, requestAnimationFrame: globalThis.requestAnimationFrame, cancelAnimationFrame: globalThis.cancelAnimationFrame };
+  t.after(() => Object.assign(globalThis, saved));
+  const viewport = { height: 844, offsetTop: 0, listeners: {}, addEventListener(type, listener) { this.listeners[type] = listener; }, removeEventListener() {} };
+  let frames = [];
+  Object.assign(globalThis, {
+    innerHeight: 844,
+    visualViewport: viewport,
+    requestAnimationFrame: (callback) => frames.push(callback),
+    cancelAnimationFrame: () => { frames = []; },
+  });
+  const runFrame = () => { const due = frames; frames = []; for (const callback of due) callback(); };
+  const document = fakeDocument();
+  const properties = {};
+  document.documentElement.style = { setProperty: (name, value) => { properties[name] = value; } };
+  const view = new PhoneView(new FakeElement(document, "div"), { panes: () => [], workspaceID: () => "w", fetch: () => new Promise(() => {}) });
+  view.enter();
+
+  viewport.height = 600;
+  viewport.listeners.resize();
+  assert.equal(properties["--phone-keyboard-inset"], "244px");
+
+  // The keyboard goes, and iOS sends nothing more.
+  document.listeners.focusout[0]();
+  viewport.height = 844;
+  runFrame();
+  assert.equal(properties["--phone-keyboard-inset"], "0px", "a later frame sees it gone");
+  t.mock.timers.tick(1100);
+  runFrame();
+  assert.equal(frames.length, 0, "and then stops measuring");
+  view.leave();
+});
+
+test("Select lays the terminal's text over it, still, until it is put away", () => {
+  const document = fakeDocument();
+  let lines = ["$ make", "ok"];
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [{ id: "a", kind: "terminal", title: "A" }, { id: "b", kind: "terminal", title: "B" }],
+    workspaceID: () => "w",
+    fetch: () => new Promise(() => {}),
+    selectText: () => lines,
+  });
+  view.enter();
+  view.setSelecting(true);
+  assert.equal(view.copyView.hidden, true, "no terminal open");
+  view.open("a");
+  view.setSelecting(true);
+  assert.equal(view.copyView.hidden, false);
+  assert.equal(view.copyView.textContent, "$ make\nok");
+  lines = ["$ make", "ok", "more"];
+  view.renderTerminalHeader();
+  assert.equal(view.copyView.textContent, "$ make\nok", "new output doesn't move the selection");
+  view.setSelecting(false);
+  assert.equal(view.copyView.hidden, true);
+  view.setSelecting(true);
+  view.open("b");
+  assert.equal(view.copyView.hidden, true, "another terminal");
+  view.setSelecting(true);
+  view.back();
+  assert.equal(view.copyView.hidden, true, "back to the list");
+  view.leave();
+});
+
+test("with the input area, the open terminal's buttons sit in its key row and the title heads its actions", () => {
+  const document = fakeDocument();
+  const root = new FakeElement(document, "div");
+  const view = new PhoneView(root, {
+    panes: () => [{ id: "a", kind: "terminal", title: "Build" }],
+    workspaceID: () => "w",
+    fetch: () => new Promise(() => {}),
+    input: { sendText() {}, sendKey() {}, storage: { get: () => null, set() {}, remove() {} } },
+  });
+  view.enter();
+  assert.equal(document.documentElement.dataset.phoneBar, "bottom");
+  view.open("a");
+  assert.equal(view.terminalHeader.hidden, true, "no bar across the top");
+  assert.deepEqual(view.input.barStart.children.map((node) => node.attributes["aria-label"]), ["Back to terminals"]);
+  assert.deepEqual(view.input.barEnd.children.map((node) => node.attributes["aria-label"]), ["View", "Terminal actions"]);
+  view.input.barEnd.children[1].click();
+  const note = root.byClass("phone-menu-note")[0];
+  assert.equal(note.textContent.startsWith("Build"), true);
+  view.input.barStart.children[0].click();
+  assert.equal(view.openPaneID, "");
+  view.leave();
+  assert.equal(document.documentElement.dataset.phoneBar, undefined);
+});
+
+test("a quick second tap on nothing that takes taps doesn't reach iOS's zoom, but keys get both", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval", "setTimeout"] });
+  const document = fakeDocument();
+  const view = new PhoneView(new FakeElement(document, "div"), { panes: () => [], workspaceID: () => "w", fetch: () => new Promise(() => {}) });
+  view.enter();
+  const gap = { closest: () => null };
+  const key = { closest: (selector) => (selector.includes("button") ? key : null) };
+  const tap = (target) => {
+    let prevented = false;
+    for (const listener of document.listeners.touchend) listener({ target, touches: [], preventDefault: () => { prevented = true; } });
+    return prevented;
+  };
+  assert.equal(tap(gap), false, "a single tap");
+  t.mock.timers.tick(200);
+  assert.equal(tap(gap), true, "the second of a double-tap");
+  t.mock.timers.tick(200);
+  assert.equal(tap(key), false, "a key pressed twice is two keys");
+  t.mock.timers.tick(1000);
+  assert.equal(tap(gap), false, "taps a while apart");
+  let pinched = false;
+  for (const listener of document.listeners.gesturestart) listener({ preventDefault: () => { pinched = true; } });
+  assert.equal(pinched, true, "a pinch is refused");
+  view.leave();
+  assert.equal(document.listeners.touchend.length, 0);
 });
