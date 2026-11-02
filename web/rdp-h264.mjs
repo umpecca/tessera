@@ -82,9 +82,13 @@ export const rdpH264View = Object.freeze({
 // are kept in a canvas of their own, since the server may copy from them
 // later (Remotr's AVC444 mode decodes into a surface that isn't shown and
 // copies it to the one that is, every frame), and the surfaces mapped to the
-// output are drawn on `canvas` too. Until the first surface operation, a
-// picture's surface is taken to be shown at 0,0. Pictures and operations are
-// applied in the order they were pushed.
+// output are drawn on `canvas` too. The one surface shown, when it is shown
+// at 0,0, as is usual, keeps its pixels in `canvas` instead of a canvas of
+// its own, so what is drawn to it is drawn once. Likewise the surface full
+// color pictures are combined for (Remotr's hidden one) keeps its pixels in
+// the combiner's canvas, while it is the only one. Until the first surface
+// operation, a picture's surface is taken to be shown at 0,0. Pictures and
+// operations are applied in the order they were pushed.
 //
 // An AVC444 update's main view is an ordinary 4:2:0 picture, drawn as it is;
 // its auxiliary view is decoded only to keep the stream in step. With
@@ -112,8 +116,17 @@ export function createRDPH264Presenter({
   const surfaces = new Map();
   // Whether the server has said which surfaces are shown.
   let outputKnown = false;
+  // The surface whose pixels are kept in `canvas` itself, or null.
+  let outputSurface = null;
+  // The surface whose pixels are kept in the combiner's canvas, and that
+  // canvas; and the one surface the combiner has painted for, or -1 once it
+  // has painted for more than one.
+  let combinerSurface = null;
+  let combinerCanvas = null;
+  let combinerOwner = null;
   let decoder = null;
-  let decoderSps = "";
+  // The SPS the decoder was opened for.
+  let decoderSps = null;
   let timestamp = 0;
   let nextStamp = 0;
   // Decoded pictures waiting for an earlier entry.
@@ -128,6 +141,8 @@ export function createRDPH264Presenter({
   let queue = Promise.resolve();
   let busy = 0;
   let planeBuffer = null;
+  // Whether pictures must be copied out whole (readVideoFramePlanes).
+  const copyState = {};
   // Regions of a main view waiting for its auxiliary view before painting.
   let deferred = [];
   let auxiliaryApplied = false;
@@ -139,7 +154,7 @@ export function createRDPH264Presenter({
       decoder.close();
     }
     decoder = null;
-    decoderSps = "";
+    decoderSps = null;
     for (const [stamp, entry] of pending) {
       if (entry.op) continue;
       if (entry.picture) {
@@ -170,7 +185,15 @@ export function createRDPH264Presenter({
   }
 
   // Grows a surface's canvas to hold `width` x `height`, keeping its pixels.
+  // Anything drawn to a surface goes through here, so a surface kept in the
+  // combiner's canvas, which only the combiner draws to, gets its own.
   function fit(entry, width, height) {
+    if (entry.canvas && entry.canvas === combinerCanvas) detachFromCombiner();
+    if (entry.canvas === canvas) {
+      if (width <= canvas.width && height <= canvas.height) return true;
+      // Larger than `canvas`: the surface needs a canvas of its own.
+      detachFromOutput();
+    }
     if (width <= entry.width && height <= entry.height) return Boolean(entry.context);
     const grown = createCanvas(Math.max(width, entry.width), Math.max(height, entry.height));
     const context = grown?.getContext("2d");
@@ -178,6 +201,70 @@ export function createRDPH264Presenter({
     if (entry.canvas) context.drawImage(entry.canvas, 0, 0);
     Object.assign(entry, { canvas: grown, context, width: grown.width, height: grown.height });
     return true;
+  }
+
+  // Gives the surface kept in `canvas` a canvas of its own again, holding
+  // what `canvas` shows.
+  function detachFromOutput() {
+    const entry = surfaces.get(outputSurface);
+    outputSurface = null;
+    if (entry?.canvas !== canvas) return;
+    Object.assign(entry, { canvas: null, context: null, width: 0, height: 0 });
+    if (fit(entry, canvas.width, canvas.height)) entry.context.drawImage(canvas, 0, 0);
+  }
+
+  // Keeps surface `id`'s pixels in the combiner's canvas, when it is the one
+  // surface the combiner paints for and has no pixels of its own: what the
+  // combiner paints for it is then drawn once, not again into a canvas of
+  // its own. Called once the combiner has painted for it.
+  function adoptCombinerCanvas(id) {
+    if (combinerSurface !== null || combinerOwner !== id) return;
+    const entry = surface(id);
+    if (entry.canvas) return;
+    combinerSurface = id;
+    combinerCanvas = combiner.canvas;
+    Object.assign(entry, { canvas: combinerCanvas, context: null, width: combiner.width, height: combiner.height });
+  }
+
+  // Gives the surface kept in the combiner's canvas a canvas of its own,
+  // holding what the combiner's canvas shows.
+  function detachFromCombiner() {
+    const entry = surfaces.get(combinerSurface);
+    const kept = combinerCanvas;
+    combinerSurface = null;
+    combinerCanvas = null;
+    if (!entry || entry.canvas !== kept) return;
+    const { width, height } = entry;
+    Object.assign(entry, { canvas: null, context: null, width: 0, height: 0 });
+    if (fit(entry, width, height)) entry.context.drawImage(kept, 0, 0);
+  }
+
+  // Keeps the one surface shown in `canvas`, when it is shown at 0,0 and fits.
+  // Called once the surfaces' origins change, before anything is drawn for
+  // the change: a surface given its own canvas takes what `canvas` holds.
+  function settleOutput() {
+    let id = null;
+    let count = 0;
+    for (const [surfaceId, entry] of surfaces) {
+      if (entry.origin) {
+        id = surfaceId;
+        count += 1;
+      }
+    }
+    const entry = count === 1 ? surfaces.get(id) : null;
+    const wanted = entry && entry.origin[0] === 0 && entry.origin[1] === 0
+      && (entry.canvas === canvas || (entry.width <= canvas.width && entry.height <= canvas.height)) ? id : null;
+    if (wanted === outputSurface) return;
+    detachFromOutput();
+    if (wanted === null) return;
+    const output = canvas.getContext("2d");
+    if (entry.canvas) output.drawImage(entry.canvas, 0, 0);
+    Object.assign(entry, { canvas, context: output, width: 0, height: 0 });
+    outputSurface = wanted;
+    if (wanted === combinerSurface) {
+      combinerSurface = null;
+      combinerCanvas = null;
+    }
   }
 
   // Where a surface is shown on `canvas`, or null.
@@ -194,10 +281,13 @@ export function createRDPH264Presenter({
     const output = shown && canvas.getContext("2d");
     for (const [x, y, width, height] of regions) {
       if (!width || !height) continue;
-      if (fit(target, x + width, y + height)) {
+      // A surface kept in the combiner's canvas has what it painted already.
+      if (target.canvas !== source && fit(target, x + width, y + height)) {
         target.context.drawImage(source, x, y, width, height, x, y, width, height);
       }
-      output?.drawImage(source, x, y, width, height, x + shown[0], y + shown[1], width, height);
+      if (target.canvas !== canvas) {
+        output?.drawImage(source, x, y, width, height, x + shown[0], y + shown[1], width, height);
+      }
     }
     firstPicture();
   }
@@ -215,12 +305,20 @@ export function createRDPH264Presenter({
       case rdpH264View.surfaceOutput: {
         outputKnown = true;
         if (!regions.length) {
+          if (entry.surfaceId === outputSurface) outputSurface = null;
+          if (entry.surfaceId === combinerSurface) {
+            combinerSurface = null;
+            combinerCanvas = null;
+          }
+          if (entry.surfaceId === combinerOwner) combinerOwner = null;
           surfaces.delete(entry.surfaceId);
+          settleOutput();
           return;
         }
         const target = surface(entry.surfaceId);
         target.origin = [regions[0][0], regions[0][1]];
-        if (target.canvas) {
+        settleOutput();
+        if (target.canvas && target.canvas !== canvas) {
           canvas.getContext("2d").drawImage(target.canvas, target.origin[0], target.origin[1]);
         }
         return;
@@ -234,13 +332,17 @@ export function createRDPH264Presenter({
           const destination = surface(destinationId);
           if (!fit(destination, px + width, py + height)) continue;
           destination.context.drawImage(source.canvas, x, y, width, height, px, py, width, height);
-          const shown = origin(destinationId);
+          const shown = destination.canvas !== canvas && origin(destinationId);
           shown && canvas.getContext("2d").drawImage(destination.canvas, px, py, width, height, px + shown[0], py + shown[1], width, height);
         }
         return;
       }
       case rdpH264View.surfacesReset:
         outputKnown = true;
+        outputSurface = null;
+        combinerSurface = null;
+        combinerCanvas = null;
+        combinerOwner = null;
         surfaces.clear();
         return;
       default:
@@ -256,12 +358,14 @@ export function createRDPH264Presenter({
       }
     }
     if (combiner?.lost()) {
+      detachFromCombiner();
       combiner = null;
     }
     return Boolean(combiner);
   }
 
   function giveUpCombining() {
+    detachFromCombiner();
     combiner?.close();
     combiner = null;
     deferred = [];
@@ -271,9 +375,11 @@ export function createRDPH264Presenter({
     if (closed) return;
     const kind = entry.view & rdpH264View.kindMask;
     let planes = null;
+    const regions = regionList(entry.regions);
     if (kind !== rdpH264View.avc420 && combinerReady()) {
       try {
-        planes = await readPlanes(picture, planeBuffer);
+        // Only the rows the regions need.
+        planes = await readPlanes(picture, planeBuffer, regions, copyState);
       } catch {
         planes = null;
       }
@@ -284,8 +390,7 @@ export function createRDPH264Presenter({
       drawDirect(picture, entry);
       return;
     }
-    planeBuffer = planes.data;
-    const regions = regionList(entry.regions);
+    planeBuffer = planes.data ?? planeBuffer;
     try {
       if (kind === rdpH264View.main) {
         combiner.applyMain(planes, regions);
@@ -299,8 +404,17 @@ export function createRDPH264Presenter({
       }
       const paint = distinct(deferred.concat(regions).map((region) => clip(region, combiner.width, combiner.height)));
       deferred = [];
+      const id = entry.surfaceId;
+      if (combinerOwner === null) {
+        combinerOwner = id;
+      } else if (combinerOwner !== id) {
+        // Its canvas will hold another surface's pixels too.
+        combinerOwner = -1;
+        detachFromCombiner();
+      }
       combiner.paint(paint);
-      drawRegions(combiner.canvas, paint, entry.surfaceId);
+      adoptCombinerCanvas(id);
+      drawRegions(combiner.canvas, paint, id);
     } catch {
       giveUpCombining();
       drawDirect(picture, entry);
@@ -375,11 +489,11 @@ export function createRDPH264Presenter({
     drain();
   }
 
-  function open(data, sps) {
+  function open(data, nals, sps) {
     // An error closes the decoder; decoding resumes at the next key frame.
     decoder = new VideoDecoder({ output, error: reset });
-    decoder.configure({ codec: h264CodecString(data) || rdpH264ProbeCodec, ...decoderConfig });
-    decoderSps = sps;
+    decoder.configure({ codec: h264CodecString(data, nals) || rdpH264ProbeCodec, ...decoderConfig });
+    decoderSps = sps.slice();
   }
 
   function add(entry) {
@@ -406,24 +520,26 @@ export function createRDPH264Presenter({
         drain();
         return;
       }
-      try {
-        data = withLowDelaySps(data, spsCache);
-      } catch {
-        // An SPS this can't parse is decoded as it is, with the decoder's delay.
-      }
+      // One scan of the picture for its NAL units serves everything below.
       const nals = annexBNals(data);
       const key = nals.some((nal) => nal.type === 5);
       const spsNal = nals.find((nal) => nal.type === 7);
-      const sps = spsNal ? data.subarray(spsNal.start, spsNal.end).join(",") : "";
+      const sps = spsNal ? data.subarray(spsNal.start, spsNal.end) : null;
       // A new SPS, such as a new desktop size, starts a new decoder.
-      if (key && sps && sps !== decoderSps) {
+      if (key && sps && !sameBytes(sps, decoderSps)) {
         reset();
-        open(data, sps);
+        open(data, nals, sps);
       }
       if (!decoder) return;
+      let chunk = data;
+      try {
+        chunk = withLowDelaySps(data, spsCache, nals);
+      } catch {
+        // An SPS this can't parse is decoded as it is, with the decoder's delay.
+      }
       const stamp = add({ op: false, view, regions, surfaceId, picture: null });
       try {
-        decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: stamp, data }));
+        decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: stamp, data: chunk }));
       } catch {
         reset();
       }
@@ -432,6 +548,9 @@ export function createRDPH264Presenter({
       closed = true;
       reset();
       pending.clear();
+      outputSurface = null;
+      combinerSurface = null;
+      combinerCanvas = null;
       surfaces.clear();
       combiner?.close();
       combiner = null;
@@ -453,6 +572,14 @@ function defaultSurfaceCanvas(width, height) {
     element.height = height;
   }
   return element ?? null;
+}
+
+function sameBytes(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 // [x, y, width, height] quadruples from IronRDP's packed regions.

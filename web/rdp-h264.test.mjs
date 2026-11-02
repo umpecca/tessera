@@ -48,6 +48,9 @@ function fakes() {
     }
   }
   const canvas = {
+    name: "pane",
+    width: 1024,
+    height: 768,
     getContext: () => ({
       drawImage: (source, ...args) => {
         sources.push(source);
@@ -392,12 +395,12 @@ test("keeps pictures of a surface that isn't shown, and shows them when copied t
   h264.push(new Uint8Array(), Uint16Array.of(0, 0, 64, 32, 0, 0, 0, 0), surfaceCopy, 65532);
   env.decoders[0].emit(0);
 
-  assert.equal(canvases.made.length, 2);
-  const [hidden, shown] = canvases.made;
+  // Surface 0, the one shown, at 0,0, is kept in the pane's canvas: the copy
+  // is drawn there once, and surface 0 has no canvas of its own.
+  assert.equal(canvases.made.length, 1);
+  const [hidden] = canvases.made;
   assert.deepEqual(hidden.draws, [["picture", 0, 0, 64, 32, 0, 0, 64, 32]]);
-  assert.deepEqual(shown.draws, [[hidden.name, 0, 0, 64, 32, 0, 0, 64, 32]]);
-  // On the pane's canvas only the copy, from surface 0's canvas.
-  assert.deepEqual(env.sources.map((source) => source.name), [shown.name]);
+  assert.deepEqual(env.sources.map((source) => source.name), [hidden.name]);
   assert.deepEqual(env.draws, [[0, 0, 64, 32, 0, 0, 64, 32]]);
 });
 
@@ -410,7 +413,7 @@ test("waits for a picture before applying a copy pushed after it", () => {
   h264.push(new Uint8Array(), Uint16Array.of(0, 0, 16, 16, 4, 4, 0, 0), surfaceCopy, 5);
   assert.deepEqual(env.draws, []);
   env.decoders[0].emit(0);
-  assert.deepEqual(env.draws, [[4, 4, 16, 16, 4, 4, 16, 16]]);
+  assert.deepEqual(env.draws, [[0, 0, 16, 16, 4, 4, 16, 16]]);
 });
 
 test("draws a shown surface at its origin, and stops showing it once it is gone", () => {
@@ -477,11 +480,95 @@ test("with full color, draws the combined picture to the update's surface", asyn
   env.decoders[0].emit(0);
   env.decoders[0].emit(1);
   await settle();
-  const [hidden, shown] = canvases.made;
-  assert.deepEqual(hidden.draws, [["combined", 0, 0, 16, 16, 0, 0, 16, 16]]);
-  assert.deepEqual(shown.draws, [[hidden.name, 0, 0, 16, 16, 0, 0, 16, 16]]);
+  // Surface 65532 is kept in the combiner's canvas, so the copy to the
+  // pane's canvas, which holds surface 0, is the only draw.
+  assert.equal(canvases.made.length, 0);
+  assert.deepEqual(env.sources.map((source) => source.name), ["combined"]);
   assert.deepEqual(env.draws, [[0, 0, 16, 16, 0, 0, 16, 16]]);
   assert.equal(combiner.calls.at(-1)[0], "paint");
+});
+
+// Remotr's full color mode: surface 0 shown at 0,0, and an update combined
+// for hidden surface 65532, then copied to surface 0.
+async function combinedUpdate(env, h264, surfaceId = 65532, region = [0, 0, 16, 16], picture = 0) {
+  h264.push(picture ? delta() : idr(), Uint16Array.of(...region), main | v2 | auxiliaryFollows, surfaceId);
+  h264.push(delta(), Uint16Array.of(...region), auxiliary | v2, surfaceId);
+  env.decoders[0].emit(picture);
+  env.decoders[0].emit(picture + 1);
+  await settle();
+}
+
+test("gives the surface kept in the combiner's canvas its own once something else draws to it", async () => {
+  const env = fakes();
+  const canvases = fakeCanvases();
+  const { h264 } = fullColorPresenter(env, { createCanvas: canvases.createCanvas });
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+  await combinedUpdate(env, h264);
+  assert.equal(canvases.made.length, 0);
+
+  // A copy into it: it takes the combiner's pixels first.
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 8, 8, 4, 4, 65532, 0), surfaceCopy, 0);
+  assert.equal(canvases.made.length, 1);
+  const [own] = canvases.made;
+  assert.deepEqual([own.width, own.height], [64, 48]);
+  assert.deepEqual(own.draws, [["combined", 0, 0], ["pane", 0, 0, 8, 8, 4, 4, 8, 8]]);
+
+  // Combined pictures for it are drawn to its own canvas from now on.
+  await combinedUpdate(env, h264, 65532, [0, 0, 16, 16], 2);
+  assert.deepEqual(own.draws.at(-1), ["combined", 0, 0, 16, 16, 0, 0, 16, 16]);
+});
+
+test("gives it its own once the combiner paints for another surface", async () => {
+  const env = fakes();
+  const canvases = fakeCanvases();
+  const { h264 } = fullColorPresenter(env, { createCanvas: canvases.createCanvas });
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+  await combinedUpdate(env, h264);
+  await combinedUpdate(env, h264, 7, [0, 0, 16, 16], 2);
+  // 65532 took the combiner's pixels before the paint for surface 7, which
+  // has a canvas of its own.
+  const [hidden, other] = canvases.made;
+  assert.deepEqual(hidden.draws, [["combined", 0, 0]]);
+  assert.deepEqual(other.draws, [["combined", 0, 0, 16, 16, 0, 0, 16, 16]]);
+});
+
+test("gives it its own when a picture is drawn to it directly, or full color stops", async () => {
+  for (const stop of ["picture", "give up"]) {
+    const env = fakes();
+    const canvases = fakeCanvases();
+    const { h264, combiner } = fullColorPresenter(env, { createCanvas: canvases.createCanvas });
+    h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+    await combinedUpdate(env, h264);
+    if (stop === "picture") {
+      h264.push(delta(), Uint16Array.of(0, 0, 8, 8), rdpH264View.avc420, 65532);
+      env.decoders[0].emit(2);
+      await settle();
+    } else {
+      combiner.paint = () => {
+        throw new Error("context lost");
+      };
+      await combinedUpdate(env, h264, 65532, [0, 0, 16, 16], 2);
+    }
+    // It takes the combiner's pixels first; a picture is then drawn to its
+    // own canvas.
+    const [own] = canvases.made;
+    const expected = stop === "picture"
+      ? [["combined", 0, 0], ["picture", 0, 0, 8, 8, 0, 0, 8, 8]]
+      : [["combined", 0, 0]];
+    assert.deepEqual(own.draws, expected, stop);
+  }
+});
+
+test("keeps nothing in the combiner's canvas after every surface is gone", async () => {
+  const env = fakes();
+  const canvases = fakeCanvases();
+  const { h264 } = fullColorPresenter(env, { createCanvas: canvases.createCanvas });
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+  await combinedUpdate(env, h264);
+  h264.push(new Uint8Array(), new Uint16Array(), surfacesReset, 0);
+  // A new surface the combiner paints for is kept in its canvas again.
+  await combinedUpdate(env, h264, 3, [0, 0, 16, 16], 2);
+  assert.equal(canvases.made.length, 0);
 });
 
 test("reports every drawn picture", () => {
@@ -495,4 +582,83 @@ test("reports every drawn picture", () => {
   env.decoders[0].emit(1);
   env.decoders[0].emit(2);
   assert.equal(pictures, 2, "a picture without regions draws nothing");
+});
+
+test("draws a picture of the one surface shown at 0,0 once, on the pane's canvas", () => {
+  const env = fakes();
+  const canvases = fakeCanvases();
+  const h264 = presenter(env, { createCanvas: canvases.createCanvas });
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+  h264.push(idr(), Uint16Array.of(0, 0, 32, 16), rdpH264View.avc420, 0);
+  // A copy within the surface, as for scrolling, reads the pane's canvas.
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 32, 8, 0, 8, 0, 0), surfaceCopy, 0);
+  env.decoders[0].emit(0);
+  assert.equal(canvases.made.length, 0);
+  assert.deepEqual(env.draws, [
+    [0, 0, 32, 16, 0, 0, 32, 16],
+    [0, 0, 32, 8, 0, 8, 32, 8],
+  ]);
+  assert.deepEqual(env.sources.map((source) => source.name ?? "picture"), ["picture", "pane"]);
+});
+
+test("gives the surface kept in the pane's canvas its own once another is shown or it moves", () => {
+  const env = fakes();
+  const canvases = fakeCanvases();
+  const h264 = presenter(env, { createCanvas: canvases.createCanvas });
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+  h264.push(new Uint8Array(), Uint16Array.of(200, 100, 0, 0), surfaceOutput, 1);
+  // Surface 0 takes the pane's pixels before surface 1 is shown over them.
+  assert.equal(canvases.made.length, 1);
+  const [own] = canvases.made;
+  assert.deepEqual([own.width, own.height], [1024, 768]);
+  assert.deepEqual(own.draws, [["pane", 0, 0]]);
+  h264.push(idr(), Uint16Array.of(0, 0, 8, 8), rdpH264View.avc420, 0);
+  env.decoders[0].emit(0);
+  assert.deepEqual(own.draws.at(-1), ["picture", 0, 0, 8, 8, 0, 0, 8, 8]);
+  assert.deepEqual(env.draws.at(-1), [0, 0, 8, 8, 0, 0, 8, 8]);
+
+  // Once surface 1 is gone, surface 0 is kept in the pane's canvas again,
+  // drawn there first.
+  h264.push(new Uint8Array(), new Uint16Array(), surfaceOutput, 1);
+  assert.deepEqual(env.sources.at(-1), own);
+  assert.deepEqual(env.draws.at(-1), [0, 0]);
+  h264.push(delta(), Uint16Array.of(0, 0, 8, 8), rdpH264View.avc420, 0);
+  env.decoders[0].emit(1);
+  assert.equal(own.draws.length, 2);
+  assert.deepEqual(env.draws.at(-1), [0, 0, 8, 8, 0, 0, 8, 8]);
+
+  // Moved away from 0,0, it gets a canvas of its own and is drawn where it is.
+  h264.push(new Uint8Array(), Uint16Array.of(10, 10, 0, 0), surfaceOutput, 0);
+  assert.equal(canvases.made.length, 2);
+  assert.deepEqual(canvases.made[1].draws, [["pane", 0, 0]]);
+  assert.deepEqual(env.draws.at(-1), [10, 10]);
+});
+
+test("gives a surface larger than the pane's canvas its own", () => {
+  const env = fakes();
+  const canvases = fakeCanvases();
+  const h264 = presenter(env, { createCanvas: canvases.createCanvas });
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+  h264.push(idr(), Uint16Array.of(1000, 0, 48, 16), rdpH264View.avc420, 0);
+  env.decoders[0].emit(0);
+  // It takes the pane's pixels, then grows.
+  const [taken, own] = canvases.made;
+  assert.deepEqual(taken.draws, [["pane", 0, 0]]);
+  assert.deepEqual([own.width, own.height], [1048, 768]);
+  assert.deepEqual(own.draws[0], [taken.name, 0, 0]);
+  assert.deepEqual(own.draws.at(-1), ["picture", 1000, 0, 48, 16, 1000, 0, 48, 16]);
+  assert.deepEqual(env.draws.at(-1), [1000, 0, 48, 16, 1000, 0, 48, 16]);
+});
+
+test("after every surface is gone, keeps nothing in the pane's canvas", () => {
+  const env = fakes();
+  const canvases = fakeCanvases();
+  const h264 = presenter(env, { createCanvas: canvases.createCanvas });
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+  h264.push(new Uint8Array(), new Uint16Array(), surfacesReset, 0);
+  h264.push(idr(), Uint16Array.of(0, 0, 8, 8), rdpH264View.avc420, 0);
+  env.decoders[0].emit(0);
+  // Surface 0 isn't shown now: its picture goes to a canvas of its own only.
+  assert.equal(canvases.made.length, 1);
+  assert.deepEqual(env.draws, []);
 });

@@ -320,8 +320,12 @@ export class PhoneView {
     this.onVisibility = () => {
       if (!this.active) return;
       if (this.document.hidden) this.stopPolling();
-      else this.startPolling({ fresh: true });
+      else {
+        this.restoreViewport();
+        this.startPolling({ fresh: true });
+      }
     };
+    this.onPageShow = () => this.restoreViewport();
     this.onOutsidePointer = (event) => {
       if (this.menu && !this.menu.contains(event.target)) this.hideMenu();
     };
@@ -379,6 +383,23 @@ export class PhoneView {
     this.followFrame = globalThis.requestAnimationFrame(step);
   }
 
+  // iOS can leave the page scrolled, or zoomed despite all the above, after
+  // its keyboard goes or the browser comes back from the background, and
+  // sends nothing that would undo it. The phone view never scrolls the page
+  // itself, so it goes back to the top; a zoom goes when the viewport's
+  // request changes, since iOS applies a changed one afresh.
+  restoreViewport() {
+    if (!this.active) return;
+    globalThis.scrollTo?.(0, 0);
+    const meta = this.document.querySelector?.('meta[name="viewport"]');
+    if (meta && (globalThis.visualViewport?.scale ?? 1) > 1) {
+      const content = meta.getAttribute("content") || "";
+      meta.setAttribute("content", `${content}, minimum-scale=1`);
+      globalThis.requestAnimationFrame?.(() => meta.setAttribute("content", content));
+    }
+    this.followViewport();
+  }
+
   enter() {
     if (this.active) return;
     this.active = true;
@@ -386,6 +407,7 @@ export class PhoneView {
     this.document.documentElement.dataset.phoneView = this.openPaneID ? "terminal" : "inbox";
     if (this.input) this.document.documentElement.dataset.phoneBar = "bottom";
     this.document.addEventListener("visibilitychange", this.onVisibility);
+    globalThis.addEventListener?.("pageshow", this.onPageShow);
     this.document.addEventListener("pointerdown", this.onOutsidePointer, true);
     globalThis.visualViewport?.addEventListener("resize", this.onViewport);
     globalThis.visualViewport?.addEventListener("scroll", this.onViewport);
@@ -410,6 +432,7 @@ export class PhoneView {
     delete this.document.documentElement.dataset.phoneKeyboard;
     delete this.document.documentElement.dataset.phoneBar;
     this.document.removeEventListener("visibilitychange", this.onVisibility);
+    globalThis.removeEventListener?.("pageshow", this.onPageShow);
     this.document.removeEventListener("pointerdown", this.onOutsidePointer, true);
     globalThis.visualViewport?.removeEventListener("resize", this.onViewport);
     globalThis.visualViewport?.removeEventListener("scroll", this.onViewport);

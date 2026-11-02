@@ -26,6 +26,15 @@
   quick replies no longer flash on and off while a program redraws; the
   compose field doesn't autocorrect.
 
+- A phone that loses its connection for a moment, as when it switches from
+  Wi-Fi to mobile data, or is put away and taken straight back out, no
+  longer resizes the shell to the desk's size and back, which could leave
+  a program that redraws in place, like Claude Code, garbled: the host
+  keeps the phone's size for 45 seconds after it lets go. A phone that
+  reconnects before its old connection is noticed gone no longer leaves
+  the shell at the phone's size afterwards. Coming back to the phone view
+  also undoes any scroll or zoom iOS left the page in.
+
 - Phones keep their own display settings: theme, font size, Deskbar
   button, OLED border, terminal font, row spacing, terminal colors and wheel
   speed. Desktops and iPads share the account's settings as before, and a
@@ -34,6 +43,29 @@
 
 - The Window list (the Deskbar button) has **Phone View**, a way back to
   the phone view that a phone can tap.
+
+- RDP windows showing H.264 draw each picture once instead of twice, and
+  no longer keep a second desktop-sized copy of the screen: the window's
+  own canvas holds the remote screen when the server shows a single
+  surface at the top left, as Remotr does. With full color on, Remotr's
+  hidden surface likewise lives in the full color converter's own canvas,
+  so each picture is drawn once on its way to the window instead of twice.
+  Also with full color on, only the rows of each picture that changed are
+  copied out of the decoder and uploaded to the GPU, instead of the whole
+  picture twice per update: typing or a blinking cursor costs a fraction of
+  what it did. Less work for the browser and less memory, which matters
+  most on an iPad.
+
+- A kept RDP session viewed over a slow network, such as a phone on mobile
+  data, no longer disconnects when the browser falls behind the video: the
+  host pauses the server's video until the browser has caught up, then
+  sends the whole screen again, so the window shows fewer pictures and
+  stays attached.
+
+- Two-finger trackpad scrolling in RDP windows starts at once instead of
+  after a little finger travel: a scroll's first movement goes to the
+  server as a whole wheel notch, and the rest of the scroll makes up the
+  difference, so it goes as far as before.
 
 - Two fingers dragged up or down scroll a terminal on a touch screen: the
   scrollback follows the fingers, and a full-screen program hears the wheel

@@ -41,10 +41,11 @@ type serverConn struct {
 	fingerprint string
 	onEvent     func(kind uint32, payload []byte)
 
-	tcp     net.Conn
-	conn    net.Conn // tcp, then the TLS connection
-	tlsErr  error
-	active  bool
+	tcp    net.Conn
+	conn   net.Conn // tcp, then the TLS connection
+	tlsErr error
+	active bool
+	// data carries what the reader read, each a tagServerBytes message.
 	data    chan []byte
 	control chan []byte
 	done    chan struct{} // closed when the reader stops
@@ -100,12 +101,17 @@ func (c *serverConn) startReader() {
 	c.active = true
 	go func() {
 		defer close(c.done)
+		// One buffer for every read; what is read goes out in a message of
+		// its own size, tagged for the module.
+		buf := make([]byte, 32*1024)
 		for {
-			buf := make([]byte, 32*1024)
 			n, err := c.conn.Read(buf)
 			if n > 0 {
+				message := make([]byte, n+1)
+				message[0] = tagServerBytes
+				copy(message[1:], buf[:n])
 				select {
-				case c.data <- buf[:n]:
+				case c.data <- message:
 				case <-c.closed:
 					return
 				}
@@ -130,14 +136,14 @@ func (c *serverConn) Recv() []byte {
 		return buf[:n+1]
 	}
 	select {
-	case bytes := <-c.data:
-		return append([]byte{tagServerBytes}, bytes...)
+	case message := <-c.data:
+		return message
 	case message := <-c.control:
 		return message
 	case <-c.done:
 		select {
-		case bytes := <-c.data:
-			return append([]byte{tagServerBytes}, bytes...)
+		case message := <-c.data:
+			return message
 		default:
 			return nil
 		}

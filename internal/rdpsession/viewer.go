@@ -59,9 +59,11 @@ func (s *Session) Attach(v Viewer) (detach func(), err error) {
 	s.attachID++
 	id := s.attachID
 	s.stopIdleLocked()
-	// In use and shown until the viewer says otherwise.
+	// In use, shown and keeping up until the viewer says otherwise.
 	s.viewerInUse = true
 	s.viewerShown = true
+	s.viewerBehind = false
+	s.displayOn = true
 	size := binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, uint16(s.width)), uint16(s.height))
 	conn := s.conn
 	// Before any event the module sends from here on, which goes to v: where
@@ -88,10 +90,11 @@ func (s *Session) detach(id uint64) {
 		return
 	}
 	s.viewer = nil
-	conn, active, shown := s.conn, s.state == StateActive, s.viewerShown
+	conn, active, on := s.conn, s.state == StateActive, s.displayOn
+	s.displayOn = false
 	s.armIdleLocked(true)
 	s.mu.Unlock()
-	if active && conn != nil && shown {
+	if active && conn != nil && on {
 		conn.post(suppressMessage(false))
 	}
 }
@@ -106,10 +109,34 @@ func (s *Session) setShown(shown bool) {
 		return
 	}
 	s.viewerShown = shown
+	s.updateDisplayLocked()
+}
+
+// SetViewerBehind pauses the server's display updates while v, the attached
+// viewer, has fallen behind the frames sent to it, as on a slow network, and
+// resumes them, with the whole screen sent again, once it has caught up. A
+// viewer that isn't attached is ignored.
+func (s *Session) SetViewerBehind(v Viewer, behind bool) {
+	s.mu.Lock()
+	if s.viewer == nil || s.viewer != v || s.viewerBehind == behind {
+		s.mu.Unlock()
+		return
+	}
+	s.viewerBehind = behind
+	s.updateDisplayLocked()
+}
+
+// updateDisplayLocked asks for the server's display updates to run while the
+// attached viewer can be seen and keeps up, and to pause otherwise, when that
+// changed. The caller holds s.mu, which this releases.
+func (s *Session) updateDisplayLocked() {
+	on := s.viewerShown && !s.viewerBehind
+	changed := on != s.displayOn
+	s.displayOn = on
 	conn, active := s.conn, s.state == StateActive
 	s.mu.Unlock()
-	if active && conn != nil {
-		conn.post(suppressMessage(shown))
+	if changed && active && conn != nil {
+		conn.post(suppressMessage(on))
 	}
 }
 

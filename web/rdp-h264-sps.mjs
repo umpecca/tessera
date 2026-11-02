@@ -236,13 +236,14 @@ export function lowDelaySps(nal) {
   return Uint8Array.from([body[0], ...escapeRbsp(body.subarray(1))]);
 }
 
-// Start-code positions and NAL types in an Annex B access unit.
+// Start-code positions and NAL types in an Annex B access unit. The search
+// jumps from one 0x01 byte to the next with the browser's own indexOf rather
+// than looking at every byte.
 export function annexBNals(data) {
   const nals = [];
-  for (let i = 0; i + 3 < data.length; i++) {
-    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
-      nals.push({ start: i + 3, type: data[i + 3] & 0x1f });
-      i += 2;
+  for (let one = data.indexOf(1, 2); one !== -1 && one + 1 < data.length; one = data.indexOf(1, one + 1)) {
+    if (data[one - 1] === 0 && data[one - 2] === 0) {
+      nals.push({ start: one + 1, type: data[one + 1] & 0x1f });
     }
   }
   nals.forEach((nal, n) => {
@@ -253,16 +254,16 @@ export function annexBNals(data) {
   return nals;
 }
 
-// Replaces each SPS in an access unit with its low-delay rewrite (cached by content).
-export function withLowDelaySps(data, cache = new Map()) {
-  const nals = annexBNals(data);
+// Replaces each SPS in an access unit with its low-delay rewrite (cached by
+// content). `nals` is annexBNals(data), when the caller has it already.
+export function withLowDelaySps(data, cache = new Map(), nals = annexBNals(data)) {
   if (!nals.some((nal) => nal.type === 7)) return data;
   const parts = [];
   let last = 0;
   for (const nal of nals) {
     if (nal.type !== 7) continue;
     const original = data.subarray(nal.start, nal.end);
-    const key = Array.from(original).join(",");
+    const key = String.fromCharCode(...original);
     let rewritten = cache.get(key);
     if (!rewritten) {
       rewritten = lowDelaySps(original);
@@ -282,9 +283,9 @@ export function withLowDelaySps(data, cache = new Map()) {
 }
 
 // The WebCodecs codec string ("avc1.PPCCLL") from the first SPS in an access
-// unit, or "" without one.
-export function h264CodecString(data) {
-  const sps = annexBNals(data).find((nal) => nal.type === 7 && nal.end - nal.start >= 4);
+// unit, or "" without one. `nals` is annexBNals(data), when the caller has it.
+export function h264CodecString(data, nals = annexBNals(data)) {
+  const sps = nals.find((nal) => nal.type === 7 && nal.end - nal.start >= 4);
   if (!sps) return "";
   const hex = (value) => value.toString(16).padStart(2, "0");
   return `avc1.${hex(data[sps.start + 1])}${hex(data[sps.start + 2])}${hex(data[sps.start + 3])}`;

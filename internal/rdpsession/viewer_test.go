@@ -338,3 +338,56 @@ func TestAViewerOutOfSightPausesTheDisplay(t *testing.T) {
 		t.Fatal("a message with no viewer attached resumed the display")
 	}
 }
+
+func TestAViewerBehindPausesTheDisplayUntilItCatchesUp(t *testing.T) {
+	runner := &scriptRunner{cookie: true}
+	s, _ := startedSession(t, runner, 0)
+	viewer := &recordingViewer{}
+	detach, err := s.Attach(viewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the resume request", func() bool { return runner.count(suppressMessage(true)) == 1 })
+
+	s.SetViewerBehind(viewer, true)
+	s.SetViewerBehind(viewer, true)
+	eventually(t, "the pause request", func() bool { return runner.count(suppressMessage(false)) == 1 })
+	s.SetViewerBehind(viewer, false)
+	eventually(t, "the resume request once caught up", func() bool { return runner.count(suppressMessage(true)) == 2 })
+
+	// Hidden and behind: the display stays paused until it is both shown and
+	// caught up.
+	s.SetViewerBehind(viewer, true)
+	eventually(t, "the second pause request", func() bool { return runner.count(suppressMessage(false)) == 2 })
+	if err := s.HandleViewerMessage([]byte{ViewShown, 0}); err != nil {
+		t.Fatal(err)
+	}
+	s.SetViewerBehind(viewer, false)
+	time.Sleep(50 * time.Millisecond)
+	if runner.count(suppressMessage(true)) != 2 || runner.count(suppressMessage(false)) != 2 {
+		t.Fatal("a hidden viewer catching up changed the display")
+	}
+	if err := s.HandleViewerMessage([]byte{ViewShown, 1}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the resume request once shown", func() bool { return runner.count(suppressMessage(true)) == 3 })
+
+	// A viewer that isn't attached is ignored, and a new viewer starts out
+	// keeping up.
+	s.SetViewerBehind(&recordingViewer{}, true)
+	s.SetViewerBehind(viewer, true)
+	eventually(t, "the third pause request", func() bool { return runner.count(suppressMessage(false)) == 3 })
+	detach()
+	time.Sleep(50 * time.Millisecond)
+	if runner.count(suppressMessage(false)) != 3 {
+		t.Fatal("detaching a paused viewer paused the display again")
+	}
+	next := &recordingViewer{}
+	if _, err := s.Attach(next); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the new viewer's resume request", func() bool { return runner.count(suppressMessage(true)) == 4 })
+	s.SetViewerBehind(viewer, false)
+	s.SetViewerBehind(next, true)
+	eventually(t, "the new viewer's pause request", func() bool { return runner.count(suppressMessage(false)) == 4 })
+}

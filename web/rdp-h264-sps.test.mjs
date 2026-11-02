@@ -82,3 +82,25 @@ test("reads the codec string from the SPS", () => {
   assert.equal(h264CodecString(hex(`0000000109f000000001${fixtures["no VUI, POC type 2"][0]}`)), "avc1.640020");
   assert.equal(h264CodecString(hex("0000000165888400")), "");
 });
+
+test("finds the same NAL units as a byte-by-byte search", () => {
+  // The search annexBNals replaced: every byte looked at in turn.
+  const reference = (data) => {
+    const starts = [];
+    for (let i = 0; i + 3 < data.length; i++) {
+      if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+        starts.push(i + 3);
+        i += 2;
+      }
+    }
+    return starts;
+  };
+  let seed = 7;
+  const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) >>> 16) & 0xff;
+  for (let round = 0; round < 500; round++) {
+    // Mostly zeros and ones, so start codes, overlaps and ones at the edges
+    // turn up often.
+    const data = Uint8Array.from({ length: random() % 64 }, () => (random() < 160 ? 0 : random() < 128 ? 1 : random()));
+    assert.deepEqual(annexBNals(data).map((nal) => nal.start), reference(data), Buffer.from(data).toString("hex"));
+  }
+});

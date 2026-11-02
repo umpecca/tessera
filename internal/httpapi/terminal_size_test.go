@@ -22,6 +22,9 @@ func TestPhoneSocketWatchesAndGivesBackASizeItTook(t *testing.T) {
 		t.Skip("uses a POSIX shell")
 	}
 	t.Setenv("TESSERA_TERMINAL_SHELL", "/bin/sh")
+	grace := terminalSizeReleaseGrace
+	terminalSizeReleaseGrace = 300 * time.Millisecond
+	t.Cleanup(func() { terminalSizeReleaseGrace = grace })
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "size.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +76,26 @@ func TestPhoneSocketWatchesAndGivesBackASizeItTook(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitSize([2]int{50, 22})
+
+	// Put away, the phone gives the size back after the grace, unless a
+	// socket of its own takes it again first, as one reconnecting after a
+	// change of network does.
+	if err := phone.WriteJSON(terminalClientMessage{Type: "release-size", Later: true}); err != nil {
+		t.Fatal(err)
+	}
 	phone.Close()
+	again, _ := terminalTestSocket(t, server.URL, query+"&cols=50&rows=22&watch=1")
+	if err := again.WriteJSON(terminalClientMessage{Type: "resize", Cols: 50, Rows: 22, CellWidth: 8, CellHeight: 16, Temporary: true}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * terminalSizeReleaseGrace)
+	waitSize([2]int{50, 22})
+
+	// Closing without reconnecting gives it back once the grace is over.
+	again.Close()
+	time.Sleep(terminalSizeReleaseGrace / 3)
+	if got := size(); got != [2]int{50, 22} {
+		t.Fatalf("size went back before the grace: %v", got)
+	}
 	waitSize([2]int{100, 30})
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -14,6 +15,12 @@ const (
 	// rdpKeptViewerBacklog is how many frames may wait for a slow viewer
 	// before it is disconnected. It can attach again, which repaints.
 	rdpKeptViewerBacklog = 256
+	// A viewer with this many frames, or bytes, waiting is behind: the
+	// server's display pauses until everything waiting is sent, and then
+	// sends the whole screen again. Pausing well before the backlog is full
+	// keeps a viewer on a slow network attached, seeing fewer frames.
+	rdpKeptViewerBehindFrames = 32
+	rdpKeptViewerBehindBytes  = 1 << 20
 	// rdpKeptViewerMaxMessage bounds one message from a viewer: input records
 	// and resize requests are small.
 	rdpKeptViewerMaxMessage = 64 << 10
@@ -22,17 +29,26 @@ const (
 
 // wsViewer shows a kept session over a WebSocket. The session calls Event
 // from its module's goroutine, so frames are queued and written by one
-// goroutine, and a viewer that falls too far behind is dropped rather than
-// allowed to slow the session.
+// goroutine. A viewer that falls behind has the server's display paused
+// until it catches up, and one that falls too far behind anyway is dropped
+// rather than allowed to slow the session.
 type wsViewer struct {
 	conn   *websocket.Conn
 	frames chan []byte
 	done   chan struct{}
 	once   sync.Once
+	// queued is the bytes waiting in frames. behind is whether the viewer is
+	// behind; changed tells reportLoop it may have changed.
+	queued  atomic.Int64
+	behind  atomic.Bool
+	changed chan struct{}
 }
 
 func newWSViewer(conn *websocket.Conn) *wsViewer {
-	return &wsViewer{conn: conn, frames: make(chan []byte, rdpKeptViewerBacklog), done: make(chan struct{})}
+	return &wsViewer{
+		conn: conn, frames: make(chan []byte, rdpKeptViewerBacklog), done: make(chan struct{}),
+		changed: make(chan struct{}, 1),
+	}
 }
 
 func (v *wsViewer) stop() {
@@ -45,9 +61,45 @@ func (v *wsViewer) stop() {
 func (v *wsViewer) enqueue(frame []byte) {
 	select {
 	case <-v.done:
+		return
+	default:
+	}
+	queued := v.queued.Add(int64(len(frame)))
+	select {
 	case v.frames <- frame:
 	default:
 		v.stop()
+		return
+	}
+	if len(v.frames) >= rdpKeptViewerBehindFrames || queued >= rdpKeptViewerBehindBytes {
+		v.setBehind(true)
+	}
+}
+
+func (v *wsViewer) setBehind(behind bool) {
+	if v.behind.Swap(behind) != behind {
+		select {
+		case v.changed <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// reportLoop tells report whether the viewer is behind each time that
+// changes, until the viewer stops. It runs apart from enqueue, which the
+// session may call while holding its lock.
+func (v *wsViewer) reportLoop(report func(behind bool)) {
+	reported := false
+	for {
+		select {
+		case <-v.done:
+			return
+		case <-v.changed:
+		}
+		if behind := v.behind.Load(); behind != reported {
+			reported = behind
+			report(behind)
+		}
 	}
 }
 
@@ -75,6 +127,10 @@ func (v *wsViewer) writeLoop() {
 			_ = v.conn.SetWriteDeadline(time.Now().Add(rdpKeptViewerWriteLimit))
 			if err := v.conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
 				return
+			}
+			if v.queued.Add(-int64(len(frame))) == 0 && v.behind.Load() {
+				// Caught up.
+				v.setBehind(false)
 			}
 			if rdpsession.EndsView(frame) {
 				_ = v.conn.WriteControl(websocket.CloseMessage,
@@ -134,6 +190,7 @@ func (a *API) rdpKeptView(w http.ResponseWriter, r *http.Request) {
 	}
 	defer detach()
 	go viewer.writeLoop()
+	go viewer.reportLoop(func(behind bool) { session.SetViewerBehind(viewer, behind) })
 	defer viewer.stop()
 
 	for {

@@ -118,6 +118,7 @@ import {
   defaultRDPWheelSpeed,
   normalizeRDPWheelSpeed,
   rdpWheelAmount,
+  rdpWheelStartNotch,
   rdpWheelSpeedOptions,
   rdpErrorMessage,
   rdpScanCode,
@@ -3104,8 +3105,11 @@ function mountRDPPane(rect) {
     if (!view.session) return;
     event.preventDefault();
     const vertical = event.deltaY !== 0;
-    const amount = rdpWheelAmount(vertical ? view.wheelVertical : view.wheelHorizontal,
-      vertical ? event.deltaY : event.deltaX, event.deltaMode, rdpWheelSpeed);
+    const axis = vertical ? view.wheelVertical : view.wheelHorizontal;
+    // A gesture's first movement goes as a whole notch, so the server
+    // scrolls at once instead of after a trackpad's small deltas add up.
+    const amount = rdpWheelStartNotch(axis,
+      rdpWheelAmount(axis, vertical ? event.deltaY : event.deltaX, event.deltaMode, rdpWheelSpeed), event.timeStamp);
     if (amount) {
       // RotationUnit 0: pixels.
       sendRDPInput(rect, [view.module.Backend.DeviceEvent.wheelRotations(vertical, amount, 0)]);
@@ -4628,10 +4632,11 @@ function handleDocumentVisibilityChange() {
   updateTerminalFocus();
   if (serverHealthMonitorTimer !== null) scheduleServerHealthPolling();
   if (document.hidden) {
-    // A phone put away isn't using the size it took; the host gives it back.
-    // Coming back reconnects the terminal, which takes it again.
+    // A phone put away isn't using the size it took; the host gives it back
+    // after a while. Coming back reconnects the terminal, which takes it
+    // again, before then without resizing the shell at all.
     const open = phoneView.active ? rectangles.find((rect) => rect.id === phoneView.openPaneID) : null;
-    if (open?.terminal?.phoneFit) releasePhoneTerminalSize(open.terminal);
+    if (open?.terminal?.phoneFit) releasePhoneTerminalSize(open.terminal, { later: true });
     // A backgrounded tab may be discarded without ever running code again,
     // so anything scheduled goes out now. This one takes the ordinary path:
     // the page is still here to read the response and keep its revision in
@@ -6117,10 +6122,10 @@ function setPhoneTerminalFit(paneID, on) {
   applyPhoneTerminalFont(rect);
 }
 
-function releasePhoneTerminalSize(state) {
+function releasePhoneTerminalSize(state, { later = false } = {}) {
   state.sentCols = 0;
   state.sentRows = 0;
-  if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type: "release-size" }));
+  if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type: "release-size", ...(later ? { later: true } : {}) }));
 }
 
 // The last rows the terminal holds, as text for the phone's text view, or
@@ -10228,8 +10233,11 @@ function showServerConnectionModal(state, { reloading = false } = {}) {
 }
 
 function hideServerConnectionModal() {
+  const shown = !serverConnectionModal.hidden;
   serverConnectionModal.hidden = true;
   serverConnectionModal.replaceChildren();
+  // Its button took focus, which can leave a phone's page scrolled.
+  if (shown) phoneView.restoreViewport();
 }
 
 // Shows the server-update status modal with a message. Closable steps get a

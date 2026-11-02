@@ -191,3 +191,54 @@ func TestPostRefusesAfterCloseAndWhenFull(t *testing.T) {
 		t.Fatal("post accepted after Close")
 	}
 }
+
+func TestTheReaderHandsOverWhatTheServerSentTagged(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		server, err := listener.Accept()
+		if err == nil {
+			accepted <- server
+		}
+	}()
+	conn, err := dialServer(context.Background(), listener.Addr().String(), "", func(uint32, []byte) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	server := <-accepted
+	conn.Event(eventConnected, nil)
+
+	// Each read is its own message, so one isn't overwritten by the next.
+	var received []byte
+	for _, chunk := range [][]byte{[]byte("first"), []byte("second"), bytes.Repeat([]byte{7}, 40*1024)} {
+		if _, err := server.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+		for len(received) < len(chunk) {
+			message := conn.Recv()
+			if len(message) < 2 || message[0] != tagServerBytes {
+				t.Fatalf("message = %v", message)
+			}
+			received = append(received, message[1:]...)
+		}
+		if !bytes.Equal(received, chunk) {
+			t.Fatalf("received %q, want %q", received[:min(len(received), 16)], chunk[:min(len(chunk), 16)])
+		}
+		received = nil
+	}
+	if !conn.post([]byte{tagRefresh}) {
+		t.Fatal("post refused")
+	}
+	if message := conn.Recv(); !bytes.Equal(message, []byte{tagRefresh}) {
+		t.Fatalf("control message = %v", message)
+	}
+	server.Close()
+	if message := conn.Recv(); message != nil {
+		t.Fatalf("after the server closed: %v", message)
+	}
+}

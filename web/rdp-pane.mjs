@@ -277,6 +277,37 @@ export function rdpWheelAmount(state, delta, deltaMode, speed) {
   return Math.max(-32768, Math.min(32767, whole));
 }
 
+// One notch of a classic mouse wheel, in RDP wheel units. A server that
+// scrolls a notch at a time moves only once this much has added up, which a
+// trackpad's first small deltas take a while to do.
+export const rdpWheelNotch = 120;
+// A pause this long between wheel events ends a scroll gesture.
+const rdpWheelGestureGapMs = 200;
+
+// Sends a whole notch for a gesture's first movement, so the server scrolls
+// at once, and takes the extra back from the gesture's next amounts, so it
+// still goes as far in all. A gesture that turns around starts again. `state`
+// is the axis's, as for rdpWheelAmount; `now` is the event's time in ms.
+export function rdpWheelStartNotch(state, amount, now) {
+  if (!(now - state.lastWheel < rdpWheelGestureGapMs)) {
+    state.direction = 0;
+    state.owed = 0;
+  }
+  state.lastWheel = now;
+  if (!amount) return 0;
+  const direction = Math.sign(amount);
+  if (direction !== state.direction) {
+    state.direction = direction;
+    state.owed = 0;
+    if (Math.abs(amount) >= rdpWheelNotch) return amount;
+    state.owed = direction * rdpWheelNotch - amount;
+    return direction * rdpWheelNotch;
+  }
+  const paid = direction * Math.min(Math.abs(amount), Math.abs(state.owed));
+  state.owed -= paid;
+  return amount - paid;
+}
+
 // Sharp mode asks for the desktop at the screen's own resolution instead of
 // its CSS size, so on a Retina screen one remote pixel lands on one screen
 // pixel instead of being stretched over four. The server's interface then

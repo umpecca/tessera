@@ -135,19 +135,62 @@ function planeFormatSupported(format) {
   return format === "I420" || format === "NV12";
 }
 
+// The rows of a view that drawing `rects` [x, y, width, height] reads, as
+// { top, rows }: whole macroblock rows (16), since an AVC444 auxiliary view
+// keeps a row's chroma elsewhere in its macroblock row. No rows for no rects.
+export function viewRows(rects, height) {
+  let top = Infinity;
+  let bottom = 0;
+  for (const [, y, w, h] of rects) {
+    if (w > 0 && h > 0) {
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y + h);
+    }
+  }
+  top = Math.floor(top / 16) * 16;
+  bottom = Math.min(height, Math.ceil(bottom / 16) * 16);
+  return bottom > top ? { top, rows: bottom - top } : { top: 0, rows: 0 };
+}
+
 // Copies a decoded VideoFrame's planes out as they are, without color
 // conversion. Resolves null for a format other than I420 or NV12. `buffer`
 // is reused when it is large enough.
-export async function readVideoFramePlanes(frame, buffer) {
+//
+// With `rects`, only the rows they need (viewRows) are copied, and only
+// those are uploaded: `top` and `rows` say which, and `dataTop` is the row
+// `data` starts at. A browser that can't copy part of a picture, or ignores
+// the part asked for, is noted in `state` and gets whole pictures from then on.
+export async function readVideoFramePlanes(frame, buffer, rects = null, state = {}) {
   if (!planeFormatSupported(frame.format)) {
     return null;
   }
-  const size = frame.allocationSize();
-  const data = buffer && buffer.byteLength >= size ? buffer : new Uint8Array(size);
-  const layout = await frame.copyTo(data);
   const width = frame.visibleRect?.width ?? frame.codedWidth;
   const height = frame.visibleRect?.height ?? frame.codedHeight;
-  return { format: frame.format, width, height, data, layout };
+  const { top, rows } = rects ? viewRows(rects, height) : { top: 0, rows: height };
+  const planes = { format: frame.format, width, height, top, rows, dataTop: 0, data: buffer, layout: null };
+  if (!rows) {
+    return planes;
+  }
+  const copy = async (options) => {
+    const size = frame.allocationSize(options);
+    planes.data = buffer && buffer.byteLength >= size ? buffer : new Uint8Array(size);
+    planes.layout = await frame.copyTo(planes.data, options);
+  };
+  if (rows < height && !state.wholePictures) {
+    const rect = { x: frame.visibleRect?.x ?? 0, y: (frame.visibleRect?.y ?? 0) + top, width, height: rows };
+    try {
+      if (frame.allocationSize({ rect }) < frame.allocationSize()) {
+        await copy({ rect });
+        planes.dataTop = top;
+        return planes;
+      }
+    } catch {
+      // Copied whole below.
+    }
+    state.wholePictures = true;
+  }
+  await copy(undefined);
+  return planes;
 }
 
 // Creates the combiner, or returns null when WebGL2 isn't available.
@@ -177,6 +220,8 @@ export function createRDPAVC444Combiner({ createCanvas = defaultCanvas } = {}) {
     return null;
   }
   const viewTextures = { luma: texture(gl), chromaU: texture(gl), chromaV: texture(gl) };
+  // Each view texture's format and size, as allocated.
+  const viewTextureShapes = new Map();
   const pictureTexture = texture(gl);
   const framebuffer = gl.createFramebuffer();
   const vertexArray = gl.createVertexArray();
@@ -203,23 +248,39 @@ export function createRDPAVC444Combiner({ createCanvas = defaultCanvas } = {}) {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pictureTexture, 0);
   }
 
-  function uploadPlane(target, format, internalFormat, planeWidth, planeHeight, data, layout, bytesPerSample) {
+  // Uploads rows `top` to `top + rows` of a plane whose data starts at row
+  // `dataTop`. The texture is allocated when its format or size changes, and
+  // otherwise keeps the rows not uploaded, which drawing doesn't read.
+  function uploadPlane(target, format, internalFormat, planeWidth, planeHeight, top, rows, dataTop, data, layout, bytesPerSample) {
     gl.bindTexture(gl.TEXTURE_2D, target);
+    const shape = `${internalFormat} ${planeWidth} ${planeHeight}`;
+    if (viewTextureShapes.get(target) !== shape) {
+      viewTextureShapes.set(target, shape);
+      gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, planeWidth, planeHeight, 0, format, gl.UNSIGNED_BYTE, null);
+    }
+    if (!rows) return;
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, layout.stride / bytesPerSample);
-    gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, planeWidth, planeHeight, 0, format, gl.UNSIGNED_BYTE, data, layout.offset);
+    const offset = layout.offset + (top - dataTop) * layout.stride;
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, top, planeWidth, rows, format, gl.UNSIGNED_BYTE, data, offset);
   }
 
   function uploadView(planes) {
     const chromaWidth = Math.ceil(planes.width / 2);
     const chromaHeight = Math.ceil(planes.height / 2);
-    const data = planes.data instanceof Uint8Array ? planes.data : new Uint8Array(planes.data);
-    uploadPlane(viewTextures.luma, gl.RED, gl.R8, planes.width, planes.height, data, planes.layout[0], 1);
+    const top = planes.top ?? 0;
+    const rows = planes.rows ?? planes.height;
+    const dataTop = planes.dataTop ?? 0;
+    // Chroma rows are half as many; `top` and `dataTop` are even.
+    const chromaTop = top / 2;
+    const chromaRows = Math.ceil((top + rows) / 2) - chromaTop;
+    const data = !rows || planes.data instanceof Uint8Array ? planes.data : new Uint8Array(planes.data);
+    uploadPlane(viewTextures.luma, gl.RED, gl.R8, planes.width, planes.height, top, rows, dataTop, data, planes.layout?.[0], 1);
     if (planes.format === "NV12") {
-      uploadPlane(viewTextures.chromaU, gl.RG, gl.RG8, chromaWidth, chromaHeight, data, planes.layout[1], 2);
+      uploadPlane(viewTextures.chromaU, gl.RG, gl.RG8, chromaWidth, chromaHeight, chromaTop, chromaRows, dataTop / 2, data, planes.layout?.[1], 2);
     } else {
-      uploadPlane(viewTextures.chromaU, gl.RED, gl.R8, chromaWidth, chromaHeight, data, planes.layout[1], 1);
-      uploadPlane(viewTextures.chromaV, gl.RED, gl.R8, chromaWidth, chromaHeight, data, planes.layout[2], 1);
+      uploadPlane(viewTextures.chromaU, gl.RED, gl.R8, chromaWidth, chromaHeight, chromaTop, chromaRows, dataTop / 2, data, planes.layout?.[1], 1);
+      uploadPlane(viewTextures.chromaV, gl.RED, gl.R8, chromaWidth, chromaHeight, chromaTop, chromaRows, dataTop / 2, data, planes.layout?.[2], 1);
     }
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
   }

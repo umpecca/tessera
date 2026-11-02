@@ -547,3 +547,43 @@ test("a quick second tap on nothing that takes taps doesn't reach iOS's zoom, bu
   view.leave();
   assert.equal(document.listeners.touchend.length, 0);
 });
+
+test("coming back puts the page where iOS may have left it scrolled or zoomed", (t) => {
+  const saved = { scrollTo: globalThis.scrollTo, visualViewport: globalThis.visualViewport, requestAnimationFrame: globalThis.requestAnimationFrame, addEventListener: globalThis.addEventListener, removeEventListener: globalThis.removeEventListener };
+  t.after(() => Object.assign(globalThis, saved));
+  const scrolls = [];
+  let frames = [];
+  const listeners = {};
+  Object.assign(globalThis, {
+    scrollTo: (x, y) => scrolls.push([x, y]),
+    visualViewport: { height: 844, offsetTop: 0, scale: 1.6, addEventListener() {}, removeEventListener() {} },
+    requestAnimationFrame: (callback) => frames.push(callback),
+    addEventListener: (type, listener) => { listeners[type] = listener; },
+    removeEventListener: (type) => { delete listeners[type]; },
+  });
+  const document = fakeDocument();
+  const content = "width=device-width, initial-scale=1, maximum-scale=1";
+  const meta = { attributes: { content }, getAttribute(name) { return this.attributes[name]; }, setAttribute(name, value) { this.attributes[name] = value; } };
+  document.querySelector = (selector) => (selector === 'meta[name="viewport"]' ? meta : null);
+  const view = new PhoneView(new FakeElement(document, "div"), { panes: () => [], workspaceID: () => "w", fetch: () => new Promise(() => {}) });
+  view.enter();
+
+  document.hidden = true;
+  for (const listener of document.listeners.visibilitychange) listener();
+  assert.deepEqual(scrolls, [], "nothing moves while it is away");
+  document.hidden = false;
+  for (const listener of document.listeners.visibilitychange) listener();
+  assert.deepEqual(scrolls, [[0, 0]]);
+  assert.notEqual(meta.attributes.content, content, "a changed request drops the zoom");
+  for (const callback of frames.splice(0)) callback();
+  assert.equal(meta.attributes.content, content, "and the page's own request comes back");
+
+  // Unzoomed, the request is left alone. A page restored from the back
+  // cache comes back the same way.
+  globalThis.visualViewport.scale = 1;
+  listeners.pageshow();
+  assert.deepEqual(scrolls, [[0, 0], [0, 0]]);
+  assert.equal(meta.attributes.content, content);
+  view.leave();
+  assert.equal(listeners.pageshow, undefined);
+});

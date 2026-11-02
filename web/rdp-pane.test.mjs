@@ -134,6 +134,27 @@ test("scales RDP wheel deltas and carries fractions between events", async () =>
   assert.equal(rdpWheelAmount({ remainder: 0 }, -1e6, 0, 2), 32767);
 });
 
+test("a scroll gesture's first movement is a whole wheel notch, taken back after", async () => {
+  const { rdpWheelNotch, rdpWheelStartNotch } = await import("./rdp-pane.mjs");
+  const state = {};
+  let time = 1000;
+  const send = (amount, gap = 16) => rdpWheelStartNotch(state, amount, (time += gap));
+  // A trackpad starting slowly: the first movement goes out as a notch, and
+  // the next ones are held back until the extra is made up.
+  const sent = [-3, -5, -40, -80, -200].map((amount) => send(amount));
+  assert.deepEqual(sent, [-rdpWheelNotch, 0, 0, -8, -200]);
+  assert.equal(sent.reduce((a, b) => a + b), -328, "the same distance in all");
+  // Turning around starts again in the other direction.
+  assert.equal(send(6), rdpWheelNotch);
+  assert.equal(send(50), 0);
+  // After a pause, a new gesture; a movement of a notch or more goes as it is.
+  assert.equal(send(-2, 300), -rdpWheelNotch);
+  assert.equal(send(-150, 300), -150);
+  // Fractions that send nothing still keep the gesture going: no new notch.
+  assert.equal(send(0), 0);
+  assert.equal(send(-10), -10);
+});
+
 test("sharp mode asks for the screen's own pixels, at most twice the CSS size", async () => {
   const { rdpOffersSharp, rdpPixelRatio, readRDPSharpPreference, saveRDPSharpPreference } = await import("./rdp-pane.mjs");
   assert.equal(rdpOffersSharp(2), true);

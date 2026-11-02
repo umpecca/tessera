@@ -69,7 +69,9 @@ or when the server doesn't send H.264, the pane uses bitmap updates instead.
 This has been tested with Remotr on macOS from iPad Safari. The pane shows the
 browser's own pointer shapes rather than the server's. If wheel or trackpad
 scrolling moves too far, lower **Settings > Scroll wheel > Remote desktop**
-(saved per browser).
+(saved per browser). Each scroll starts with a whole wheel notch, so a server
+that scrolls a notch at a time moves as soon as the fingers do; the scroll
+still goes as far in all.
 
 Servers may send H.264 in 4:4:4 (AVC444), which keeps colored text and thin
 colored lines sharp. The sign-in dialog's **Full color (4:4:4) when the server
@@ -133,6 +135,11 @@ this browser.
   iPad's battery. The window keeps its last picture, and the server sends
   the whole screen again once it can be seen. The session itself, the
   mouse wiggler included, carries on.
+- On a network too slow for the video, the host pauses the server's video
+  once 32 frames or 1 MB are waiting for the browser, sends what is
+  waiting, and asks for the whole screen again once the browser has caught
+  up, so a slow connection shows fewer pictures instead of dropping. A
+  browser still 256 frames behind is disconnected and attaches again.
 - Only the account that kept a session can see or end it. Signing out closes
   the view but leaves the session running until it is ended or idles out.
 - Clipboard text isn't available in kept sessions yet.

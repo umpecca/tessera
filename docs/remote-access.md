@@ -82,9 +82,11 @@ there (turn it off in **Aa** to look in at the desk's size). The fitted
 screen and the text view use a font size each terminal keeps on the phone,
 apart from the desk's: **Larger** and **Smaller** change it a pixel at a
 time, starting from the phone's default font size, and the phone's browser
-remembers it. Going back to the list,
-putting the phone away or losing the connection gives the shell its earlier
-size again, unless a desktop browser has resized it in the meantime. The
+remembers it. Going back to the list gives the shell its earlier size
+again, unless a desktop browser has resized it in the meantime; putting the
+phone away or losing the connection does the same after 45 seconds, so a
+phone taken straight back out, or switching from Wi-Fi to mobile data, picks
+up where it was without the shell being resized twice. The
 **Aa** menu says the shell's size and whose it is. Before the phone adds, renames or closes a window it loads
 the newest copy of the workspace, so a window opened at the desk meanwhile is
 kept; a desktop browser left open will then offer to reload the newer

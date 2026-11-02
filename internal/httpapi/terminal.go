@@ -39,6 +39,10 @@ const (
 // A close frame payload holds 125 bytes, two of which carry the code.
 const maxTerminalCloseReason = 123
 
+// terminalSizeReleaseGrace is how long a size a socket let go of stays; a
+// variable so tests needn't wait it out.
+var terminalSizeReleaseGrace = terminal.SizeReleaseGrace
+
 type terminalClientMessage struct {
 	ID               string `json:"id"`
 	Epoch            string `json:"epoch"`
@@ -57,6 +61,9 @@ type terminalClientMessage struct {
 	// Temporary marks a resize the shell gets back from when this socket
 	// sends release-size or closes.
 	Temporary bool `json:"temporary"`
+	// Later on release-size gives the size back after the grace a closed
+	// socket gets, as for a phone put away, not at once.
+	Later bool `json:"later"`
 }
 
 // terminalTimingMessage follows an output frame while a client is capturing
@@ -183,9 +190,9 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	defer attachment.Unsubscribe()
 	// A size this socket took for a while goes back when it closes, as when
-	// a phone locks or loses its connection.
+	// a phone locks or loses its connection, unless it reconnects first.
 	sizeOwner := new(byte)
-	defer session.ReleaseSize(sizeOwner)
+	defer session.ReleaseSizeAfter(sizeOwner, terminalSizeReleaseGrace)
 	colorMode := r.URL.Query().Get("colorMode")
 	if colorMode != "dark" && colorMode != "light" {
 		colorMode = settings.TerminalColorMode
@@ -430,7 +437,11 @@ func (a *API) terminalSession(w http.ResponseWriter, r *http.Request) {
 					_ = session.ResizeWithMetrics(message.Cols, message.Rows, message.CellWidth, message.CellHeight)
 				}
 			} else if message.Type == "release-size" {
-				_ = session.ReleaseSize(sizeOwner)
+				if message.Later {
+					session.ReleaseSizeAfter(sizeOwner, terminalSizeReleaseGrace)
+				} else {
+					_ = session.ReleaseSize(sizeOwner)
+				}
 			} else if message.Type == "image-settings" || message.Type == "clear-images" {
 				var imageErr error
 				if message.Type == "clear-images" {

@@ -149,11 +149,15 @@ type Session struct {
 	// a detach function can tell whether its viewer was replaced.
 	viewer   Viewer
 	attachID uint64
-	// viewerShown is whether the attached viewer's window can be seen; while
-	// it can't, the server's display updates are paused.
-	viewerShown bool
-	idleLimit   time.Duration
-	idleTimer   *time.Timer
+	// viewerShown is whether the attached viewer's window can be seen, and
+	// viewerBehind whether the viewer has fallen behind the frames sent to
+	// it; the server's display updates run only while it can be seen and
+	// keeps up. displayOn is whether they were last asked to run.
+	viewerShown  bool
+	viewerBehind bool
+	displayOn    bool
+	idleLimit    time.Duration
+	idleTimer    *time.Timer
 	// closeReason replaces the end reason of a session closed by the idle limit.
 	closeReason string
 
