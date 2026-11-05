@@ -210,26 +210,20 @@ func (a *API) vncProxyConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	buffer := make([]byte, 32<<10)
-	for {
-		count, readErr := tcpConnection.Read(buffer)
-		if count > 0 {
-			if writeErr := websocketConnection.WriteMessage(websocket.BinaryMessage, buffer[:count]); writeErr != nil {
-				return
-			}
+	readErr := relayToWebSocket(func(message []byte) error {
+		return websocketConnection.WriteMessage(websocket.BinaryMessage, message)
+	}, tcpConnection)
+	if readErr == nil {
+		return
+	}
+	select {
+	case clientErr := <-clientDone:
+		if clientErr != nil && !websocket.IsCloseError(clientErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+			_ = websocketConnection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, vncCloseReason(clientErr)), time.Now().Add(time.Second))
 		}
-		if readErr != nil {
-			select {
-			case clientErr := <-clientDone:
-				if clientErr != nil && !websocket.IsCloseError(clientErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					_ = websocketConnection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, vncCloseReason(clientErr)), time.Now().Add(time.Second))
-				}
-			default:
-				if !errors.Is(readErr, io.EOF) {
-					_ = websocketConnection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, vncCloseReason(readErr)), time.Now().Add(time.Second))
-				}
-			}
-			return
+	default:
+		if !errors.Is(readErr, io.EOF) {
+			_ = websocketConnection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, vncCloseReason(readErr)), time.Now().Add(time.Second))
 		}
 	}
 }

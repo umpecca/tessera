@@ -264,26 +264,20 @@ func relayRDP(websocketConnection *websocket.Conn, server net.Conn) {
 		}
 	}()
 
-	buffer := make([]byte, 32<<10)
-	for {
-		count, readErr := server.Read(buffer)
-		if count > 0 {
-			if writeErr := websocketConnection.WriteMessage(websocket.BinaryMessage, buffer[:count]); writeErr != nil {
-				return
-			}
+	readErr := relayToWebSocket(func(message []byte) error {
+		return websocketConnection.WriteMessage(websocket.BinaryMessage, message)
+	}, server)
+	if readErr == nil {
+		return
+	}
+	select {
+	case clientErr := <-clientDone:
+		if clientErr != nil && !websocket.IsCloseError(clientErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+			_ = websocketConnection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, rdpCloseReason(clientErr)), time.Now().Add(time.Second))
 		}
-		if readErr != nil {
-			select {
-			case clientErr := <-clientDone:
-				if clientErr != nil && !websocket.IsCloseError(clientErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					_ = websocketConnection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, rdpCloseReason(clientErr)), time.Now().Add(time.Second))
-				}
-			default:
-				if !errors.Is(readErr, io.EOF) {
-					_ = websocketConnection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, rdpCloseReason(readErr)), time.Now().Add(time.Second))
-				}
-			}
-			return
+	default:
+		if !errors.Is(readErr, io.EOF) {
+			_ = websocketConnection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, rdpCloseReason(readErr)), time.Now().Add(time.Second))
 		}
 	}
 }

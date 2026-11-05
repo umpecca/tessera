@@ -44,8 +44,8 @@ test("New Terminal opens centered, or where the desktop was right-clicked", () =
 
 test("New Browser and New VNC from the palette open centered at half the board; others keep their place", () => {
   const created = [];
-  const context = load(["centeredPaneBox", "paneBox", "createBrowserPane", "createVNCPane"], {
-    tabHeight: 24, Math, browserPaneKind: "browser", vncPaneKind: "vnc",
+  const context = load(["centeredPaneBox", "paneBox", "prefillPaneAddress", "createBrowserPane", "createVNCPane", "createRDPPane"], {
+    tabHeight: 24, Math, browserPaneKind: "browser", vncPaneKind: "vnc", rdpPaneKind: "rdp",
     board: { getBoundingClientRect: () => ({ width: 1600, height: 1000 }) },
     createRectangle: (x, y, width, height, options) => { const rect = { x, y, width, height, ...options }; created.push(rect); return rect; },
     clampIntoBoard() {}, setRectangle() {}, setActivePane() {}, scheduleWorkspaceSave() {},
@@ -62,4 +62,22 @@ test("New Browser and New VNC from the palette open centered at half the board; 
   ]);
   assert.match(source, /id: "new-browser"[^\n]*run: \(\) => createBrowserPane\(\) \}/);
   assert.match(source, /id: "new-vnc"[^\n]*run: \(\) => createVNCPane\(\) \}/);
+});
+
+test("new Browser, VNC and RDP windows offer localhost on the protocol's default port", () => {
+  const field = () => ({ value: "", focused: false, selected: false, focus() { this.focused = true; }, select() { this.selected = true; } });
+  const context = load(["centeredPaneBox", "paneBox", "prefillPaneAddress", "createBrowserPane", "createVNCPane", "createRDPPane"], {
+    tabHeight: 24, Math, browserPaneKind: "browser", vncPaneKind: "vnc", rdpPaneKind: "rdp",
+    board: { getBoundingClientRect: () => ({ width: 1600, height: 1000 }) },
+    createRectangle: (x, y, width, height, options) => ({ x, y, width, height, ...options, [options.kind]: { address: field() } }),
+    clampIntoBoard() {}, setRectangle() {}, setActivePane() {}, scheduleWorkspaceSave() {},
+  });
+  for (const [create, kind, value] of [["createBrowserPane", "browser", "localhost:8080"], ["createVNCPane", "vnc", "localhost:5900"], ["createRDPPane", "rdp", "localhost:3389"]]) {
+    const address = context[create]()[kind].address;
+    assert.deepEqual({ value: address.value, focused: address.focused, selected: address.selected }, { value, focused: true, selected: true }, kind);
+  }
+  const typed = field();
+  typed.value = "studio:5901";
+  context.prefillPaneAddress(typed, "localhost:5900");
+  assert.equal(typed.value, "studio:5901", "an address already there stays");
 });

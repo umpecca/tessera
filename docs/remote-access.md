@@ -113,6 +113,10 @@ listeners in the running process. The primary listener remains available over
 HTTP on port 7331 while HTTPS uses port 7332 by default. RDP windows need HTTPS
 for H.264 video, since browsers decode it only on secure pages.
 
+The HTTPS listener speaks HTTP/2, so a browser loads Tessera's modules over
+one connection instead of six; WebSockets still upgrade over HTTP/1.1. Start
+Tessera with `GODEBUG=http2server=0` to turn HTTP/2 off.
+
 Open `http://<host-address>:7331/local-https/` to reach the enrollment page if
 the device does not trust HTTPS yet. It downloads only the public root
 certificate. On iPadOS, install the downloaded profile, then open **Settings >

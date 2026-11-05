@@ -448,7 +448,7 @@ test("browser panes relay the wheel opener without forwarding ordinary or destru
   const posted = [];
   vm.runInNewContext(script, {
     addEventListener: (type, callback) => { handler = callback; },
-    parent: { postMessage: message => posted.push(message) },
+    top: { postMessage: message => posted.push(message) },
   });
   for (const modifiers of [{ ctrlKey: true }, { metaKey: true }]) {
     const event = key(";", { ...modifiers, code: "Semicolon" });

@@ -74,6 +74,7 @@ export function connectRDPViewer({
   fullColor = false,
   onFullColor,
   timeoutMs = openTimeoutMs,
+  now = () => performance.now(),
 }) {
   // An opaque context composites faster, and the host's pixels have no alpha.
   const context = canvas.getContext("2d", { alpha: false });
@@ -82,6 +83,9 @@ export function connectRDPViewer({
 
   let size = null;
   let presenter = null;
+  // Counts for the stats overlay (rdp-stats.mjs): messages and bytes from
+  // the host, and the bitmap updates drawn without H.264.
+  const received = { socketMessages: 0, socketBytes: 0, images: 0, imageMs: 0 };
   let closed = false;
   let ending = null;
   let finishRun;
@@ -131,6 +135,8 @@ export function connectRDPViewer({
     // The remote clipboard isn't carried by kept sessions yet.
     async onClipboardPaste() {},
     shutdown: closeAll,
+    // The presenter's stats reading (rdp-h264.mjs) with this viewer's counts.
+    stats: () => ({ ...presenter?.stats(), ...received }),
     // Resolves when the viewer stops, with the reason; rejects if the session
     // failed.
     run: () => finished,
@@ -148,10 +154,13 @@ export function connectRDPViewer({
         presenter.push(frame.data, frame.regions, frame.view, frame.surface);
         break;
       case "image": {
+        const started = now();
         // The composited image's alpha isn't reliable, so make it opaque.
         const pixels = new Uint32Array(frame.rgba.buffer);
         for (let i = 0; i < pixels.length; i += 1) pixels[i] |= 0xff000000;
         context.putImageData(new ImageDataImpl(frame.rgba, frame.width, frame.height), frame.x, frame.y);
+        received.images += 1;
+        received.imageMs += now() - started;
         break;
       }
       case "ended":
@@ -182,6 +191,8 @@ export function connectRDPViewer({
 
     socket.addEventListener("message", (event) => {
       if (closed) return;
+      received.socketMessages += 1;
+      received.socketBytes += event.data.byteLength;
       const frame = parseViewerFrame(event.data);
       if (!frame) {
         ending = { type: "error", end: endError, reason: "the host sent an invalid RDP frame" };

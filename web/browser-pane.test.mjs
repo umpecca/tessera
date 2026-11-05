@@ -28,10 +28,10 @@ test("rejects non-loopback and non-HTTP browser addresses", () => {
   assert.equal(isLoopbackBrowserHost("128.0.0.1"), false);
 });
 
-test("local-port help uses the current valid address or the Flask default", () => {
+test("local-port help uses the current valid address or localhost:8080", () => {
   assert.equal(browserHelpAddress("localhost:5173/app"), "http://localhost:5173/app");
-  assert.equal(browserHelpAddress("https://example.com"), "localhost:5000");
-  assert.equal(browserHelpAddress(""), "localhost:5000");
+  assert.equal(browserHelpAddress("https://example.com"), "localhost:8080");
+  assert.equal(browserHelpAddress(""), "localhost:8080");
 });
 
 test("local-port help examples are valid and expose the command-palette route", () => {
@@ -98,4 +98,23 @@ test("an escaped frame navigation goes back through the pane's proxy session", (
   ctx.handleBrowserPaneEscape({ source: frameWindow, data: { type: "tessera-browser-escape", path: "https://example.com/" } });
   ctx.handleBrowserPaneEscape({ source: { location: frameWindow.location }, data: { type: "tessera-browser-escape", path: "/other" } });
   assert.deepEqual(replaced, ["/browser-proxy/abc/games/?p=1#top"]);
+});
+
+test("relayed keys from a frame inside a page belong to the pane holding it", () => {
+  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const start = source.indexOf("function browserPaneHoldingWindow(");
+  const ctx = vm.createContext({ browserPaneKind: "browser", rectangles: [] });
+  vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), ctx);
+  const top = {};
+  top.parent = top;
+  const page = { parent: top }, inner = { parent: page }, deeper = { parent: inner };
+  const other = { parent: top };
+  const pane = { kind: "browser", browser: { frame: { contentWindow: page } } };
+  ctx.rectangles.push({ kind: "terminal" }, pane);
+
+  assert.equal(ctx.browserPaneHoldingWindow(page), pane);
+  assert.equal(ctx.browserPaneHoldingWindow(deeper), pane);
+  assert.equal(ctx.browserPaneHoldingWindow(other), null);
+  assert.equal(ctx.browserPaneHoldingWindow(top), null);
+  assert.equal(ctx.browserPaneHoldingWindow(null), null);
 });

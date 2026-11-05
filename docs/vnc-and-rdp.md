@@ -81,6 +81,30 @@ at 4:2:0, which is lighter on the device. The client can't ask the server for
 one or the other: whether 4:4:4 is sent is the server's choice. The option is
 remembered in this browser and also applies to kept sessions it opens.
 
+Click the toolbar's **H.264** badge to show stats over the desktop, refreshed
+each second; click it again to hide them. The choice is remembered in this
+browser and applies to every RDP window, in the page or kept on the host:
+
+- **pictures**: H.264 pictures a second, the video's data rate, and **4:4:4**
+  while full color is being combined.
+- **decode**: from handing a picture to the browser's decoder to getting it
+  back, on average and at most; **queue** is pictures the decoder holds, and
+  **waiting** is decoded pictures waiting for an earlier one.
+- **push**, **draw** and **read**: time on the page's main thread to hand over
+  each picture and to draw it, and, in full color, to copy its rows out of the
+  decoder.
+- **shown after**: from a picture arriving to it being on screen.
+- **page**: the page's frames a second, its longest frame (a stall of its main
+  thread, whatever caused it), and the share of the main thread pictures took.
+- **dropped** and **errors**: pictures given up on, as while waiting for a key
+  frame, and decoder failures.
+- **from host** (kept sessions): messages and data from the host, and bitmap
+  updates drawn without H.264.
+
+Safari times in whole milliseconds, so there the per-picture times below about
+1 ms are averages of rounded values. The in-page client's other work, such as
+bitmap updates IronRDP draws itself, shows only in **page**.
+
 The sign-in dialog's **Resolution**, remembered per window, asks for the
 desktop at the window's own size (the default) or at a fixed size such as
 1920 × 1080. A fixed size stays as chosen: **Fit** scales it into the window
@@ -118,6 +142,9 @@ the same account, and it shows the desktop where you left it, without asking
 for the password; the toolbar shows **On host**. The choice is remembered in
 this browser.
 
+- **Detach** stops viewing but leaves the session logged in and connected on
+  the host, as closing the tab does; **Connect** attaches again without the
+  password. The idle limit below counts from then.
 - **Disconnect**, or closing the window, ends the session, as a client
   disconnecting would; a Mac running Remotr stays at its login screen.
 - A session ends after **8 hours** with no browser attached; change this with

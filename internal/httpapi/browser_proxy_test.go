@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -108,6 +109,73 @@ func TestBrowserProxyRewritesDevelopmentPageAndRedirect(t *testing.T) {
 	}
 }
 
+func TestBrowserProxyRevalidatesRewrittenResponses(t *testing.T) {
+	page := `<!doctype html><head><link href="/style.css"></head><body>` + strings.Repeat("<p>content</p>", 100) + `</body>`
+	var receivedValidator string
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedValidator = r.Header.Get("If-None-Match")
+		w.Header().Set("Cache-Control", "no-cache")
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("ETag", `"page-1"`)
+			http.ServeContent(w, r, "index.html", time.Time{}, strings.NewReader(page))
+		case "/app.js":
+			w.Header().Set("ETag", `W/"module-1"`)
+			http.ServeContent(w, r, "app.js", time.Time{}, strings.NewReader(`import "/dep.js";`))
+		}
+	}))
+	defer targetServer.Close()
+	target, _ := url.Parse(targetServer.URL)
+	session, err := newBrowserProxySession(target)
+	if err != nil {
+		t.Fatalf("new proxy session: %v", err)
+	}
+	api := &API{}
+	api.proxyManager().add(session)
+	handler := NewCompressionHandler(http.HandlerFunc(api.browserProxyRequest))
+	prefix := browserProxyPrefix + session.id
+	fetch := func(path, validator string, gzip bool) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, prefix+path, nil)
+		if validator != "" {
+			request.Header.Set("If-None-Match", validator)
+		}
+		if gzip {
+			request.Header.Set("Accept-Encoding", "gzip")
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	// The page is rewritten and gzipped; its validator names both.
+	first := fetch("/", "", true)
+	pageTag := first.Header().Get("ETag")
+	if first.Code != http.StatusOK || pageTag != `"page-1`+browserProxyETagSuffix+gzipETagSuffix+`"` {
+		t.Fatalf("first page = %d with ETag %q", first.Code, pageTag)
+	}
+	again := fetch("/", pageTag, true)
+	if again.Code != http.StatusNotModified || receivedValidator != `"page-1"` || again.Header().Get("ETag") != pageTag || again.Body.Len() != 0 {
+		t.Fatalf("revalidated page = %d with ETag %q, body %d bytes; server saw %q", again.Code, again.Header().Get("ETag"), again.Body.Len(), receivedValidator)
+	}
+
+	// A copy rewritten by another Tessera doesn't match.
+	stale := fetch("/", `"page-1-tessera-000000000000"`, false)
+	if stale.Code != http.StatusOK || !strings.Contains(stale.Body.String(), prefix+"/style.css") {
+		t.Fatalf("stale copy = %d, want a fresh rewritten page", stale.Code)
+	}
+
+	// A small module isn't gzipped, and a weak validator stays weak.
+	module := fetch("/app.js", "", false)
+	moduleTag := module.Header().Get("ETag")
+	if module.Code != http.StatusOK || moduleTag != `W/"module-1`+browserProxyETagSuffix+`"` || !strings.Contains(module.Body.String(), prefix+"/dep.js") {
+		t.Fatalf("module = %d with ETag %q: %s", module.Code, moduleTag, module.Body.String())
+	}
+	if again := fetch("/app.js", moduleTag, false); again.Code != http.StatusNotModified || again.Header().Get("ETag") != moduleTag {
+		t.Fatalf("revalidated module = %d with ETag %q", again.Code, again.Header().Get("ETag"))
+	}
+}
+
 func TestBrowserProxyResolvesRedirectsAgainstRequestedPath(t *testing.T) {
 	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -147,6 +215,11 @@ func TestBrowserProxyResolvesRedirectsAgainstRequestedPath(t *testing.T) {
 	api.browserProxyRequest(response, httptest.NewRequest(http.MethodGet, prefix+"/away", nil))
 	if response.Code != http.StatusBadGateway || response.Header().Get("Location") != "" {
 		t.Errorf("redirect to another origin was not refused: status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+	// The error page fills the pane, so it must still let Tessera's window
+	// shortcuts out.
+	if !strings.Contains(response.Body.String(), browserProxyKeyRelayScript) {
+		t.Errorf("proxy error page does not relay window shortcuts: %q", response.Body.String())
 	}
 }
 
@@ -190,6 +263,9 @@ func TestBrowserProxyEscapePageReplacesBlankFrame(t *testing.T) {
 	}
 	if response.Header().Get("X-Frame-Options") != "" {
 		t.Errorf("escape page kept X-Frame-Options: %q", response.Header().Get("X-Frame-Options"))
+	}
+	if !strings.Contains(body, browserProxyKeyRelayScript) {
+		t.Errorf("escape page does not relay window shortcuts")
 	}
 	policy := response.Header().Get("Content-Security-Policy")
 	if !strings.Contains(policy, "frame-ancestors 'self'") || !strings.HasPrefix(policy, "sandbox allow-scripts;") {

@@ -662,3 +662,31 @@ test("after every surface is gone, keeps nothing in the pane's canvas", () => {
   assert.equal(canvases.made.length, 1);
   assert.deepEqual(env.draws, []);
 });
+
+test("counts and times pictures for the stats overlay", () => {
+  const env = fakes();
+  let clock = 0;
+  const h264 = presenter(env, { now: () => clock });
+  h264.push(delta(), Uint16Array.of(0, 0, 8, 8));
+  const key = idr();
+  h264.push(key, Uint16Array.of(0, 0, 8, 8));
+  clock = 5;
+  env.decoders[0].emit(0);
+  let reading = h264.stats();
+  assert.equal(reading.pictures, 2);
+  assert.equal(reading.bytes, delta().byteLength + key.byteLength);
+  assert.equal(reading.dropped, 1, "the delta before the key frame");
+  assert.equal(reading.decoded, 1);
+  assert.equal(reading.presented, 1);
+  assert.equal(reading.decodeMs, 5);
+  assert.equal(reading.decodeMaxMs, 5);
+  assert.equal(reading.latencyMaxMs, 5);
+  assert.equal(reading.decodeQueue, 0);
+  reading = h264.stats();
+  assert.equal(reading.decodeMaxMs, 0, "maxima are since the last reading");
+  assert.equal(reading.latencyMaxMs, 0);
+  assert.equal(reading.decodeMs, 5, "totals keep counting");
+
+  env.decoders[0].error(new Error("decode failed"));
+  assert.equal(h264.stats().errors, 1);
+});

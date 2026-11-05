@@ -108,6 +108,7 @@ export function createRDPH264Presenter({
   createCombiner = createRDPAVC444Combiner,
   readPlanes = readVideoFramePlanes,
   createCanvas = defaultSurfaceCanvas,
+  now = () => performance.now(),
 }) {
   // Pictures and operations by push order: a picture waits here for its
   // decoder output.
@@ -147,6 +148,13 @@ export function createRDPH264Presenter({
   let deferred = [];
   let auxiliaryApplied = false;
   let fullColorDrawn = false;
+  // Counts for the stats overlay (rdp-stats.mjs), in milliseconds where
+  // timed: pushing a picture, its decoding (push to output), reading its
+  // planes for full color, drawing it, and push to presented.
+  const metrics = {
+    pictures: 0, bytes: 0, decoded: 0, presented: 0, dropped: 0, errors: 0,
+    pushMs: 0, decodeMs: 0, decodeMaxMs: 0, readMs: 0, drawMs: 0, latencyMs: 0, latencyMaxMs: 0,
+  };
 
   // Forgets pictures waiting for the decoder; operations stay.
   function reset() {
@@ -162,9 +170,17 @@ export function createRDPH264Presenter({
         waiting -= 1;
       }
       pending.delete(stamp);
+      metrics.dropped += 1;
     }
     deferred = [];
     drain();
+  }
+
+  function presented(entry) {
+    const latency = now() - entry.pushedAt;
+    metrics.presented += 1;
+    metrics.latencyMs += latency;
+    metrics.latencyMaxMs = Math.max(metrics.latencyMaxMs, latency);
   }
 
   function firstPicture() {
@@ -377,15 +393,26 @@ export function createRDPH264Presenter({
     let planes = null;
     const regions = regionList(entry.regions);
     if (kind !== rdpH264View.avc420 && combinerReady()) {
+      const readStarted = now();
       try {
         // Only the rows the regions need.
         planes = await readPlanes(picture, planeBuffer, regions, copyState);
       } catch {
         planes = null;
       }
+      metrics.readMs += now() - readStarted;
       if (!planes) giveUpCombining();
     }
     if (closed) return;
+    const drawStarted = now();
+    try {
+      paintCombined(picture, entry, kind, planes, regions);
+    } finally {
+      metrics.drawMs += now() - drawStarted;
+    }
+  }
+
+  function paintCombined(picture, entry, kind, planes, regions) {
     if (!planes || !combiner) {
       drawDirect(picture, entry);
       return;
@@ -436,14 +463,20 @@ export function createRDPH264Presenter({
       }
       const picture = entry.picture;
       if (combiner === null) {
+        const drawStarted = now();
         try {
           drawDirect(picture, entry);
         } finally {
           picture.close();
+          metrics.drawMs += now() - drawStarted;
+          presented(entry);
         }
         return undefined;
       }
-      return combine(picture, entry).finally(() => picture.close());
+      return combine(picture, entry).finally(() => {
+        picture.close();
+        presented(entry);
+      });
     };
     if (busy === 0 && (entry.op || combiner === null)) {
       if (!closed) task();
@@ -468,6 +501,7 @@ export function createRDPH264Presenter({
         if (waiting <= maxWaitingPictures) break;
         pending.delete(nextStamp);
         nextStamp += 1;
+        metrics.dropped += 1;
         continue;
       }
       pending.delete(nextStamp);
@@ -486,12 +520,22 @@ export function createRDPH264Presenter({
     }
     entry.picture = picture;
     waiting += 1;
+    const decodeMs = now() - entry.pushedAt;
+    metrics.decoded += 1;
+    metrics.decodeMs += decodeMs;
+    metrics.decodeMaxMs = Math.max(metrics.decodeMaxMs, decodeMs);
     drain();
   }
 
   function open(data, nals, sps) {
     // An error closes the decoder; decoding resumes at the next key frame.
-    decoder = new VideoDecoder({ output, error: reset });
+    decoder = new VideoDecoder({
+      output,
+      error: () => {
+        metrics.errors += 1;
+        reset();
+      },
+    });
     decoder.configure({ codec: h264CodecString(data, nals) || rdpH264ProbeCodec, ...decoderConfig });
     decoderSps = sps.slice();
   }
@@ -507,9 +551,41 @@ export function createRDPH264Presenter({
           waiting -= 1;
         }
         pending.delete(oldest);
+        metrics.dropped += 1;
       }
     }
     return timestamp - 1;
+  }
+
+  function pushPicture(data, regions, view, surfaceId, pushedAt) {
+    // One scan of the picture for its NAL units serves everything below.
+    const nals = annexBNals(data);
+    const key = nals.some((nal) => nal.type === 5);
+    const spsNal = nals.find((nal) => nal.type === 7);
+    const sps = spsNal ? data.subarray(spsNal.start, spsNal.end) : null;
+    // A new SPS, such as a new desktop size, starts a new decoder.
+    if (key && sps && !sameBytes(sps, decoderSps)) {
+      reset();
+      open(data, nals, sps);
+    }
+    if (!decoder) {
+      // Waiting for a key frame.
+      metrics.dropped += 1;
+      return;
+    }
+    let chunk = data;
+    try {
+      chunk = withLowDelaySps(data, spsCache, nals);
+    } catch {
+      // An SPS this can't parse is decoded as it is, with the decoder's delay.
+    }
+    const stamp = add({ op: false, view, regions, surfaceId, picture: null, pushedAt });
+    try {
+      decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: stamp, data: chunk }));
+    } catch {
+      metrics.errors += 1;
+      reset();
+    }
   }
 
   return {
@@ -520,29 +596,23 @@ export function createRDPH264Presenter({
         drain();
         return;
       }
-      // One scan of the picture for its NAL units serves everything below.
-      const nals = annexBNals(data);
-      const key = nals.some((nal) => nal.type === 5);
-      const spsNal = nals.find((nal) => nal.type === 7);
-      const sps = spsNal ? data.subarray(spsNal.start, spsNal.end) : null;
-      // A new SPS, such as a new desktop size, starts a new decoder.
-      if (key && sps && !sameBytes(sps, decoderSps)) {
-        reset();
-        open(data, nals, sps);
-      }
-      if (!decoder) return;
-      let chunk = data;
+      const started = now();
+      metrics.pictures += 1;
+      metrics.bytes += data.byteLength;
       try {
-        chunk = withLowDelaySps(data, spsCache, nals);
-      } catch {
-        // An SPS this can't parse is decoded as it is, with the decoder's delay.
+        pushPicture(data, regions, view, surfaceId, started);
+      } finally {
+        metrics.pushMs += now() - started;
       }
-      const stamp = add({ op: false, view, regions, surfaceId, picture: null });
-      try {
-        decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: stamp, data: chunk }));
-      } catch {
-        reset();
-      }
+    },
+    // A reading of the counts above, with the decoder's queue and the
+    // pictures decoded but not yet drawn. The maxima are since the last
+    // reading.
+    stats() {
+      const reading = { ...metrics, decodeQueue: decoder?.decodeQueueSize ?? 0, waiting, fullColor: fullColorDrawn && Boolean(combiner) };
+      metrics.decodeMaxMs = 0;
+      metrics.latencyMaxMs = 0;
+      return reading;
     },
     close() {
       closed = true;
@@ -556,6 +626,7 @@ export function createRDPH264Presenter({
       combiner = null;
     },
   };
+
 }
 
 // Decoded pictures that may wait behind one the decoder hasn't output before

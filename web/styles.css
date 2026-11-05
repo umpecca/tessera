@@ -1431,6 +1431,11 @@ input {
   font-size: 11px;
 }
 
+.rdp-detach {
+  flex-basis: 56px;
+  font-size: 11px;
+}
+
 .vnc-select,
 .rdp-select {
   height: 25px;
@@ -1450,6 +1455,18 @@ input {
 
 .rdp-video[hidden] {
   display: none;
+}
+
+/* The H.264 badge shows and hides the stats overlay. */
+button.rdp-video {
+  height: 25px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+button.rdp-video.is-active {
+  color: var(--text);
 }
 
 .vnc-toggle {
@@ -1553,6 +1570,7 @@ input {
 }
 
 .rdp-screen {
+  position: relative;
   display: flex;
   /* Drags on the canvas are remote mouse input. Without this, iPadOS turns a
      mouse or trackpad drag into a selection of the page around the pane. */
@@ -1566,6 +1584,22 @@ input {
   margin: auto;
   outline: none;
   touch-action: none;
+}
+
+/* Over the desktop's corner, letting input through to the canvas. */
+.rdp-stats {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 1;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 72%);
+  color: #e8e8e8;
+  font: 11px/1.4 ui-monospace, Menlo, monospace;
+  white-space: pre;
+  pointer-events: none;
 }
 
 .rdp-certificate {

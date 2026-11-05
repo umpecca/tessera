@@ -67,6 +67,12 @@ must send one unambiguous RFC `Forwarded` header or one
 `X-Forwarded-Proto`; mixed or multi-hop values are rejected. Trust only a
 proxy that overwrites client-supplied forwarding headers.
 
+A proxy can also forward to the Local HTTPS listener, over HTTP/1.1 or HTTP/2.
+Tessera doesn't advertise WebSockets over HTTP/2 (extended CONNECT), so a
+proxy that reaches it over HTTP/2 must upgrade WebSockets on a separate
+HTTP/1.1 connection, as Go's `httputil.ReverseProxy` does.
+`GODEBUG=http2server=0` turns HTTP/2 off.
+
 The in-memory rate limiter applies to API requests and Terminal handshakes. A
 negative `-rate-limit` or `-rate-burst` disables it. Audit persistence is off
 by default; enable it explicitly with `-audit-log`. When enabled, records

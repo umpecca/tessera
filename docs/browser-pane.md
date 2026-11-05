@@ -22,6 +22,10 @@ A Browser pane shows the development server in a sandboxed frame without
   navigation from script, such as `location.replace("/")`, briefly loads a
   Tessera page that sends the frame back through the proxy. If that page
   stays up, it names the path the site tried to open.
+- Rewritten HTML, CSS and JavaScript keep the development server's `ETag`,
+  with a suffix naming Tessera's rewriting, so a reload revalidates them
+  (`304 Not Modified`) instead of downloading every module again. A Tessera
+  upgrade that changes the rewriting changes the suffix.
 
 ## Site data
 

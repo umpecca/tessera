@@ -114,7 +114,7 @@ test("the browser proxy relays reorder shortcuts while ordinary selection/naviga
   const script = proxy.slice(start).split("\n").slice(0, 2).join("\n");
   let handler;
   const posted = [];
-  vm.runInNewContext(script, { addEventListener: (type, callback) => { handler = callback; }, parent: { postMessage: message => posted.push(message) } });
+  vm.runInNewContext(script, { addEventListener: (type, callback) => { handler = callback; }, top: { postMessage: message => posted.push(message) } });
   for (const modifiers of [{ ctrlKey: true, shiftKey: true }, { metaKey: true, shiftKey: true }]) {
     const event = keyboard("ArrowUp", modifiers);
     handler(event);

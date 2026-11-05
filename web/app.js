@@ -129,6 +129,7 @@ import {
   rdpWindowsKey,
 } from "./rdp-pane.mjs";
 import { createRDPH264Presenter, rdpH264Supported, readRDPFullColorPreference, saveRDPFullColorPreference } from "./rdp-h264.mjs";
+import { createRDPStatsOverlay, readRDPStatsPreference, saveRDPStatsPreference } from "./rdp-stats.mjs";
 import {
   fetchKeptRDPSessions,
   findKeptRDPSession,
@@ -2091,7 +2092,7 @@ function createRectangle(x, y, width, height, options = {}) {
       ? rect.rdpTarget
       : rect.cwd;
   cwdInput.placeholder =  rect.kind === browserPaneKind
-        ? "localhost:5000"
+        ? "localhost:8080"
       : rect.kind === vncPaneKind
         ? "host:5900"
       : rect.kind === rdpPaneKind
@@ -2279,7 +2280,7 @@ function mountBrowserPane(rect) {
   const address = document.createElement("input");
   address.className = "browser-address";
   address.type = "text";
-  address.placeholder = "localhost:5000";
+  address.placeholder = "localhost:8080";
   address.value = rect.browserUrl;
   address.spellcheck = false;
   address.setAttribute("aria-label", "Browser address");
@@ -2435,7 +2436,7 @@ function handleBrowserPaneMessage(event) {
     return;
   }
   if (event.data?.type === "tessera-browser-keyup") {
-    if (rectangles.some((rect) => rect.kind === browserPaneKind && rect.browser?.frame.contentWindow === event.source)) {
+    if (browserPaneHoldingWindow(event.source)) {
       handleWindowSwitcherKeyup({ key: event.data.key });
     }
     return;
@@ -2502,6 +2503,19 @@ function handleBrowserPaneDraw(event) {
   }
 }
 
+// The pane whose frame holds source, at any depth: a page's own frames relay
+// keys straight to this window. parent is readable across origins, and a
+// window that is its own parent is a top.
+function browserPaneHoldingWindow(source) {
+  for (let win = source, depth = 0; win && depth < 32; depth++) {
+    const rect = rectangles.find((candidate) => candidate.kind === browserPaneKind && candidate.browser?.frame.contentWindow === win);
+    if (rect) return rect;
+    if (win.parent === win) return null;
+    win = win.parent;
+  }
+  return null;
+}
+
 // Keystrokes typed while a browser pane's iframe holds focus never reach this
 // document, so the proxy bootstrap relays the window-management ones here.
 function handleBrowserPaneShortcut(event) {
@@ -2509,7 +2523,7 @@ function handleBrowserPaneShortcut(event) {
     return;
   }
   const keys = event.data;
-  const rect = rectangles.find((candidate) => candidate.kind === browserPaneKind && candidate.browser?.frame.contentWindow === event.source);
+  const rect = browserPaneHoldingWindow(event.source);
   if (!rect) {
     return;
   }
@@ -2952,6 +2966,9 @@ function mountRDPPane(rect) {
   address.setAttribute("aria-label", "RDP target");
   const connect = browserToolbarButton("Connect", "Connect or disconnect RDP");
   connect.classList.add("rdp-connect");
+  const detach = browserToolbarButton("Detach", "Stop viewing but keep the session logged in and connected on the Tessera host; Connect attaches again");
+  detach.classList.add("rdp-detach");
+  detach.hidden = true;
   const ctrlAltDelete = browserToolbarButton("CAD", "Send Ctrl+Alt+Del");
   const windowsKey = browserToolbarButton("Win", "Send the Windows key");
   const scale = document.createElement("select");
@@ -2977,7 +2994,9 @@ function mountRDPPane(rect) {
   wiggle.value = rect.rdpWiggle ? (rect.rdpWiggleAlways ? "always" : "away") : "off";
   const sendClipboard = browserToolbarButton("↑", "Send local clipboard to remote");
   const copyClipboard = browserToolbarButton("↓", "Copy remote clipboard locally");
-  const video = document.createElement("span");
+  // The badge also shows and hides the stats overlay.
+  const video = document.createElement("button");
+  video.type = "button";
   video.className = "rdp-video";
   video.textContent = "H.264";
   video.title = rdpVideoTitle(false);
@@ -3004,13 +3023,15 @@ function mountRDPPane(rect) {
   dialog.addEventListener("keydown", (event) => cyclePaneDialogFocus(dialog, event));
 
   const view = {
-    pane, address, connect, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel, message, screen, canvas, dialog,
+    pane, address, connect, detach, ctrlAltDelete, windowsKey, scale, sendClipboard, copyClipboard, video, keptLabel, message, screen, canvas, dialog,
     module: null, session: null, connecting: false, attempt: 0, dialogResolve: null, intentionalDisconnect: false,
     remoteClipboard: "", lastSentClipboard: "", clipboardRequested: false, resizeTimer: null, resizeObserver: null, canvasObserver: null,
     pointerFrame: 0, pendingPointer: null, wiggleTimer: null, wiggleSent: "", shownSent: true, hideTimer: null,
     // Where this page last put the remote pointer, in desktop pixels.
     lastPointer: null,
-    h264: null, h264Drawn: false, h264FullColor: false, kept: false,
+    h264: null, h264Drawn: false, h264FullColor: false, kept: false, detached: false,
+    // The stats overlay while it shows (rdp-stats.mjs).
+    stats: null,
     wheelVertical: { remainder: 0 }, wheelHorizontal: { remainder: 0 },
     // Desktop pixels per CSS pixel: above 1 in sharp mode.
     pixelRatio: 1,
@@ -3027,7 +3048,7 @@ function mountRDPPane(rect) {
     scaledGeneration: 0,
   };
   rect.rdp = view;
-  toolbar.append(address, connect, ctrlAltDelete, windowsKey, scale, wiggle, sendClipboard, copyClipboard, video, keptLabel);
+  toolbar.append(address, connect, detach, ctrlAltDelete, windowsKey, scale, wiggle, sendClipboard, copyClipboard, video, keptLabel);
   pane.append(toolbar, message, screen, dialog);
   rect.body.appendChild(pane);
   updateRDPControls(rect);
@@ -3036,6 +3057,13 @@ function mountRDPPane(rect) {
     if (event.key === "Enter") {
       event.preventDefault();
       void connectRDPPane(rect);
+    }
+  });
+  video.addEventListener("click", () => {
+    const storage = rdpPreferenceStorage();
+    saveRDPStatsPreference(storage, !readRDPStatsPreference(storage));
+    for (const other of rectangles) {
+      if (other.rdp) syncRDPStats(other);
     }
   });
   address.addEventListener("input", () => {
@@ -3052,6 +3080,7 @@ function mountRDPPane(rect) {
       void connectRDPPane(rect);
     }
   });
+  detach.addEventListener("click", () => detachRDPPane(rect));
   ctrlAltDelete.addEventListener("click", () => sendRDPKeys(rect, rdpCtrlAltDelete));
   windowsKey.addEventListener("click", () => sendRDPKeys(rect, rdpWindowsKey));
   scale.addEventListener("change", () => {
@@ -3162,8 +3191,29 @@ function updateRDPControls(rect) {
   view.copyClipboard.disabled = !view.remoteClipboard;
   view.video.hidden = !(connected && view.h264Drawn);
   view.video.textContent = view.h264FullColor ? "H.264 4:4:4" : "H.264";
-  view.video.title = rdpVideoTitle(view.h264FullColor);
+  view.video.title = `${rdpVideoTitle(view.h264FullColor)}. Click to show or hide stats.`;
   view.keptLabel.hidden = !(connected && view.kept);
+  view.detach.hidden = !(connected && view.kept);
+  syncRDPStats(rect);
+}
+
+// Shows the stats overlay over a connected session while it's turned on in
+// this browser, and takes it away otherwise.
+function syncRDPStats(rect) {
+  const view = rect.rdp;
+  if (!view) return;
+  const wanted = Boolean(view.session) && readRDPStatsPreference(rdpPreferenceStorage());
+  if (wanted && !view.stats) {
+    view.stats = createRDPStatsOverlay({
+      container: view.screen,
+      read: () => (view.kept ? view.session?.stats?.() : view.h264?.stats()) ?? null,
+      title: () => `${view.kept ? "kept on host" : "in page"} · ${view.canvas.width}×${view.canvas.height}`,
+    });
+  } else if (!wanted && view.stats) {
+    view.stats.close();
+    view.stats = null;
+  }
+  view.video.classList.toggle("is-active", Boolean(view.stats));
 }
 
 // Fit scales the desktop into the pane; 1:1 and Resize show it unscaled.
@@ -3436,6 +3486,7 @@ function activateRDPSession(rect, view, session) {
   view.screen.hidden = false;
   view.message.hidden = true;
   layoutRDPCanvas(rect);
+  syncRDPStats(rect);
   view.canvas.focus({ preventScroll: true });
   if (view.clipboardRequested) {
     view.clipboardRequested = false;
@@ -3735,7 +3786,9 @@ async function runRDPSession(rect, view, session) {
   view.screen.hidden = true;
   layoutRDPCanvas(rect);
   hideRDPDialog(rect);
-  if (view.intentionalDisconnect) {
+  if (view.detached) {
+    setRDPMessage(rect, "Detached. The session is still logged in and connected on the Tessera host; Connect attaches again.");
+  } else if (view.intentionalDisconnect) {
     setRDPMessage(rect, "Disconnected.");
   } else if (failed) {
     setRDPMessage(rect, text, true);
@@ -3743,6 +3796,7 @@ async function runRDPSession(rect, view, session) {
     setRDPMessage(rect, text ? `Disconnected: ${text}` : "Disconnected.");
   }
   view.intentionalDisconnect = false;
+  view.detached = false;
   updateRDPControls(rect);
 }
 
@@ -4191,6 +4245,17 @@ function disconnectRDPPane(rect) {
   }
 }
 
+// Stops viewing a session the host keeps without ending it: the host stays
+// signed in to the server, as when this page closes.
+function detachRDPPane(rect) {
+  const view = rect?.rdp;
+  if (!view?.session || !view.kept) return;
+  view.intentionalDisconnect = true;
+  view.detached = true;
+  rdpKeptListCache = null;
+  view.session.shutdown();
+}
+
 function disposeRDPPane(rect) {
   const view = rect?.rdp;
   if (!view) return;
@@ -4204,6 +4269,8 @@ function disposeRDPPane(rect) {
   view.canvasObserver?.disconnect();
   cancelRDPPointerMove(view);
   closeRDPH264(view);
+  view.stats?.close();
+  view.stats = null;
   try {
     view.session?.shutdown();
   } catch {
@@ -8974,7 +9041,7 @@ function renderBrowserPortHelp(targetRect) {
   address.type = "text";
   address.spellcheck = false;
   address.value = browserHelpAddress(targetRect?.browserUrl);
-  address.placeholder = "localhost:5000";
+  address.placeholder = "localhost:8080";
   const openButton = document.createElement("button");
   openButton.type = "submit";
   openButton.className = "settings-background-button browser-port-help-open";
@@ -10897,6 +10964,16 @@ function openTerminalLink(url) {
   void navigateBrowserPane(createBrowserPane(point), local);
 }
 
+// A new Browser, VNC or RDP window offers localhost on a usual port (8080 for
+// a development server), focused and selected: Enter connects, typing
+// replaces it.
+function prefillPaneAddress(address, value) {
+  if (!address) return;
+  if (!address.value) address.value = value;
+  address.focus();
+  address.select();
+}
+
 function createBrowserPane(point = null) {
   const box = paneBox(point, 720, 480);
   const rect = createRectangle(box.x, box.y, box.width, box.height, {
@@ -10905,7 +10982,7 @@ function createBrowserPane(point = null) {
   clampIntoBoard(rect);
   setRectangle(rect, rect);
   setActivePane(rect, { raise: true, focus: true });
-  rect.browser?.address.focus();
+  prefillPaneAddress(rect.browser?.address, "localhost:8080");
   scheduleWorkspaceSave();
   return rect;
 }
@@ -10918,7 +10995,7 @@ function createVNCPane(point = null) {
   clampIntoBoard(rect);
   setRectangle(rect, rect);
   setActivePane(rect, { raise: true, focus: true });
-  rect.vnc?.address.focus();
+  prefillPaneAddress(rect.vnc?.address, "localhost:5900");
   scheduleWorkspaceSave();
   return rect;
 }
@@ -10931,7 +11008,7 @@ function createRDPPane(point = null) {
   clampIntoBoard(rect);
   setRectangle(rect, rect);
   setActivePane(rect, { raise: true, focus: true });
-  rect.rdp?.address.focus();
+  prefillPaneAddress(rect.rdp?.address, "localhost:3389");
   scheduleWorkspaceSave();
   return rect;
 }

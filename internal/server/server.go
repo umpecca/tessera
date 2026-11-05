@@ -235,6 +235,12 @@ func (s *Server) startListenersLocked(config localhttps.Config) error {
 		httpsListener = tls.NewListener(httpsListener, &tls.Config{
 			Certificates: []tls.Certificate{material.Certificate},
 			MinVersion:   tls.VersionTLS12,
+			// Offering h2 lets a browser fetch the page's modules over one
+			// connection instead of six. WebSockets stay on HTTP/1.1: Go
+			// doesn't advertise extended CONNECT, so browsers and proxies
+			// open a separate connection to upgrade. GODEBUG=http2server=0
+			// turns HTTP/2 back off.
+			NextProtos: []string{"h2", "http/1.1"},
 		})
 	}
 

@@ -16,7 +16,7 @@ Current pane types:
   PTY on macOS/Linux. Terminal sessions retain bounded scrollback while the
   server process remains alive.
 - **Browser:** a sandboxed view of an HTTP(S) development server on the Tessera
-  host. Enter a loopback address such as `localhost:5000`; Tessera forwards the
+  host. Enter a loopback address such as `localhost:8080`; Tessera forwards the
   page, assets, forms, fetches, redirects, and hot-reload WebSockets through its
   existing listener without exposing the development-server port. Service
   workers, strict origin assumptions, and complex authentication may require

@@ -47,7 +47,7 @@ export function normalizeBrowserAddress(value) {
 }
 
 export function browserHelpAddress(currentAddress) {
-  return normalizeBrowserAddress(currentAddress) || "localhost:5000";
+  return normalizeBrowserAddress(currentAddress) || "localhost:8080";
 }
 
 export function isLoopbackBrowserHost(hostname) {

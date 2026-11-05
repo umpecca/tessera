@@ -227,3 +227,17 @@ test("offers every session method and input event the RDP pane calls", async () 
     assert.equal(typeof rdpViewerModule.Backend.DeviceEvent[event], "function", `DeviceEvent.${event}`);
   }
 });
+
+test("counts what the host sent for the stats overlay", async () => {
+  let clock = 0;
+  const { connecting, socket } = setup({ now: () => (clock += 2) });
+  socket().frame(...sizeFrame);
+  const session = await connecting;
+  socket().frame(viewImage, 4, 0, 6, 0, 1, 0, 1, 0, 10, 20, 30, 0);
+  const reading = session.stats();
+  assert.equal(reading.socketMessages, 2);
+  assert.equal(reading.socketBytes, sizeFrame.length + 13);
+  assert.equal(reading.images, 1);
+  assert.equal(reading.imageMs, 2);
+  assert.equal(reading.pictures, undefined, "no presenter before the first picture");
+});

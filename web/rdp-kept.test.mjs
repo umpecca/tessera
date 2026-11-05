@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 import {
   fetchKeptRDPSessions,
@@ -92,4 +94,34 @@ test("describes the idle limit", () => {
   assert.equal(rdpIdleLimitText(90), "2 minutes");
   assert.match(rdpKeepLabelText(28800), /ends after 8 hours without a viewer$/);
   assert.doesNotMatch(rdpKeepLabelText(0), /ends after/);
+});
+
+test("Detach leaves a kept session on the host; Disconnect ends it", () => {
+  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const ctx = vm.createContext({ ended: 0, rdpKeptListCache: {} });
+  for (const name of ["detachRDPPane", "disconnectRDPPane"]) {
+    const start = source.indexOf(`function ${name}(`);
+    vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), ctx);
+  }
+  vm.runInContext("function endKeptRDP() { ended += 1; }", ctx);
+  const pane = (kept) => {
+    const view = { kept, shutdowns: 0, intentionalDisconnect: false, detached: false };
+    view.session = { shutdown: () => { view.shutdowns += 1; } };
+    return { rdp: view };
+  };
+
+  const detached = pane(true);
+  ctx.detachRDPPane(detached);
+  assert.equal(detached.rdp.shutdowns, 1);
+  assert.equal(detached.rdp.detached, true);
+  assert.equal(ctx.ended, 0);
+
+  const inPage = pane(false);
+  ctx.detachRDPPane(inPage);
+  assert.equal(inPage.rdp.shutdowns, 0, "a session run in the page has nothing on the host to keep");
+
+  const disconnected = pane(true);
+  ctx.disconnectRDPPane(disconnected);
+  assert.equal(disconnected.rdp.shutdowns, 1);
+  assert.equal(ctx.ended, 1);
 });

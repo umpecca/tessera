@@ -42,6 +42,26 @@ var (
 	htmlStartPattern = regexp.MustCompile(`(?is)^\x{FEFF}?(?:\s|<!--.*?-->)*(?:<!doctype[^>]*>)?(?:\s|<!--.*?-->)*(?:<html(?:\s[^>]*)?>)?`)
 )
 
+// browserProxyETagSuffix marks a validator as belonging to a rewritten
+// response. Rewritten bytes depend only on the server's bytes, the prefix,
+// which is part of the URL, and Tessera's own rewriting, so the server's ETag
+// stays good for them once it also names the rewriting: an upgrade that
+// changes the injected script changes the suffix, and old copies stop
+// matching. Without a validator, every reload of a development server's
+// no-cache modules is a full download.
+var browserProxyETagSuffix = func() string {
+	hash := sha256.New()
+	hash.Write(rewriteBrowserHTML([]byte("<head>"), browserProxyPrefix+"version", &url.URL{Scheme: "http", Host: "localhost"}))
+	for _, pattern := range []*regexp.Regexp{htmlRootAttributePattern, cssRootURLPattern, jsRootImportPattern, htmlHeadPattern, htmlStartPattern} {
+		hash.Write([]byte(pattern.String()))
+	}
+	return "-tessera-" + hex.EncodeToString(hash.Sum(nil)[:6])
+}()
+
+// browserProxyRevalidationKey marks an outgoing request whose If-None-Match
+// named a rewritten copy, so a 304 can name that copy again.
+type browserProxyRevalidationKey struct{}
+
 type browserProxyManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*browserProxySession
@@ -267,6 +287,9 @@ func newBrowserProxySession(requested *url.URL) (*browserProxySession, error) {
 				}
 			}
 			request.Out.Header.Del("Accept-Encoding")
+			if stripBrowserProxyETagSuffix(request.Out.Header) {
+				request.Out = request.Out.WithContext(context.WithValue(request.Out.Context(), browserProxyRevalidationKey{}, true))
+			}
 			request.Out.Header.Set("Origin", target.Scheme+"://"+target.Host)
 			if request.Out.Header.Get("Referer") != "" {
 				request.Out.Header.Set("Referer", target.Scheme+"://"+target.Host+request.Out.URL.Path)
@@ -294,7 +317,7 @@ func newBrowserProxySession(requested *url.URL) (*browserProxySession, error) {
 			setBrowserProxyResponseHeaders(w.Header())
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = fmt.Fprintf(w, "<!doctype html><title>Browser proxy error</title><p>Could not reach %s.</p><pre>%s</pre>", html.EscapeString(target.Host), html.EscapeString(err.Error()))
+			_, _ = fmt.Fprintf(w, "<!doctype html><title>Browser proxy error</title><p>Could not reach %s.</p><pre>%s</pre><script>%s</script>", html.EscapeString(target.Host), html.EscapeString(err.Error()), browserProxyKeyRelayScript)
 		},
 	}
 	return session, nil
@@ -344,6 +367,13 @@ func rewriteBrowserProxyResponse(response *http.Response, prefix string, target 
 		}
 		response.Header.Set("Location", rewritten)
 	}
+	if response.StatusCode == http.StatusNotModified {
+		// Nothing to rewrite; the browser keeps the copy it has.
+		if revalidated, _ := response.Request.Context().Value(browserProxyRevalidationKey{}).(bool); revalidated {
+			addBrowserProxyETagSuffix(response.Header)
+		}
+		return nil
+	}
 
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
 	if mediaType != "text/html" && mediaType != "text/css" && mediaType != "application/javascript" && mediaType != "text/javascript" {
@@ -370,8 +400,31 @@ func rewriteBrowserProxyResponse(response *http.Response, prefix string, target 
 	response.ContentLength = int64(len(body))
 	response.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	response.Header.Del("Content-Encoding")
-	response.Header.Del("ETag")
+	addBrowserProxyETagSuffix(response.Header)
 	return nil
+}
+
+// stripBrowserProxyETagSuffix turns a rewritten copy's validator back into
+// the server's, and reports whether it did. A suffix from other rewriting
+// stays on, so the server sees a tag it never issued and sends the page again.
+func stripBrowserProxyETagSuffix(header http.Header) bool {
+	value := header.Get("If-None-Match")
+	if !strings.Contains(value, browserProxyETagSuffix+`"`) {
+		return false
+	}
+	header.Set("If-None-Match", strings.ReplaceAll(value, browserProxyETagSuffix+`"`, `"`))
+	return true
+}
+
+func addBrowserProxyETagSuffix(header http.Header) {
+	tag := header.Get("ETag")
+	switch {
+	case tag == "" || strings.HasSuffix(tag, browserProxyETagSuffix+`"`):
+	case strings.HasSuffix(tag, `"`):
+		header.Set("ETag", tag[:len(tag)-1]+browserProxyETagSuffix+`"`)
+	default:
+		header.Del("ETag")
+	}
 }
 
 func rewriteBrowserHTML(body []byte, prefix string, target *url.URL) []byte {
@@ -397,9 +450,7 @@ const logicalURL=()=>targetOrigin+location.pathname.slice(prefix.length)+locatio
 const report=()=>parent.postMessage({type:"tessera-browser-location",url:logicalURL()},"*");
 addEventListener("message",event=>{if(event.source!==parent)return;if(event.data==="tessera-browser-back")history.back();else if(event.data==="tessera-browser-forward")history.forward();else if(event.data==="tessera-browser-reload")location.reload();});
 addEventListener("popstate",report);addEventListener("hashchange",report);addEventListener("load",report);
-const relayKeys=new Set(["[","]","BracketLeft","BracketRight","k","K","l","L",";","Semicolon","F7","F9","F10"]);
-addEventListener("keydown",event=>{const primary=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey;const alt=event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const reorder=(event.ctrlKey||event.metaKey)&&event.shiftKey&&!event.altKey&&(event.key==="ArrowUp"||event.key==="ArrowDown");if(!primary&&!alt&&!reorder)return;if(!reorder&&!relayKeys.has(event.key)&&!relayKeys.has(event.code))return;event.preventDefault();parent.postMessage({type:"tessera-browser-key",key:event.key,code:event.code,ctrlKey:event.ctrlKey,metaKey:event.metaKey,altKey:event.altKey,shiftKey:event.shiftKey},"*");},true);
-addEventListener("keyup",event=>{if(event.key==="Control"||event.key==="Meta")parent.postMessage({type:"tessera-browser-keyup",key:event.key},"*");},true);
+` + browserProxyKeyRelayScript + `
 let drawPointer=null;
 const relayDraw=(event,phase)=>parent.postMessage({type:"tessera-browser-draw",phase,pointerId:event.pointerId,clientX:event.clientX,clientY:event.clientY,shiftKey:event.shiftKey},"*");
 const cancelDraw=()=>{if(drawPointer===null)return;const pointerId=drawPointer;drawPointer=null;relayDraw({pointerId,clientX:0,clientY:0},"cancel");if(document.documentElement.hasPointerCapture(pointerId))document.documentElement.releasePointerCapture(pointerId);};
@@ -422,11 +473,22 @@ document.addEventListener("submit",event=>{const form=event.target;if(form&&form
 	return append(append(append([]byte{}, body[:at]...), bootstrap...), body[at:]...)
 }
 
+// browserProxyKeyRelayScript sends Tessera's window shortcuts out of a page in
+// a Browser pane: while the page has focus, Tessera's document sees no keys at
+// all. It posts to top, not parent, so a frame inside the page relays too.
+// Every document the pane can show from Tessera runs it: proxied pages, the
+// proxy's error page and the escape page. Without it, a maximized pane with no
+// title bar has no keyboard way out.
+const browserProxyKeyRelayScript = `const relayKeys=new Set(["[","]","BracketLeft","BracketRight","k","K","l","L",";","Semicolon","F7","F9","F10"]);
+addEventListener("keydown",event=>{const primary=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey;const alt=event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const reorder=(event.ctrlKey||event.metaKey)&&event.shiftKey&&!event.altKey&&(event.key==="ArrowUp"||event.key==="ArrowDown");if(!primary&&!alt&&!reorder)return;if(!reorder&&!relayKeys.has(event.key)&&!relayKeys.has(event.code))return;event.preventDefault();top.postMessage({type:"tessera-browser-key",key:event.key,code:event.code,ctrlKey:event.ctrlKey,metaKey:event.metaKey,altKey:event.altKey,shiftKey:event.shiftKey},"*");},true);
+addEventListener("keyup",event=>{if(event.key==="Control"||event.key==="Meta")top.postMessage({type:"tessera-browser-keyup",key:event.key},"*");},true);`
+
 // browserProxyEscapeScript reports the escaped path to the Tessera app, which
 // sends the frame back through the pane's proxy session, and lets the page go
 // back from its own link or the pane's Back button. Its hash is the only script
 // the page's policy allows.
-const browserProxyEscapeScript = `parent.postMessage({type:"tessera-browser-escape",path:location.pathname+location.search+location.hash},"*");document.getElementById("back").addEventListener("click",event=>{event.preventDefault();history.back();});addEventListener("message",event=>{if(event.source===parent&&event.data==="tessera-browser-back")history.back();});`
+const browserProxyEscapeScript = `parent.postMessage({type:"tessera-browser-escape",path:location.pathname+location.search+location.hash},"*");document.getElementById("back").addEventListener("click",event=>{event.preventDefault();history.back();});addEventListener("message",event=>{if(event.source===parent&&event.data==="tessera-browser-back")history.back();});
+` + browserProxyKeyRelayScript
 
 var browserProxyEscapePolicy = func() string {
 	sum := sha256.Sum256([]byte(browserProxyEscapeScript))

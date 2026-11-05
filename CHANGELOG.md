@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- An RDP window kept on the host has a **Detach** button: it stops viewing
+  but leaves the session logged in and connected on the host, and
+  **Connect** attaches again without the password. **Disconnect** still
+  ends the session.
+
+- A new Browser, VNC or RDP window's address starts as `localhost:8080`,
+  `localhost:5900` or `localhost:3389`, selected: Enter connects, typing
+  replaces it.
+
+- Tessera's window shortcuts (Ctrl/Cmd+K, L, [, ], ;) work from a Browser
+  pane whose focus is in a frame inside the page, and from the proxy's
+  "Could not reach" and "Left the browser proxy" pages. Before, those kept
+  the keys, which left a maximized OLED pane with no keyboard way out.
+
+- Click an RDP window's **H.264** badge for stats over the desktop: pictures
+  and data a second, decode and draw times, how long a picture takes to show,
+  the page's frame rate and longest stall, and dropped pictures. Remembered in
+  this browser.
+
+- RDP and VNC windows get the remote desktop in fewer, larger messages: data
+  that arrives while the last message is still being sent goes out together,
+  instead of in one message per 16 KB (RDP) or per read (VNC).
+
+- Local HTTPS speaks HTTP/2, so a phone or iPad loads Tessera over one
+  connection instead of six. WebSockets, and proxies in front of Tessera,
+  carry on over HTTP/1.1; `GODEBUG=http2server=0` turns it off.
+
+- A Browser pane reload revalidates the development server's HTML, CSS and
+  JavaScript instead of downloading them all again: rewritten responses keep
+  the server's `ETag`.
+
 - A terminal opened in the phone view shows the screen (not the text view)
   and fits the shell to the phone by default (**Fit to this phone**); turn it off in **Aa** to look in at the
   desk's size. The host gives the earlier size back when the phone leaves.
