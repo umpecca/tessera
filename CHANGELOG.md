@@ -5,7 +5,9 @@
 - An RDP window kept on the host has a **Detach** button: it stops viewing
   but leaves the session logged in and connected on the host, and
   **Connect** attaches again without the password. **Disconnect** still
-  ends the session.
+  ends the session. A kept window whose connection to the host drops (an
+  iPad sleeping, a network blip) says **Detached** instead of
+  **Disconnected** and attaches again once the page can be seen.
 
 - A new Browser, VNC or RDP window's address starts as `localhost:8080`,
   `localhost:5900` or `localhost:3389`, selected: Enter connects, typing

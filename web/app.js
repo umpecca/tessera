@@ -3769,9 +3769,15 @@ async function connectRDPPane(rect) {
 async function runRDPSession(rect, view, session) {
   let text = "";
   let failed = false;
+  // A kept session's viewer can stop while the session stays logged in on
+  // the host: Detach, a dropped connection, or another viewer taking over.
+  let stillOnHost = false;
+  let takenOver = false;
   try {
     const info = await session.run();
     text = info?.reason?.() || "";
+    stillOnHost = info?.stillOnHost === true;
+    takenOver = info?.takenOver === true;
   } catch (error) {
     failed = true;
     text = rdpFailureMessage(error);
@@ -3787,7 +3793,11 @@ async function runRDPSession(rect, view, session) {
   layoutRDPCanvas(rect);
   hideRDPDialog(rect);
   if (view.detached) {
-    setRDPMessage(rect, "Detached. The session is still logged in and connected on the Tessera host; Connect attaches again.");
+    setRDPMessage(rect, `Detached. ${rdpDetachedMessage}`);
+  } else if (stillOnHost && !view.intentionalDisconnect) {
+    setRDPMessage(rect, takenOver ? `Detached: ${text}. ${rdpDetachedMessage}` : `Detached: the connection to Tessera dropped. Attaching again... ${rdpDetachedMessage}`);
+    // A connection that dropped, as when an iPad sleeps, comes back by itself.
+    if (!takenOver) reattachKeptRDPWhenShown(rect);
   } else if (view.intentionalDisconnect) {
     setRDPMessage(rect, "Disconnected.");
   } else if (failed) {
@@ -3798,6 +3808,31 @@ async function runRDPSession(rect, view, session) {
   view.intentionalDisconnect = false;
   view.detached = false;
   updateRDPControls(rect);
+}
+
+const rdpDetachedMessage = "The session is still logged in and connected on the Tessera host; Connect attaches again.";
+// How long a dropped kept-session viewer waits before attaching again, so a
+// host that is restarting or a network that is coming back has a moment.
+const rdpReattachDelayMs = 2000;
+
+// Attaches a kept session's window again after its connection to the host
+// dropped, once this page can be seen, unless the window has moved on.
+function reattachKeptRDPWhenShown(rect) {
+  const view = rect.rdp;
+  // Returns true once there is nothing left to wait for.
+  const attach = () => {
+    if (rect.rdp !== view || view.session || view.connecting) return true;
+    if (document.visibilityState !== "visible") return false;
+    void autoAttachKeptRDP(rect).catch((error) => setRDPMessage(rect, rdpFailureMessage(error), true));
+    return true;
+  };
+  window.setTimeout(() => {
+    if (attach()) return;
+    const onVisible = () => {
+      if (attach()) document.removeEventListener("visibilitychange", onVisible);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+  }, rdpReattachDelayMs);
 }
 
 // Desktop pixels per CSS pixel of what the pane shows: Resize ×2's, the

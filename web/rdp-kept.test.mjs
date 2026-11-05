@@ -125,3 +125,38 @@ test("Detach leaves a kept session on the host; Disconnect ends it", () => {
   assert.equal(disconnected.rdp.shutdowns, 1);
   assert.equal(ctx.ended, 1);
 });
+
+test("a dropped kept viewer attaches again once the page can be seen", () => {
+  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const timers = [], listeners = new Set(), attached = [];
+  const ctx = vm.createContext({
+    rdpReattachDelayMs: 2000,
+    window: { setTimeout: (callback) => timers.push(callback) },
+    document: {
+      visibilityState: "hidden",
+      addEventListener: (type, listener) => listeners.add(listener),
+      removeEventListener: (type, listener) => listeners.delete(listener),
+    },
+    autoAttachKeptRDP: async (rect) => { attached.push(rect); },
+    setRDPMessage() {}, rdpFailureMessage: String,
+  });
+  const start = source.indexOf("function reattachKeptRDPWhenShown(");
+  vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), ctx);
+
+  const hidden = { rdp: { session: null, connecting: false } };
+  ctx.reattachKeptRDPWhenShown(hidden);
+  timers.shift()();
+  assert.equal(attached.length, 0, "a hidden page waits");
+  assert.equal(listeners.size, 1);
+  ctx.document.visibilityState = "visible";
+  for (const listener of [...listeners]) listener();
+  assert.deepEqual(attached, [hidden]);
+  assert.equal(listeners.size, 0);
+
+  const moved = { rdp: { session: null, connecting: false } };
+  ctx.reattachKeptRDPWhenShown(moved);
+  moved.rdp = null;
+  timers.shift()();
+  assert.equal(attached.length, 1, "a window that closed or connected again is left alone");
+  assert.equal(listeners.size, 0);
+});

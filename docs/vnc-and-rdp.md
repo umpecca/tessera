@@ -145,6 +145,9 @@ this browser.
 - **Detach** stops viewing but leaves the session logged in and connected on
   the host, as closing the tab does; **Connect** attaches again without the
   password. The idle limit below counts from then.
+- If the page's connection to the host drops, as when an iPad sleeps or the
+  network blinks, the window says **Detached** and attaches again by itself
+  once the page can be seen. The session stays logged in meanwhile.
 - **Disconnect**, or closing the window, ends the session, as a client
   disconnecting would; a Mac running Remotr stays at its login screen.
 - A session ends after **8 hours** with no browser attached; change this with

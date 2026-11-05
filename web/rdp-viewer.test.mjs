@@ -152,7 +152,9 @@ test("run resolves with the reason when the session is lost", async () => {
   const running = session.run();
   socket().frame(viewEnded, endConnectionLost, ...text("the connection closed"));
   socket().emit("close", {});
-  assert.match((await running).reason(), /connection to the RDP server was lost.*rejoin/);
+  const info = await running;
+  assert.match(info.reason(), /connection to the RDP server was lost.*rejoin/);
+  assert.equal(info.stillOnHost, false);
 });
 
 test("run rejects when the session failed", async () => {
@@ -170,7 +172,18 @@ test("run reports another viewer taking over", async () => {
   const session = await connecting;
   socket().frame(viewDetached, ...text("another viewer took over"));
   socket().emit("close", {});
-  assert.equal((await session.run()).reason(), "another viewer took over");
+  const info = await session.run();
+  assert.equal(info.reason(), "another viewer took over");
+  assert.deepEqual([info.stillOnHost, info.takenOver], [true, true]);
+});
+
+test("a dropped connection to Tessera leaves the session on the host", async () => {
+  const { connecting, socket } = setup();
+  socket().frame(...sizeFrame);
+  const session = await connecting;
+  socket().emit("close", {});
+  const info = await session.run();
+  assert.deepEqual([info.reason(), info.stillOnHost, info.takenOver], ["", true, false]);
 });
 
 test("shutdown closes the socket and the presenter, and run resolves quietly", async () => {
@@ -204,7 +217,9 @@ test("an invalid frame ends the viewer", async () => {
   const session = await connecting;
   socket().frame(99, 1, 2);
   assert.equal(socket().closeCode, 1000);
-  assert.match((await session.run()).reason(), /invalid RDP frame/);
+  const info = await session.run();
+  assert.match(info.reason(), /invalid RDP frame/);
+  assert.equal(info.stillOnHost, false);
 });
 
 // The pane drives a kept session through the same calls as IronRDP's, so the

@@ -212,7 +212,13 @@ export function connectRDPViewer({
         if (ending && ending.type === "ended" && ending.end === endError) {
           finishRun(Promise.reject(new Error(reason)));
         } else {
-          finishRun({ reason: () => (ending ? reason : "") });
+          // Without an end from the host, only this viewer stopped: the
+          // session is still logged in there, unless the frame was invalid.
+          finishRun({
+            reason: () => (ending ? reason : ""),
+            stillOnHost: !ending || ending.type === "detached",
+            takenOver: ending?.type === "detached",
+          });
         }
       }
     });
