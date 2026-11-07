@@ -21,7 +21,7 @@ function appFunction(name, globals) {
 function overlays() {
   return Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal", "sessionActionModal",
     "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal", "directoryBrowser",
-    "userSelect", "commandPalette", "commandWheel", "windowList"].map(name => [name, { hidden: true }]));
+    "userSelect", "commandPalette", "windowList", "sessionList"].map(name => [name, { hidden: true }]));
 }
 function keyboard(key, modifiers = {}) {
   return { key, ...modifiers, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } };

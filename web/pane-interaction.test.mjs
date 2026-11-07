@@ -39,7 +39,7 @@ function appFunction(name, globals) {
 test("dialogs block window shortcuts from both the document and iframe resolver", () => {
   const names = ["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal", "sessionActionModal",
     "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"];
+    "directoryBrowser", "userSelect", "commandPalette", "windowList", "sessionList"];
   const globals = Object.fromEntries(names.map((name) => [name, { hidden: true }]));
   let moved = 0;
   globals.focusAdjacentPane = () => moved++;
@@ -62,7 +62,7 @@ test("dialogs block window shortcuts from both the document and iframe resolver"
 test("Ctrl/Cmd+Backspace no longer destroys the active window", () => {
   const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
     "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
+    "directoryBrowser", "userSelect", "commandPalette", "windowList", "sessionList"].map((name) => [name, { hidden: true }]));
   const resolve = appFunction("paneShortcutAction", globals);
   assert.equal(resolve({ ctrlKey: true, key: "Backspace", code: "Backspace" }), null);
   assert.equal(resolve({ metaKey: true, key: "Backspace", code: "Backspace" }), null);
@@ -71,7 +71,7 @@ test("Ctrl/Cmd+Backspace no longer destroys the active window", () => {
 test("Ctrl+T opens the rename modal for the active pane", () => {
   const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
     "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
+    "directoryBrowser", "userSelect", "commandPalette", "windowList", "sessionList"].map((name) => [name, { hidden: true }]));
   const rect = { title: "my-window" };
   globals.getActivePane = () => rect;
   let renamed;
@@ -84,7 +84,7 @@ test("Ctrl+T opens the rename modal for the active pane", () => {
 test("Ctrl+Plus and Ctrl+Minus resize the active pane's font", () => {
   const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
     "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
+    "directoryBrowser", "userSelect", "commandPalette", "windowList", "sessionList"].map((name) => [name, { hidden: true }]));
   const deltas = [];
   globals.adjustActivePaneFontSize = (delta) => deltas.push(delta);
   const resolve = appFunction("paneShortcutAction", globals);
@@ -115,7 +115,7 @@ test("adjustActivePaneFontSize resizes the active pane via setPaneFontSize", () 
 test("find shortcuts open and move find in a terminal window only", () => {
   const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
     "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
+    "directoryBrowser", "userSelect", "commandPalette", "windowList", "sessionList"].map((name) => [name, { hidden: true }]));
   const calls = [];
   let pane = { kind: "terminal", terminal: { term: {} } };
   globals.getActivePane = () => pane;
@@ -144,7 +144,7 @@ test("find shortcuts open and move find in a terminal window only", () => {
 test("Ctrl+0 resets the active pane's font to the default size", () => {
   const globals = Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal",
     "sessionActionModal", "serverUpdateModal", "serverConnectionModal", "workspaceConflictModal", "helpModal",
-    "directoryBrowser", "userSelect", "commandPalette", "commandWheel", "windowList"].map((name) => [name, { hidden: true }]));
+    "directoryBrowser", "userSelect", "commandPalette", "windowList", "sessionList"].map((name) => [name, { hidden: true }]));
   let reset = 0;
   globals.resetActivePaneFontSize = () => reset++;
   const resolve = appFunction("paneShortcutAction", globals);

@@ -14,8 +14,6 @@ async function fixture(t) {
 
 test("release verification requires only Tessera for every workflow target", async t => {
   const directory = await fixture(t);
-  // Compatibility binaries and licenses remain valid additional release assets.
-  await writeFile(path.join(directory, "LICENSE.LAME.txt"), "license");
   assert.deepEqual(await verifyReleaseAssets(directory), releaseBinaries);
   assert.equal(releaseBinaries.length, 4);
   const workflow = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");

@@ -286,7 +286,8 @@ pane's text size. A brief indicator shows the size as a percentage of the
 configured default; `Ctrl+0`/`Cmd+0` restores that default and shows 100%.
 
 Terminal panes use the locally bundled JetBrains Mono font by default. Choose
-JetBrains Mono or Fira Code under **Settings → Terminal → Font**; the per-user
+JetBrains Mono, Fira Code, IBM Plex Mono or Commit Mono under
+**Settings → Terminal → Font**; the per-user
 choice is persisted and applies immediately to open panes. Tessera waits for
 the regular and bold faces before creating a terminal so the canvas starts
 with stable character-cell measurements. A bundled Noto Sans Symbols 2 face is
@@ -421,7 +422,7 @@ Inputs are appended in their configured order, with values quoted for the host's
 terminal shell. The base command itself is shell syntax. Quote executable paths
 with spaces, and prefix quoted executable paths with `&` in PowerShell.
 
-Invoke `CE` then Enter in the palette, or `C` → `E` in the Command Wheel. Launchers
+Invoke `CE` then Enter in the palette. Launchers
 with inputs show a compact invocation form; launchers without inputs run directly.
 Each opens a new terminal titled Editor. A blank working directory uses the current
 pane's directory, falling back to the host default; an explicit directory must be

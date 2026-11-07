@@ -277,7 +277,10 @@ Per-user settings also carry a wheel sensitivity multiplier for
 Terminal panes, the selected
 terminal font and color mode, and the validated `TERM` capability name used
 when new Unix terminal PTYs are created. JetBrains Mono is bundled and selected
-by default, with Fira Code retained as an alternative. Noto Sans Symbols 2 is
+by default, with Fira Code, IBM Plex Mono and Commit Mono as alternatives.
+The browser's font list (`web/terminal-font.mjs`) and the server's
+`store.NormalizeTerminalFont` must name the same fonts, or a saved choice
+falls back to JetBrains Mono. Noto Sans Symbols 2 is
 bundled after either selected face to make missing terminal symbols independent
 of operating-system fallback fonts. Terminal creation waits
 for the selected regular and bold faces before Ghostty Web measures the canvas
@@ -494,9 +497,7 @@ retain build artifacts without publishing releases.
 The audio and file OSC CLI programs are maintained and released in an independent
 repository. External audio producers can encode streams with FFmpeg/libopus.
 The pinned browser Opus decoder and its license notices ship in the web assets.
-Release packaging also retains the original v1.9.0 LAME companions and their
-source/license, verified against pinned sizes and SHA-256 hashes, solely for
-pre-v1.9.1 updater compatibility. Current Tessera does not build or use LAME.
+Tessera does not build, use or publish LAME.
 
 Monitoring & Logging: Go standard logging writes lifecycle and failure messages
 to stderr or the platform process output. When explicitly enabled, SQLite

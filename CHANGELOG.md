@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- `Ctrl+;`/`Cmd+;` opens the **Session List**, which switches sessions the
+  way the Window List (`Ctrl+L`/`Cmd+L`) switches windows. Sessions are listed
+  most recently opened first, and the previous session starts highlighted, so
+  `Ctrl+;` then Enter flips between the last two. **Manage...** opens the
+  Sessions dialog to create, rename or destroy. It is also **Session List** in
+  the command palette.
+
+- The experimental Command Wheel is gone, along with its workspace menu entry.
+  Use the command palette (`Ctrl+K`/`Cmd+K`) and the same two-letter codes.
+
+- Commit Mono is a terminal font choice under **Settings → Terminal →
+  Font**, bundled with Tessera like the others. Choosing IBM Plex Mono
+  is now remembered too: before, saving it reset the font to JetBrains Mono.
+
+- Releases no longer include the old `tessera-lame-*` encoders, the LAME
+  source or its license. They were kept only so v1.4.0–v1.9.0 could update
+  themselves. Those versions now need their executable replaced by hand or
+  the Ubuntu installer run again.
+
 - An RDP window kept on the host has a **Detach** button: it stops viewing
   but leaves the session logged in and connected on the host, and
   **Connect** attaches again without the password. **Disconnect** still

@@ -4,7 +4,6 @@ import {
   firefoxClipboardExtensionRecommendation,
 } from "./clipboard-bridge.mjs";
 import { compatibilityDiagnostics, detectCompatibility } from "./compatibility.mjs";
-import { CommandWheel } from "./command-wheel.mjs";
 import { TerminalTouchScroll } from "./terminal-touch-scroll.mjs";
 import { TerminalAudioPlayer, terminalAudioMuteKey } from "./terminal-audio.mjs";
 import { TerminalFiles } from "./terminal-files.mjs";
@@ -1477,17 +1476,6 @@ commandPalette.addEventListener("pointerdown", (event) => {
 commandPaletteInput.addEventListener("input", () => renderPaletteResults());
 commandPaletteInput.addEventListener("keydown", handlePaletteKeyboard);
 
-// The experimental wheel shares the palette's available commands and codes.
-const commandWheel = document.createElement("div");
-commandWheel.className = "command-wheel";
-commandWheel.hidden = true;
-const commandWheelUI = new CommandWheel(commandWheel, {
-  onCommand: command => runPaletteCommand(command),
-  onClose: () => hideCommandWheel(),
-  onSearch: () => openCommandPalette(),
-});
-document.body.appendChild(commandWheel);
-
 const windowList = document.createElement("div");
 windowList.className = "command-palette window-list";
 windowList.hidden = true;
@@ -1537,6 +1525,56 @@ windowList.addEventListener("pointerdown", (event) => {
   }
 });
 windowListPanel.addEventListener("keydown", handleWindowListKeyboard);
+
+// Session List switches sessions from the keyboard the way Window List
+// switches windows. The Sessions dialog still creates, renames and destroys.
+const sessionList = document.createElement("div");
+sessionList.className = "command-palette window-list session-list";
+sessionList.hidden = true;
+const sessionListPanel = document.createElement("div");
+sessionListPanel.className = "command-palette-panel window-list-panel";
+sessionListPanel.tabIndex = 0;
+sessionListPanel.setAttribute("role", "dialog");
+sessionListPanel.setAttribute("aria-modal", "true");
+sessionListPanel.setAttribute("aria-labelledby", "session-list-title");
+sessionListPanel.setAttribute("aria-describedby", "session-list-hint");
+const sessionListTitle = document.createElement("div");
+sessionListTitle.className = "window-list-title";
+const sessionListHeading = document.createElement("span");
+sessionListHeading.id = "session-list-title";
+sessionListHeading.className = "session-list-heading";
+sessionListHeading.textContent = "Session List";
+const sessionListManage = document.createElement("button");
+sessionListManage.type = "button";
+sessionListManage.className = "session-list-manage";
+sessionListManage.textContent = "Manage...";
+sessionListManage.addEventListener("click", () => void openSessionsModal());
+const sessionListClose = document.createElement("button");
+sessionListClose.type = "button";
+sessionListClose.className = "settings-close";
+sessionListClose.textContent = "X";
+sessionListClose.setAttribute("aria-label", "Close session list");
+sessionListClose.addEventListener("click", hideSessionList);
+sessionListTitle.append(sessionListHeading, sessionListManage, sessionListClose);
+const sessionListItems = document.createElement("div");
+sessionListItems.className = "command-palette-list window-list-items";
+const sessionListHint = document.createElement("p");
+sessionListHint.id = "session-list-hint";
+sessionListHint.className = "window-list-hint";
+sessionListHint.textContent = "Most recent first · ↑/↓ selects · Enter opens";
+const sessionListStatus = document.createElement("div");
+sessionListStatus.className = "window-list-status";
+sessionListStatus.setAttribute("role", "status");
+sessionListPanel.append(sessionListTitle, sessionListItems, sessionListHint, sessionListStatus);
+sessionList.appendChild(sessionListPanel);
+document.body.appendChild(sessionList);
+
+sessionList.addEventListener("pointerdown", (event) => {
+  if (event.target === sessionList) {
+    hideSessionList();
+  }
+});
+sessionListPanel.addEventListener("keydown", handleSessionListKeyboard);
 
 const windowSwitcher = document.createElement("div");
 windowSwitcher.className = "window-switcher";
@@ -1630,7 +1668,7 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener("keydown", handleSettingsKeyboard, { capture: true });
 document.addEventListener("focusin", containSettingsFocus);
 document.addEventListener("focusin", containWindowListFocus);
-document.addEventListener("focusin", containCommandWheelFocus);
+document.addEventListener("focusin", containSessionListFocus);
 document.addEventListener("keydown", handlePaneKeyboardShortcuts, { capture: true });
 document.addEventListener("keyup", handleWindowSwitcherKeyup, { capture: true });
 document.addEventListener("visibilitychange", handleDocumentVisibilityChange);
@@ -7648,17 +7686,6 @@ function renderWorkspaceMenu() {
     openCommandPalette();
   });
   workspaceMenu.appendChild(paletteButton);
-  const wheelButton = document.createElement("button");
-  wheelButton.type = "button";
-  wheelButton.className = "has-hint";
-  const wheelLabel = document.createElement("span");
-  wheelLabel.textContent = "Command Wheel";
-  const wheelHint = document.createElement("span");
-  wheelHint.className = "menu-hint";
-  wheelHint.textContent = "Ctrl/Cmd+;";
-  wheelButton.append(wheelLabel, wheelHint);
-  wheelButton.addEventListener("click", () => openCommandWheel());
-  workspaceMenu.appendChild(wheelButton);
 }
 
 // The Deskbar lists windows and restores minimized panes in place.
@@ -8239,7 +8266,7 @@ function hideSettingsModal() {
   if (!wasOpen) return;
   window.requestAnimationFrame(() => {
     if (!settingsModal.hidden || [...document.querySelectorAll(".settings-modal")].some(modal => !modal.hidden)
-      || !commandPalette.hidden || !commandWheel.hidden || !windowList.hidden) return;
+      || !commandPalette.hidden || !windowList.hidden || !sessionList.hidden) return;
     // A close can hand off to another UI in the same tick. Preserve that focus.
     if (document.activeElement !== document.body) return;
     if (returnFocus?.isConnected && !returnFocus.matches(":disabled")
@@ -9202,8 +9229,8 @@ function renderHelpModal() {
   ]));
   content.appendChild(renderHelpSection("Keyboard shortcuts", [
     ["Command palette", "Ctrl/Cmd+K — search or type a code, ↑/↓ to select, Enter to run"],
-    ["Command wheel", "Ctrl/Cmd+; — S opens Settings; other commands use two keys, Backspace to go back"],
     ["Window list", "Ctrl/Cmd+L"],
+    ["Session list", "Ctrl/Cmd+;"],
     ["Find in terminal", "Cmd+F (Ctrl+Shift+F off an Apple keyboard) — Enter / Shift+Enter or Cmd+G / Cmd+Shift+G (F3 / Shift+F3) for older / newer, Escape to close"],
     ["Next / previous window", "Ctrl/Cmd+] / Ctrl/Cmd+["],
     ["Move window earlier / later", "Ctrl/Cmd+Shift+↑ / Ctrl/Cmd+Shift+↓"],
@@ -9706,6 +9733,8 @@ let paletteSelection = 0;
 let windowListEntries = [];
 let windowListSelection = 0;
 let windowListDrag = null;
+let sessionListEntries = [];
+let sessionListSelection = 0;
 let windowSwitcherHideTimer = null;
 
 function toggleCommandPalette() {
@@ -9713,31 +9742,6 @@ function toggleCommandPalette() {
     openCommandPalette();
   } else {
     hideCommandPalette();
-  }
-}
-
-function toggleCommandWheel() {
-  if (commandWheel.hidden) openCommandWheel();
-  else hideCommandWheel();
-}
-
-function openCommandWheel() {
-  if (!userSelect.hidden) return;
-  hideAllMenus();
-  const commands = buildPaletteCommands();
-  assignPaletteShortcutCodes(commands);
-  commandWheelUI.open(commands);
-}
-
-function hideCommandWheel() {
-  const restorePaneFocus = !commandWheel.hidden && commandWheel.contains(document.activeElement);
-  commandWheel.hidden = true;
-  if (restorePaneFocus) restorePaneFocusAfterOverlayDismiss(commandWheel);
-}
-
-function containCommandWheelFocus(event) {
-  if (!commandWheel.hidden && !commandWheel.contains(event.target)) {
-    commandWheelUI.panel.focus({ preventScroll: true });
   }
 }
 
@@ -9790,12 +9794,151 @@ function hideWindowList() {
   }
 }
 
+function toggleSessionList() {
+  if (sessionList.hidden) {
+    void openSessionList();
+  } else {
+    hideSessionList();
+  }
+}
+
+async function openSessionList() {
+  if (!userSelect.hidden) {
+    return;
+  }
+  hideAllMenus();
+  sessionList.hidden = false;
+  sessionListStatus.textContent = "";
+  // Show the sessions already loaded at once, then refresh them in place.
+  renderSessionList(null);
+  window.requestAnimationFrame(() => {
+    if (!sessionList.hidden) sessionListPanel.focus();
+  });
+  try {
+    await refreshSessions();
+  } catch (error) {
+    console.warn(error);
+    if (!sessionList.hidden) sessionListStatus.textContent = "Could not refresh sessions.";
+    return;
+  }
+  if (!sessionList.hidden) renderSessionList();
+}
+
+function hideSessionList() {
+  const restorePaneFocus = !sessionList.hidden && sessionList.contains(document.activeElement);
+  sessionList.hidden = true;
+  if (restorePaneFocus) {
+    restorePaneFocusAfterOverlayDismiss(sessionList);
+  }
+}
+
+// Sessions arrive most recently opened first, so the current session leads
+// and the one before it is second. A fresh list selects that previous
+// session: Ctrl/Cmd+; then Enter flips between the last two.
+function renderSessionList(selectedSessionID = sessionListEntries[sessionListSelection]?.id) {
+  const focused = sessionListItems.contains(document.activeElement);
+  sessionListEntries = [...sessions];
+  let index = sessionListEntries.findIndex((session) => session.id === selectedSessionID);
+  if (index < 0) index = sessionListEntries.findIndex((session) => session.id !== currentSessionID);
+  sessionListSelection = Math.max(0, index);
+  sessionListItems.replaceChildren();
+
+  if (sessionListEntries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "command-palette-empty";
+    empty.textContent = "No sessions";
+    sessionListItems.appendChild(empty);
+    return;
+  }
+
+  sessionListEntries.forEach((session, index) => {
+    const current = session.id === currentSessionID;
+    const row = document.createElement("div");
+    row.className = "command-palette-item window-list-item session-list-item";
+    row.dataset.sessionId = session.id;
+    const name = document.createElement("button");
+    name.type = "button";
+    name.className = "window-list-name";
+    name.textContent = `${index + 1}. ${session.name}`;
+    name.setAttribute("aria-label", current ? `${name.textContent} (current)` : name.textContent);
+    name.addEventListener("click", () => selectSessionListEntry(index));
+    row.appendChild(name);
+    if (current) {
+      const state = document.createElement("span");
+      state.className = "session-list-state";
+      state.textContent = "Current";
+      row.appendChild(state);
+    }
+    row.addEventListener("pointermove", () => setSessionListSelection(index));
+    row.addEventListener("focusin", () => setSessionListSelection(index));
+    sessionListItems.appendChild(row);
+  });
+  setSessionListSelection(sessionListSelection);
+  if (focused) {
+    sessionListItems.querySelectorAll(".window-list-name")[sessionListSelection]?.focus({ preventScroll: true });
+  }
+}
+
+function containSessionListFocus(event) {
+  if (!sessionList.hidden && !sessionList.contains(event.target)) sessionListPanel.focus();
+}
+
+function setSessionListSelection(index) {
+  if (sessionListEntries.length === 0) {
+    return;
+  }
+  sessionListSelection = (index + sessionListEntries.length) % sessionListEntries.length;
+  const rows = sessionListItems.querySelectorAll(".session-list-item");
+  rows.forEach((row, rowIndex) => row.classList.toggle("is-selected", rowIndex === sessionListSelection));
+  rows[sessionListSelection]?.scrollIntoView({ block: "nearest" });
+}
+
+function selectSessionListEntry(index = sessionListSelection) {
+  const session = sessionListEntries[index];
+  if (!session) {
+    return;
+  }
+  hideSessionList();
+  if (session.id !== currentSessionID) void switchSession(session);
+}
+
+function handleSessionListKeyboard(event) {
+  if (event.defaultPrevented) return;
+  if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const controls = [...sessionListPanel.querySelectorAll("button:not(:disabled)")];
+    const current = controls.indexOf(document.activeElement);
+    if (current < 0 || (event.shiftKey ? current === 0 : current === controls.length - 1)) {
+      event.preventDefault();
+      (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+    }
+    return;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSessionListSelection(sessionListSelection + (event.key === "ArrowDown" ? 1 : -1));
+    sessionListItems.querySelectorAll(".window-list-name")[sessionListSelection]?.focus();
+    return;
+  }
+  if ((event.key === "Enter" || event.key === " ") && event.target === sessionListPanel) {
+    event.preventDefault();
+    selectSessionListEntry();
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    hideSessionList();
+  }
+}
+
 function restorePaneFocusAfterOverlayDismiss(overlay) {
   window.requestAnimationFrame(() => {
     // One overlay can hand off to another in the same tick (running Window
     // List from the command palette). The overlay that is still open owns
     // keyboard focus, so returning it to the pane would swallow its arrow keys.
-    if ([commandPalette, commandWheel, windowList, settingsModal, localHTTPSModal,
+    if ([commandPalette, windowList, sessionList, settingsModal, localHTTPSModal,
       renameWindowModal, sessionsModal, sessionActionModal, helpModal, shortcutsUI.element, screensaver.element].some(modal => !modal.hidden)) {
       return;
     }
@@ -10557,13 +10700,13 @@ async function runServerUpdate() {
 // plus jump-to-window entries (which also restore minimized panes).
 function buildPaletteCommands() {
   const commands = [];
-  commands.push({ id: "command-wheel", label: "Command Wheel", hint: "Ctrl/Cmd+;", run: () => openCommandWheel() });
   commands.push({ id: "help", label: "Help", hint: "shortcuts and commands", run: () => openHelpModal() });
   commands.push({ ...browseLocalPortHelpCommand, run: () => {
     const active = getActivePane();
     openBrowserPortHelp(active?.kind === browserPaneKind ? active : null);
   } });
   commands.push({ id: "window-list", label: "Window List", hint: "Ctrl+L", run: () => openWindowList() });
+  commands.push({ id: "session-list", label: "Session List", hint: "Ctrl/Cmd+;", run: () => void openSessionList() });
   commands.push(phoneView.active
     ? { id: "desktop-view", label: "Desktop View", aliases: ["windows"], hint: "this browser", run: () => setPhoneViewOverride("desktop") }
     : { id: "phone-view", label: "Phone View", aliases: ["mobile", "terminal list"], hint: "this browser", run: () => setPhoneViewOverride("phone") });
@@ -10883,7 +11026,6 @@ function runPaletteSelection() {
 
 function runPaletteCommand(command) {
   hideCommandPalette();
-  hideCommandWheel();
   command.run();
 }
 
@@ -11890,13 +12032,12 @@ function paneShortcutAction(keys) {
     return { run: toggleCommandPalette };
   }
   if (primary && !keys.repeat && !keys.isComposing && (keys.key === ";" || keys.code === "Semicolon")) {
-    return { run: toggleCommandWheel };
+    return { run: toggleSessionList };
   }
-  if (!commandWheel.hidden) return null;
   if (primary && (keys.key === "t" || keys.key === "T")) {
     return { run: () => openRenameWindowModal(getActivePane()) };
   }
-  if (!commandPalette.hidden || !commandWheel.hidden || !windowList.hidden) {
+  if (!commandPalette.hidden || !windowList.hidden || !sessionList.hidden) {
     return null;
   }
   const find = terminalFindShortcut(keys, { appleKeyboard: appleKeyboardLayout });
@@ -12024,8 +12165,8 @@ function hideAllMenus() {
   hideFloatingMenus();
   hideDirectoryBrowser();
   hideCommandPalette();
-  hideCommandWheel();
   hideWindowList();
+  hideSessionList();
   hideDeskbar();
   hideSettingsModal();
   hideLocalHTTPSModal();

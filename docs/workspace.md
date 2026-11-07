@@ -49,15 +49,12 @@ Current pane types:
   and Enter to run it; typing never runs a palette command automatically.
   Search aliases include `preferences` for Settings, `rename` for Set Window
   Title, and `close` for Destroy Window.
-- Open the experimental **Command Wheel** with `Ctrl+;`/`Cmd+;`, or from the
-  workspace menu. Hover or type a first key to reveal valid second keys, then type or
-  click the next key to run its command (for example, `N` → `N` creates a
-  terminal). Settings opens directly with `S` in the wheel and `S` then Enter
-  in the palette.
-  **Tessera Sessions** uses `T` → `S` in the wheel and `TS` in the palette.
-  Backspace goes back, Escape closes, and **Search all commands**
-  opens the existing palette. Clicking or typing a group keeps it selected.
-  Dark radial wedges surround a context hub, with next keys in an outer arc.
+- Use `Ctrl+;`/`Cmd+;` for the **Session List**: your sessions, most
+  recently opened first, with the current one marked. The previous session
+  starts highlighted, so `Ctrl+;` then Enter flips between the last two. Use
+  ↑/↓ and Enter, or click a row; Escape or `Ctrl+;` again closes it.
+  **Manage...** opens the Sessions dialog to create, rename and destroy
+  sessions.
 - Run **Screensaver** from the command palette to fill the screen with a
   slowly shifting mosaic, Matrix-style digital rain and a tile clock. Any
   key, click, tap or mouse movement returns to the workspace. It doesn't

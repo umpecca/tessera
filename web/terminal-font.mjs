@@ -15,6 +15,10 @@ export const terminalFonts = Object.freeze({
     label: "IBM Plex Mono",
     family: '"IBM Plex Mono", monospace',
   }),
+  "commit-mono": Object.freeze({
+    label: "Commit Mono",
+    family: '"Commit Mono", monospace',
+  }),
 });
 
 export function normalizeTerminalFont(value) {

@@ -84,7 +84,7 @@ function fixture() {
   let diagnosticsCreated = 0, paneFocusCount = 0;
   const context = vm.createContext({
     authMode: "off", document, settingsModal, deskbarButton, signInRecovery: {}, renderSignInSettings: async () => {},
-    commandPalette: { hidden: true }, commandWheel: { hidden: true }, windowList: { hidden: true },
+    commandPalette: { hidden: true }, windowList: { hidden: true }, sessionList: { hidden: true },
     compatibilityUpdateTimer: null, settingsReturnFocus: null,
     defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,
     terminalShellIntegration: true, commandNoticesEnabled: true, setTerminalShellIntegration() {}, setCommandNoticesEnabled() {},

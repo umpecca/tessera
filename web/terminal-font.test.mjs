@@ -32,6 +32,10 @@ test("returns regular and bold browser font descriptors", () => {
     '16px "IBM Plex Mono", "Noto Sans Symbols 2", monospace',
     'bold 16px "IBM Plex Mono", "Noto Sans Symbols 2", monospace',
   ]);
+  assert.deepEqual(terminalFontDescriptors("commit-mono", 16), [
+    '16px "Commit Mono", "Noto Sans Symbols 2", monospace',
+    'bold 16px "Commit Mono", "Noto Sans Symbols 2", monospace',
+  ]);
 });
 
 test("waits for regular, bold, and deterministic symbol fallback faces", async () => {

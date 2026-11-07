@@ -131,7 +131,7 @@ func NormalizeTerminalTERM(value string) string {
 
 func NormalizeTerminalFont(value string) string {
 	switch value {
-	case "jetbrains-mono", "fira-code":
+	case "jetbrains-mono", "fira-code", "ibm-plex-mono", "commit-mono":
 		return value
 	default:
 		return DefaultTerminalFont

@@ -76,7 +76,6 @@ built files, not the committed copies, and the release publishes:
 - `tessera-linux-arm64`
 - `tessera-windows-amd64.exe`
 - `tessera-darwin-arm64`
-- Verified original LAME companions, source, and license for legacy updater compatibility
 
 x64 and amd64 are the same architecture. Native platform jobs use GitHub's
 [supported runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
@@ -113,21 +112,11 @@ answers its health check. If the privileged update fails, inspect
 `journalctl -u 'run-*.service'` and `journalctl -u tessera.service`; rerunning
 `install-ubuntu.sh` from an external shell remains the recovery path.
 
-Releases retain the original v1.9.0 LAME companions, source archive, and license
-as compatibility assets for older updaters. Those updaters require a companion
-before they can install Tessera v1.9.1 or later. The files are copied with pinned
-size/SHA-256 checks; LAME is no longer built or used by Tessera. New updaters
-install only Tessera; install/update external OSC CLI tools separately.
-
-To prepare the same compatibility assets for repairing an existing release:
-
-```text
-node scripts/prepare-legacy-update-assets.mjs .cache/legacy-update-assets
-```
-
-An executable-only release published without these compatibility assets still
-requires a manual executable replacement or Ubuntu installer rerun when updating
-from a LAME-dependent version.
+The updater installs only Tessera; install/update external OSC CLI tools
+separately. Versions v1.4.0 through v1.9.0 can't update themselves to current
+releases: their updater requires a LAME companion asset that releases no longer
+include. Update those by replacing the executable by hand or rerunning the
+Ubuntu installer.
 
 Anonymous GitHub Releases API access is used, so release assets must be
 reachable without private repository credentials.

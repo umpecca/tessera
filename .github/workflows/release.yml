@@ -163,9 +163,6 @@ jobs:
       - name: Verify all Tessera binaries
         run: node scripts/verify-release-assets.mjs dist
 
-      - name: Preserve assets required by pre-v1.9.1 updaters
-        run: node scripts/prepare-legacy-update-assets.mjs dist
-
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:

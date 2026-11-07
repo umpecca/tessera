@@ -135,8 +135,11 @@ func TestTerminalRowSpacingPersistenceAndDefault(t *testing.T) {
 }
 
 func TestTerminalFontNormalization(t *testing.T) {
-	if got := NormalizeTerminalFont("fira-code"); got != "fira-code" {
-		t.Fatalf("NormalizeTerminalFont(fira-code) = %q", got)
+	// Every font the browser offers (web/terminal-font.mjs) must survive a save.
+	for _, value := range []string{"jetbrains-mono", "fira-code", "ibm-plex-mono", "commit-mono"} {
+		if got := NormalizeTerminalFont(value); got != value {
+			t.Errorf("NormalizeTerminalFont(%q) = %q", value, got)
+		}
 	}
 	for _, value := range []string{"", "JetBrains Mono", "url(evil)"} {
 		if got := NormalizeTerminalFont(value); got != DefaultTerminalFont {

@@ -21,7 +21,7 @@ for recent changes.
   [file transfers](docs/terminal-files.md) and the
   [terminal core](docs/terminal-core.md).
 - **A desktop of windows** you draw, move, resize, minimize and reorder, with a
-  command palette (`Ctrl+K`/`Cmd+K`), a Command Wheel, a window list, themes,
+  command palette (`Ctrl+K`/`Cmd+K`), window and session lists, themes,
   and named sessions per user. See [Workspace](docs/workspace.md).
 - **Browser panes** that show a development server on the host through
   Tessera's own listener. See [Browser pane](docs/browser-pane.md).
