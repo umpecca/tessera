@@ -569,6 +569,16 @@
   font-display: swap;
 }
 
+/* Departure Mono 1.500, the release's woff2 unchanged. It is a pixel font
+ * with a single regular weight, so the browser synthesizes bold. */
+@font-face {
+  font-family: "Departure Mono";
+  src: url("/assets/DepartureMono-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 /* Official unmodified Google Fonts face (Noto Symbols commit 25b00f0).
  * It prevents legacy Firefox/macOS canvas rendering from choosing an
  * incompatible operating-system fallback for terminal symbols such as ⏵. */

@@ -277,7 +277,7 @@ Per-user settings also carry a wheel sensitivity multiplier for
 Terminal panes, the selected
 terminal font and color mode, and the validated `TERM` capability name used
 when new Unix terminal PTYs are created. JetBrains Mono is bundled and selected
-by default, with Fira Code, IBM Plex Mono and Commit Mono as alternatives.
+by default, with Fira Code, IBM Plex Mono, Commit Mono and Departure Mono as alternatives.
 The browser's font list (`web/terminal-font.mjs`) and the server's
 `store.NormalizeTerminalFont` must name the same fonts, or a saved choice
 falls back to JetBrains Mono. Noto Sans Symbols 2 is

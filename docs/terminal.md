@@ -286,7 +286,7 @@ pane's text size. A brief indicator shows the size as a percentage of the
 configured default; `Ctrl+0`/`Cmd+0` restores that default and shows 100%.
 
 Terminal panes use the locally bundled JetBrains Mono font by default. Choose
-JetBrains Mono, Fira Code, IBM Plex Mono or Commit Mono under
+JetBrains Mono, Fira Code, IBM Plex Mono, Commit Mono or Departure Mono under
 **Settings → Terminal → Font**; the per-user
 choice is persisted and applies immediately to open panes. Tessera waits for
 the regular and bold faces before creating a terminal so the canvas starts

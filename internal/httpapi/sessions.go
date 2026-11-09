@@ -137,12 +137,15 @@ func (a *API) sessions(w http.ResponseWriter, r *http.Request, userID, sessionID
 			writeStoreError(w, store.ErrLastSession)
 			return
 		}
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 		if a.Terminals != nil {
 			a.Terminals.TerminateWorkspace(sessionID)
 		}
-		if err := a.Store.DeleteSession(stopCtx, userID, sessionID); err != nil {
+		if a.RDPSessions != nil {
+			a.RDPSessions.RemoveWorkspace(sessionID)
+		}
+		deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := a.Store.DeleteSession(deleteCtx, userID, sessionID); err != nil {
 			writeStoreError(w, err)
 			return
 		}

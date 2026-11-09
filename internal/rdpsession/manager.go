@@ -3,6 +3,7 @@ package rdpsession
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,7 +19,7 @@ var (
 )
 
 // Key identifies a kept session: the Tessera user who owns it, and the pane
-// that shows it.
+// that shows it. Pane is workspaceID + "/" + paneID for workspace panes.
 type Key struct {
 	Owner string
 	Pane  string
@@ -27,6 +28,17 @@ type Key struct {
 type entry struct {
 	session *Session
 	release func()
+	cancel  context.CancelFunc
+}
+
+func (e *entry) close() {
+	if e.cancel != nil {
+		e.cancel()
+	}
+	if e.session != nil {
+		e.session.Close()
+		e.release()
+	}
 }
 
 // Manager keeps RDP sessions on the host. It compiles the headless module the
@@ -91,7 +103,9 @@ func (m *Manager) Create(ctx context.Context, key Key, target Target, password s
 		defer old.release()
 	}
 	// Reserve the key while connecting, so two requests can't both create.
-	reserved := &entry{}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	reserved := &entry{cancel: cancel}
 	m.entries[key] = reserved
 	m.mu.Unlock()
 
@@ -120,7 +134,15 @@ func (m *Manager) Create(ctx context.Context, key Key, target Target, password s
 		release()
 		return nil, ErrManagerClosed
 	}
+	if m.entries[key] != reserved {
+		m.mu.Unlock()
+		session.Close()
+		release()
+		return nil, ErrClosed
+	}
 	reserved.session, reserved.release = session, release
+	// Live sessions outlive the request; only pending logins need its context.
+	reserved.cancel = nil
 	m.mu.Unlock()
 	return session, nil
 }
@@ -149,17 +171,37 @@ func (m *Manager) Keys(owner string) []Key {
 	return keys
 }
 
-// Remove ends the session kept under key and frees it.
+// Remove ends the session kept under key and frees it, or cancels its login.
 func (m *Manager) Remove(key Key) {
 	m.mu.Lock()
 	e, ok := m.entries[key]
-	if ok && e.session != nil {
+	if ok {
 		delete(m.entries, key)
 	}
 	m.mu.Unlock()
-	if ok && e.session != nil {
-		e.session.Close()
-		e.release()
+	if ok {
+		e.close()
+	}
+}
+
+// RemoveWorkspace ends every kept session in a workspace, including logins in
+// progress. Other workspaces and accounts keep their sessions.
+func (m *Manager) RemoveWorkspace(workspaceID string) {
+	if workspaceID == "" {
+		return
+	}
+	prefix := workspaceID + "/"
+	m.mu.Lock()
+	var entries []*entry
+	for key, e := range m.entries {
+		if strings.HasPrefix(key.Pane, prefix) {
+			delete(m.entries, key)
+			entries = append(entries, e)
+		}
+	}
+	m.mu.Unlock()
+	for _, e := range entries {
+		e.close()
 	}
 }
 
@@ -172,10 +214,7 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	m.entries = map[Key]*entry{}
 	m.mu.Unlock()
 	for _, e := range entries {
-		if e.session != nil {
-			e.session.Close()
-			e.release()
-		}
+		e.close()
 	}
 	if m.engine != nil {
 		_ = m.engine.Close(ctx)

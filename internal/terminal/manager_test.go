@@ -475,6 +475,7 @@ func TestManagedSessionFinishClosesSubscribers(t *testing.T) {
 
 func TestTerminateWorkspaceOnlyClosesMatchingSessions(t *testing.T) {
 	manager := NewManager()
+	t.Cleanup(manager.Close)
 	one := &ManagedSession{manager: manager, workspaceID: "one", paneID: "pane", subscribers: map[*subscriber]struct{}{}}
 	two := &ManagedSession{manager: manager, workspaceID: "two", paneID: "pane", subscribers: map[*subscriber]struct{}{}}
 	manager.sessions[sessionKey("one", "pane")] = one

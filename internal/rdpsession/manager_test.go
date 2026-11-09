@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // scriptedManager is a manager whose module instances are scriptRunners.
@@ -122,4 +123,81 @@ func TestManagerCompilesTheModuleOnFirstUse(t *testing.T) {
 		t.Fatal("the module wasn't compiled for the first session")
 	}
 	manager.Shutdown(context.Background())
+}
+
+func TestManagerRemoveWorkspaceOnlyEndsMatchingSessions(t *testing.T) {
+	server := startHoldServer(t)
+	manager, released := scriptedManager(&scriptRunner{cookie: true})
+	t.Cleanup(func() { manager.Shutdown(context.Background()) })
+	sessions := map[Key]*Session{}
+	for _, key := range []Key{
+		{Owner: "alice", Pane: "one/a"},
+		{Owner: "alice", Pane: "one/b"},
+		{Owner: "bob", Pane: "one/a"},
+		{Owner: "alice", Pane: "one-more/a"},
+		{Owner: "alice", Pane: "two/a"},
+		{Owner: "bob", Pane: "two/a"},
+	} {
+		session, err := manager.Create(context.Background(), key, testTarget(server.address()), "pw", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessions[key] = session
+	}
+	manager.RemoveWorkspace("one")
+	for key, session := range sessions {
+		_, found := manager.Get(key)
+		if strings.HasPrefix(key.Pane, "one/") {
+			if found || session.Info().State != StateEnded {
+				t.Fatalf("deleted workspace session survived: %v", key)
+			}
+		} else if !found || session.Info().State != StateActive {
+			t.Fatalf("unrelated session was removed: %v", key)
+		}
+	}
+	manager.RemoveWorkspace("one")
+	manager.RemoveWorkspace("")
+	if released.Load() != 3 {
+		t.Fatalf("released %d instances, want exactly 3", released.Load())
+	}
+	if _, err := manager.Create(context.Background(), Key{Owner: "alice", Pane: "two/b"}, testTarget(server.address()), "pw", nil); err != nil {
+		t.Fatalf("create after workspace teardown: %v", err)
+	}
+}
+
+func TestManagerRemoveWorkspaceCancelsPendingCreation(t *testing.T) {
+	manager := NewManager("", 0)
+	t.Cleanup(func() { manager.Shutdown(context.Background()) })
+	started := make(chan struct{})
+	manager.newRunner = func(ctx context.Context) (Runner, func(), error) {
+		close(started)
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+	key := Key{Owner: "alice", Pane: "one/a"}
+	result := make(chan error, 1)
+	go func() {
+		_, err := manager.Create(context.Background(), key, Target{}, "pw", nil)
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("creation did not start")
+	}
+	manager.RemoveWorkspace("one")
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("pending creation = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("workspace teardown did not cancel the pending creation")
+	}
+	manager.mu.Lock()
+	_, reserved := manager.entries[key]
+	manager.mu.Unlock()
+	if reserved {
+		t.Fatal("a pending creation survived workspace teardown")
+	}
 }

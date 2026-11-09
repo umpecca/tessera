@@ -302,10 +302,9 @@ func (m *Manager) TerminateWorkspace(workspaceID string) {
 	}
 	m.mu.Unlock()
 	for _, session := range sessions {
+		// Closing the session cancels its transfers; the shared file broker
+		// must stay available to other workspaces until the manager closes.
 		session.Close()
-	}
-	if m.Files != nil {
-		m.Files.Close()
 	}
 }
 

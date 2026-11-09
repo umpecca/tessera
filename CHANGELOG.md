@@ -12,8 +12,10 @@
 - The experimental Command Wheel is gone, along with its workspace menu entry.
   Use the command palette (`Ctrl+K`/`Cmd+K`) and the same two-letter codes.
 
-- Commit Mono is a terminal font choice under **Settings → Terminal →
-  Font**, bundled with Tessera like the others. Choosing IBM Plex Mono
+- Commit Mono and Departure Mono are terminal font choices under
+  **Settings → Terminal → Font**, bundled with Tessera like the others.
+  Departure Mono is a pixel font with no bold face, so bold text is
+  synthesized; it is sharpest at multiples of 11px. Choosing IBM Plex Mono
   is now remembered too: before, saving it reset the font to JetBrains Mono.
 
 - Releases no longer include the old `tessera-lame-*` encoders, the LAME

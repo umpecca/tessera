@@ -19,6 +19,10 @@ export const terminalFonts = Object.freeze({
     label: "Commit Mono",
     family: '"Commit Mono", monospace',
   }),
+  "departure-mono": Object.freeze({
+    label: "Departure Mono",
+    family: '"Departure Mono", monospace',
+  }),
 });
 
 export function normalizeTerminalFont(value) {

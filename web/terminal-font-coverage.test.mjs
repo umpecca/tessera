@@ -110,3 +110,11 @@ test("Commit Mono faces and redistribution license are bundled", () => {
   assert.match(license, /Copyright 2023 Commit Mono authors/);
   assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/);
 });
+
+test("Departure Mono face and redistribution license are bundled", () => {
+  const regular = readFileSync(new URL("./assets/DepartureMono-Regular.woff2", import.meta.url));
+  const license = readFileSync(new URL("./assets/DepartureMono-OFL.txt", import.meta.url), "utf8");
+  assert.ok(regular.length > 10_000, "Departure Mono regular face is unexpectedly small");
+  assert.match(license, /Copyright 2022–2024 Helena Zhang/);
+  assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/);
+});

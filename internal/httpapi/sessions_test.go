@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tessera/internal/rdpsession"
 	"tessera/internal/store"
 )
 
@@ -118,5 +119,97 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	}
 	if !loadedSettings.OlderMacMode {
 		t.Fatalf("older Mac mode setting was not persisted: %+v", loadedSettings)
+	}
+}
+
+func TestDestroyWorkspaceOnlyEndsItsKeptRDPSessions(t *testing.T) {
+	h := newKeptHarness(t)
+	status, body := h.post("alice", "/api/users/alice/sessions", map[string]string{"name": "Keep"})
+	if status != http.StatusCreated {
+		t.Fatalf("create second workspace = %d %s", status, body)
+	}
+	var keptWorkspace store.Session
+	if err := json.Unmarshal(body, &keptWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	sessions := map[rdpsession.Key]*rdpsession.Session{}
+	for _, pane := range []struct{ account, workspace, id string }{
+		{"alice", h.spaces["alice"], "pane-1"},
+		{"alice", h.spaces["alice"], "pane-2"},
+		{"alice", keptWorkspace.ID, "pane-1"},
+		{"bob", h.spaces["bob"], "pane-1"},
+	} {
+		request := h.createBody(pane.account, pane.id)
+		request["workspaceId"] = pane.workspace
+		if status, body := h.post(pane.account, "/api/rdp-kept", request); status != http.StatusCreated {
+			t.Fatalf("create kept session = %d %s", status, body)
+		}
+		key := rdpsession.Key{Owner: pane.account, Pane: pane.workspace + "/" + pane.id}
+		session, ok := h.manager.Get(key)
+		if !ok {
+			t.Fatalf("missing kept session %v", key)
+		}
+		sessions[key] = session
+	}
+	remove := func(account, owner, workspace string) int {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodDelete, h.server.URL+"/api/users/"+owner+"/sessions/"+workspace, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Cookie", signInCookie+"="+h.cookies[account])
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		return response.StatusCode
+	}
+	for _, attempt := range []struct {
+		account, owner, workspace string
+		status                    int
+	}{
+		{"bob", "alice", h.spaces["alice"], http.StatusNotFound},
+		{"alice", "alice", "missing", http.StatusNotFound},
+		{"bob", "bob", h.spaces["bob"], http.StatusConflict},
+	} {
+		if status := remove(attempt.account, attempt.owner, attempt.workspace); status != attempt.status {
+			t.Fatalf("rejected deletion = %d, want %d", status, attempt.status)
+		}
+	}
+	for key, session := range sessions {
+		if session.Info().State != rdpsession.StateActive {
+			t.Fatalf("a rejected deletion ended session %v", key)
+		}
+	}
+	viewer, _, err := h.view("alice", h.spaces["alice"], "pane-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer viewer.Close()
+	if frame := readFrame(t, viewer); frame[0] != rdpsession.ViewDesktopSize {
+		t.Fatalf("initial viewer frame = %v", frame)
+	}
+	if status := remove("alice", "alice", h.spaces["alice"]); status != http.StatusNoContent {
+		t.Fatalf("delete workspace = %d, want 204", status)
+	}
+	if frame := readFrame(t, viewer); frame[0] != rdpsession.ViewEnded {
+		t.Fatalf("deleted workspace's viewer was not ended: %v", frame)
+	}
+	for key, session := range sessions {
+		_, found := h.manager.Get(key)
+		if key.Pane == h.spaces["alice"]+"/pane-1" || key.Pane == h.spaces["alice"]+"/pane-2" {
+			if found || session.Info().State != rdpsession.StateEnded {
+				t.Fatalf("deleted workspace's session survived: %v", key)
+			}
+		} else if !found || session.Info().State != rdpsession.StateActive {
+			t.Fatalf("unrelated workspace's session was ended: %v", key)
+		}
+	}
+	if sessions := h.list("alice"); len(sessions) != 1 || sessions[0].WorkspaceID != keptWorkspace.ID {
+		t.Fatalf("alice's remaining sessions = %+v", sessions)
+	}
+	if sessions := h.list("bob"); len(sessions) != 1 || sessions[0].WorkspaceID != h.spaces["bob"] {
+		t.Fatalf("bob's remaining sessions = %+v", sessions)
 	}
 }
