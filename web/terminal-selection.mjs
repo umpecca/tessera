@@ -14,6 +14,80 @@ export function installTerminalSelection(terminal) {
   const originalNormalizeSelection = manager.normalizeSelection;
   const listeners = [];
   let pointerID = null;
+  let directPointerID = null;
+  let restoreInput = null;
+
+  // iOS can focus the contenteditable terminal as a touch default action even
+  // when pointer/mouse handlers are cancelled. Selection is not an input mode:
+  // make both upstream input surfaces non-editable until Done, not just blurred.
+  const setInputSuppressed = on => {
+    if (on === Boolean(restoreInput)) return;
+    if (!on) {
+      const restore = restoreInput;
+      restoreInput = null;
+      restore?.();
+      return;
+    }
+    const attributes = [[container, "contenteditable", "false"], [container, "inputmode", "none"]];
+    const textarea = terminal.textarea || manager.textarea;
+    if (textarea) attributes.push([textarea, "readonly", ""], [textarea, "inputmode", "none"]);
+    const previous = attributes.map(([node, name]) => [node, name, node.getAttribute(name)]);
+    restoreInput = () => {
+      for (const [node, name, value] of previous) {
+        if (value === null) node.removeAttribute(name);
+        else node.setAttribute(name, value);
+      }
+    };
+    for (const [node, name, value] of attributes) node.setAttribute(name, value);
+    if (container.contains(doc.activeElement)) doc.activeElement?.blur?.();
+  };
+
+  const pointerCell = event => {
+    const box = canvas.getBoundingClientRect();
+    if (!box.width || !box.height || !originalPixelToCell) return null;
+    const x = Math.max(0, Math.min(box.width - 1, event.clientX - box.left));
+    const y = Math.max(0, Math.min(box.height - 1, event.clientY - box.top));
+    const cell = manager.pixelToCell(x, y);
+    return { col: cell.col, absoluteRow: manager.viewportRowToAbsolute(cell.row) };
+  };
+
+  const beginPointerSelection = event => {
+    const cell = pointerCell(event);
+    if (!cell) return false;
+    terminal.smoothScroll?.cancel();
+    manager.clearSelection();
+    directPointerID = event.pointerId;
+    manager.selectionStart = cell;
+    manager.selectionEnd = { ...cell };
+    manager.isSelecting = true;
+    terminal.requestRender();
+    return true;
+  };
+
+  const movePointerSelection = event => {
+    if (directPointerID === null || directPointerID !== event.pointerId) return false;
+    const cell = pointerCell(event);
+    if (!cell) return false;
+    manager.markCurrentSelectionDirty?.();
+    manager.selectionEnd = cell;
+    // Alternate-screen scrolling belongs to the TUI, never local autoscroll.
+    if (!terminal.wasmTerm?.isAlternateScreen?.()) {
+      const box = canvas.getBoundingClientRect();
+      manager.updateAutoScroll?.(event.clientY - box.top, box.height);
+    }
+    terminal.requestRender();
+    return true;
+  };
+
+  const endPointerSelection = event => {
+    if (directPointerID === null || (event?.pointerId != null && event.pointerId !== directPointerID)) return false;
+    directPointerID = null;
+    manager.isSelecting = false;
+    manager.stopAutoScroll();
+    manager.selectionChangedEmitter?.fire();
+    terminal.requestRender();
+    return true;
+  };
 
   const clearNativeSelection = () => {
     const selection = doc.getSelection?.();
@@ -56,6 +130,7 @@ export function installTerminalSelection(terminal) {
     };
   };
   manager.clearSelection = () => {
+    directPointerID = null;
     manager.stopAutoScroll();
     manager.isSelecting = false;
     originalClearSelection.call(manager);
@@ -68,6 +143,9 @@ export function installTerminalSelection(terminal) {
   };
 
   const finishDrag = (event, copy = false) => {
+    // Touch selection has an explicit Copy control. Do not auto-copy (or focus
+    // an invisible editable field) from upstream's document-level mouseup.
+    if (directPointerID !== null) { endPointerSelection(event); return; }
     if (event?.pointerId != null && pointerID !== null && event.pointerId !== pointerID) return;
     pointerID = null;
     if (!manager.isSelecting) return;
@@ -99,6 +177,12 @@ export function installTerminalSelection(terminal) {
   listen(container, "selectstart", (event) => {
     if (event.target === canvas) event.preventDefault();
   });
+  listen(container, "focusin", event => {
+    if (restoreInput) {
+      event.stopImmediatePropagation();
+      event.target?.blur?.();
+    }
+  });
   listen(doc, "selectionchange", clearNativeSelection);
   listen(doc, "pointerup", (event) => {
     if (event.button === 0) finishDrag(event, true);
@@ -107,6 +191,13 @@ export function installTerminalSelection(terminal) {
     if (event.button === 0) finishDrag(event, true);
   });
   listen(doc, "mousemove", (event) => {
+    if (directPointerID !== null) {
+      // Pointer capture owns the endpoints, even outside the canvas. Upstream
+      // document mousemove must not mutate them or start TUI autoscroll.
+      if (typeof event.buttons === "number" && !(event.buttons & 1)) finishDrag(event);
+      event.stopImmediatePropagation();
+      return;
+    }
     if (typeof event.buttons === "number" && !(event.buttons & 1)) finishDrag(event);
   });
   listen(doc, "pointercancel", (event) => finishDrag(event));
@@ -123,8 +214,14 @@ export function installTerminalSelection(terminal) {
 
   return {
     clearNativeSelection,
+    setInputSuppressed,
+    beginPointerSelection,
+    movePointerSelection,
+    endPointerSelection,
+    cancelDrag: () => finishDrag(),
     dispose() {
       finishDrag();
+      setInputSuppressed(false);
       for (const remove of listeners) remove();
       manager.requestRender = originalRequestRender;
       manager.clearSelection = originalClearSelection;

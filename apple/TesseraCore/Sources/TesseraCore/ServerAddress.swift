@@ -36,6 +36,10 @@ public enum ServerAddress {
         let scheme = components.scheme?.lowercased() ?? ""
         guard scheme == "http" || scheme == "https" else { return .failure(.unsupportedScheme(scheme)) }
         guard let host = components.host, !host.isEmpty else { return .failure(.missingHost) }
+        // Profiles are not a credential store; URL userinfo would leak through
+        // labels, history, diagnostics and external navigation.
+        guard components.user == nil, components.password == nil,
+              components.port.map({ (1...65535).contains($0) }) ?? true else { return .failure(.invalid) }
         components.scheme = scheme
         if !hasScheme && components.port == nil { components.port = defaultPort }
         if components.path.isEmpty { components.path = "/" }

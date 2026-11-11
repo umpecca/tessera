@@ -1,16 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+import { featureFixture } from "./application.test-support.mjs";
 
 test("loading a legacy workspace discards Audio panes and retains the remaining panes", () => {
   const rectangles = [];
   let active;
   const context = {
-    isLoadingWorkspace: false, workspaceID: "", workspaceRevision: "", workspaceSaveSuspended: false,
-    workspaceNeedsRevalidation: false, workspaceSaveQueued: false, workspaceConflictModal: {},
+    isLoadingWorkspace: false, workspaceID: "", workspacePersistence: { reset() {} }, workspaceConflictModal: {},
     rectangles, nextZIndex: 1, tabHeight: 24,
     setWorkspaceStatus() {}, applyWorkspaceBackground() {}, clearRectanglesForLoad() {},
     createRectangle: (x, y, width, height, options) => {
@@ -19,12 +15,9 @@ test("loading a legacy workspace discards Audio panes and retains the remaining 
       return rect;
     },
     reflowDockedPanesForTheme() {}, updateDeskbar() {}, parseRestoreBox: () => null, phoneView: { reset() {} },
-    activePaneOnLoad: (panes, id) => panes.find(pane => pane.id === id) || panes[0],
     setActivePane: rect => { active = rect; },
   };
-  const start = source.indexOf("function loadWorkspace(");
-  const end = source.indexOf("\n}\n", start) + 2;
-  const load = vm.runInNewContext(`(${source.slice(start, end)})`, context);
+  const load = featureFixture(["loadWorkspace"], context).loadWorkspace;
   load({ id: "legacy", activePaneId: "old-audio", panes: [
     { id: "old-audio", kind: "audio" },
     { id: "terminal", kind: "terminal", title: "Build", x: 123 },
@@ -33,6 +26,6 @@ test("loading a legacy workspace discards Audio panes and retains the remaining 
   assert.deepEqual(rectangles.map(pane => pane.id), ["terminal", "notes"]);
   assert.equal(rectangles[0].x, 123);
   assert.equal(rectangles[1].text, "preserve notes");
-  assert.equal(active.id, "terminal");
+  assert.equal(active, undefined, "a removed Audio pane must not receive focus");
   assert.equal(context.isLoadingWorkspace, false);
 });

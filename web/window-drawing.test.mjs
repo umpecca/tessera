@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
-
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+import { featureFixture } from "./application.test-support.mjs";
 
 function fixture() {
   const captures = [], menus = [], destroyed = [];
   const board = { setPointerCapture: id => captures.push(id) };
-  const ctx = vm.createContext({
+  const ctx = featureFixture(["startDrawing", "createDrawnRectangle", "continueInteraction", "finishInteraction", "boxFromDrag", "handleBrowserPaneDraw"], {
     board, interaction: null, activeRect: { cwd: "/project" }, activePaneID: "editor",
     nextZIndex: 10, rectangles: [], browserPaneKind: "browser", serverConnectionModal: { hidden: true },
     hideAllMenus() {}, boardPoint: event => ({ x: event.clientX, y: event.clientY }),
@@ -22,11 +21,6 @@ function fixture() {
     destroyRectangle(rect, options) { destroyed.push({ rect, options }); ctx.rectangles.splice(ctx.rectangles.indexOf(rect), 1); },
     showWindowTypeMenu: (rect, x, y) => menus.push({ rect, x, y }),
   });
-  for (const name of ["startDrawing", "createDrawnRectangle", "continueInteraction", "finishInteraction", "boxFromDrag", "handleBrowserPaneDraw"]) {
-    const start = source.indexOf(`function ${name}(`);
-    const end = source.indexOf("\n}\n", start) + 2;
-    vm.runInContext(source.slice(start, end), ctx);
-  }
   return { ctx, board, captures, menus, destroyed };
 }
 

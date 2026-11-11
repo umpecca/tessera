@@ -54,7 +54,7 @@ test("chooses enrollment, HTTPS, or HTTP after a restart", () => {
 });
 
 test("the command palette opens the Local HTTPS modal and saves host settings", () => {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const source = ["command-palette.mjs", "local-https-dialog.mjs"].map(name => readFileSync(new URL(name, import.meta.url), "utf8")).join("\n");
   assert.match(source, /id: "local-https", label: "Local HTTPS\.\.\."/);
   assert.match(source, /function renderLocalHTTPSModal\(/);
   assert.match(source, /fetch\("\/api\/host\/https", \{/);

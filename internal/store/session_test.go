@@ -136,7 +136,7 @@ func TestTerminalRowSpacingPersistenceAndDefault(t *testing.T) {
 
 func TestTerminalFontNormalization(t *testing.T) {
 	// Every font the browser offers (web/terminal-font.mjs) must survive a save.
-	for _, value := range []string{"jetbrains-mono", "fira-code", "ibm-plex-mono", "commit-mono", "departure-mono"} {
+	for _, value := range []string{"jetbrains-mono", "fira-code", "ibm-plex-mono", "commit-mono", "departure-mono", "spleen", "pixel-operator-mono", "scientifica", "cozette"} {
 		if got := NormalizeTerminalFont(value); got != value {
 			t.Errorf("NormalizeTerminalFont(%q) = %q", value, got)
 		}
@@ -145,6 +145,35 @@ func TestTerminalFontNormalization(t *testing.T) {
 		if got := NormalizeTerminalFont(value); got != DefaultTerminalFont {
 			t.Errorf("NormalizeTerminalFont(%q) = %q, want %q", value, got, DefaultTerminalFont)
 		}
+	}
+}
+
+func TestPixelTerminalFontPersistence(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "pixel-fonts.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, font := range []string{"spleen", "pixel-operator-mono", "scientifica", "cozette"} {
+		t.Run(font, func(t *testing.T) {
+			settings, err := st.LoadUserSettings(ctx, "alice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings.TerminalFont = font
+			settings.Phone = &DisplaySettings{TerminalFont: font}
+			if err := st.SaveUserSettings(ctx, settings); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := st.LoadUserSettings(ctx, "alice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.TerminalFont != font || loaded.Phone == nil || loaded.Phone.TerminalFont != font {
+				t.Fatalf("font %q did not survive desktop/phone settings save: %+v", font, loaded)
+			}
+		})
 	}
 }
 

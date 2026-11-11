@@ -1,19 +1,13 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+
 import test from "node:test";
-import vm from "node:vm";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+import { BrowserController } from "./browser-controller.mjs";
 
-function loadFunctions(names, globals) {
-  const context = vm.createContext(globals);
-  for (const name of names) {
-    const start = source.indexOf(`function ${name}(`);
-    const end = source.indexOf("\n}\n", start) + 2;
-    const prefix = source.slice(start - 6, start) === "async " ? "async " : "";
-    vm.runInContext(`${prefix}${source.slice(start, end)}`, context);
-  }
-  return context;
+function loadFunctions(names, globals = {}) {
+  const fixtureContext = featureFixture(names, globals);
+  return fixtureContext;
 }
 
 function deferred() {
@@ -74,21 +68,21 @@ function browserFixture() {
     frame: { hidden: false, src: "" },
   };
   const rect = { browser, browserRequestID: 0, browserStatusInput: { value: "" } };
-  const ctx = loadFunctions(["navigateBrowserPane", "releaseBrowserProxySession"], {
-    rectangles: [rect], normalizeBrowserAddress: (value) => value.startsWith("http") ? value : "",
+  const controller = new BrowserController({
+    containsPane: pane => pane === rect && Boolean(rect.browser), changed() {},
     fetch(url, options) {
       if (options?.method === "DELETE") { deleted.push(url); return Promise.resolve({ ok: true }); }
       const reply = deferred(); replies.push(reply); return reply.promise;
     },
-    encodeURIComponent, scheduleWorkspaceSave() {},
   });
+  const ctx = { navigateBrowserPane: (...args) => controller.navigate(...args), disposeBrowserPane: pane => controller.dispose(pane) };
   return { browser, ctx, deleted, rect, replies };
 }
 
 test("Browser pane navigation is latest-request-wins and releases stale proxies", async () => {
   const { browser, ctx, deleted, rect, replies } = browserFixture();
-  const first = ctx.navigateBrowserPane(rect, "http://first/");
-  const second = ctx.navigateBrowserPane(rect, "http://second/");
+  const first = ctx.navigateBrowserPane(rect, "http://localhost:3001/");
+  const second = ctx.navigateBrowserPane(rect, "http://localhost:3002/");
   replies[1].resolve({ ok: true, json: async () => ({ id: "second-id", path: "/second", url: "http://second/" }) });
   await second;
   replies[0].resolve({ ok: true, json: async () => ({ id: "first-id", path: "/first", url: "http://first/" }) });
@@ -100,7 +94,7 @@ test("Browser pane navigation is latest-request-wins and releases stale proxies"
 
 test("invalid navigation cancels a pending Browser request", async () => {
   const { ctx, deleted, rect, replies } = browserFixture();
-  const pending = ctx.navigateBrowserPane(rect, "http://first/");
+  const pending = ctx.navigateBrowserPane(rect, "http://localhost:3001/");
   await ctx.navigateBrowserPane(rect, "invalid");
   replies[0].resolve({ ok: true, json: async () => ({ id: "stale-id", path: "/stale" }) });
   await pending;
@@ -110,11 +104,8 @@ test("invalid navigation cancels a pending Browser request", async () => {
 test("disposing a Browser pane releases both active and subsequently created proxies", async () => {
   const { ctx, deleted, rect, replies } = browserFixture();
   rect.browser.sessionID = "active-id";
-  const pending = ctx.navigateBrowserPane(rect, "http://first/");
-  const dispose = loadFunctions(["disposeBrowserPane"], {
-    interaction: null, releaseBrowserProxySession: ctx.releaseBrowserProxySession,
-  }).disposeBrowserPane;
-  dispose(rect);
+  const pending = ctx.navigateBrowserPane(rect, "http://localhost:3001/");
+  ctx.disposeBrowserPane(rect);
   replies[0].resolve({ ok: true, json: async () => ({ id: "late-id", path: "/late" }) });
   await pending;
   assert.deepEqual(deleted, ["/api/browser-proxy/active-id", "/api/browser-proxy/late-id"]);

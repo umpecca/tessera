@@ -19,7 +19,7 @@ test("shows guidance only for undismissed iPadOS access over HTTP", () => {
 });
 
 test("the iPad HTTP modal explains clipboard limits and opens HTTPS setup", () => {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./local-https-dialog.mjs", import.meta.url), "utf8");
   assert.match(source, /Use HTTPS for the best iPad experience/);
   assert.match(source, /limits clipboard access and other browser features/);
   assert.match(source, /setupHTTPS\.textContent = "Set up HTTPS"/);

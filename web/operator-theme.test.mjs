@@ -1,13 +1,11 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import test from "node:test";
-import vm from "node:vm";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+import test from "node:test";
+
 function appFunction(name, context) {
-  const start = source.indexOf(`function ${name}(`);
-  const end = source.indexOf("\n}\n", start) + 2;
-  return vm.runInNewContext(`(${source.slice(start, end)})`, context);
+  const fixtureContext = featureFixture([name], context);
+  return fixtureContext[name];
 }
 
 test("Operator defaults use unsuffixed titles and other themes retain their naming", () => {

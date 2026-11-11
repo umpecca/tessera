@@ -11,11 +11,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		7E5500000000000000000020 /* TesseraUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = TesseraUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7E5500000000000000000005 /* Tessera.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tessera.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7E5500000000000000000013 /* Tessera-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Tessera-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		7E5500000000000000000021 /* TesseraUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = TesseraUITests; sourceTree = "<group>"; };
 		7E5500000000000000000004 /* Tessera */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Tessera;
@@ -24,6 +26,7 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		7E5500000000000000000022 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		7E5500000000000000000008 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -39,6 +42,7 @@
 			isa = PBXGroup;
 			children = (
 				7E5500000000000000000004 /* Tessera */,
+				7E5500000000000000000021 /* TesseraUITests */,
 				7E5500000000000000000013 /* Tessera-Info.plist */,
 				7E5500000000000000000003 /* Products */,
 			);
@@ -48,6 +52,7 @@
 			isa = PBXGroup;
 			children = (
 				7E5500000000000000000005 /* Tessera.app */,
+				7E5500000000000000000020 /* TesseraUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -55,6 +60,18 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		7E5500000000000000000025 /* TesseraUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7E5500000000000000000026;
+			buildPhases = (7E5500000000000000000023, 7E5500000000000000000022, 7E5500000000000000000024);
+			buildRules = ();
+			dependencies = (7E550000000000000000002A);
+			fileSystemSynchronizedGroups = (7E5500000000000000000021);
+			name = TesseraUITests;
+			productName = TesseraUITests;
+			productReference = 7E5500000000000000000020;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		7E5500000000000000000006 /* Tessera */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 7E5500000000000000000010 /* Build configuration list for PBXNativeTarget "Tessera" */;
@@ -111,11 +128,13 @@
 			projectRoot = "";
 			targets = (
 				7E5500000000000000000006 /* Tessera */,
+				7E5500000000000000000025 /* TesseraUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		7E5500000000000000000024 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		7E5500000000000000000009 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -126,6 +145,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		7E5500000000000000000023 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		7E5500000000000000000007 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -136,6 +156,26 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
+		7E5500000000000000000027 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jaxdad.tessera.UITests; PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = 2; TEST_TARGET_NAME = Tessera;
+			};
+			name = Debug;
+		};
+		7E5500000000000000000028 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jaxdad.tessera.UITests; PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = 2; TEST_TARGET_NAME = Tessera;
+			};
+			name = Release;
+		};
 		7E550000000000000000000E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -178,7 +218,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -195,7 +236,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jaxdad.tessera;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -215,7 +256,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -232,7 +274,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jaxdad.tessera;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -251,6 +293,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		7E5500000000000000000026 = {isa = XCConfigurationList; buildConfigurations = (7E5500000000000000000027, 7E5500000000000000000028); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		7E550000000000000000000D /* Build configuration list for PBXProject "Tessera" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -284,6 +327,13 @@
 			productName = TesseraCore;
 		};
 /* End XCSwiftPackageProductDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		7E5500000000000000000029 = {isa = PBXContainerItemProxy; containerPortal = 7E5500000000000000000001; proxyType = 1; remoteGlobalIDString = 7E5500000000000000000006; remoteInfo = Tessera; };
+/* End PBXContainerItemProxy section */
+/* Begin PBXTargetDependency section */
+		7E550000000000000000002A = {isa = PBXTargetDependency; target = 7E5500000000000000000006; targetProxy = 7E5500000000000000000029; };
+/* End PBXTargetDependency section */
 	};
 	rootObject = 7E5500000000000000000001 /* Project object */;
 }

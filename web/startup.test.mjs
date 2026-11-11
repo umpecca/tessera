@@ -1,10 +1,11 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
 const early = readFileSync(new URL("./startup.js", import.meta.url), "utf8");
-const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+
 const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
 
 function fixture({ path = "/", values = {}, blocked = false } = {}) {
@@ -76,13 +77,7 @@ test("the visibility gate and parser-blocking script precede both CSS and the ap
 });
 
 function loadFunctions(names, globals) {
-  const context = vm.createContext({ phoneView: { active: false }, updatePhoneView() {}, ...globals });
-  for (const name of names) {
-    const start = app.indexOf(`function ${name}(`), end = app.indexOf("\n}\n", start) + 2;
-    const prefix = app.slice(start - 6, start) === "async " ? "async " : "";
-    vm.runInContext(`${prefix}${app.slice(start, end)}`, context);
-  }
-  return context;
+  return featureFixture(names, { phoneView: { active: false }, updatePhoneView() {}, ...globals });
 }
 
 test("restoration finishes before reveal, focus and optional prompts", async () => {
@@ -90,11 +85,12 @@ test("restoration finishes before reveal, focus and optional prompts", async () 
   let ready;
   const waiting = new Promise(resolve => { ready = resolve; });
   const context = loadFunctions(["openStartupWorkspace", "showStartupFailure"], {
-    document: f.context.document, board: f.nodes.board, currentUser: "alice", activeRect: { id: "saved" },
+    document: f.context.document, board: f.nodes.board, currentUser: "alice", activeRect: {
+      id: "saved", kind: "terminal", terminal: { term: { focus() { assert.equal(f.attributes.size, 0); order.push("focus"); } } },
+    },
     window: { tesseraStartup: { finish() { order.push("reveal"); f.startup.finish(); } } },
     startApp: async () => { order.push("session"); return true; },
     waitForStartupWorkspace: () => { order.push("wait"); return waiting; },
-    focusPane() { assert.equal(f.attributes.size, 0); order.push("focus"); },
     refreshClipboardBridgeAndPrompt: () => order.push("clipboard"),
     showIPadHTTPGuidanceIfNeeded: () => order.push("guidance"),
     startServerConnectionMonitor: () => order.push("monitor"), console,
@@ -132,12 +128,14 @@ test("first-time user selection can reveal without waiting for a workspace", asy
 
 test("visible terminal snapshots must paint; hidden panes and failed or stalled terminals cannot trap startup", async () => {
   const state = { replica: { cursor: { epoch: "" }, needsSnapshot: true }, term: { fullRedrawPending: true } };
-  const visible = { kind: "terminal", terminal: state }, covered = { kind: "terminal" }, minimized = { kind: "terminal", minimized: true };
+  const visible = { kind: "terminal", terminal: state, x: 0, y: 0, width: 100, height: 100, zIndex: 1 };
+  const covered = { kind: "terminal", x: 200, y: 0, width: 100, height: 100, zIndex: 1 };
+  const covering = { kind: "worksheet", x: 200, y: 0, width: 100, height: 100, zIndex: 2 };
+  const minimized = { kind: "terminal", minimized: true };
   let now = 0, complete = true;
   const context = loadFunctions(["waitForStartupWorkspace"], {
-    workspaceHasBackground: false, rectangles: [visible, covered, minimized],
+    workspaceHasBackground: false, rectangles: [visible, covered, covering, minimized],
     document: { hidden: false }, performance: { now: () => now },
-    terminalIsCovered: rect => rect === covered,
     window: { setTimeout(resolve, delay) {
       now += delay;
       if (complete && now === 50) { state.replica.cursor.epoch = "shell"; state.replica.needsSnapshot = false; }

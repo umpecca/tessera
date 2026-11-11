@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+import { featureFixture } from "./application.test-support.mjs";
 import { windowSwitcherEntries } from "./window-switcher.mjs";
 import { terminalAttentionLabel } from "./terminal-attention.mjs";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 function fixture() {
   const rect = { id: "terminal", kind: "terminal", title: "Terminal", titleInput: { value: "Terminal", readOnly: true } };
   const name = { textContent: "Terminal" };
@@ -17,10 +15,7 @@ function fixture() {
     updateDeskbar() { context.updates++; }, scheduleWorkspaceSave() { context.saves++; },
     updates: 0, saves: 0, terminalAttentionLabel,
   };
-  const start = source.indexOf("function applyTerminalWindowTitle(");
-  const labelsStart = source.indexOf("function updatePaneTitleLabels(");
-  const end = source.indexOf("\n}\n", labelsStart) + 2;
-  const apply = vm.runInNewContext(`${source.slice(start, end)}; applyTerminalWindowTitle`, context);
+  const apply = featureFixture(["applyTerminalWindowTitle", "updatePaneTitleLabels"], context).applyTerminalWindowTitle;
   return { rect, name, context, apply: title => apply(rect, title) };
 }
 

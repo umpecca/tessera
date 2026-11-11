@@ -8,6 +8,8 @@ import {
   phoneFontShrink,
   phoneFontSize,
   phoneViewPathOverride,
+  phoneInteractionModeStorageKey,
+  normalizePhoneInteractionMode,
   readingLines,
   shortenDirectory,
   isPhoneDevice,
@@ -127,8 +129,8 @@ class FakeElement {
     this.textContent = "";
     this.classList = { toggle: (name, on) => { this.classes ??= new Set(); if (on) this.classes.add(name); else this.classes.delete(name); } };
   }
-  append(...nodes) { for (const node of nodes) { node.parent = this; this.children.push(node); } }
-  replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
+  append(...nodes) { for (const node of nodes) { node.remove(); node.parent = this; this.children.push(node); } }
+  replaceChildren(...nodes) { for (const node of this.children) node.parent = null; this.children = []; this.append(...nodes); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this); this.parent = null; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return this.attributes[name] ?? null; }
@@ -137,7 +139,8 @@ class FakeElement {
   dispatch(type, event = {}) { for (const listener of this.listeners[type] || []) listener({ stopPropagation() {}, target: this, ...event }); }
   click() { this.dispatch("click"); }
   contains(node) { for (let n = node; n; n = n.parent) if (n === this) return true; return false; }
-  focus() {}
+  focus() { this.ownerDocument.activeElement = this; }
+  blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = null; }
   getBoundingClientRect() { return { bottom: 40, right: 380 }; }
   querySelector(selector) { return this.findAll((node) => node.tagName === selector.toUpperCase())[0] || null; }
   findAll(match) { const found = []; for (const child of this.children) { if (match(child)) found.push(child); found.push(...child.findAll(match)); } return found; }
@@ -244,6 +247,63 @@ test("the phone view keeps one request waiting for changes, and opens terminals"
   assert.equal(root.hidden, true);
   assert.equal(document.documentElement.dataset.phoneView, undefined);
   assert.equal(requests.at(-1).options.signal.aborted, true);
+});
+
+test("phone menus toggle on the same trigger and outside pointerdown cannot reopen them", () => {
+  const document = fakeDocument();
+  const root = new FakeElement(document, "div");
+  const view = new PhoneView(root, {
+    panes: () => [{ id: "a", kind: "terminal", title: "Build" }],
+    terminalView: () => ({ cols: 80, rows: 24, fitted: true }),
+  });
+  view.openPaneID = "a";
+  const tap = button => {
+    view.onOutsidePointer({ target: button });
+    button.click();
+  };
+  tap(view.moreButton);
+  assert.equal(root.byClass("phone-menu").length, 1);
+  assert.equal(view.moreButton.getAttribute("aria-expanded"), "true");
+  const icon = document.createElement("span");
+  view.moreButton.append(icon);
+  view.onOutsidePointer({ target: icon });
+  assert.notEqual(view.menu, null, "pointerdown inside the trigger must wait for its toggle click");
+  tap(view.moreButton);
+  assert.equal(view.menu, null);
+  assert.equal(view.moreButton.getAttribute("aria-expanded"), "false");
+  tap(view.moreButton);
+  tap(view.viewButton);
+  assert.equal(root.byClass("phone-menu").length, 1, "another trigger replaces the menu");
+  assert.equal(view.moreButton.getAttribute("aria-expanded"), "false");
+  assert.equal(view.viewButton.getAttribute("aria-expanded"), "true");
+  tap(view.viewButton);
+  assert.equal(view.menu, null);
+  tap(view.moreButton);
+  view.onOutsidePointer({ target: view.menu.children[0] });
+  assert.notEqual(view.menu, null, "menu items remain clickable");
+  view.onOutsidePointer({ target: root });
+  assert.equal(view.menu, null, "outside taps still dismiss");
+  assert.equal(view.moreButton.getAttribute("aria-expanded"), "false");
+});
+
+test("card action menus still toggle after status polling replaces their button", () => {
+  const document = fakeDocument();
+  const root = new FakeElement(document, "div");
+  const view = new PhoneView(root, { panes: () => [{ id: "a", kind: "terminal", title: "Build" }] });
+  view.active = true;
+  view.render();
+  let more = root.byClass("phone-card-more")[0];
+  more.click();
+  const menu = view.menu;
+  view.render();
+  more = root.byClass("phone-card-more")[0];
+  assert.equal(view.menuAnchor, more);
+  assert.equal(more.getAttribute("aria-expanded"), "true");
+  view.onOutsidePointer({ target: more });
+  assert.equal(view.menu, menu);
+  more.click();
+  assert.equal(view.menu, null);
+  assert.equal(more.getAttribute("aria-expanded"), "false");
 });
 
 test("a closed pane takes its open terminal back to the list", () => {
@@ -353,7 +413,8 @@ test("the phone's font fits the shell's columns to its width", () => {
   assert.equal(phoneFontSize({ columns: 0, width: 374, fontSize: 13, cellWidth: 7.8 }), 13, "nothing measured yet");
 });
 
-test("the view menu shows the shell's size and switches screen, text, zoom and fit", () => {
+test("the view menu shows the shell's size and switches screen, text, zoom and fit", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
   const document = fakeDocument();
   const root = new FakeElement(document, "div");
   const calls = [];
@@ -402,6 +463,8 @@ test("the view menu shows the shell's size and switches screen, text, zoom and f
 
   view = { cols: 45, rows: 30, fitted: true, zoom: 1, alternate: false, fontSize: 13 };
   viewButton.click();
+  assert.equal(view$.menu, null, "the open menu toggles closed before reopening with updated size");
+  viewButton.click();
   assert.deepEqual(items()[0], ["Shell 45×30 · fitted to this phone · 13px", "", false]);
   assert.deepEqual(items().slice(3, 5).map(([, , disabled]) => disabled), [false, false], "the terminal's own font size on this phone");
   root.byClass("phone-menu")[0].children[4].click();
@@ -432,6 +495,28 @@ test("a phone is a touch screen under 600 points on its shorter side", () => {
   assert.equal(isPhoneDevice({ coarsePointer: true, screenWidth: 820, screenHeight: 1180 }), false, "an iPad");
   assert.equal(isPhoneDevice({ coarsePointer: false, screenWidth: 390, screenHeight: 844 }), false, "a small desktop screen");
   assert.equal(isPhoneDevice({ coarsePointer: true, screenWidth: 0, screenHeight: 0 }), false, "no screen size");
+});
+
+test("the phone backdrop follows the active terminal rather than the workspace theme", () => {
+  const document = fakeDocument(), properties = new Map();
+  document.documentElement.style.setProperty = (key, value) => properties.set(key, value);
+  const colors = { a: "#000000", b: "#ffffff" };
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [{ id: "a", kind: "terminal" }, { id: "b", kind: "terminal" }],
+    terminalView: id => ({ background: colors[id] }),
+  });
+  view.openPaneID = "a";
+  view.renderTerminalHeader();
+  assert.equal(properties.get("--phone-terminal-bg"), "#000000");
+  colors.a = "#123456";
+  view.measure();
+  assert.equal(properties.get("--phone-terminal-bg"), "#123456", "keyboard measurements pick up program background changes");
+  view.openPaneID = "b";
+  view.renderTerminalHeader();
+  assert.equal(properties.get("--phone-terminal-bg"), "#ffffff", "a light terminal must not get a hard-coded black backdrop");
+  delete colors.b;
+  view.renderTerminalHeader();
+  assert.equal(properties.get("--phone-terminal-bg"), "var(--terminal-bg)");
 });
 
 test("the keyboard inset follows the viewport for a while after each change", (t) => {
@@ -468,34 +553,145 @@ test("the keyboard inset follows the viewport for a while after each change", (t
   view.leave();
 });
 
-test("Select lays the terminal's text over it, still, until it is put away", () => {
+test("compose focus holds the viewport until the keyboard close animation has settled", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval", "setTimeout"] });
+  const saved = { innerHeight: globalThis.innerHeight, visualViewport: globalThis.visualViewport, requestAnimationFrame: globalThis.requestAnimationFrame, cancelAnimationFrame: globalThis.cancelAnimationFrame };
+  t.after(() => Object.assign(globalThis, saved));
+  let frames = [];
+  const viewport = { height: 844, offsetTop: 0, addEventListener() {}, removeEventListener() {} };
+  Object.assign(globalThis, { innerHeight: 844, visualViewport: viewport,
+    requestAnimationFrame: callback => frames.push(callback), cancelAnimationFrame: () => { frames = []; } });
+  const runFrame = () => { const due = frames; frames = []; for (const callback of due) callback(); };
+  const document = fakeDocument(), holds = [], follows = [];
+  document.documentElement.style.setProperty = () => {};
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [{ id: "a", kind: "terminal" }, { id: "b", kind: "terminal" }], workspaceID: () => "w",
+    fetch: () => new Promise(() => {}), input: { sendKey() {}, sendText() {} },
+    onComposeViewport: (...args) => holds.push(args), followComposeViewport: id => follows.push(id),
+  });
+  t.after(() => view.leave());
+  view.enter(); view.open("a");
+  view.onViewport({ type: "focusin", target: view.moreButton });
+  assert.deepEqual(holds, [], "native/menu/terminal focus is not compose editing");
+  view.input.field.focus();
+  view.onViewport({ type: "focusin", target: view.input.field });
+  assert.deepEqual(holds, [["a", true]]);
+  viewport.height = 500;
+  runFrame();
+  assert.equal(view.keyboardInset, 344);
+  assert.equal(follows.at(-1), "a", "the existing bitmap follows the visible viewport");
+  view.input.field.blur();
+  view.onViewport({ type: "focusout", target: view.input.field });
+  t.mock.timers.tick(1100); runFrame();
+  assert.equal(view.composePaneID, "a", "a delayed OS keyboard close must not release an intermediate grid");
+  viewport.height = 844;
+  view.onViewport();
+  assert.equal(view.composePaneID, "a", "close has started but is not settled");
+  t.mock.timers.tick(1100); runFrame();
+  assert.equal(view.composePaneID, "");
+  assert.deepEqual(holds, [["a", true], ["a", false]]);
+  view.input.field.focus();
+  view.onViewport({ type: "focusin", target: view.input.field });
+  view.open("b");
+  assert.deepEqual(holds.slice(-2), [["a", true], ["a", false]], "switching terminals cannot leave the old one held");
+});
+
+test("Select keeps the canvas visible, preserves Text preference and ends on pane changes", () => {
   const document = fakeDocument();
-  let lines = ["$ make", "ok"];
+  const changes = [], stored = new Map();
   const view = new PhoneView(new FakeElement(document, "div"), {
     panes: () => [{ id: "a", kind: "terminal", title: "A" }, { id: "b", kind: "terminal", title: "B" }],
     workspaceID: () => "w",
     fetch: () => new Promise(() => {}),
-    selectText: () => lines,
+    input: { sendKey() {}, sendText() {} }, readingText: () => ["live text"],
+    onSelectionChange: (...args) => changes.push(args),
+    storage: { get: key => stored.get(key), set: (key, value) => stored.set(key, value) },
   });
   view.enter();
   view.setSelecting(true);
-  assert.equal(view.copyView.hidden, true, "no terminal open");
+  assert.equal(view.selecting, false, "no terminal open");
   view.open("a");
+  view.setReading(true);
+  assert.equal(view.readingView.hidden, false);
   view.setSelecting(true);
-  assert.equal(view.copyView.hidden, false);
-  assert.equal(view.copyView.textContent, "$ make\nok");
-  lines = ["$ make", "ok", "more"];
+  assert.equal(view.selecting, true);
+  assert.equal(view.readingView.hidden, true);
+  assert.equal(view.copyView, undefined, "no replacement text control");
+  assert.equal(view.input.compose.hidden, true);
+  assert.equal(view.input.selectionControls.hidden, false);
+  assert.equal(document.documentElement.dataset.phoneSelecting, "true");
+  assert.equal(document.activeElement, undefined, "Select does not focus an editable keyboard");
   view.renderTerminalHeader();
-  assert.equal(view.copyView.textContent, "$ make\nok", "new output doesn't move the selection");
+  view.renderReading();
+  assert.equal(view.readingView.hidden, true, "polling cannot cover the canvas");
   view.setSelecting(false);
-  assert.equal(view.copyView.hidden, true);
+  assert.equal(view.readingView.hidden, false, "Text preference restored");
+  assert.equal(view.input.compose.hidden, false);
+  assert.equal(document.documentElement.dataset.phoneSelecting, undefined);
   view.setSelecting(true);
   view.open("b");
-  assert.equal(view.copyView.hidden, true, "another terminal");
+  assert.equal(view.selecting, false, "another terminal");
+  assert.deepEqual(changes.at(-1), ["a", false], "cancel the old pane before switching");
   view.setSelecting(true);
   view.back();
-  assert.equal(view.copyView.hidden, true, "back to the list");
+  assert.equal(view.selecting, false, "back to the list");
   view.leave();
+});
+
+test("Select hides typing without losing drafts or disabling page anti-zoom", (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const document = fakeDocument();
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [{ id: "a", kind: "terminal" }],
+    terminalView: () => ({ fontSize: 10 }), input: { sendKey() {}, sendText() {} },
+  });
+  view.openPaneID = "a";
+  view.input.direct = true;
+  view.input.field.value = "unfinished draft";
+  view.setSelecting(true);
+  assert.equal(view.input.direct, false, "selection exits direct terminal typing without focusing compose");
+  view.input.setDirect(true);
+  assert.equal(view.input.direct, false);
+  let prevented = 0;
+  const event = { preventDefault: () => prevented++, touches: [], target: { closest: () => null } };
+  view.onGesture(event);
+  view.onTouchEnd(event);
+  t.mock.timers.tick(100);
+  view.onTouchEnd(event);
+  assert.equal(prevented, 2, "canvas selection does not exempt page zoom guards");
+  view.setSelecting(false);
+  assert.equal(view.input.field.value, "unfinished draft");
+  assert.equal(view.input.compose.hidden, false);
+  assert.equal(document.documentElement.dataset.phoneSelecting, undefined);
+  view.onGesture(event);
+  assert.equal(prevented, 3);
+});
+
+test("Select puts Copy, Done and mouse-aware TUI scrolling in the existing compose row", () => {
+  const document = fakeDocument(), properties = new Map(), calls = [];
+  document.documentElement.style.setProperty = (key, value) => properties.set(key, value);
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [{ id: "a", kind: "terminal" }], terminalView: () => ({ alternate: true, mouseTracking: true }),
+    input: { sendText() {}, sendKey() {} },
+    onSelectionChange: () => calls.push("hold layout"),
+    copySelection: id => calls.push(["copy", id]),
+    scrollSelection: (id, direction) => calls.push([id, direction]),
+  });
+  view.openPaneID = "a";
+  view.setSelecting(true);
+  assert.equal(view.input.selectionScrollButtons[0].hidden, false);
+  view.input.attach("a");
+  view.input.element.offsetHeight = 100;
+  view.measure();
+  assert.equal(properties.get("--phone-input-height"), "100px");
+  assert.equal(properties.get("--phone-base-input-height"), "100px");
+  view.renderTerminalHeader();
+  view.input.selectionScrollButtons[1].click();
+  view.input.copyButton.click();
+  assert.deepEqual(calls, ["hold layout", ["a", 1], ["copy", "a"]]);
+  view.input.doneButton.click();
+  assert.equal(view.selecting, false);
+  assert.equal(view.input.selectionControls.hidden, true);
 });
 
 test("with the input area, the open terminal's buttons sit in its key row and the title heads its actions", () => {
@@ -512,14 +708,165 @@ test("with the input area, the open terminal's buttons sit in its key row and th
   view.open("a");
   assert.equal(view.terminalHeader.hidden, true, "no bar across the top");
   assert.deepEqual(view.input.barStart.children.map((node) => node.attributes["aria-label"]), ["Back to terminals"]);
-  assert.deepEqual(view.input.barEnd.children.map((node) => node.attributes["aria-label"]), ["View", "Terminal actions"]);
-  view.input.barEnd.children[1].click();
+  assert.deepEqual(view.input.barEnd.children.map((node) => node.attributes["aria-label"]), ["Interaction mode; switch to scroll mode", "View", "Terminal actions"]);
+  view.moreButton.click();
   const note = root.byClass("phone-menu-note")[0];
   assert.equal(note.textContent.startsWith("Build"), true);
   view.input.barStart.children[0].click();
   assert.equal(view.openPaneID, "");
   view.leave();
   assert.equal(document.documentElement.dataset.phoneBar, undefined);
+});
+
+test("Scroll mode hides input, keeps the toggle/back visible and preserves the draft and reading position", (t) => {
+  const document = fakeDocument(), stored = new Map(), changes = [], sent = [];
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [{ id: "a", kind: "terminal", title: "Build" }], workspaceID: () => "w",
+    fetch: () => new Promise(() => {}), onModeChange: (...args) => changes.push(args),
+    storage: { get: key => stored.get(key), set: (key, value) => stored.set(key, value) },
+    input: { sendText: (...args) => sent.push(args), sendKey: (...args) => sent.push(args),
+      storage: { get: key => stored.get(key), set: (key, value) => stored.set(key, value), remove: key => stored.delete(key) } },
+  });
+  t.after(() => view.leave());
+  view.enter(); view.open("a");
+  view.input.field.value = "unfinished command";
+  view.readingView.scrollTop = 123;
+  let blurred = 0;
+  document.activeElement = { blur() { blurred++; document.activeElement = null; } };
+  view.modeButton.click();
+  assert.equal(view.mode, "scroll");
+  assert.equal(view.input.element.hidden, true);
+  assert.equal(view.terminalHeader.hidden, false);
+  assert.equal(view.modeButton.parent, view.terminalHeader);
+  assert.equal(view.backButton.parent, view.terminalHeader);
+  assert.equal(view.modeButton.getAttribute("aria-pressed"), "true");
+  assert.equal(document.documentElement.dataset.phoneBar, undefined);
+  assert.equal(document.documentElement.dataset.phoneMode, "scroll");
+  assert.equal(blurred, 1);
+  assert.equal(view.readingView.scrollTop, 123);
+  assert.equal(stored.get(phoneInteractionModeStorageKey), "scroll");
+  view.modeButton.click();
+  assert.equal(view.mode, "interaction");
+  assert.equal(view.input.element.hidden, false);
+  assert.equal(view.terminalHeader.hidden, true);
+  assert.equal(view.modeButton.parent, view.input.barEnd);
+  assert.equal(document.activeElement, null, "returning never opens the keyboard");
+  assert.equal(view.input.field.value, "unfinished command");
+  assert.equal(view.readingView.scrollTop, 123);
+  assert.deepEqual(changes, [["a", "scroll"], ["a", "interaction"]]);
+  assert.deepEqual(sent, []);
+  view.back();
+  assert.equal(view.input.element.hidden, true);
+  assert.equal(view.terminalHeader.hidden, true);
+});
+
+test("Scroll mode offers canvas selection and Copy/Done without showing typing controls or changing mode", () => {
+  const document = fakeDocument(), calls = [], stored = new Map();
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [{ id: "a", kind: "terminal" }], workspaceID: () => "w", fetch: () => new Promise(() => {}),
+    terminalView: () => ({ alternate: true, mouseTracking: true }),
+    storage: { get: key => stored.get(key), set: (key, value) => stored.set(key, value) },
+    copySelection: id => calls.push(["copy", id]), scrollSelection: (id, direction) => calls.push(["scroll", id, direction]),
+    input: { sendKey: () => assert.fail("Scroll selection sent a key"), sendText() {} },
+  });
+  view.enter(); view.open("a");
+  view.input.field.value = "keep draft";
+  view.setMode("scroll");
+  assert.equal(view.scrollSelectButton.hidden, false);
+  view.scrollSelectButton.click();
+  assert.equal(view.selecting, true);
+  assert.equal(view.mode, "scroll", "selection must not force Interact");
+  assert.equal(view.input.suspended, true);
+  assert.equal(view.input.element.hidden, true, "typing controls remain hidden");
+  assert.equal(view.pageControls.contains(view.input.selectionControls), true);
+  assert.equal(view.input.selectionControls.hidden, false);
+  assert.ok(view.pageButtons.every(button => button.hidden));
+  view.input.copyButton.click();
+  view.input.selectionScrollButtons[1].click();
+  view.input.sendKey({ init: { key: "Enter" } });
+  assert.deepEqual(calls, [["copy", "a"], ["scroll", "a", 1]]);
+  assert.equal(document.activeElement === view.input.field, false);
+  view.input.doneButton.click();
+  assert.equal(view.mode, "scroll");
+  assert.equal(view.selecting, false);
+  assert.equal(view.scrollSelectButton.hidden, false);
+  assert.equal(view.input.element.hidden, true);
+  assert.equal(view.input.element.contains(view.input.selectionControls), true);
+  assert.equal(view.input.field.value, "keep draft");
+  view.setMode("interaction");
+  assert.equal(view.input.element.hidden, false);
+  assert.equal(document.activeElement === view.input.field, false);
+  view.leave();
+});
+
+test("Scroll mode pages text locally with overlap and clamps at both ends", () => {
+  const document = fakeDocument(), sent = [], pages = [];
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [], scrollPage: (...args) => pages.push(args),
+    input: { sendKey: (...args) => sent.push(args), sendText: (...args) => sent.push(args) },
+  });
+  view.openPaneID = "a";
+  view.mode = "scroll";
+  view.renderMode();
+  assert.equal(view.pageControls.hidden, false);
+  assert.deepEqual(view.pageControls.children.map(button => button.textContent), ["Page Up", "Page Down", "Select"]);
+  Object.assign(view.readingView, { hidden: false, clientHeight: 400, scrollHeight: 2000, scrollTop: 1000 });
+  view.pageControls.children[0].click();
+  assert.equal(view.readingView.scrollTop, 640);
+  view.pageControls.children[1].click();
+  assert.equal(view.readingView.scrollTop, 1000);
+  view.readingView.scrollTop = 30;
+  view.pageControls.children[0].click();
+  assert.equal(view.readingView.scrollTop, 0);
+  view.readingView.scrollTop = 1500;
+  view.pageControls.children[1].click();
+  assert.equal(view.readingView.scrollTop, 1600);
+  assert.deepEqual(pages, []);
+  assert.deepEqual(sent, [], "paging cannot send terminal keys or text");
+});
+
+test("page controls navigate canvas history only in Scroll mode and reserve their own space", () => {
+  const document = fakeDocument(), pages = [], properties = new Map();
+  document.documentElement.style.setProperty = (key, value) => properties.set(key, value);
+  const view = new PhoneView(new FakeElement(document, "div"), { panes: () => [], scrollPage: (...args) => pages.push(args) });
+  assert.equal(view.pageControls.hidden, true);
+  view.openPaneID = "a";
+  view.mode = "scroll";
+  view.renderMode();
+  view.pageControls.offsetHeight = 56;
+  view.measure();
+  assert.equal(properties.get("--phone-input-height"), "56px", "controls do not cover terminal content");
+  view.pageControls.children[0].click();
+  view.pageControls.children[1].click();
+  assert.deepEqual(pages, [["a", -1], ["a", 1]]);
+  view.mode = "interaction";
+  view.renderMode();
+  assert.equal(view.pageControls.hidden, true);
+  view.pageControls.children[0].click();
+  assert.equal(pages.length, 2, "late clicks cannot page outside Scroll mode");
+  view.measure();
+  assert.equal(properties.get("--phone-input-height"), "0px");
+  view.mode = "scroll";
+  view.renderMode();
+  view.showInbox();
+  assert.equal(view.pageControls.hidden, true);
+  view.pageControls.children[1].click();
+  assert.equal(pages.length, 2, "nothing pages after leaving the terminal");
+});
+
+test("the browser's Scroll mode choice is restored without showing keyboard controls", (t) => {
+  const document = fakeDocument();
+  const view = new PhoneView(new FakeElement(document, "div"), {
+    panes: () => [{ id: "a", kind: "terminal", title: "A" }], workspaceID: () => "w",
+    fetch: () => new Promise(() => {}), storage: { get: key => key === phoneInteractionModeStorageKey ? "scroll" : null },
+    input: { sendKey() {}, sendText() {} },
+  });
+  t.after(() => view.leave());
+  view.enter(); view.open("a");
+  assert.equal(view.mode, "scroll");
+  assert.equal(view.input.element.hidden, true);
+  assert.equal(view.terminalHeader.hidden, false);
+  assert.equal(normalizePhoneInteractionMode("invalid"), "interaction");
 });
 
 test("a quick second tap on nothing that takes taps doesn't reach iOS's zoom, but keys get both", (t) => {

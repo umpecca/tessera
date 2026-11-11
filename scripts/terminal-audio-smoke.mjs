@@ -52,41 +52,41 @@ const baseURL = await new Promise((resolve, reject) => {
 
 const instrumentation = `
 window.audioSmoke = {
-  ready: () => Boolean(currentSessionID) && !isLoadingWorkspace,
-  create() { this.pane = createTerminalPane(40, 60); return this.pane.id; },
+  ready: () => Boolean(navigation.currentSessionID) && !workspace.isLoadingWorkspace,
+  create() { this.pane = desktop.createTerminalPane({ x: 40, y: 60 }); return this.pane.id; },
   send(command) { this.pane.terminal.socket.send(new TextEncoder().encode(command + "\\r")); },
-  hide() { setMinimized(this.pane, true); },
-  reveal() { setMinimized(this.pane, false); },
+  hide() { geometry.setMinimized(this.pane, true); },
+  reveal() { geometry.setMinimized(this.pane, false); },
   closeSocket() { this.pane.terminal.socket.close(); },
-  async save() { await flushAllPersistence(); },
-  restorePane(id) { this.pane = rectangles.find(rect => rect.id === id); },
+  async save() { await workspace.flushAllPersistence(); },
+  restorePane(id) { this.pane = desktop.rectangles.find(rect => rect.id === id); },
   state() {
-    const key = this.pane?.terminal?.audioKey, t = terminalAudioPlayer.terminals.get(key);
-    return { enabled: terminalAudioPlayer.enabled, playing: terminalAudioPlayer.playing.map(clip => clip.id),
+    const key = this.pane?.terminal?.audioKey, t = terminal.terminalAudioPlayer.terminals.get(key);
+    return { enabled: terminal.terminalAudioPlayer.enabled, playing: terminal.terminalAudioPlayer.playing.map(clip => clip.id),
       muted: t?.muted, paused: this.pane?.terminal?.outputPaused,
       connected: this.pane?.terminal?.socket?.readyState === WebSocket.OPEN,
       attached: Boolean(this.pane?.terminal?.replica?.cursor.epoch),
-      contextState: terminalAudioPlayer.context?.state, errors: this.errors || [], received: this.received || [] };
+      contextState: terminal.terminalAudioPlayer.context?.state, errors: this.errors || [], received: this.received || [] };
   },
   text() {
     const b = this.pane.terminal.term.wasmTerm;
     return Array.from({length: b.getDimensions().rows}, (_, row) => b.getLine(row).map(cell => String.fromCodePoint(cell.codepoint || 32)).join('')).join('');
   },
   rms() {
-    const t = terminalAudioPlayer.terminals.get(this.pane.terminal.audioKey);
+    const t = terminal.terminalAudioPlayer.terminals.get(this.pane.terminal.audioKey);
     if (!t?.gain) return 0;
-    if (!this.meter) { this.meter = terminalAudioPlayer.context.createAnalyser(); t.gain.connect(this.meter); }
+    if (!this.meter) { this.meter = terminal.terminalAudioPlayer.context.createAnalyser(); t.gain.connect(this.meter); }
     const data = new Float32Array(this.meter.fftSize); this.meter.getFloatTimeDomainData(data);
     return Math.sqrt(data.reduce((sum, value) => sum + value * value, 0) / data.length);
   },
   async cleanup() {
     if (!this.pane) return;
-    const id = this.pane.id; destroyRectangle(this.pane, {closeServerTerminal:true});
-    await fetch('/api/terminal?workspaceId=' + encodeURIComponent(workspaceID) + '&paneId=' + encodeURIComponent(id), {method:'DELETE'});
+    const id = this.pane.id; desktop.destroyRectangle(this.pane, {closeServerTerminal:true});
+    await fetch('/api/terminal?workspaceId=' + encodeURIComponent(navigation.workspaceID) + '&paneId=' + encodeURIComponent(id), {method:'DELETE'});
   }
 };
-const originalAudioReceive = terminalAudioPlayer.receive.bind(terminalAudioPlayer);
-terminalAudioPlayer.receive = (key, event) => {
+const originalAudioReceive = terminal.terminalAudioPlayer.receive.bind(terminal.terminalAudioPlayer);
+terminal.terminalAudioPlayer.receive = (key, event) => {
   (window.audioSmoke.received ??= []).push({action:event.action,id:event.id,sequence:event.sequence ?? 0});
   originalAudioReceive(key,event);
 };

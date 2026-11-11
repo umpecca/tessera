@@ -33,6 +33,7 @@ type UserSettings struct {
 	AlternateRevision        string  `json:"alternateRevision,omitempty"`
 	UserID                   string  `json:"userId"`
 	DefaultPaneFontSize      int     `json:"defaultPaneFontSize"`
+	InterfaceFontSize        int     `json:"interfaceFontSize"`
 	DefaultTheme             string  `json:"defaultTheme"`
 	ThemeID                  string  `json:"themeId"`
 	DeskbarButtonEnabled     bool    `json:"deskbarButtonEnabled"`
@@ -55,6 +56,7 @@ type UserSettings struct {
 // a desktop, such as a hidden Deskbar button, can leave a phone stuck.
 type DisplaySettings struct {
 	DefaultPaneFontSize      int     `json:"defaultPaneFontSize"`
+	InterfaceFontSize        int     `json:"interfaceFontSize"`
 	DefaultTheme             string  `json:"defaultTheme"`
 	ThemeID                  string  `json:"themeId"`
 	DeskbarButtonEnabled     bool    `json:"deskbarButtonEnabled"`
@@ -67,6 +69,7 @@ type DisplaySettings struct {
 
 func (d *DisplaySettings) normalize() {
 	d.DefaultPaneFontSize = normalizeDefaultPaneFontSize(d.DefaultPaneFontSize)
+	d.InterfaceFontSize = normalizeInterfaceFontSize(d.InterfaceFontSize)
 	d.DefaultTheme = normalizeThemeID(d.DefaultTheme)
 	d.ThemeID = normalizeThemeID(d.ThemeID)
 	d.TerminalWheelSensitivity = normalizeWheelSensitivity(d.TerminalWheelSensitivity)
@@ -95,6 +98,14 @@ const DefaultTerminalTERM = "xterm-256color"
 const DefaultTerminalFont = "jetbrains-mono"
 const DefaultTerminalRowSpacing = "tight"
 const DefaultTerminalColorMode = "dark"
+const DefaultInterfaceFontSize = 12
+
+func normalizeInterfaceFontSize(value int) int {
+	if value < 10 || value > 18 {
+		return DefaultInterfaceFontSize
+	}
+	return value
+}
 
 func normalizeWheelSensitivity(value float64) float64 {
 	if value < 0.25 || value > 4 {
@@ -131,7 +142,8 @@ func NormalizeTerminalTERM(value string) string {
 
 func NormalizeTerminalFont(value string) string {
 	switch value {
-	case "jetbrains-mono", "fira-code", "ibm-plex-mono", "commit-mono", "departure-mono":
+	case "jetbrains-mono", "fira-code", "ibm-plex-mono", "commit-mono", "departure-mono",
+		"spleen", "pixel-operator-mono", "scientifica", "cozette":
 		return value
 	default:
 		return DefaultTerminalFont
@@ -372,7 +384,7 @@ func (s *Store) LoadUserSettings(ctx context.Context, userID string) (*UserSetti
 SELECT user_id, default_pane_font_size, default_theme, theme_id, deskbar_button_enabled,
        terminal_wheel_sensitivity, oled_window_border_size,
        terminal_term, terminal_font, terminal_row_spacing, terminal_color_mode, older_mac_mode,
-       terminal_shell_integration_off, phone_settings, revision
+       terminal_shell_integration_off, phone_settings, revision, interface_font_size
 FROM user_settings
 WHERE user_id = ?`, userID).Scan(
 		&settings.UserID, &settings.DefaultPaneFontSize, &settings.DefaultTheme,
@@ -380,7 +392,7 @@ WHERE user_id = ?`, userID).Scan(
 		&settings.TerminalWheelSensitivity,
 		&settings.OLEDWindowBorderSize, &settings.TerminalTERM, &settings.TerminalFont,
 		&settings.TerminalRowSpacing,
-		&settings.TerminalColorMode, &settings.OlderMacMode, &settings.TerminalShellIntegrationOff, &phoneSettings, &settings.Revision)
+		&settings.TerminalColorMode, &settings.OlderMacMode, &settings.TerminalShellIntegrationOff, &phoneSettings, &settings.Revision, &settings.InterfaceFontSize)
 	if errors.Is(err, sql.ErrNoRows) {
 		now := nowText()
 		if _, err := s.db.ExecContext(ctx, `
@@ -399,6 +411,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSi
 		return nil, fmt.Errorf("load user settings: %w", err)
 	}
 	settings.DefaultPaneFontSize = normalizeDefaultPaneFontSize(settings.DefaultPaneFontSize)
+	settings.InterfaceFontSize = normalizeInterfaceFontSize(settings.InterfaceFontSize)
 	settings.DefaultTheme = normalizeThemeID(settings.DefaultTheme)
 	settings.ThemeID = normalizeThemeID(settings.ThemeID)
 	settings.TerminalWheelSensitivity = normalizeWheelSensitivity(settings.TerminalWheelSensitivity)
@@ -430,6 +443,7 @@ func (s *Store) SaveUserSettings(ctx context.Context, settings *UserSettings) er
 		}
 	}
 	settings.DefaultPaneFontSize = normalizeDefaultPaneFontSize(settings.DefaultPaneFontSize)
+	settings.InterfaceFontSize = normalizeInterfaceFontSize(settings.InterfaceFontSize)
 	settings.DefaultTheme = normalizeThemeID(settings.DefaultTheme)
 	settings.ThemeID = normalizeThemeID(settings.ThemeID)
 	settings.TerminalWheelSensitivity = normalizeWheelSensitivity(settings.TerminalWheelSensitivity)
@@ -454,11 +468,12 @@ INSERT INTO user_settings (
   deskbar_button_enabled, terminal_wheel_sensitivity,
   oled_window_border_size, terminal_term, terminal_font,
   terminal_row_spacing, terminal_color_mode, older_mac_mode, terminal_shell_integration_off,
-  phone_settings, created_at, updated_at, revision
+  phone_settings, created_at, updated_at, revision, interface_font_size
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id) DO UPDATE SET
   default_pane_font_size = excluded.default_pane_font_size,
+  interface_font_size = excluded.interface_font_size,
   default_theme = excluded.default_theme,
   theme_id = excluded.theme_id,
   deskbar_button_enabled = excluded.deskbar_button_enabled,
@@ -478,7 +493,7 @@ WHERE ? = '' OR user_settings.revision = ? OR (user_settings.revision = ? AND ? 
 		settings.TerminalWheelSensitivity,
 		settings.OLEDWindowBorderSize, settings.TerminalTERM, settings.TerminalFont,
 		settings.TerminalRowSpacing,
-		settings.TerminalColorMode, settings.OlderMacMode, settings.TerminalShellIntegrationOff, phoneSettings, now, now, nextRevision,
+		settings.TerminalColorMode, settings.OlderMacMode, settings.TerminalShellIntegrationOff, phoneSettings, now, now, nextRevision, settings.InterfaceFontSize,
 		settings.Revision, settings.Revision, settings.AlternateRevision, settings.AlternateRevision)
 	if err != nil {
 		return fmt.Errorf("save user settings: %w", err)

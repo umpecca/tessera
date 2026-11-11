@@ -60,6 +60,7 @@ func TestMigrationsCreateCurrentSchemaAndAreIdempotent(t *testing.T) {
 		"deskbar_button_enabled", "terminal_wheel_sensitivity",
 		"editor_wheel_sensitivity", "oled_window_border_size", "terminal_term",
 		"terminal_font", "terminal_color_mode", "older_mac_mode", "created_at", "updated_at", "revision", "terminal_row_spacing",
+		"interface_font_size",
 	})
 	if err := st.Close(); err != nil {
 		t.Fatalf("close fresh store: %v", err)

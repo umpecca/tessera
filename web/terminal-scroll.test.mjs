@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import vm from "node:vm";
-import { readFileSync } from "node:fs";
+
+import { featureFixture } from "./application.test-support.mjs";
+
 import { TerminalScroll, installTerminalScrollRenderer, terminalScrollMouseEvent } from "./terminal-scroll.mjs";
 import { wheelDeltaUnits } from "./wheel-sensitivity.mjs";
 import { TerminalTouchScroll } from "./terminal-touch-scroll.mjs";
@@ -138,20 +139,17 @@ test("link hit testing tracks physical scroll pixels and preserves native event 
 });
 
 function wheelBridge(speed = 1.5) {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
-  const start = source.indexOf("function attachTerminalMouseBridge(");
-  const end = source.indexOf("\nfunction terminalShouldReportMouse", start);
   let wheel, reporting = false, alternate = false;
   const movements = [], inputs = [], reports = [];
   const term = { rows: 24, wasmTerm: { isAlternateScreen: () => alternate },
     renderer: { getMetrics: () => ({ height: 20 }) }, scrollWheelLines(value) { movements.push(value); },
     input(value) { inputs.push(value); }, attachCustomWheelEventHandler(handler) { wheel = handler; } };
-  const bridge = vm.runInNewContext(`(${source.slice(start, end)})`, {
+  const bridge = featureFixture(["attachTerminalMouseBridge"], {
     TerminalMousePress: class {}, TerminalMouseHover: class {}, TerminalContextMenuFallback: class {},
     TerminalTouchScroll, terminalWheelSensitivity: speed, wheelDeltaUnits,
     terminalShouldReportMouse: () => reporting, terminalMousePosition: () => ({ col: 1, row: 1 }),
     terminalMouseEventCode: code => code, sendTerminalMouseSequence(_socket, code) { reports.push(code); },
-  })({ terminalContainer: { addEventListener() {}, removeEventListener() {} } }, term, {});
+  }).attachTerminalMouseBridge({ terminalContainer: { addEventListener() {}, removeEventListener() {} } }, term, {});
   return { movements, inputs, reports, wheel(deltaY, deltaMode = 0) { return wheel({ deltaY, deltaMode }); },
     reporting() { reporting = true; }, alternate() { alternate = true; }, bridge };
 }
@@ -177,9 +175,6 @@ test("TUI wheel input accumulates tiny deltas instead of flooding or dropping ge
 });
 
 function touchBridge() {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
-  const start = source.indexOf("function attachTerminalMouseBridge(");
-  const end = source.indexOf("\nfunction terminalShouldReportMouse", start);
   let reporting = false, alternate = false, selection = false, pressed = null;
   const movements = [], inputs = [], reports = [], listeners = {};
   const term = { rows: 24, wasmTerm: { isAlternateScreen: () => alternate },
@@ -188,7 +183,7 @@ function touchBridge() {
     hasSelection: () => selection, clearSelection() { selection = false; } };
   const container = { addEventListener(type, handler) { listeners[type] = handler; }, removeEventListener() {},
     setPointerCapture() {}, hasPointerCapture: () => false };
-  vm.runInNewContext(`(${source.slice(start, end)})`, {
+  featureFixture(["attachTerminalMouseBridge"], {
     TerminalMousePress: class {
       begin(pointerID, buttonCode, position) { pressed = { pointerID, buttonCode, position }; }
       matches(pointerID) { return pressed?.pointerID === pointerID; }
@@ -205,7 +200,7 @@ function touchBridge() {
     sendTerminalMouseSequence(_socket, code, _position, kind) { reports.push(`${code}${kind}`); },
     clearTerminalSelectionStartedDuringGesture(t, had) { if (had === false && t.hasSelection()) t.clearSelection(); },
     stopTerminalMouseEvent() {}, hideFloatingMenus() {}, setActivePane() {},
-  })({ terminalContainer: container }, term, {});
+  }).attachTerminalMouseBridge({ terminalContainer: container }, term, {});
   const event = (pointerId, clientY) => ({ pointerType: "touch", pointerId, clientY, button: 0, buttons: 1 });
   return {
     movements, inputs, reports,

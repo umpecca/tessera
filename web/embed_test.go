@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"image/png"
 	"io/fs"
+	"path"
 	"regexp"
 	"strings"
 	"testing"
@@ -21,17 +22,25 @@ func TestTopLevelBrowserAssetsAreEmbedded(t *testing.T) {
 }
 
 func TestAppModuleImportsAreEmbedded(t *testing.T) {
-	app, err := fs.ReadFile(Files, "app.js")
-	if err != nil {
-		t.Fatalf("read embedded app.js: %v", err)
-	}
-
-	importPattern := regexp.MustCompile(`from\s+"\.\/([^"]+)"`)
-	for _, match := range importPattern.FindAllSubmatch(app, -1) {
-		name := string(match[1])
-		name, _, _ = strings.Cut(name, "?")
-		if _, err := fs.Stat(Files, name); err != nil {
-			t.Errorf("app.js import %q is not embedded: %v", name, err)
+	// Follow controller imports and lazy vendor modules, not just the entry point.
+	importPattern := regexp.MustCompile(`(?:from\s+|import\(\s*)["'](\./[^"']+)["']`)
+	pending := []string{"app.js"}
+	seen := map[string]bool{}
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		module, err := fs.ReadFile(Files, name)
+		if err != nil {
+			t.Errorf("module %q is not embedded: %v", name, err)
+			continue
+		}
+		for _, match := range importPattern.FindAllSubmatch(module, -1) {
+			imported, _, _ := strings.Cut(string(match[1]), "?")
+			pending = append(pending, path.Join(path.Dir(name), imported))
 		}
 	}
 }

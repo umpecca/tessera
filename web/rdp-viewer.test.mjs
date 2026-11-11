@@ -226,11 +226,11 @@ test("an invalid frame ends the viewer", async () => {
 // viewer must offer every session method and input event the pane uses. A
 // missing one throws inside an input handler, and that input is lost.
 test("offers every session method and input event the RDP pane calls", async () => {
-  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  const app = ["rdp-session.mjs", "rdp-view.mjs", "rdp-controller.mjs"].map(name => readFileSync(new URL(name, import.meta.url), "utf8")).join("\n");
   const called = (pattern) => [...new Set([...app.matchAll(pattern)].map((match) => match[1]))];
   const sessionMethods = called(/\bsession\??\.([A-Za-z]+)\(/g);
   const deviceEvents = called(/\bDeviceEvent\.([A-Za-z]+)\(/g);
-  assert.ok(sessionMethods.includes("applyInputs") && deviceEvents.includes("mouseMove"), "app.js calls weren't found");
+  assert.ok(sessionMethods.includes("applyInputs") && deviceEvents.includes("mouseMove"), "RDP feature calls weren't found");
 
   const { connecting, socket } = setup();
   socket().frame(...sizeFrame);

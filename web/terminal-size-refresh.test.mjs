@@ -1,16 +1,14 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+
 import test from "node:test";
-import vm from "node:vm";
 
 import { TerminalFitScheduler } from "./terminal-fit-scheduler.mjs";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 function appFunction(name, context) {
   context.phoneView ??= { active: false };
-  const start = source.indexOf(`function ${name}(`);
-  const end = source.indexOf("\n}\n", start) + 2;
-  return vm.runInNewContext(`(${source.slice(start, end)})`, context);
+  const fixtureContext = featureFixture([name], context);
+  return fixtureContext[name];
 }
 
 test("Refresh Terminal Size refits every terminal on screen and reclaims each shell's size", () => {

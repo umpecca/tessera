@@ -23,6 +23,22 @@ export const terminalFonts = Object.freeze({
     label: "Departure Mono",
     family: '"Departure Mono", monospace',
   }),
+  spleen: Object.freeze({
+    label: "Spleen",
+    family: '"Spleen", monospace',
+  }),
+  "pixel-operator-mono": Object.freeze({
+    label: "Pixel Operator Mono",
+    family: '"Pixel Operator Mono", monospace',
+  }),
+  scientifica: Object.freeze({
+    label: "scientifica",
+    family: '"scientifica", monospace',
+  }),
+  cozette: Object.freeze({
+    label: "Cozette",
+    family: '"Cozette", monospace',
+  }),
 });
 
 export function normalizeTerminalFont(value) {

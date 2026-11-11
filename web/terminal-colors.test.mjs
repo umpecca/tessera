@@ -1,7 +1,9 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+
 import test from "node:test";
-import vm from "node:vm";
+
+import { TerminalConnections } from "./terminal-connections.mjs";
 
 import {
   defaultTerminalColorMode,
@@ -21,12 +23,9 @@ test("normalizes terminal color modes to the dark default", () => {
   }
 });
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 function appFunction(name, context) {
-  const match = new RegExp(`(?:async )?function ${name}\\(`).exec(source);
-  assert.ok(match, `missing app function ${name}`);
-  const end = source.indexOf("\n}\n", match.index) + 2;
-  return vm.runInNewContext(`(${source.slice(match.index, end)})`, context);
+  const fixtureContext = featureFixture([name], context);
+  return fixtureContext[name];
 }
 
 test("per-pane colors restart only that browser view and allow returning to the default", async () => {
@@ -80,10 +79,10 @@ test("changing the user color default leaves explicitly themed terminals connect
 });
 
 test("terminal attachment sends the effective color mode before workspace persistence", () => {
-  const url = appFunction("terminalWebSocketURL", {
-    window: { location: { protocol: "http:", host: "localhost:7331" } },
-    workspaceID: "session", URLSearchParams, phoneViewWanted: () => false,
+  const controller = new TerminalConnections({
+    context: () => ({ location: { protocol: "http:", host: "localhost:7331" }, workspaceID: "session", watch: false }),
   });
+  const url = controller.url.bind(controller);
   const pane = { id: "pane", terminal: { term: { coreID: "core" } } };
   assert.equal(new URL(url(pane, 80, 24, "light")).searchParams.get("colorMode"), "light");
   assert.equal(new URL(url(pane, 80, 24, "dark")).searchParams.get("colorMode"), "dark");

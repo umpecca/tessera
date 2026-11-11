@@ -2,6 +2,25 @@
 
 Terminal panes run a persistent shell on the Tessera host: ConPTY on Windows, a Unix PTY on macOS and Linux. Sessions keep bounded scrollback while the server runs, and restore their text and images when a browser reconnects.
 
+## Phone interaction modes
+
+Phone terminals start in **Interaction** mode, with the existing keyboard and
+compose controls. Tap **Interact** to switch to **Scroll** mode: the entire
+input bar disappears, and Back, the mode toggle, View and terminal actions move
+to the top header.
+
+In Scroll mode, drag with **one finger** to scroll local terminal history (or
+the text-reading view), without sending input to the running program. Drag with
+**two fingers** to send application mouse-wheel events. Two-finger scrolling
+only acts when the program enables mouse tracking; it never falls back to arrow
+keys or local history. Lifting one finger after a two-finger gesture does not
+start local scrolling until both fingers have lifted.
+
+Tap **Scroll** to return to Interaction mode. Switching preserves the compose
+draft and scroll position, dismisses the keyboard without reopening it on
+return, and does not resize the shared shell. The browser remembers its mode
+choice. Desktop and Interaction-mode touch behavior are unchanged.
+
 ## Features
 
 Terminal panes support Sixel images and restore retained text and images from
@@ -285,14 +304,34 @@ Use `Ctrl+Plus`/`Cmd+Plus` and `Ctrl+Minus`/`Cmd+Minus` to adjust the active
 pane's text size. A brief indicator shows the size as a percentage of the
 configured default; `Ctrl+0`/`Cmd+0` restores that default and shows 100%.
 
-Terminal panes use the locally bundled JetBrains Mono font by default. Choose
-JetBrains Mono, Fira Code, IBM Plex Mono, Commit Mono or Departure Mono under
-**Settings → Terminal → Font**; the per-user
-choice is persisted and applies immediately to open panes. Tessera waits for
+Tessera uses the locally bundled JetBrains Mono font by default. Choose
+JetBrains Mono, Fira Code, IBM Plex Mono, Commit Mono, Departure Mono, Spleen,
+Pixel Operator Mono, scientifica or Cozette under
+**Settings → Font**; the per-user choice is persisted separately for phones
+and desktops/iPads, and applies immediately throughout Tessera, including
+terminals, window titles, menus, settings and phone controls in every theme.
+Existing text sizes stay unchanged. Embedded websites and remote desktops keep
+their own fonts. Tessera waits for
 the regular and bold faces before creating a terminal so the canvas starts
 with stable character-cell measurements. A bundled Noto Sans Symbols 2 face is
 used only when the selected monospace font lacks a symbol, avoiding platform
 fallback metrics that can overlap terminal cells in legacy Firefox/macOS.
+
+Pixel fonts are sharpest at their native sizes and integer multiples. Spleen
+uses the 8×16 design (start at 16px); Pixel Operator Mono also targets 16px.
+Departure Mono targets 11px. Cozette uses the browser-compatible vector face
+of its 6×13 design; its appearance, like scientifica's, depends on size, browser
+zoom and display density. Pixel Operator Mono and scientifica include real bold
+faces; Spleen, Departure Mono and Cozette use synthesized bold. Cozette's upstream
+bold face is wider than its regular face, so Tessera does not use it. Changing
+the font does not change the pane's text size.
+
+Under **Settings → Font**, **Interface** independently scales menus, window
+titles, settings and phone controls (10–18px, default 12px). **Terminal default**
+sets text size for new terminal panes; **Current terminal** changes only the
+selected terminal. Interface sizing does not change terminal text, the shared
+shell's grid, embedded websites or remote desktops. Interface size is saved
+per user, separately for phones and desktops/iPads.
 
 Choose **Tight** (the default) or **Comfortable** under **Settings → Terminal →
 Row spacing**. Tight fits the font's full height without extra padding;

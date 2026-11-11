@@ -9,8 +9,8 @@ import {
   phoneKeyInit,
   phoneKeys,
   phoneReplies,
+  phoneRepliesStorageKey,
   removeAttachmentPath,
-  terminalAwaitsReply,
 } from "./phone-input.mjs";
 
 const keyNamed = (name) => phoneKeys.find((definition) => definition.name === name || definition.label === name);
@@ -36,16 +36,6 @@ test("a character typed with Ctrl held becomes that control key", () => {
   assert.equal(characterKeyInit("ab"), null);
 });
 
-test("a running program that has gone quiet is waiting for an answer", () => {
-  assert.equal(terminalAwaitsReply(null), false);
-  assert.equal(terminalAwaitsReply({ running: true, outputSecondsAgo: 0 }), false, "still printing");
-  assert.equal(terminalAwaitsReply({ running: true, outputSecondsAgo: 1 }, 2), true, "quiet for 3 s by now");
-  assert.equal(terminalAwaitsReply({ running: false, outputSecondsAgo: 60 }), false, "a shell at its prompt");
-  assert.equal(terminalAwaitsReply({ running: true, outputSecondsAgo: -1 }, 10), false, "never printed");
-  assert.equal(terminalAwaitsReply({ running: true, exited: true, outputSecondsAgo: 9 }), false);
-  assert.equal(terminalAwaitsReply({ running: false }, 0, true), true, "it rang or notified");
-});
-
 class FakeElement {
   constructor(ownerDocument, tag) {
     this.ownerDocument = ownerDocument;
@@ -68,7 +58,7 @@ class FakeElement {
   addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
   dispatch(type, event = {}) {
     let prevented = false;
-    for (const listener of this.listeners[type] || []) listener({ preventDefault() { prevented = true; }, target: this, ...event });
+    for (const listener of this.listeners[type] || []) listener({ preventDefault() { prevented = true; }, stopPropagation() {}, target: this, ...event });
     return prevented;
   }
   click() { this.dispatch("click"); }
@@ -94,6 +84,56 @@ function setup(overrides = {}) {
   });
   return { document, input, sent, stored };
 }
+
+test("suspending the keyboard bar preserves drafts, clears modifiers and cancels pending Send", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { input, sent, stored, document } = setup();
+  input.attach("a");
+  input.field.value = "do not send";
+  input.field.focus();
+  input.setCtrl(true);
+  input.sendButton.dispatch("pointerdown");
+  input.setSuspended(true);
+  assert.equal(input.element.hidden, true);
+  assert.equal(input.ctrl, false);
+  assert.equal(document.activeElement, null);
+  assert.equal(stored.get(phoneDraftStoragePrefix + "a"), "do not send");
+  t.mock.timers.tick(2000);
+  input.sendButton.click();
+  input.sendKey(keyNamed("Control+C"));
+  assert.deepEqual(sent, []);
+  input.setSuspended(false);
+  assert.equal(input.element.hidden, false);
+  assert.equal(input.field.value, "do not send");
+  assert.equal(document.activeElement, null);
+  input.send({ enter: false });
+  assert.deepEqual(sent, [["text", "a", "do not send", false]]);
+});
+
+test("bottom Copy/Paste use clipboard actions, preserve drafts/focus and cannot send Ctrl+C/Ctrl+V", async () => {
+  const calls = [];
+  let finish;
+  const { input, document, sent } = setup({ copySelection: pane => calls.push(["copy", pane]),
+    pasteClipboard: pane => { calls.push(["paste", pane]); return new Promise(resolve => { finish = resolve; }); } });
+  input.attach("a");
+  input.field.value = "keep draft";
+  input.field.focus();
+  assert.equal(input.clipboardCopyButton.dispatch("pointerdown"), true);
+  assert.equal(input.pasteButton.dispatch("pointerdown"), true);
+  input.clipboardCopyButton.click();
+  const pending = input.pasteClipboard();
+  input.pasteButton.click();
+  assert.equal(input.pasteButton.disabled, true);
+  assert.deepEqual(calls, [["copy", "a"], ["paste", "a"]], "one clipboard request at a time");
+  finish(); await pending;
+  assert.equal(input.pasteButton.disabled, false);
+  assert.equal(input.field.value, "keep draft");
+  assert.equal(document.activeElement, input.field);
+  assert.deepEqual(sent, []);
+  input.setSuspended(true);
+  input.clipboardCopyButton.click(); input.pasteButton.click();
+  assert.equal(calls.length, 2, "hidden keyboard-row actions cannot paste in Scroll mode");
+});
 
 test("the compose field sends a line, keeps drafts per terminal, and Send can skip Enter", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -153,62 +193,66 @@ test("the compose field leaves what's typed as typed", () => {
   assert.equal(input.field.spellcheck, false);
 });
 
-test("quick replies show while a program waits, and on request", () => {
-  const { input, sent } = setup();
-  input.attach("a");
-  assert.equal(input.replies.hidden, true);
-  input.update({ running: true, outputSecondsAgo: 0 }, 0);
-  assert.equal(input.replies.hidden, true);
-  input.update({ running: true, outputSecondsAgo: 4 }, 0);
-  assert.equal(input.replies.hidden, false);
-  assert.equal(input.element.dataset.waiting, "true");
-  input.replies.button("2").click();
-  assert.deepEqual(sent.at(-1), ["key", "a", { key: "2", code: "Digit2" }]);
-  input.update({ running: false, outputSecondsAgo: 0 }, 0);
-  assert.equal(input.replies.hidden, true);
-  input.repliesButton.click();
-  assert.equal(input.replies.hidden, false, "asked for");
-
-  input.attach("b", { alerted: true });
-  assert.equal(input.replies.hidden, false, "it rang before the phone opened it");
-  input.update({ running: true, outputSecondsAgo: 9999 }, 0);
-  assert.equal(input.replies.hidden, false);
-  input.field.value = "yes";
-  input.sendButton.click();
-  input.update({ running: false, outputSecondsAgo: 9999 }, 0);
-  assert.equal(input.replies.hidden, true, "answered");
-});
-
-test("quick replies don't come and go with a waiting program's odd redraw", (t) => {
+test("quick replies never automatically appear for quiet programs, alerts or elapsed time", (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const { input } = setup();
   input.attach("a");
-  input.update({ running: true, outputSecondsAgo: 4 }, 0);
-  assert.equal(input.replies.hidden, false);
-  input.update({ running: true, outputSecondsAgo: 0 }, 0);
-  assert.equal(input.replies.hidden, false, "one redraw");
-  t.mock.timers.tick(4000);
-  input.update({ running: true, outputSecondsAgo: 4 }, 0);
-  for (let second = 0; second < 9; second += 1) {
-    t.mock.timers.tick(1000);
-    input.update({ running: true, outputSecondsAgo: 0 }, 0);
+  assert.equal(input.replies.hidden, true);
+  for (const summary of [null, { running: true, outputSecondsAgo: 0 }, { running: true, outputSecondsAgo: 4 },
+    { running: true, outputSecondsAgo: 9999, alert: { kind: "bell" } }, { running: false, exited: true }]) {
+    t.mock.timers.tick(30000);
+    input.update(summary);
+    assert.equal(input.replies.hidden, true);
+    assert.equal(input.repliesButton.getAttribute("aria-pressed"), "false");
   }
-  assert.equal(input.replies.hidden, false, "printing for 9 s");
-  t.mock.timers.tick(2000);
-  input.update({ running: true, outputSecondsAgo: 0 }, 0);
-  assert.equal(input.replies.hidden, true, "busy for over 10 s");
+});
 
-  input.update({ running: true, outputSecondsAgo: 5 }, 0);
+test("123 alone controls quick replies; sending keys/text and program updates never hide them", () => {
+  const { input, sent, stored } = setup();
+  input.attach("a");
+  input.repliesButton.click();
+  assert.equal(input.repliesButton.getAttribute("aria-pressed"), "true");
+  assert.equal(stored.get(phoneRepliesStorageKey), "true");
+  input.replies.button("2").click();
+  assert.deepEqual(sent.at(-1), ["key", "a", { key: "2", code: "Digit2" }]);
+  input.field.value = "yes";
+  input.send({ enter: true });
+  assert.equal(input.replies.hidden, false, "answering does not change the toggle");
+  for (const summary of [null, { running: true, outputSecondsAgo: 0 }, { running: false, exited: true }]) {
+    input.update(summary);
+    assert.equal(input.replies.hidden, false);
+  }
+  input.detach(); input.attach("b");
+  assert.equal(input.replies.hidden, false, "switching terminals preserves the choice");
+  input.setSuspended(true); input.setSuspended(false);
+  assert.equal(input.replies.hidden, false, "Scroll mode preserves the choice");
+  input.repliesButton.click();
+  assert.equal(input.replies.hidden, true);
+  assert.equal(stored.get(phoneRepliesStorageKey), "false");
+});
+
+test("the manual quick reply choice survives reconstruction and recent commands still update", () => {
+  const stored = new Map();
+  const storage = { get: key => stored.get(key), set: (key, value) => stored.set(key, value) };
+  const first = setup({ storage }).input;
+  first.attach("a"); first.repliesButton.click();
+  const restored = setup({ storage }).input;
+  restored.attach("b");
+  assert.equal(restored.replies.hidden, false);
+  restored.update({ recentCommands: ["git status"] });
+  assert.deepEqual(restored.recent, ["git status"]);
+  restored.repliesButton.click();
+  const hidden = setup({ storage }).input;
+  hidden.attach("a");
+  assert.equal(hidden.replies.hidden, true);
+});
+
+test("manual quick replies also work without browser storage", () => {
+  const { input } = setup({ storage: undefined });
+  input.attach("a"); input.repliesButton.click();
   assert.equal(input.replies.hidden, false);
-  input.replies.button("y").click();
-  assert.equal(input.replies.hidden, true, "answered");
-  t.mock.timers.tick(3000);
-  input.update({ running: true, outputSecondsAgo: 5 }, 3);
-  assert.equal(input.replies.hidden, true, "nothing printed since the answer");
-  input.update({ running: true, outputSecondsAgo: 0 }, 0);
-  t.mock.timers.tick(3000);
-  input.update({ running: true, outputSecondsAgo: 3 }, 0);
-  assert.equal(input.replies.hidden, false, "printed, then waiting again");
+  input.attach("b");
+  assert.equal(input.replies.hidden, false);
 });
 
 test("the keys button types straight into the terminal instead", () => {
@@ -350,7 +394,7 @@ test("picked and pasted images are kept on the host, their paths put in the fiel
   assert.equal(input.notice.hidden, true, "the notice goes after a while");
 });
 
-test("Select asks for the terminal as text, and shows whether it is", () => {
+test("Select toggles local terminal selection and shows whether it is active", () => {
   const asked = [];
   const { input } = setup({ select: (on) => asked.push(on) });
   input.attach("a");

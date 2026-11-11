@@ -1,15 +1,13 @@
 // Typing into a terminal from a phone: a compose field with the phone's own
 // dictation that sends whole lines, a row of the keys a phone
-// keyboard lacks, one-tap answers when a program is waiting, a sheet of
+// keyboard lacks, a manually toggled row of one-tap answers, a sheet of
 // recent commands and saved snippets, and images from the phone, kept on the
 // host with their path put in the field for a program such as Claude Code. Keys go to the terminal as key events,
 // so cursor modes and the Kitty keyboard protocol apply as for a keyboard.
 
 export const phoneDraftStoragePrefix = "tessera.phone-draft.v1:";
+export const phoneRepliesStorageKey = "tessera.phone-replies.v1";
 const longPressMs = 500;
-const awaitingAfterSeconds = 3;
-// Printing this long without a pause means the program is busy, not asking.
-const repliesBusyMs = 10000;
 const maximumComposeHeight = 132;
 const attachmentNoticeMs = 10000;
 
@@ -92,16 +90,6 @@ export function phoneKeyInit(definition, { ctrl = false } = {}) {
   return init;
 }
 
-// Whether a program in the terminal looks like it is waiting for an answer:
-// it rang or notified when the phone opened the terminal, or a command is
-// running and has printed nothing for a few seconds (as Claude Code does
-// while it asks for permission).
-export function terminalAwaitsReply(summary, elapsedSeconds = 0, alerted = false) {
-  if (alerted) return true;
-  if (!summary?.running || summary.exited || !(summary.outputSecondsAgo >= 0)) return false;
-  return summary.outputSecondsAgo + Math.max(0, elapsedSeconds) >= awaitingAfterSeconds;
-}
-
 // Commands, paths and flags aren't prose: the phone mustn't correct,
 // capitalize or suggest replacements for them.
 function plainTextField(field) {
@@ -135,7 +123,7 @@ function button(document, className, label, name) {
 //   sendText(paneID, text, { enter })   paste text, then Enter if asked
 //   sendKey(paneID, init)               a key event for the terminal
 //   typeDirectly(paneID)                focus the terminal itself
-//   select(on)                          show the terminal as text to select
+//   select(on), copySelection()         select and copy on the terminal canvas
 //   loadSnippets(), saveSnippets(doc)   the account's snippets
 //   attachFile(file)                    keep a file on the host: { path }
 //   pasteImage(paneID, file)            paste an image into the program
@@ -147,7 +135,9 @@ export class PhoneInput {
     this.paneID = "";
     this.ctrl = false;
     this.direct = false;
-    this.forceReplies = false;
+    this.selecting = false;
+    this.suspended = false;
+    this.repliesVisible = options.storage?.get(phoneRepliesStorageKey) === "true";
     this.recent = [];
     this.snippets = null;
     this.snippetsRevision = "";
@@ -182,13 +172,21 @@ export class PhoneInput {
     this.repliesButton = button(doc, "phone-key phone-key-mode", "123", "Quick replies");
     this.repliesButton.setAttribute("aria-pressed", "false");
     this.repliesButton.addEventListener("click", () => {
-      this.forceReplies = !this.forceReplies;
+      this.repliesVisible = !this.repliesVisible;
+      this.options.storage?.set(phoneRepliesStorageKey, String(this.repliesVisible));
       this.renderReplies();
     });
     this.selectButton = button(doc, "phone-key phone-key-mode", "Select", "Select text to copy");
     this.selectButton.setAttribute("aria-pressed", "false");
     this.selectButton.addEventListener("click", () => this.options.select?.(this.selectButton.getAttribute("aria-pressed") !== "true"));
-    this.keys.append(this.hideKeyboardButton, this.directButton, this.repliesButton, this.selectButton);
+    this.clipboardCopyButton = button(doc, "phone-key phone-key-mode", "Copy", "Copy selected terminal text");
+    this.clipboardCopyButton.addEventListener("click", event => {
+      event.stopPropagation();
+      if (this.paneID && !this.suspended) void this.options.copySelection?.(this.paneID);
+    });
+    this.pasteButton = button(doc, "phone-key phone-key-mode", "Paste", "Paste clipboard into terminal");
+    this.pasteButton.addEventListener("click", () => { void this.pasteClipboard(); });
+    this.keys.append(this.hideKeyboardButton, this.clipboardCopyButton, this.pasteButton, this.selectButton, this.directButton, this.repliesButton);
     for (const definition of phoneKeys) {
       const node = button(doc, "phone-key", definition.label, definition.name);
       if (definition.sticky) {
@@ -258,6 +256,28 @@ export class PhoneInput {
     });
     this.compose.append(this.sheetButton, this.attachButton, this.picker, this.field, this.sendButton);
 
+    this.selectionControls = element(doc, "div", "phone-compose phone-selection-controls");
+    this.selectionControls.hidden = true;
+    this.selectionControls.setAttribute("role", "group");
+    this.selectionControls.setAttribute("aria-label", "Terminal selection");
+    this.selectionControls.addEventListener("click", event => event.stopPropagation());
+    this.selectionHint = element(doc, "span", "phone-selection-hint", "Drag to select");
+    this.selectionHint.setAttribute("role", "status");
+    this.selectionControls.append(this.selectionHint);
+    this.selectionScrollButtons = [];
+    for (const [label, direction] of [["Up", -1], ["Down", 1]]) {
+      const node = button(doc, "phone-text-button", label === "Up" ? "TUI ↑" : "TUI ↓", `Scroll TUI ${label}`);
+      node.hidden = true;
+      node.addEventListener("click", () => this.options.scrollSelection?.(direction));
+      this.selectionScrollButtons.push(node);
+      this.selectionControls.append(node);
+    }
+    this.copyButton = button(doc, "phone-text-button", "Copy", "Copy terminal selection");
+    this.copyButton.addEventListener("click", () => { void this.options.copySelection?.(); });
+    this.doneButton = button(doc, "phone-text-button", "Done", "Finish terminal selection");
+    this.doneButton.addEventListener("click", () => this.options.select?.(false));
+    this.selectionControls.append(this.copyButton, this.doneButton);
+
     this.notice = element(doc, "div", "phone-input-notice");
     this.notice.hidden = true;
     this.notice.setAttribute("role", "status");
@@ -283,18 +303,11 @@ export class PhoneInput {
     this.barStart = element(doc, "div", "phone-bar-end");
     this.barEnd = element(doc, "div", "phone-bar-end");
     this.bar.append(this.barStart, this.keys, this.barEnd);
-    this.element.append(this.notice, this.replies, this.bar, this.compose, this.sheet);
+    this.element.append(this.notice, this.replies, this.bar, this.compose, this.selectionControls, this.sheet);
   }
 
-  attach(paneID, { alerted = false } = {}) {
+  attach(paneID) {
     this.paneID = paneID;
-    this.alerted = alerted;
-    this.openedAt = Date.now();
-    this.summary = null;
-    this.forceReplies = false;
-    this.offering = false;
-    this.busySince = 0;
-    this.answeredAt = 0;
     this.setCtrl(false);
     this.setDirect(false, { focus: false });
     this.closeSheet();
@@ -312,51 +325,31 @@ export class PhoneInput {
     if (this.field === this.document.activeElement) this.field.blur();
   }
 
-  // The open terminal's latest summary, and how long ago it arrived.
-  update(summary, elapsedSeconds) {
-    this.summary = summary;
-    this.elapsed = elapsedSeconds;
-    this.recent = Array.isArray(summary?.recentCommands) ? summary.recentCommands : [];
-    // Once the terminal has printed since it was opened, the alert that was
-    // waiting has been answered or was never a question.
-    if (this.alerted && summary?.outputSecondsAgo >= 0 && summary.outputSecondsAgo < this.openedFor()) this.alerted = false;
-    this.renderReplies();
-  }
-
-  openedFor() {
-    return this.openedAt ? (Date.now() - this.openedAt) / 1000 : Infinity;
-  }
-
-  // A waiting program can still print now and then (a redraw, a clock), and
-  // replies that came and went with each print would make the terminal above
-  // jump. Once offered they stay until the program stops, an answer goes, or
-  // it prints without a pause for a while. After an answer they come back
-  // only once the program has printed since and gone quiet again.
-  renderReplies() {
-    const quiet = this.summary?.outputSecondsAgo >= 0 ? this.summary.outputSecondsAgo + Math.max(0, this.elapsed || 0) : -1;
-    const sinceAnswer = this.answeredAt ? (Date.now() - this.answeredAt) / 1000 : Infinity;
-    const waiting = terminalAwaitsReply(this.summary, this.elapsed, this.alerted) && (this.alerted || quiet < sinceAnswer);
-    const running = this.alerted || Boolean(this.summary?.running && !this.summary.exited);
-    if (waiting) {
-      this.offering = true;
-      this.busySince = 0;
-    } else if (!running) {
-      this.offering = false;
-    } else if (this.offering) {
-      this.busySince ||= Date.now();
-      if (Date.now() - this.busySince >= repliesBusyMs) this.offering = false;
+  // Scroll mode keeps the draft/attachment state attached to this pane, but no
+  // keyboard UI, pending long press, modifier or late click may send input.
+  setSuspended(on) {
+    if (on && !this.suspended) {
+      this.saveDraft();
+      clearTimeout(this.longPressTimer);
+      this.longPress = false;
+      this.setCtrl(false);
+      this.closeSheet();
+      this.hideKeyboard();
     }
-    this.replies.hidden = !(this.offering || this.forceReplies);
-    this.repliesButton.setAttribute("aria-pressed", String(!this.replies.hidden));
-    this.element.dataset.waiting = String(this.offering);
+    this.suspended = on;
+    this.element.hidden = on || !this.paneID;
   }
 
-  answered() {
-    this.alerted = false;
-    this.offering = false;
-    this.busySince = 0;
-    this.answeredAt = Date.now();
-    this.renderReplies();
+  // Summary updates refresh recent commands, never keyboard layout.
+  update(summary) {
+    this.recent = Array.isArray(summary?.recentCommands) ? summary.recentCommands : [];
+  }
+
+  // Only the 123 toggle changes this preference. Output, alerts and answers
+  // must not make the terminal jump by adding/removing a keyboard row.
+  renderReplies() {
+    this.replies.hidden = !this.repliesVisible;
+    this.repliesButton.setAttribute("aria-pressed", String(this.repliesVisible));
   }
 
   hideKeyboard() {
@@ -365,7 +358,19 @@ export class PhoneInput {
   }
 
   showSelecting(on) {
+    this.selecting = on;
+    if (on) {
+      this.saveDraft();
+      this.closeSheet();
+      this.hideKeyboard();
+      this.selectionHint.textContent = "Drag to select";
+      this.notice.hidden = true;
+    }
     this.selectButton.setAttribute("aria-pressed", String(on));
+    this.selectionControls.hidden = !on;
+    this.compose.hidden = on || this.direct;
+    this.directButton.disabled = on;
+    if (!on) this.showNotice("");
   }
 
   setCtrl(on) {
@@ -373,22 +378,31 @@ export class PhoneInput {
     this.ctrlButton.setAttribute("aria-pressed", String(on));
   }
 
+  async pasteClipboard() {
+    if (!this.paneID || this.suspended || this.pastingClipboard) return;
+    this.pastingClipboard = true;
+    this.pasteButton.disabled = true;
+    try { await this.options.pasteClipboard?.(this.paneID); }
+    finally { this.pastingClipboard = false; this.pasteButton.disabled = false; }
+  }
+
   setDirect(on, { focus = true } = {}) {
+    if ((this.suspended || this.selecting) && on) return;
     this.direct = on;
     this.directButton.setAttribute("aria-pressed", String(on));
-    this.compose.hidden = on;
-    if (!focus) return;
+    this.compose.hidden = on || this.selecting;
+    this.options.onDirectChange?.(this.paneID, on);
+    if (!focus || this.suspended) return;
     if (on) this.options.typeDirectly?.(this.paneID);
     else this.field.focus({ preventScroll: true });
   }
 
   sendKey(definition) {
-    if (!this.paneID) return;
+    if (!this.paneID || this.suspended) return;
     const init = phoneKeyInit(definition, { ctrl: this.ctrl });
     this.setCtrl(false);
     if (!init) return;
     this.options.sendKey(this.paneID, init);
-    this.answered();
   }
 
   // With Ctrl held, the next character typed is a control key for the
@@ -403,7 +417,7 @@ export class PhoneInput {
   }
 
   send({ enter }) {
-    if (!this.paneID) return;
+    if (!this.paneID || this.suspended) return;
     const text = this.field.value;
     if (!text && !enter) return;
     this.options.sendText(this.paneID, text, { enter });
@@ -411,7 +425,6 @@ export class PhoneInput {
     this.field.value = "";
     this.options.storage?.remove(phoneDraftStoragePrefix + this.paneID);
     this.fitField();
-    this.answered();
   }
 
   // Keeps each image on the host and puts its path in the field. One image
@@ -463,7 +476,8 @@ export class PhoneInput {
 
   showNotice(text, action = null, { keep = false } = {}) {
     clearTimeout(this.noticeTimer);
-    this.notice.hidden = !text;
+    this.notice.hidden = !text || this.selecting;
+    if (this.selecting) this.selectionHint.textContent = text || "Drag to select";
     this.noticeText.textContent = text;
     this.noticeAction.hidden = !action;
     this.noticeAction.textContent = action?.label || "";

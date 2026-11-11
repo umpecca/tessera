@@ -1,19 +1,19 @@
+import { featureFixture } from "./application.test-support.mjs";
+import { createBrowser } from "./browser-view.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { terminalFindShortcut } from "./terminal-find.mjs";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-function appFunction(name, globals) {
+function appFunction(name, globals = {}) {
   globals.shortcutsUI ||= { element: { hidden: true } };
   globals.screensaver ||= { element: { hidden: true } };
   globals.saveClipboardDialog ||= { element: { hidden: true }, close() {} };
   globals.terminalFindShortcut ||= terminalFindShortcut;
   globals.appleKeyboardLayout ??= false;
-  const start = source.indexOf(`function ${name}(`);
-  const end = source.indexOf("\n}\n", start) + 2;
-  return vm.runInNewContext(`(${source.slice(start, end)})`, globals);
+  const fixtureContext = featureFixture([name], globals);
+  return fixtureContext[name];
 }
 function overlays() {
   return Object.fromEntries(["settingsModal", "localHTTPSModal", "renameWindowModal", "sessionsModal", "sessionActionModal",
@@ -168,8 +168,9 @@ test("list keys move the highlight, open from the panel, and leave native button
 });
 
 test("Browser panes and the browser proxy relay Ctrl/Cmd+; out of the page", () => {
-  const relayed = source.split("\n").find(line => line.startsWith("const browserPaneRelayedKeys = "));
-  assert.ok(relayed.includes('";", "Semicolon"'), "Browser panes relay Ctrl/Cmd+;");
+  const browser = createBrowser({});
+  browser.initializeBrowserPaneKind();
+  assert.ok(browser.browserPaneRelayedKeys.has(";") && browser.browserPaneRelayedKeys.has("Semicolon"), "Browser panes relay Ctrl/Cmd+;");
   const proxy = readFileSync(new URL("../internal/httpapi/browser_proxy.go", import.meta.url), "utf8");
   const start = proxy.indexOf("const relayKeys=");
   const script = proxy.slice(start).split("\n").slice(0, 2).join("\n");

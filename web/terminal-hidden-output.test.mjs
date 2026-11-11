@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+import { featureFixture } from "./application.test-support.mjs";
 import { TerminalReplica } from "./terminal-replica.mjs";
+import { TerminalConnections } from "./terminal-connections.mjs";
 import { TerminalWriteCoordinator, TerminalWriteScheduler } from "./terminal-write-scheduler.mjs";
 import { terminalIsCovered } from "./terminal-visibility.mjs";
 import { terminalBacklogCloseCode, terminalCloseOutcome, terminalConnectingStatus, terminalShouldRetry } from "./terminal-reconnect.mjs";
 import { acceptTerminalAlert, mergeTerminalAttention, terminalNoticeText } from "./terminal-attention.mjs";
 import { terminalProgressDescription, terminalProgressFromMessage, terminalProgressLifetimeMs, terminalProgressWidth } from "./terminal-progress.mjs";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const attachment = { type: "attach", protocol: 2, core: "core", epoch: "shell", sequence: 3, offset: 12, snapshotBytes: 4, reset: true };
 
 function frame(kind, sequence, offset, payload = new Uint8Array()) {
@@ -59,12 +59,21 @@ function fixture() {
   const document = { hidden: false, body: {}, focused: true, hasFocus() { return this.focused; } };
   const notices = [], systemNotifications = [];
   document.activeElement = document.body;
-  const context = vm.createContext({
+  const context = featureFixture(["setActivePane", "clearActivePane", "clearActivePaneClass", "setTerminalCursorBlink",
+    "paneUnseen", "updatePaneRenderState", "syncRDPShown", "updateTerminalRenderState", "setTerminalOutputPaused", "updateTerminalDocumentVisibility",
+    "terminalSocketOpened", "terminalControlMessage", "handleTerminalAudioMessage", "resumeTerminalConnections",
+    "terminalPaneFocused", "updateTerminalFocus", "handleTerminalAlert", "sendTerminalAlertSeen", "clearTerminalAttention", "renderTerminalAttention",
+    "applyTerminalProgress", "recoverAfterBrowserWake"], {
     WebSocket: Socket, Uint8Array, URLSearchParams, document, rectangles: [rect], activeRect: rect, workspaceID: "workspace",
     activePaneID: rect.id, board: { dataset: {} }, scheduleWorkspaceSave() {}, updateDeskbar() {}, phoneView: { active: false, openPaneID: "" }, phoneViewWanted: () => false,
     terminalIsCovered, terminalBacklogCloseCode, terminalCloseOutcome, terminalConnectingStatus, terminalShouldRetry,
     rdpHideDelayMs: 2000, ghosttyModulePromise: null, terminalOutputCoalescing: false, authMode: "off", signInEndedCloseCode: 4401, terminalColorMode: "dark", serverConnectionModal: { hidden: true },
-    window: { location: { protocol: "http:", host: "localhost:7331" }, setTimeout: schedule, clearTimeout: cancel },
+    window: { location: { protocol: "http:", host: "localhost:7331" }, setTimeout: schedule, clearTimeout: cancel,
+      Notification: class {
+        static permission = "granted";
+        constructor(title, { body, tag }) { systemNotifications.push({ title, body, tag, source: "" }); }
+      },
+    },
     attachTerminalMouseBridge: () => ({ dispose() {} }), setPaneCwd() {}, sendTerminalGridSize() {}, browserInUse: () => true,
     terminalAudioPlayer: { receive: (key, event) => audio.push([key, event]), disconnect: key => audio.push([key, "disconnect"]),
       streaming: key => streaming.has(key) },
@@ -78,17 +87,24 @@ function fixture() {
     terminalProgressDescription, terminalProgressFromMessage, terminalProgressLifetimeMs, terminalProgressWidth,
     terminalNotices: { show: (key, text) => notices.push(["show", key, text]), dismiss: key => notices.push(["dismiss", key]) },
     systemNotificationsEnabled: false,
-    showSystemNotification: (_, text) => systemNotifications.push(text),
   });
-  for (const name of ["setActivePane", "clearActivePane", "clearActivePaneClass", "setTerminalCursorBlink",
-    "paneUnseen", "updatePaneRenderState", "syncRDPShown", "updateTerminalRenderState", "setTerminalOutputPaused", "updateTerminalDocumentVisibility", "connectTerminalSocket",
-    "applyTerminalTextMessage", "handleTerminalAudioMessage", "handleTerminalSocketClose", "retryTerminalNow", "resumeTerminalConnections", "terminalWebSocketURL",
-    "terminalPaneFocused", "updateTerminalFocus", "handleTerminalAlert", "sendTerminalAlertSeen", "clearTerminalAttention", "renderTerminalAttention",
-    "applyTerminalProgress"]) {
-    const start = source.indexOf(`function ${name}(`), end = source.indexOf("\n}\n", start) + 2;
-    assert.ok(start >= 0 && end > start, name);
-    vm.runInContext(source.slice(start, end), context);
-  }
+  const connections = new TerminalConnections({
+    context: () => ({ workspaceID: context.workspaceID, location: context.window.location,
+      watch: context.phoneViewWanted(), colorMode: context.terminalColorMode,
+      authMode: context.authMode, serverReported: !context.serverConnectionModal.hidden }),
+    opened: context.terminalSocketOpened, control: context.terminalControlMessage,
+    mouseBridge: context.attachTerminalMouseBridge, setStatus: context.setTerminalStatus,
+    disconnectAudio: key => context.terminalAudioPlayer.disconnect(key),
+    reauthenticate: () => context.signInRecovery.ensureSignedIn(),
+    retire: context.destroyRectangle, host: name => { context.terminalHostName = name; },
+    attached: context.completeTerminalWakeRecovery, Socket, timers: context.window,
+  });
+  Object.assign(context, {
+    connectTerminalSocket: connections.connect.bind(connections),
+    handleTerminalSocketClose: connections.closed.bind(connections),
+    retryTerminalNow: connections.retry.bind(connections),
+    terminalWebSocketURL: connections.url.bind(connections),
+  });
   const drain = () => {
     while (timers.size) {
       const [id, callback] = timers.entries().next().value;
@@ -508,8 +524,6 @@ test("wake recovery leaves hidden terminals connected without restarting their p
     requestTerminalFit() { throw new Error("hidden wake must not fit or reconnect the terminal"); },
     updateWakeRecoveryStatus() {}, checkServerConnection: async () => true,
   });
-  const start = source.indexOf("async function recoverAfterBrowserWake("), end = source.indexOf("\n}\n", start) + 2;
-  vm.runInContext(source.slice(start, end), f.context);
   await f.context.recoverAfterBrowserWake();
   assert.equal(f.sockets.length, 1);
   assert.equal(f.sockets[0].readyState, 1);

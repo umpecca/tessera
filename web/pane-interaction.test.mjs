@@ -1,10 +1,10 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+
 import test from "node:test";
-import vm from "node:vm";
+
 import { terminalFindShortcut } from "./terminal-find.mjs";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 test("background polling replaces its timer and restores the foreground cadence", () => {
   const delays = [];
   const cleared = [];
@@ -23,17 +23,15 @@ test("background polling replaces its timer and restores the foreground cadence"
   assert.deepEqual(cleared, [7, 8]);
 });
 
-function appFunction(name, globals) {
+function appFunction(name, globals = {}) {
   globals.shortcutsUI ||= { element: { hidden: true } };
   globals.screensaver ||= { element: { hidden: true } };
   globals.saveClipboardDialog ||= { element: { hidden: true }, close() {} };
   globals.lastClipboardSave ||= { paths: [] };
   globals.terminalFindShortcut ||= terminalFindShortcut;
   globals.appleKeyboardLayout ??= false;
-  const start = source.indexOf(`function ${name}(`);
-  const end = source.indexOf("\n}\n", start) + 2;
-  const prefix = source.slice(start - 6, start) === "async " ? "async " : "";
-  return vm.runInNewContext(`(${prefix}${source.slice(start, end)})`, globals);
+  const fixtureContext = featureFixture([name], globals);
+  return fixtureContext[name];
 }
 
 test("dialogs block window shortcuts from both the document and iframe resolver", () => {
@@ -181,29 +179,6 @@ test("a terminal removed while its dependencies load never opens or connects", a
   release({ Terminal: class { constructor() { assert.fail("opened a removed terminal"); } } });
   await pending;
   assert.equal(rect.terminal, undefined);
-});
-
-test("exit saves accept their own pending revision and carry reverted content", () => {
-  let request;
-  const exit = appFunction("saveWorkspaceOnExit", {
-    isLoadingWorkspace: false, workspaceSaveSuspended: false, workspaceNeedsRevalidation: false,
-    saveTimer: 1, workspaceSavePromise: {}, workspaceInFlightRevision: "pending-revision",
-    workspaceID: "test", maxKeepaliveSaveBytes: 1000, TextEncoder,
-    window: { clearTimeout() {} }, newWorkspaceRevision: () => "newrevision",
-    workspaceSavePayload: () => ({
-      body: { revision: "loaded-revision", panes: [{ id: "editor", bufferTextUnchanged: true, editorTabsUnchanged: true }] },
-      contentByPaneID: new Map([["editor", { bufferText: "original text", editorTabs: "" }]]),
-    }),
-    fetch(url, options) { request = options; return Promise.resolve(); },
-  });
-  exit();
-  const body = JSON.parse(request.body);
-  assert.equal(body.revision, "loaded-revision");
-  assert.equal(body.alternateRevision, "pending-revision");
-  assert.equal(body.nextRevision, "newrevision");
-  assert.equal(body.panes[0].bufferText, "original text");
-  assert.equal(body.panes[0].bufferTextUnchanged, undefined);
-  assert.equal(body.panes[0].editorTabsUnchanged, undefined);
 });
 
 test("moving panes avoids size measurements, while resize and initial layout still measure", () => {

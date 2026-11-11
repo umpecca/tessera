@@ -77,6 +77,8 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 
 	settings := map[string]any{
 		"defaultPaneFontSize": 18, "defaultTheme": "studio", "themeId": "hacker",
+		"interfaceFontSize":    16,
+		"phone":                map[string]any{"interfaceFontSize": 14, "defaultPaneFontSize": 13},
 		"deskbarButtonEnabled": false, "terminalWheelSensitivity": 0.5,
 		"oledWindowBorderSize": 16,
 		"terminalTerm":         "xterm-ghostty", "terminalFont": "fira-code",
@@ -98,6 +100,9 @@ func TestSessionAPIAndUserSettings(t *testing.T) {
 	}
 	if loadedSettings.DeskbarButtonEnabled {
 		t.Fatalf("deskbar button setting was not persisted: %+v", loadedSettings)
+	}
+	if loadedSettings.InterfaceFontSize != 16 || loadedSettings.DefaultPaneFontSize != 18 || loadedSettings.Phone == nil || loadedSettings.Phone.InterfaceFontSize != 14 || loadedSettings.Phone.DefaultPaneFontSize != 13 {
+		t.Fatalf("independent interface and terminal sizes were not persisted: %+v", loadedSettings)
 	}
 	if loadedSettings.TerminalWheelSensitivity != 0.5 {
 		t.Fatalf("wheel sensitivity settings were not persisted: %+v", loadedSettings)

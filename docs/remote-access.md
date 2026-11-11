@@ -26,7 +26,8 @@ updates as things change while the page is open, holding one request open on
 the host rather than connecting to every terminal. Tap a card to use that
 terminal full screen. Its buttons sit at the ends of the key row under it, so
 the terminal reaches the top of the screen: **‹** goes back to the list, and
-**Aa** and **⋯** are at the right. **⋯** on a card or the open terminal sends
+**Aa** and **⋯** are at the right. Tapping **⋯** or **Aa** again closes its
+menu; tapping outside closes it too. **⋯** on a card or the open terminal sends
 `Ctrl+C`, renames the window or closes it (for the open terminal it is headed
 by the window's name and what its shell is doing), **+** starts a new
 terminal, and the session name at the top switches sessions. Browser, VNC and
@@ -39,20 +40,42 @@ the program asked for that, so a multi-line prompt reaches Claude Code as one
 message and a shell doesn't run it line by line. What you haven't sent is
 kept for that terminal. Above it, a row of the keys a phone keyboard lacks:
 Esc, Tab, Shift+Tab, Ctrl, the arrows, `^C`, `^D`, `|`, `~`, `/`, `-` and
-Enter. They reach the terminal as key events, so full-screen programs and
+Enter. **Copy** copies highlighted terminal cells; **Paste** sends clipboard
+text directly to the program, bracketed when requested, without appending Enter
+or opening the keyboard. They are clipboard actions, not Ctrl+C/Ctrl+V shortcuts.
+If browser clipboard access is blocked, Paste can use Tessera's last copy and
+says so; native clipboard permission prompts still apply.
+
+The other keys reach the terminal as key events, so full-screen programs and
 the Kitty keyboard protocol get what a keyboard would send. **Ctrl** applies
 to the next key, from the row or typed in the field (Ctrl then `r` searches
 shell history), and is never a window shortcut. **Type** switches to typing
 into the terminal itself, for Vim or `less`; only it opens the keyboard, so
 tapping or scrolling the terminal doesn't. While the keyboard is up, **⌄** at
-the start of the row puts it away and stops typing directly. **Select** lays the terminal's
-text over it, still, to select with the phone's own handles and copy (a
-full-screen program's screen as it stands); tap it again to go back.
+the start of the row puts it away and stops typing directly. **Select** keeps
+the normal terminal screen visible, including a full-screen program's layout
+and colors. Drag across cells to highlight text, then tap **Copy**. **Done**
+(or Select again in Interact) returns without opening the keyboard. Selection
+drags stay local: they never become application mouse presses. A saved Text
+view preference is restored after selection ends.
 
-When a running program has printed nothing for a few seconds, or rang or
-notified before you opened it, as Claude Code does when it asks for
-permission, a row of one-tap answers appears: `1`, `2`, `3`, `y`, `n`, Enter
-and Esc. **123** shows it any time. **☰** lists the terminal's recent commands
+For mouse-aware full-screen programs such as Fresh, **TUI ↑** and **TUI ↓**
+appear beside Copy while **Select** is open. These scroll the running program
+so you can reach more text before selecting it. Two fingers can also scroll
+the TUI; a single finger selects. TUI navigation clears the previous selection
+and requires mouse support: it never falls back to typing arrow keys into a
+shell. The screen remains live, so copy before program output changes the text.
+
+Opening the compose keyboard keeps the shell's grid and existing terminal canvas
+stable, panning its last rows above the keyboard instead of repeatedly resizing
+the program. After the keyboard closes and settles, fitting resumes. **Type**
+still uses the terminal's normal direct-input behavior. Editable fields keep a
+16px minimum even with a smaller interface setting, to avoid Safari auto-zoom.
+
+**123** shows or hides a row of one-tap answers: `1`, `2`, `3`, `y`, `n`, Enter
+and Esc. The choice is remembered in this browser across terminals and reloads.
+The row never opens or closes automatically because a program goes quiet,
+prints output, rings an alert or receives an answer. **☰** lists the terminal's recent commands
 and your snippets; tapping one puts it in the field to change or send.
 **📎** sends photos or images from the phone (the photo library, the camera
 or Files), and a screenshot pasted into the field goes the same way: each is
@@ -67,6 +90,21 @@ Snippets belong to your account, so every device has them, and **New…**
 starts one from what is in the field. Recent commands come from the shell's
 prompt marks, so they need shell integration, and leave out lines the shell
 reported only in part (a second line, or past 200 characters).
+
+In **Scroll** mode, **Page Up** and **Page Down** at the bottom move through
+local text or canvas history one visible page at a time, with a little overlap.
+They never send PageUp/PageDown keys, mouse events or other input to the running
+program. Full-screen programs still use the existing two-finger application scroll.
+Phone-layout terminal scroll gestures have a 35% distance boost for less finger
+travel; selection precision, page-button distances and desktop/tablet layouts
+are unchanged.
+
+**Select** is also available beside the page buttons. It selects cells on the
+normal canvas while you remain in Scroll mode, with **Copy**, **Done** and
+mouse-aware **TUI ↑/↓** navigation replacing the page buttons. No typing controls
+or keyboard are needed. **Done** restores the page buttons and stays in Scroll.
+In Interact, application mouse gestures still reach Fresh, but tapping the
+canvas no longer focuses terminal input: only an explicit **Type** action does.
 
 Opening a terminal on the phone does not move, resize or raise its window,
 and does not save the workspace, so the desk's layout is left as it was.

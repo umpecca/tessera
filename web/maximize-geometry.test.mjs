@@ -1,16 +1,11 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import test from "node:test";
-import vm from "node:vm";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+import test from "node:test";
+
 function appFunctions(names, context) {
-  const bodies = names.map((name) => {
-    const start = source.indexOf(`function ${name}(`);
-    return source.slice(start, source.indexOf("\n}\n", start) + 2);
-  });
-  vm.runInNewContext(bodies.join("\n"), context);
-  return context;
+  const fixtureContext = featureFixture(names, context);
+  return fixtureContext;
 }
 
 function workspace(bounds) {

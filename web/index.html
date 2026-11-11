@@ -9,7 +9,7 @@
       html[data-startup]:not([data-theme]) body { background: #10141c; }
       html[data-startup]:not([data-theme]) .startup-shell { color: #e5e1d5; }
       html[data-startup] body > :not(#startup):not(noscript) { visibility: hidden; }
-      .startup-shell { position: fixed; inset: 0; display: grid; place-content: center; gap: 16px; padding: 24px; text-align: center; color: var(--text, #e5e1d5); font: 14px system-ui, sans-serif; opacity: 0; animation: startup-appear 150ms linear 600ms forwards; }
+      .startup-shell { position: fixed; inset: 0; display: grid; place-content: center; gap: 16px; padding: 24px; text-align: center; color: var(--text, #e5e1d5); font: 0.875rem var(--tessera-font, monospace); opacity: 0; animation: startup-appear 150ms linear 600ms forwards; }
       .startup-shell[hidden] { display: none; }
       .startup-shell p { margin: 0; }
       .startup-shell a { color: inherit; }

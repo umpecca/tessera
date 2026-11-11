@@ -164,6 +164,7 @@ export class SaveClipboardDialog {
     this.current = "";
     this.saving = false;
     this.listing = 0;
+    this.generation = 0;
 
     this.element = document.createElement("div");
     this.element.className = "settings-modal save-clipboard-modal";
@@ -181,6 +182,7 @@ export class SaveClipboardDialog {
     titleBar.className = "settings-title";
     const title = document.createElement("h2");
     title.id = "save-clipboard-title";
+    this.title = title;
     title.textContent = "Save Clipboard to File";
     titleBar.append(title);
 
@@ -265,30 +267,33 @@ export class SaveClipboardDialog {
   }
 
   // current is the active terminal's folder, or "" when it has none.
-  open({ current = "" } = {}) {
+  open({ current = "", entries = null, title = "Save Clipboard to File" } = {}) {
+    const generation = ++this.generation;
+    this.title.textContent = title;
     this.entries = [];
     this.current = current;
     this.saving = false;
-    this.setStatus("Reading the clipboard…");
+    this.setStatus(entries ? "Review files before saving to the host." : "Reading the clipboard…");
     this.renderItems();
     this.element.hidden = false;
     // Start the read before anything awaits, while this is still a user action.
     let reading;
-    try { reading = Promise.resolve(this.readClipboard()); } catch (error) { reading = Promise.reject(error); }
+    try { reading = Promise.resolve(entries ?? this.readClipboard()); } catch (error) { reading = Promise.reject(error); }
     void this.browse(current, { fallback: true });
     this.panel.focus();
     reading.then((entries) => {
-      if (this.element.hidden) return;
+      if (this.element.hidden || generation !== this.generation) return;
       this.add(entries);
       this.setStatus(this.entries.length ? "" : `The clipboard is empty, or the browser would not share it. Press ${this.pasteKey} here to paste.`);
     }, () => {
-      if (!this.element.hidden) this.setStatus(`The browser would not share the clipboard. Press ${this.pasteKey} here to paste.`);
+      if (!this.element.hidden && generation === this.generation) this.setStatus(`The browser would not share the clipboard. Press ${this.pasteKey} here to paste.`);
     });
   }
 
   close() {
     if (this.element.hidden) return;
     this.element.hidden = true;
+    this.generation++;
     this.entries = [];
     this.items.replaceChildren();
     this.onClose();

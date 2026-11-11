@@ -27,21 +27,21 @@ const baseURL = await new Promise((resolve, reject) => {
 });
 const instrumentation = `
 window.fileSmoke = {
- ready: () => Boolean(currentSessionID) && !isLoadingWorkspace,
- commands: () => buildPaletteCommands().map(command => command.id),
- moveArchive() { const pane = rectangles.find(rect => rect.id === "archived-editor");
-   if (pane) setRectangle(pane, { ...rectangleBox(pane), x: pane.x + 4 }); },
- create() { this.pane = createTerminalPane(40,60); return this.pane.id; },
- restore(id) { this.pane = rectangles.find(rect => rect.id === id); },
+ ready: () => Boolean(navigation.currentSessionID) && !workspace.isLoadingWorkspace,
+ commands: () => palette.buildPaletteCommands().map(command => command.id),
+ moveArchive() { const pane = desktop.rectangles.find(rect => rect.id === "archived-editor");
+   if (pane) geometry.setRectangle(pane, { ...geometry.rectangleBox(pane), x: pane.x + 4 }); },
+ create() { this.pane = desktop.createTerminalPane({x:40,y:60}); return this.pane.id; },
+ restore(id) { this.pane = desktop.rectangles.find(rect => rect.id === id); },
  send(command) { this.pane.terminal.socket.send(new TextEncoder().encode(command + "\\r")); },
- hide() { setMinimized(this.pane,true); }, reveal() { setMinimized(this.pane,false); },
- save() { return flushAllPersistence(); },
+ hide() { geometry.setMinimized(this.pane,true); }, reveal() { geometry.setMinimized(this.pane,false); },
+ save() { return workspace.flushAllPersistence(); },
  state() { return { connected: this.pane?.terminal?.socket?.readyState === WebSocket.OPEN,
   epoch: this.pane?.terminal?.files?.epoch, count: this.pane?.terminal?.files?.requests.size,
   paused: this.pane?.terminal?.outputPaused }; },
  text() { const b = this.pane.terminal.term.wasmTerm;
   return Array.from({length:b.getDimensions().rows}, (_,row)=>b.getLine(row).map(c=>String.fromCodePoint(c.codepoint||32)).join('')).join(''); },
- cleanup() { if(this.pane) destroyRectangle(this.pane,{closeServerTerminal:true}); }
+ cleanup() { if(this.pane) desktop.destroyRectangle(this.pane,{closeServerTerminal:true}); }
 };`;
 const source = await readFile(path.join(root, "web/app.js"), "utf8");
 const quote = v => "'" + v.replaceAll("'", process.platform === "win32" ? "''" : "'\\''") + "'";

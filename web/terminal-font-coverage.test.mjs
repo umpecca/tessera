@@ -118,3 +118,51 @@ test("Departure Mono face and redistribution license are bundled", () => {
   assert.match(license, /Copyright 2022–2024 Helena Zhang/);
   assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/);
 });
+
+const pixelFontAssets = [
+  {
+    family: "Spleen", faces: [["Spleen-8x16.woff2", 400]],
+    license: "Spleen-LICENSE.txt", notices: [/Frederic Cambus/, /Redistribution and use in source and binary forms/],
+  },
+  {
+    family: "Pixel Operator Mono", faces: [["PixelOperatorMono-Regular.ttf", 400], ["PixelOperatorMono-Bold.ttf", 700]],
+    license: "PixelOperator-CC0.txt", notices: [/CC0 1\.0 Universal/],
+  },
+  {
+    family: "scientifica", faces: [["scientifica-Regular.ttf", 400], ["scientifica-Bold.ttf", 700]],
+    license: "scientifica-LICENSE.txt", notices: [/Akshay Oppiliappan/, /SIL OPEN FONT\s+LICENSE Version 1\.1/],
+  },
+  {
+    family: "Cozette", faces: [["CozetteVector.woff2", 400]],
+    license: "Cozette-LICENSE.txt", notices: [/MIT License/, /Copyright \(c\) 2020, Ines/],
+  },
+];
+
+for (const { family, faces, license, notices } of pixelFontAssets) {
+  test(`${family} has locally registered font files and redistribution notices`, () => {
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const definitions = [...styles.matchAll(/@font-face\s*\{([^}]+)\}/g)].map(match => match[1]);
+    assert.equal(definitions.filter(block => block.includes(`font-family: "${family}";`)).length, faces.length,
+      `${family} must register only its terminal-compatible weights`);
+    for (const [filename, weight] of faces) {
+      const path = `./assets/${filename}`;
+      const bytes = readFileSync(new URL(path, import.meta.url));
+      assert.ok(bytes.length > 4_000, `${filename} is unexpectedly small`);
+      const definition = definitions.find(block => block.includes(`url("/assets/${filename}")`));
+      assert.ok(definition, `${filename} has no local @font-face`);
+      assert.ok(definition.includes(`font-family: "${family}";`));
+      assert.ok(definition.includes(`font-weight: ${weight};`));
+      if (filename.endsWith(".woff2")) {
+        assert.equal(bytes.toString("ascii", 0, 4), "wOF2", `${filename} is not WOFF2`);
+        assert.equal(bytes.readUInt32BE(8), bytes.length, `${filename} has a truncated WOFF2 header`);
+      } else {
+        const codepoints = fontCodepoints(path);
+        for (let codepoint = 0x20; codepoint <= 0x7e; codepoint++) {
+          assert.ok(codepoints.has(codepoint), `${filename} is missing ASCII U+${codepoint.toString(16)}`);
+        }
+      }
+    }
+    const text = readFileSync(new URL(`./assets/${license}`, import.meta.url), "utf8");
+    for (const notice of notices) assert.match(text, notice);
+  });
+}

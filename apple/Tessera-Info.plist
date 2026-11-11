@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Use Face ID to unlock your Tessera workspace when returning to the app.</string>
+	<!-- Public ProMotion opt-in; actual WebKit cadence remains measurable and OS-controlled. -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<!-- Tessera serves plain HTTP by default, often over Tailscale. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

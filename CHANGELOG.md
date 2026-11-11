@@ -2,6 +2,109 @@
 
 ## Unreleased
 
+- Phone-layout finger scrolling is 35% faster for terminal history, text reading
+  and application/TUI wheel scrolling, without changing selection precision,
+  desktop/tablet layouts, mouse/trackpad wheels or page-button distances.
+
+- Native iPad **Privacy** settings hide app-switcher previews behind opaque native
+  covers by default and offer an opt-in Face ID/Touch ID/device-passcode lock on
+  launch and return from background. Device authentication is required to change
+  the lock setting; cancellation stays locked, and late replies cannot unlock a
+  backgrounded app. This does not replace server authentication or encrypt data.
+
+- Native iPad app defaults to **Distraction-Free Full Screen**: active full-screen
+  workspaces hide the status bar and request auto-hiding of the Home indicator.
+  Windowed multitasking, native sheets and inactive scenes retain normal system
+  presentation. The app menu/diagnostics offer a persisted opt-out; existing explicit
+  status-bar preferences are preserved. System gestures remain available.
+
+- Mobile bottom-key-row **Copy** and **Paste** use the terminal text clipboard.
+  Paste sends bracketed text to the running program without appending Enter,
+  opening the keyboard or sending Ctrl+C/Ctrl+V. Delayed reads are discarded if
+  the pane or mode changes; unavailable system clipboard access is explained.
+
+- Phone **Scroll** mode offers **Select**, **Copy**, **Done** and TUI navigation
+  without switching to Interact or exposing typing controls. Interact forwards
+  application mouse gestures without opening the keyboard; only **Type** makes
+  the terminal editable, including after selection or reconnecting.
+
+- Phone selection/scroll gestures recover from missing release events after
+  capture changes, keyboard/OS interruptions or leaving the page, rather than
+  remaining blocked by a cancelled or phantom finger.
+
+- Phone canvas input stays non-editable and rejects stray focus unless **Type**
+  is explicitly enabled, keeping iOS's keyboard closed during selection and
+  ordinary Interact taps. **Done** returns without reopening the keyboard.
+
+- Phone **Select** now selects cells directly on the normal terminal canvas,
+  preserving full-screen TUI layout and colors instead of replacing it with a
+  text field. Drag locally, then tap **Copy** or **Done**, without opening the
+  keyboard or sending the drag to the program. **TUI ↑/↓** and two-finger
+  scrolling navigate mouse-aware TUIs without arrow-key fallbacks.
+
+- The phone page and safe-area backdrop match the active terminal during
+  keyboard expansion, avoiding a white workspace/browser background at the top.
+
+- Focusing the phone compose field no longer resizes/reflows the shared terminal
+  as the keyboard opens or closes. Its existing canvas is panned above the
+  keyboard, and small interface sizes retain a 16px minimum for editable fields
+  to avoid Safari's automatic zoom.
+
+- Phone **Scroll** mode has **Page Up** and **Page Down** buttons for paging
+  through local text or canvas history without sending keys to the program.
+
+- Phone **…** action menus (and **Aa**) now close when their button is tapped
+  again; outside taps still dismiss them.
+
+- The phone's quick-reply row (1/2/3/y/n) is now manual-only via **123**.
+  Its visibility is remembered on the device and no longer changes with terminal
+  output, alerts or sending an answer.
+
+- iPad app 0.2 adds a touch app menu, hardware shortcuts and terminal key row,
+  isolated saved-server profiles, foreground/network recovery, tablet layouts in
+  narrow windows, download progress/preview/share/export and reviewed Files/Photos/
+  drop imports. Native diagnostics offer a high-refresh preference and bounded
+  frame-rate sampling (not a promise of 120 Hz). Connection help, app icons,
+  labeled native controls, Dynamic Type and installation/update guidance are included.
+
+- The iPad app has native text/image clipboard access over HTTP or HTTPS.
+  Tessera Copy, Paste and Save Clipboard use the bridge; reads require native
+  confirmation, cancellation never pastes stale text, and embedded/proxied pages
+  cannot access it. Background terminal requests do not gain native clipboard
+  write permission. Requires an updated iPad app and server.
+
+- **Settings → Font** has a separate **Interface** size control for menus,
+  window titles, settings and phone controls. Terminal default/current sizes
+  remain independent; interface size saves separately for phones and desktops.
+
+- The font picker now lives under **Settings → Font** and changes all Tessera
+  interface text as well as terminals, including Operator chrome and phone
+  controls. Existing phone/desktop preferences and text sizes are preserved;
+  embedded websites and remote desktops retain their own fonts.
+
+- Phone terminals have an **Interaction / Scroll** toggle. Scroll mode hides
+  keyboard/input controls, keeps navigation in the top header, and uses one
+  finger for local history and two for application mouse-wheel events when
+  supported. Switching preserves drafts and scroll position without sending
+  input, reopening the keyboard, or resizing the shared shell; the mode choice
+  is remembered per browser.
+
+- Spleen, Pixel Operator Mono, scientifica and Cozette are available under
+  **Settings → Font**, with locally bundled fonts and licenses.
+  Choices apply to open terminals and are remembered per user. Spleen uses its
+  8×16 design; Cozette uses its browser-compatible vector face with synthesized
+  bold to preserve terminal alignment.
+
+- Workspace and account-settings autosave now use independently tested frontend
+  controllers rather than shared application globals. They retain queued edits,
+  conflict/reconnect checks and exit saves, and ignore stale responses after a
+  different workspace or account is loaded.
+- Frontend modularization is complete: `web/app.js` now only wires feature
+  modules and startup. Pane views, RDP connection flow, terminal UI/input,
+  settings, session/window navigation, menus, clipboard and connectivity own
+  their state and have directly imported tests. No interface, framework or
+  release-pipeline change.
+
 - `Ctrl+;`/`Cmd+;` opens the **Session List**, which switches sessions the
   way the Window List (`Ctrl+L`/`Cmd+L`) switches windows. Sessions are listed
   most recently opened first, and the previous session starts highlighted, so

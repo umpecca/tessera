@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+import { SettingsDialog } from "./settings-dialog.mjs";
 
 // Small DOM model for the Settings lifecycle. Real tab order and disclosure
 // visibility are also checked in a browser; no DOM dependency is needed here.
@@ -82,7 +79,7 @@ function fixture() {
   document.body.append(settingsModal, deskbarButton);
   const frames = [], metrics = [], intervals = new Set();
   let diagnosticsCreated = 0, paneFocusCount = 0;
-  const context = vm.createContext({
+  const context = {
     authMode: "off", document, settingsModal, deskbarButton, signInRecovery: {}, renderSignInSettings: async () => {},
     commandPalette: { hidden: true }, windowList: { hidden: true }, sessionList: { hidden: true },
     compatibilityUpdateTimer: null, settingsReturnFocus: null,
@@ -94,6 +91,7 @@ function fixture() {
     window: {
       requestAnimationFrame: callback => frames.push(callback),
       clearInterval: timer => intervals.delete(timer),
+      setInterval: () => { const timer = diagnosticsCreated; intervals.add(timer); return timer; },
     },
     hideDeskbar() {},
     openShortcuts() {},
@@ -105,12 +103,11 @@ function fixture() {
     focusPane: () => { paneFocusCount++; document.activeElement = deskbarButton; },
     renderSettingsCompatibilityRow: () => {
       diagnosticsCreated++;
-      context.compatibilityUpdateTimer = diagnosticsCreated;
-      intervals.add(diagnosticsCreated);
+      dialog.startDiagnostics(() => {});
       return row("Copy diagnostics");
     },
     renderSettingsKeyReadoutRow: () => row("Key test", "textarea"),
-  });
+  };
   function row(label, tag = "select") {
     const control = new Element(tag);
     control.setAttribute("aria-label", label);
@@ -122,7 +119,8 @@ function fixture() {
     renderSettingsThemeRow: label => row(`${label} theme`),
     displaySettingsScope: () => "on desktops and iPads",
     renderSettingsOLEDWindowBorderRow: () => row("OLED border", "button"),
-    renderSettingsTerminalFontRow: () => row("Terminal font"),
+    renderSettingsTerminalFontRow: () => row("Application font"),
+    renderSettingsInterfaceFontSizeRow: () => row("Interface font size", "button"),
     renderSettingsTerminalRowSpacingRow: () => row("Terminal row spacing"),
     renderSettingsTerminalColorModeRow: () => row("Terminal colors"),
     renderSettingsTerminalPredictionRow: () => row("Typing prediction"),
@@ -137,13 +135,33 @@ function fixture() {
     renderSettingsTerminalBacklogRow: () => row("Terminal output backlog"),
   };
   Object.assign(context, renderers);
-  for (const name of ["openSettingsModal", "hideSettingsModal", "settingsOwnsFocus", "settingsFocusControls",
-    "containSettingsFocus", "handleSettingsKeyboard", "settingsDiagnosticsOpen", "renderSettingsModal", "renderSettingsSection"]) {
-    const start = source.indexOf(`function ${name}(`);
-    const end = source.indexOf("\n}\n", start) + 2;
-    assert.ok(start >= 0 && end > start, name);
-    vm.runInContext(source.slice(start, end), context);
-  }
+  const dialog = new SettingsDialog({
+    modal: settingsModal, document, window: context.window,
+    state: () => ({ ...context, scope: "on desktops and iPads" }),
+    rows: {
+      font: context.renderSettingsFontRow, currentPaneFont: context.renderCurrentPaneFontRow,
+      interfaceFontSize: context.renderSettingsInterfaceFontSizeRow,
+      theme: context.renderSettingsThemeRow, oledBorder: context.renderSettingsOLEDWindowBorderRow,
+      toggle: context.renderSettingsToggleRow, terminalFont: context.renderSettingsTerminalFontRow,
+      rowSpacing: context.renderSettingsTerminalRowSpacingRow, terminalColor: context.renderSettingsTerminalColorModeRow,
+      prediction: context.renderSettingsTerminalPredictionRow, wheel: context.renderSettingsWheelRow,
+      background: context.renderSettingsBackgroundRow, backgroundMode: context.renderSettingsBackgroundModeRow,
+      clipboard: context.renderSettingsClipboardRow, performance: context.renderSettingsPerformanceRow,
+      term: context.renderSettingsTerminalTERMRow, renderer: context.renderSettingsExperimentalRendererRow,
+      backlog: context.renderSettingsTerminalBacklogRow, compatibility: context.renderSettingsCompatibilityRow,
+      keyReadout: context.renderSettingsKeyReadoutRow,
+    },
+    actions: { shortcuts() {} }, hideDeskbar() {},
+    otherOverlay: () => !context.commandPalette.hidden || !context.windowList.hidden || !context.sessionList.hidden,
+    focusWorkspace: () => context.focusPane(), metrics: enabled => metrics.push(enabled),
+    renderSignIn() {}, renderDevices() {},
+  });
+  Object.assign(context, {
+    openSettingsModal: options => dialog.open(options), hideSettingsModal: () => dialog.close(),
+    settingsOwnsFocus: () => dialog.ownsFocus(), settingsFocusControls: () => dialog.controls(),
+    containSettingsFocus: event => dialog.containFocus(event), handleSettingsKeyboard: event => dialog.keydown(event),
+    settingsDiagnosticsOpen: () => dialog.diagnosticsOpen(), renderSettingsModal: () => dialog.render(),
+  });
   return {
     context, document, settingsModal, deskbarButton, metrics, intervals,
     flush: () => { for (const callback of frames.splice(0)) callback(); },
@@ -169,12 +187,15 @@ test("Settings leads with everyday preferences and hides technical controls by d
   f.flush();
   const content = f.settingsModal.querySelector(".settings-content");
   assert.deepEqual(content.children.map(child => child.children[0].textContent), [
-    "Font size", "Theme", "Terminal", "Scroll wheel", "Shortcuts", "Background", "Clipboard", "Performance", "Sign-in", "Advanced", "Diagnostics",
+    "Font", "Theme", "Terminal", "Scroll wheel", "Shortcuts", "Background", "Clipboard", "Performance", "Sign-in", "Advanced", "Diagnostics",
   ]);
   const advanced = f.settingsModal.querySelector("#settings-advanced");
   assert.equal(advanced.open, false);
   const labels = f.context.settingsFocusControls().map(control => control.getAttribute("aria-label"));
-  assert.ok(labels.includes("Terminal font"));
+  assert.ok(labels.includes("Application font"));
+  assert.ok(labels.includes("Interface font size"));
+  assert.ok(labels.includes("Terminal default font size"));
+  assert.equal(content.children[0].children[1].getAttribute("aria-label"), "Application font");
   assert.ok(labels.includes("Terminal row spacing"));
   assert.ok(labels.includes("Shell integration"));
   assert.ok(labels.includes("Command finished notices"));
@@ -268,10 +289,10 @@ test("redraw preserves focused preference, scroll, and disclosures; reopening re
   f.flush();
   f.settingsModal.querySelector("#settings-advanced").open = true;
   const controls = f.context.settingsFocusControls();
-  controls.find(control => control.getAttribute("aria-label") === "Default font size").focus();
+  controls.find(control => control.getAttribute("aria-label") === "Terminal default font size").focus();
   f.settingsModal.querySelector(".settings-content").scrollTop = 175;
   f.context.renderSettingsModal();
-  assert.equal(f.document.activeElement.getAttribute("aria-label"), "Default font size");
+  assert.equal(f.document.activeElement.getAttribute("aria-label"), "Terminal default font size");
   assert.equal(f.settingsModal.querySelector(".settings-content").scrollTop, 175);
   assert.equal(f.settingsModal.querySelector("#settings-advanced").open, true);
   f.context.hideSettingsModal();

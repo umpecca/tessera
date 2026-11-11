@@ -1,3 +1,4 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -14,7 +15,6 @@ const upstream = readFileSync(new URL("../node_modules/ghostty-web/dist/ghostty-
 const first = upstream.indexOf("const L = class Y {");
 const last = upstream.indexOf("let AA = L;", first) + "let AA = L;".length;
 assert.ok(first >= 0 && last > first, "test the pinned upstream selection manager");
-const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 function event(type, target, fields = {}) {
   return {
@@ -30,7 +30,10 @@ function event(type, target, fields = {}) {
 }
 
 class Surface {
-  constructor(parent = null) { this.parentElement = parent; this.handlers = new Map(); }
+  constructor(parent = null) { this.parentElement = parent; this.handlers = new Map(); this.attributes = new Map(); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  setAttribute(name, value) { this.attributes.set(name, value); }
+  removeAttribute(name) { this.attributes.delete(name); }
   addEventListener(type, handler, options = {}) {
     const handlers = this.handlers.get(type) || [];
     handlers.push({ handler, capture: options.capture === true });
@@ -131,6 +134,80 @@ function fixture() {
     nativeSelected: () => nativeSelection.rangeCount === 1,
   };
 }
+
+test("phone selection makes both terminal inputs non-editable, rejects focus and restores exact attributes", () => {
+  const f = fixture();
+  f.container.setAttribute("contenteditable", "true");
+  f.container.setAttribute("inputmode", "text");
+  f.textarea.setAttribute("inputmode", "search");
+  let blurred = 0;
+  f.container.blur = f.textarea.blur = () => { blurred++; f.doc.activeElement = null; };
+  f.integration.setInputSuppressed(true);
+  assert.equal(blurred, 1, "dismiss a keyboard already attached to the terminal");
+  assert.equal(f.container.getAttribute("contenteditable"), "false");
+  assert.equal(f.container.getAttribute("inputmode"), "none");
+  assert.equal(f.textarea.getAttribute("readonly"), "");
+  assert.equal(f.textarea.getAttribute("inputmode"), "none");
+  for (const target of [f.container, f.textarea]) {
+    f.doc.activeElement = target;
+    const e = event("focusin", target);
+    f.container.dispatch(e);
+    assert.equal(f.doc.activeElement, null, "late/upstream focus cannot summon the keyboard");
+    assert.equal(e.immediateStopped, true);
+  }
+  f.integration.setInputSuppressed(true);
+  f.integration.setInputSuppressed(false);
+  assert.equal(f.container.getAttribute("contenteditable"), "true");
+  assert.equal(f.container.getAttribute("inputmode"), "text");
+  assert.equal(f.textarea.getAttribute("readonly"), null);
+  assert.equal(f.textarea.getAttribute("inputmode"), "search");
+  const e = event("focusin", f.container);
+  f.container.dispatch(e);
+  assert.equal(e.immediateStopped, false, "Type can focus normally after Done");
+});
+
+test("disposing a terminal restores inputs even if selection mode is still active", () => {
+  const f = fixture();
+  f.textarea.setAttribute("readonly", "readonly");
+  f.integration.setInputSuppressed(true);
+  f.integration.dispose();
+  assert.equal(f.container.getAttribute("contenteditable"), null);
+  assert.equal(f.container.getAttribute("inputmode"), null);
+  assert.equal(f.textarea.getAttribute("readonly"), "readonly");
+  assert.equal(f.textarea.getAttribute("inputmode"), null);
+});
+
+test("direct touch cell selection paints without focus, upstream mouse input or automatic copying", () => {
+  const f = fixture();
+  f.term.focus = () => assert.fail("selection focused the terminal");
+  f.term.wasmTerm = { isAlternateScreen: () => true };
+  assert.equal(f.integration.beginPointerSelection({ pointerId: 9, clientX: 15, clientY: 15 }), true);
+  assert.equal(f.integration.movePointerSelection({ pointerId: 8, clientX: 90, clientY: 230 }), false);
+  f.integration.movePointerSelection({ pointerId: 9, clientX: 95, clientY: 15 });
+  const end = f.manager.selectionEnd;
+  f.emit("mousemove", { clientX: 2000, clientY: 1000, offsetX: 1, offsetY: 239 });
+  assert.equal(f.manager.selectionEnd, end, "compatibility movement cannot overwrite pointer coordinates");
+  f.drain();
+  assert.equal(f.painted(), true);
+  assert.equal(f.manager.getSelection(), "AAAAAAAAA");
+  assert.equal(f.timers.size, 0, "no local autoscroll in a TUI");
+  f.emit("pointerup", { pointerId: 9 });
+  f.emit("mouseup");
+  assert.equal(f.manager.isSelecting, false);
+  assert.deepEqual(f.copied, [], "Copy is explicit");
+});
+
+test("direct selection cancellation stops autoscroll and cannot be moved by a stale pointer", () => {
+  const f = fixture();
+  f.integration.beginPointerSelection({ pointerId: 9, clientX: 15, clientY: 15 });
+  f.integration.movePointerSelection({ pointerId: 9, clientX: 95, clientY: 239 });
+  assert.equal(f.timers.size, 1);
+  f.integration.cancelDrag();
+  assert.equal(f.timers.size, 0);
+  assert.equal(f.manager.isSelecting, false);
+  assert.equal(f.integration.movePointerSelection({ pointerId: 9, clientX: 50, clientY: 30 }), false);
+  assert.deepEqual(f.copied, []);
+});
 
 test("local selection dragging and clearing paint without output or cursor blinking", () => {
   const f = fixture();
@@ -235,6 +312,28 @@ test("a different pointer cannot end the local drag", () => {
   assert.equal(f.manager.isSelecting, false);
 });
 
+test("changing gesture modes stops selection autoscroll without copying or clearing selected text", () => {
+  const f = fixture();
+  f.term.selectionIntegration = f.integration;
+  const { bridge } = attachBridge(f, false);
+  f.emit("pointerdown", { shiftKey: true });
+  f.emit("mousedown", { shiftKey: true });
+  f.emit("mousemove", { shiftKey: true, offsetX: 400, offsetY: 239 });
+  assert.equal(f.manager.isSelecting, true);
+  assert.equal(f.timers.size, 1);
+  const start = f.manager.selectionStart, end = f.manager.selectionEnd;
+  bridge.cancelTouchGesture();
+  assert.equal(f.manager.isSelecting, false);
+  assert.equal(f.timers.size, 0);
+  assert.equal(f.manager.selectionStart, start);
+  assert.equal(f.manager.selectionEnd, end);
+  assert.equal(f.term.hasSelection(), true);
+  f.emit("mouseup");
+  assert.deepEqual(f.copied, []);
+  bridge.dispose();
+  f.integration.dispose();
+});
+
 test("zero-button movement recovers a lost release without moving the selection endpoint", () => {
   const f = fixture();
   f.emit("mousedown");
@@ -291,9 +390,8 @@ test("disposing the integration removes document listeners and restores upstream
 });
 
 function appFunction(name, globals = {}) {
-  const start = appSource.indexOf(`function ${name}(`);
-  const end = appSource.indexOf("\n}\n", start) + 2;
-  return vm.runInNewContext(`(${appSource.slice(start, end)})`, globals);
+  const fixtureContext = featureFixture([name], globals);
+  return fixtureContext[name];
 }
 
 function attachBridge(f, appleKeyboardLayout) {

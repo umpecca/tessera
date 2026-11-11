@@ -1,20 +1,15 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+
 import test from "node:test";
-import vm from "node:vm";
+
 import { normalizeTerminalBacklogLimit, TerminalReplica } from "./terminal-replica.mjs";
 import { terminalBacklogCloseCode, terminalCloseOutcome } from "./terminal-reconnect.mjs";
+import { TerminalConnections } from "./terminal-connections.mjs";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-
-function loadFunctions(names, globals) {
-  const context = vm.createContext(globals);
-  for (const name of names) {
-    const start = source.indexOf(`function ${name}(`);
-    const end = source.indexOf("\n}\n", start) + 2;
-    vm.runInContext(source.slice(start, end), context);
-  }
-  return context;
+function loadFunctions(names, globals = {}) {
+  const fixtureContext = featureFixture(names, globals);
+  return fixtureContext;
 }
 
 function frame(kind, sequence, offset, length) {
@@ -72,11 +67,10 @@ test("storage refusal keeps the preference live for the current page", () => {
 
 test("recovery URLs request a fresh snapshot until import, then resume from the applied cursor", () => {
   const rect = pane(1, () => {});
-  const context = loadFunctions(["terminalWebSocketURL"], {
-    window: { location: { protocol: "http:", host: "localhost:7331" } }, workspaceID: "workspace", URLSearchParams,
-    phoneViewWanted: () => false,
+  const controller = new TerminalConnections({
+    context: () => ({ location: { protocol: "http:", host: "localhost:7331" }, workspaceID: "workspace", watch: false }),
   });
-  const parameters = () => new URL(context.terminalWebSocketURL(rect, 80, 24)).searchParams;
+  const parameters = () => new URL(controller.url(rect, 80, 24)).searchParams;
   assert.equal(parameters().get("resumeSequence"), "3");
   rect.terminal.replica.setBacklogLimit("auto");
   rect.terminal.replica.receive(frame(1, 4, 14, 2));
@@ -103,15 +97,17 @@ test("successful socket opens do not reset overload backoff, and a quiet interva
     socket: { close(...args) { closes.push(args); } },
   };
   const rect = { terminal: state };
-  const context = loadFunctions(["recoverTerminalBacklog", "handleTerminalSocketClose"], {
+  const context = loadFunctions(["recoverTerminalBacklog"], {
     terminalBacklogCloseCode, terminalCloseOutcome, Date: { now: () => now }, serverConnectionModal: { hidden: true }, authMode: "off", signInEndedCloseCode: 4401,
     window: { setTimeout(callback, delay) { delays.push(delay); return 1; } },
     setTerminalStatus() {}, connectTerminalSocket() {},
     terminalAudioPlayer: { disconnect() {} },
   });
+  const controller = new TerminalConnections({ context: () => ({ authMode: "off", serverReported: false }),
+    timers: context.window, setStatus() {}, disconnectAudio() {} });
   for (let attempt = 0; attempt < 7; attempt++) {
     context.recoverTerminalBacklog(rect);
-    context.handleTerminalSocketClose(rect, state, { code: terminalBacklogCloseCode });
+    controller.closed(rect, state, { code: terminalBacklogCloseCode });
     // These are the fields reset by the normal socket-open path.
     state.reconnectTimer = null;
     state.reconnectAttempts = 0;
@@ -121,17 +117,17 @@ test("successful socket opens do not reset overload backoff, and a quiet interva
   assert.ok(closes.every(([code]) => code === terminalBacklogCloseCode));
   now += 30001;
   context.recoverTerminalBacklog(rect);
-  context.handleTerminalSocketClose(rect, state, { code: terminalBacklogCloseCode });
+  controller.closed(rect, state, { code: terminalBacklogCloseCode });
   assert.equal(delays.at(-1), 500);
 });
 
 test("a phone attaches watching, so it never sizes the shell by attaching", () => {
   const rect = pane(1, () => {});
-  const context = loadFunctions(["terminalWebSocketURL"], {
-    window: { location: { protocol: "http:", host: "localhost:7331" } }, workspaceID: "workspace", URLSearchParams,
-    phoneViewWanted: () => true,
+  let watch = true;
+  const controller = new TerminalConnections({
+    context: () => ({ location: { protocol: "http:", host: "localhost:7331" }, workspaceID: "workspace", watch }),
   });
-  assert.equal(new URL(context.terminalWebSocketURL(rect, 45, 30)).searchParams.get("watch"), "1");
-  context.phoneViewWanted = () => false;
-  assert.equal(new URL(context.terminalWebSocketURL(rect, 45, 30)).searchParams.get("watch"), null);
+  assert.equal(new URL(controller.url(rect, 45, 30)).searchParams.get("watch"), "1");
+  watch = false;
+  assert.equal(new URL(controller.url(rect, 45, 30)).searchParams.get("watch"), null);
 });

@@ -139,11 +139,14 @@ func TestValidationAndBuiltInCodeParity(t *testing.T) {
 	if err := Validate([]Shortcut{s}); err == nil {
 		t.Fatal("multiline command accepted")
 	}
-	source, err := os.ReadFile("../../web/app.js")
+	source, err := os.ReadFile("../../web/command-palette.mjs")
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := regexp.MustCompile(`(?s)const paletteShortcutCodes = \{(.*?)\n};`).FindSubmatch(source)
+	block := regexp.MustCompile(`(?s)feature\.paletteShortcutCodes = \{(.*?)\n\s*};`).FindSubmatch(source)
+	if len(block) != 2 {
+		t.Fatal("command palette shortcut codes not found")
+	}
 	codes := []string{}
 	for _, match := range regexp.MustCompile(`: "([A-Z]{1,2})"`).FindAllSubmatch(block[1], -1) {
 		codes = append(codes, string(match[1]))

@@ -405,11 +405,8 @@ test("a run that ends where it started confirms without proving an echo", () => 
 });
 
 test("diagnostics say whether predictions are drawn and why", async () => {
-  const { readFileSync } = await import("node:fs");
-  const vm = await import("node:vm");
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
-  const start = source.indexOf("function describeTypingPrediction(");
-  const describe = vm.runInNewContext(`(${source.slice(start, source.indexOf("\n}\n", start) + 2)})`, {});
+  const { createSettings } = await import("./settings-view.mjs");
+  const describe = createSettings({}).describeTypingPrediction;
   const marks = "underlined above 80 ms or after a wrong guess";
   assert.equal(describe({ mode: "auto", latencyMs: null, showing: false, underlined: false }), `Auto, not drawing (no echo measured yet; draws above 20 ms, ${marks})`);
   assert.equal(describe({ mode: "auto", latencyMs: 31, showing: true, underlined: false }), `Auto, drawing (echo 31 ms; draws above 20 ms, ${marks})`);
@@ -438,11 +435,8 @@ test("recent echoes are split into time before sending, until the reply is handl
 });
 
 test("diagnostics describe the echo breakdown", async () => {
-  const { readFileSync } = await import("node:fs");
-  const vm = await import("node:vm");
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
-  const start = source.indexOf("function describeEchoBreakdown(");
-  const describe = vm.runInNewContext(`(${source.slice(start, source.indexOf("\n}\n", start) + 2)})`, {});
+  const { createSettings } = await import("./settings-view.mjs");
+  const describe = createSettings({}).describeEchoBreakdown;
   assert.equal(describe(null), "");
   assert.equal(describe({ count: 64, total: 43.6, beforeSend: 0.42, transit: 41.2, apply: 1.25 }),
     "; last 64 echoes, medians: 44 ms total, 0.4 ms before sending, 41 ms until the reply is handled, 1.3 ms applying");

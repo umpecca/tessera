@@ -1,5 +1,5 @@
-/* Fira Code: the monospace face used by the terminal and app
- * chrome. Served locally from /assets so the app works offline (no CDN).
+/* Fira Code: one of the selectable terminal and app fonts.
+ * Served locally from /assets so the app works offline (no CDN).
  * These are the full (non-subset) faces so Fira Code's programming
  * ligatures survive. It ships no italic; the browser synthesizes an
  * oblique when a highlight style asks for italic. */
@@ -14,7 +14,7 @@
   border-radius: 4px;
   background: var(--pane-bg);
   color: var(--text);
-  font: 12px sans-serif;
+  font: 0.75rem var(--tessera-font);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -67,7 +67,11 @@
  * [data-theme="..."] block on :root that overrides them.
  */
 :root {
-  --tessera-font: "Fira Code", monospace;
+  /* Settings replaces this family for the whole interface and terminal text. */
+  /* rem text sizes scale the interface without changing terminal canvas sizes. */
+  font-size: calc(16px * var(--tessera-ui-font-scale, 1));
+  --tessera-font: "JetBrains Mono", "Noto Sans Symbols 2", monospace;
+  --tessera-mono-font: var(--tessera-font);
   --oled-window-border-size: 10px;
 
   /*"Tessera Swiss", Arial, Helvetica, sans-serif;*/
@@ -579,6 +583,62 @@
   font-display: swap;
 }
 
+/* Spleen 2.2.0, the release's 8x16 woff2 unchanged. Best at 16px and integer
+ * multiples; the single regular weight uses browser-synthesized bold. */
+@font-face {
+  font-family: "Spleen";
+  src: url("/assets/Spleen-8x16.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+/* Pixel Operator 2018.10.04-1, unmodified monospace TTFs. Best at 16px and
+ * integer multiples, with a real bold face. */
+@font-face {
+  font-family: "Pixel Operator Mono";
+  src: url("/assets/PixelOperatorMono-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Pixel Operator Mono";
+  src: url("/assets/PixelOperatorMono-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+/* scientifica 2.3, the release's regular and bold TTFs unchanged. */
+@font-face {
+  font-family: "scientifica";
+  src: url("/assets/scientifica-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "scientifica";
+  src: url("/assets/scientifica-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+/* Cozette 1.30.0, official regular vector woff2 for browser compatibility.
+ * Its upstream bold face has a wider advance, so synthesize bold to preserve
+ * terminal cell widths. Pixel alignment depends on size, zoom and density. */
+@font-face {
+  font-family: "Cozette";
+  src: url("/assets/CozetteVector.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 /* Official unmodified Google Fonts face (Noto Symbols commit 25b00f0).
  * It prevents legacy Firefox/macOS canvas rendering from choosing an
  * incompatible operating-system fallback for terminal symbols such as ⏵. */
@@ -646,6 +706,9 @@ body {
   width: 100%;
   height: 100%;
   margin: 0;
+  /* Safari can expose the root canvas while panning to a focused input.
+     Keep it opaque instead of falling back to the browser's white canvas. */
+  background-color: var(--board-bg);
   /* Keep the installed app from rubber-band scrolling or zooming as a whole. */
   overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;
@@ -654,6 +717,7 @@ body {
 
 body {
   background: var(--board-bg);
+  font-size: 1rem;
   font-family: var(--tessera-font);
   overflow: hidden;
   user-select: none;
@@ -663,6 +727,17 @@ body {
 
 input {
   font: inherit;
+}
+
+/* Native controls and semantic code elements otherwise use browser fonts. */
+button,
+select,
+textarea,
+code,
+kbd,
+samp,
+pre {
+  font-family: inherit;
 }
 
 .board {
@@ -703,7 +778,7 @@ input {
   z-index: 90000;
   min-width: 64px;
   max-width: min(260px, calc(100vw - 16px));
-  height: 22px;
+  height: max(22px, 1.375rem);
   overflow: hidden;
   border: 1px solid var(--border-strong);
   padding: 1px 8px;
@@ -713,9 +788,9 @@ input {
     inset -1px -1px 0 var(--bevel-lo);
   color: var(--text-muted);
   font-family: var(--tessera-font);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 1.125rem;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -756,7 +831,7 @@ input {
     0 2px 8px rgb(0 0 0 / 25%);
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .terminal-notice-open {
@@ -789,7 +864,7 @@ input {
 
 .terminal-notice-source {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -802,7 +877,7 @@ input {
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 16px;
+  font-size: 1rem;
   cursor: pointer;
 }
 
@@ -825,7 +900,7 @@ input {
     0 2px 8px rgb(0 0 0 / 25%);
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: default;
 }
 
@@ -844,7 +919,7 @@ input {
   color: var(--text);
   font: inherit;
   /* 16px stops iPadOS zooming into the field when it takes focus. */
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 .terminal-find.is-empty .terminal-find-input {
@@ -868,7 +943,7 @@ input {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 15px;
+  font-size: 0.9375rem;
   cursor: pointer;
 }
 
@@ -1238,9 +1313,9 @@ input {
   background: transparent;
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
-  line-height: 20px;
+  line-height: 1.25rem;
   cursor: text;
   user-select: text;
   z-index: 1;
@@ -1347,7 +1422,7 @@ input {
   padding: 0;
   background: var(--pane-bg);
   color: var(--text);
-  font: 14px/1 var(--tessera-font);
+  font: 0.875rem/1 var(--tessera-font);
   cursor: pointer;
 }
 
@@ -1378,7 +1453,7 @@ input {
   padding: 2px 6px;
   background: var(--input-bg);
   color: var(--text);
-  font: 12px/1 var(--tessera-font);
+  font: 0.75rem/1 var(--tessera-font);
 }
 
 .browser-frame,
@@ -1397,7 +1472,7 @@ input {
   padding: 24px;
   color: var(--muted-text);
   background: var(--pane-bg);
-  font: 12px/1.4 var(--tessera-font);
+  font: 0.75rem/1.4 var(--tessera-font);
   text-align: center;
 }
 
@@ -1450,18 +1525,18 @@ input {
   padding: 2px 6px;
   background: var(--input-bg);
   color: var(--text);
-  font: 12px/1 var(--tessera-font);
+  font: 0.75rem/1 var(--tessera-font);
 }
 
 .vnc-connect,
 .rdp-connect {
   flex-basis: 76px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .rdp-detach {
   flex-basis: 56px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .vnc-select,
@@ -1470,14 +1545,14 @@ input {
   border: 1px solid var(--divider);
   background: var(--pane-bg);
   color: var(--text);
-  font: 11px/1 var(--tessera-font);
+  font: 0.6875rem/1 var(--tessera-font);
 }
 
 .rdp-video {
   flex: 0 0 auto;
   padding: 0 4px;
   color: var(--muted-text);
-  font: 11px/1 var(--tessera-font);
+  font: 0.6875rem/1 var(--tessera-font);
   white-space: nowrap;
 }
 
@@ -1504,7 +1579,7 @@ button.rdp-video.is-active {
   gap: 3px;
   white-space: nowrap;
   color: var(--text);
-  font: 11px/1 var(--tessera-font);
+  font: 0.6875rem/1 var(--tessera-font);
 }
 
 .vnc-screen,
@@ -1537,7 +1612,7 @@ button.rdp-video.is-active {
   padding: 24px;
   color: var(--muted-text);
   background: var(--pane-bg);
-  font: 12px/1.4 var(--tessera-font);
+  font: 0.75rem/1.4 var(--tessera-font);
   text-align: center;
 }
 
@@ -1571,7 +1646,7 @@ button.rdp-video.is-active {
   box-shadow: 4px 5px 0 color-mix(in srgb, var(--shadow) 65%, transparent);
   background: var(--pane-bg);
   color: var(--text);
-  font: 12px/1.4 var(--tessera-font);
+  font: 0.75rem/1.4 var(--tessera-font);
 }
 
 .vnc-dialog input,
@@ -1584,7 +1659,7 @@ button.rdp-video.is-active {
   padding: 5px;
   background: var(--input-bg);
   color: var(--text);
-  font: 12px/1.3 var(--tessera-font);
+  font: 0.75rem/1.3 var(--tessera-font);
 }
 
 .rdp-dialog input[hidden] {
@@ -1625,7 +1700,7 @@ button.rdp-video.is-active {
   border-radius: 4px;
   background: rgb(0 0 0 / 72%);
   color: #e8e8e8;
-  font: 11px/1.4 ui-monospace, Menlo, monospace;
+  font: 0.6875rem/1.4 var(--tessera-font);
   white-space: pre;
   pointer-events: none;
 }
@@ -1689,7 +1764,7 @@ button.rdp-video.is-active {
      container editable. The terminal cursor itself is rendered on canvas. */
   caret-color: transparent;
   font-family: var(--tessera-font);
-  font-size: 13px;
+  font-size: 0.8125rem;
   /* Ghostty selects painted cells itself. Safari must not select the editable
      canvas as a single object when opening a Control-click context menu. */
   user-select: none;
@@ -1708,7 +1783,7 @@ button.rdp-video.is-active {
 @media (pointer: coarse) {
   .terminal-container,
   .terminal-container textarea {
-    font-size: 16px;
+    font-size: max(16px, 1rem);
   }
 }
 
@@ -1748,8 +1823,8 @@ button.rdp-video.is-active {
   background: var(--chrome-bg);
   color: var(--text-muted);
   font-family: var(--tessera-font);
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 0.6875rem;
+  line-height: 1rem;
   white-space: nowrap;
   text-overflow: ellipsis;
   pointer-events: none;
@@ -1857,8 +1932,8 @@ button.rdp-video.is-active {
   background: var(--chrome-bg);
   color: var(--text-muted);
   font-family: var(--tessera-font);
-  font-size: 11px;
-  line-height: 18px;
+  font-size: 0.6875rem;
+  line-height: 1.125rem;
   user-select: text;
   z-index: 5;
 }
@@ -1887,9 +1962,9 @@ button.rdp-video.is-active {
     0 2px 6px #0003;
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 1.125rem;
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
@@ -1932,8 +2007,8 @@ button.rdp-video.is-active {
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 10px;
-  line-height: 14px;
+  font-size: 0.625rem;
+  line-height: 0.875rem;
   cursor: pointer;
 }
 
@@ -2096,8 +2171,8 @@ button.rdp-video.is-active {
   background: transparent;
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
   text-align: left;
   cursor: default;
 }
@@ -2207,14 +2282,14 @@ button.rdp-video.is-active {
 }
 
 .directory-browser-title {
-  height: 24px;
+  min-height: 24px;
   padding: 2px 8px;
   border-bottom: 1px solid var(--bevel-lo);
   background: var(--highlight-bg);
   box-shadow: inset 1px 1px 0 var(--highlight-bevel-hi);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 700;
-  line-height: 20px;
+  line-height: 1.25rem;
 }
 
 .directory-browser-path {
@@ -2224,8 +2299,8 @@ button.rdp-video.is-active {
   border-bottom: 1px solid var(--divider);
   background: var(--pane-bg);
   font-family: var(--tessera-font);
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 0.75rem;
+  line-height: 1rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2260,7 +2335,7 @@ button.rdp-video.is-active {
   padding: 5px;
   border-bottom: 1px solid var(--divider);
   background: var(--pane-bg);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -2273,7 +2348,7 @@ button.rdp-video.is-active {
   color: var(--text);
   box-shadow: inset 1px 1px 0 var(--bevel-hi);
   font-family: var(--tessera-font);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .directory-browser button {
@@ -2286,8 +2361,8 @@ button.rdp-video.is-active {
     inset 1px 1px 0 var(--bevel-hi),
     inset -1px -1px 0 var(--bevel-lo);
   font-family: var(--tessera-font);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
   cursor: default;
 }
 
@@ -2314,7 +2389,7 @@ button.rdp-video.is-active {
 .directory-browser-message {
   padding: 8px;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .directory-browser-message.is-error {
@@ -2356,15 +2431,15 @@ button.rdp-video.is-active {
   border-bottom: 1px solid var(--bevel-lo);
   background: var(--highlight-bg);
   box-shadow: inset 1px 1px 0 var(--highlight-bevel-hi);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 700;
-  line-height: 22px;
+  line-height: 1.375rem;
 }
 
 .user-select-hint {
   padding: 8px 12px 4px;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .user-select-list {
@@ -2384,9 +2459,9 @@ button.rdp-video.is-active {
     inset 1px 1px 0 var(--bevel-hi),
     inset -1px -1px 0 var(--bevel-lo);
   font-family: var(--tessera-font);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
-  line-height: 22px;
+  line-height: 1.375rem;
   text-align: left;
   cursor: default;
 }
@@ -2449,9 +2524,9 @@ button.rdp-video.is-active {
   padding: 0 2px;
   background: var(--accent-strong-bg);
   color: var(--accent-strong-text);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 700;
-  line-height: 15px;
+  line-height: 0.9375rem;
   text-align: center;
 }
 
@@ -2487,7 +2562,7 @@ button.rdp-video.is-active {
   background: var(--accent-strong-bg);
   box-shadow: inset 1px 1px 0 var(--accent-bevel-hi);
   color: var(--accent-strong-text);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -2520,7 +2595,7 @@ button.rdp-video.is-active {
 .dock-menu .menu-hint {
   flex: 0 0 auto;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .workspace-menu-row.is-minimized .workspace-menu-name {
@@ -2581,7 +2656,7 @@ button.rdp-video.is-active {
 .browser-port-help-introduction {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 
@@ -2601,7 +2676,7 @@ button.rdp-video.is-active {
 
 .browser-port-help-launch label {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2614,7 +2689,7 @@ button.rdp-video.is-active {
   padding: 3px 7px;
   background: var(--input-bg);
   color: var(--text);
-  font: 12px/1 var(--tessera-font);
+  font: 0.75rem/1 var(--tessera-font);
 }
 
 .browser-port-help-address:focus {
@@ -2632,7 +2707,7 @@ button.rdp-video.is-active {
 
 .browser-port-help-validation {
   color: var(--danger-text, #b00020);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .browser-port-help-validation[hidden] {
@@ -2657,7 +2732,7 @@ button.rdp-video.is-active {
   padding: 9px 8px 8px 38px;
   background: var(--pane-bg);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.4;
 }
 
@@ -2690,7 +2765,7 @@ button.rdp-video.is-active {
   min-height: 38px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--divider);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .browser-port-help-example:last-child {
@@ -2701,7 +2776,7 @@ button.rdp-video.is-active {
   min-width: 0;
   overflow-x: auto;
   color: var(--text-muted);
-  font: 11px/1.4 var(--tessera-mono-font, monospace);
+  font: 0.6875rem/1.4 var(--tessera-mono-font, monospace);
   white-space: nowrap;
 }
 
@@ -2719,7 +2794,7 @@ button.rdp-video.is-active {
   min-height: 30px;
   padding: 5px 8px;
   border-bottom: 1px solid var(--divider);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .help-shortcut-row {
@@ -2733,7 +2808,7 @@ button.rdp-video.is-active {
 .help-shortcut-row > span:last-child,
 .help-command-row > span:last-child {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-align: right;
 }
 
@@ -2748,7 +2823,7 @@ button.rdp-video.is-active {
   background: var(--chrome-bg);
   color: var(--text-muted);
   font: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-align: center;
 }
 
@@ -2764,13 +2839,14 @@ button.rdp-video.is-active {
 
 .settings-title h2 {
   margin: 0;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
 }
 
 .settings-close {
-  width: 22px;
-  height: 20px;
+  width: max(22px, 1.375rem);
+  height: max(20px, 1.25rem);
+  flex: none;
   margin-left: auto;
   border: 1px solid var(--border-strong);
   padding: 0;
@@ -2780,9 +2856,9 @@ button.rdp-video.is-active {
     inset 1px 1px 0 var(--bevel-hi),
     inset -1px -1px 0 var(--bevel-lo);
   font: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
-  line-height: 18px;
+  line-height: 1.125rem;
   cursor: pointer;
 }
 
@@ -2818,7 +2894,7 @@ button.rdp-video.is-active {
 .settings-section h3 {
   margin: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
 }
 
@@ -2829,7 +2905,7 @@ button.rdp-video.is-active {
 
 .settings-disclosure > summary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   padding: 9px 8px;
 }
@@ -2882,13 +2958,13 @@ button.rdp-video.is-active {
 }
 
 .settings-row-label strong {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .settings-row-label span {
   color: var(--text-faint);
-  font-size: 11px;
-  line-height: 14px;
+  font-size: 0.6875rem;
+  line-height: 0.875rem;
 }
 
 .settings-font-control {
@@ -2908,7 +2984,7 @@ button.rdp-video.is-active {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   cursor: pointer;
 }
 
@@ -2926,7 +3002,7 @@ button.rdp-video.is-active {
 .settings-font-control output {
   min-width: 42px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
@@ -2940,7 +3016,7 @@ button.rdp-video.is-active {
   background: var(--pane-bg);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .settings-theme-select:focus {
@@ -2957,7 +3033,7 @@ button.rdp-video.is-active {
   padding: 1px 7px;
   background: var(--pane-bg);
   color: var(--text);
-  font: 12px var(--tessera-font, monospace);
+  font: 0.75rem var(--tessera-font, monospace);
 }
 
 .settings-text-input:focus {
@@ -2982,7 +3058,7 @@ button.rdp-video.is-active {
     inset -1px -1px 0 var(--bevel-lo);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 
@@ -3003,7 +3079,7 @@ button.rdp-video.is-active {
 
 .rename-window-content label {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -3015,7 +3091,7 @@ button.rdp-video.is-active {
   background: var(--input-bg);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .rename-window-input:focus {
@@ -3046,7 +3122,7 @@ button.rdp-video.is-active {
 
 .save-clipboard-content > label {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -3067,7 +3143,7 @@ button.rdp-video.is-active {
 .save-clipboard-empty {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .save-clipboard-presets {
@@ -3090,7 +3166,7 @@ button.rdp-video.is-active {
 .save-clipboard-status {
   min-height: 1.4em;
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   overflow-wrap: anywhere;
 }
 
@@ -3107,7 +3183,7 @@ button.rdp-video.is-active {
 .settings-title > .settings-background-button {
   height: 22px;
   margin-left: 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .sessions-list {
@@ -3149,7 +3225,7 @@ button.rdp-video.is-active {
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 12px;
+  font-size: 0.75rem;
   text-align: left;
 }
 
@@ -3162,7 +3238,7 @@ button.rdp-video.is-active {
 
 .sessions-action {
   border-left: 1px solid var(--divider);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .sessions-name:hover,
@@ -3192,7 +3268,7 @@ button.rdp-video.is-active {
 
 .sessions-state {
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -3206,20 +3282,20 @@ button.rdp-video.is-active {
   display: grid;
   gap: 6px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
 .session-action-error {
   min-height: 15px;
   color: var(--danger-text);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .session-action-modal p {
   margin: 14px;
-  font-size: 12px;
-  line-height: 17px;
+  font-size: 0.75rem;
+  line-height: 1.0625rem;
 }
 
 .session-action-modal .rename-window-actions {
@@ -3244,8 +3320,8 @@ button.rdp-video.is-active {
 
 .workspace-conflict-status {
   margin: 0;
-  font-size: 12px;
-  line-height: 17px;
+  font-size: 0.75rem;
+  line-height: 1.0625rem;
 }
 
 .server-connection-panel {
@@ -3254,8 +3330,8 @@ button.rdp-video.is-active {
 
 .server-connection-status {
   margin: 0;
-  font-size: 12px;
-  line-height: 17px;
+  font-size: 0.75rem;
+  line-height: 1.0625rem;
 }
 
 .server-connection-actions {
@@ -3273,8 +3349,8 @@ button.rdp-video.is-active {
 
 .server-update-status {
   margin: 0;
-  font-size: 12px;
-  line-height: 17px;
+  font-size: 0.75rem;
+  line-height: 1.0625rem;
 }
 
 .server-update-status.is-busy::after,
@@ -3317,7 +3393,7 @@ button.rdp-video.is-active {
 .local-https-restarting p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 
@@ -3332,13 +3408,13 @@ button.rdp-video.is-active {
 }
 
 .local-https-field > strong {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .local-https-field > span {
   grid-column: 1;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.35;
 }
 
@@ -3352,7 +3428,7 @@ button.rdp-video.is-active {
   padding: 6px 7px;
   background: var(--input-bg);
   color: var(--text);
-  font: 12px/1.35 var(--tessera-mono-font, monospace);
+  font: 0.75rem/1.35 var(--tessera-mono-font, monospace);
   resize: vertical;
 }
 
@@ -3370,13 +3446,13 @@ button.rdp-video.is-active {
   padding: 9px;
   border: 1px solid var(--accent-border);
   background: var(--pane-bg);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .local-https-identity code {
   overflow-wrap: anywhere;
   color: var(--text-muted);
-  font: 10px/1.5 var(--tessera-mono-font, monospace);
+  font: 0.625rem/1.5 var(--tessera-mono-font, monospace);
 }
 
 .local-https-identity a {
@@ -3386,7 +3462,7 @@ button.rdp-video.is-active {
 .local-https-status {
   min-height: 16px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .local-https-status.is-error,
@@ -3406,7 +3482,7 @@ button.rdp-video.is-active {
 
 .local-https-restarting h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 
 .ipad-http-info-panel {
@@ -3423,7 +3499,7 @@ button.rdp-video.is-active {
 
 .ipad-http-info-panel p {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.5;
 }
 
@@ -3554,15 +3630,15 @@ button.rdp-video.is-active {
 .window-list-title {
   display: flex;
   align-items: center;
-  height: 32px;
+  min-height: 32px;
   border-bottom: 1px solid var(--divider);
   padding: 7px 10px;
   background: var(--input-bg);
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 700;
-  line-height: 16px;
+  line-height: 1rem;
 }
 
 .window-list-item.is-selected {
@@ -3578,7 +3654,7 @@ button.rdp-video.is-active {
 
 .window-list-grip {
   flex: 0 0 14px;
-  font-size: 18px;
+  font-size: 1.125rem;
   text-align: center;
   user-select: none;
   touch-action: none;
@@ -3665,7 +3741,7 @@ button.rdp-video.is-active {
   padding: 6px 10px;
   border-top: 1px solid var(--divider);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.5;
 }
 
@@ -3683,7 +3759,7 @@ button.rdp-video.is-active {
 .session-list-state {
   flex: 0 0 auto;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .session-list-item.is-selected .session-list-state {
@@ -3701,7 +3777,7 @@ button.rdp-video.is-active {
     inset 1px 1px 0 var(--bevel-hi),
     inset -1px -1px 0 var(--bevel-lo);
   font: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   cursor: pointer;
 }
@@ -3727,7 +3803,7 @@ button.rdp-video.is-active {
   background: var(--input-bg);
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .command-palette-input::placeholder {
@@ -3752,7 +3828,7 @@ button.rdp-video.is-active {
   background: transparent;
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-align: left;
   cursor: default;
 }
@@ -3780,10 +3856,10 @@ button.rdp-video.is-active {
   border: 1px solid var(--border-strong);
   padding: 0 4px;
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 700;
   letter-spacing: 0.02em;
-  line-height: 15px;
+  line-height: 0.9375rem;
 }
 
 .command-palette-item.is-selected .command-palette-code {
@@ -3794,7 +3870,7 @@ button.rdp-video.is-active {
 .command-palette-hint {
   flex: 0 0 auto;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .command-palette-item.is-selected .command-palette-hint {
@@ -3805,7 +3881,7 @@ button.rdp-video.is-active {
 .command-palette-empty {
   padding: 10px;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .terminal-image-setting {
@@ -3816,7 +3892,7 @@ button.rdp-video.is-active {
   padding: 2px 8px;
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .terminal-image-setting select {
@@ -3865,13 +3941,13 @@ button.rdp-video.is-active {
   padding: 7px 10px;
   background: var(--input-bg);
   color: var(--text);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 700;
 }
 
 .window-switcher-position {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 400;
 }
 
@@ -3887,7 +3963,7 @@ button.rdp-video.is-active {
   align-items: center;
   min-height: 32px;
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .window-switcher-item.is-selected {
@@ -3912,7 +3988,7 @@ button.rdp-video.is-active {
   white-space: nowrap;
 }
 
-.settings-clipboard { font-size: 13px; line-height: 1.5; }
+.settings-clipboard { font-size: 0.8125rem; line-height: 1.5; }
 .settings-clipboard p { margin: 0 0 10px; }
 .settings-clipboard code { overflow-wrap: anywhere; }
 .settings-clipboard-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
@@ -3925,7 +4001,7 @@ button.rdp-video.is-active {
   padding: 9px;
   border: 1px solid var(--divider);
   background: var(--pane-bg);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .settings-compatibility-grid {
@@ -3985,7 +4061,7 @@ button.rdp-video.is-active {
   min-height: 16px;
   margin: 0;
   color: var(--text-faint);
-  line-height: 16px;
+  line-height: 1rem;
 }
 
 @media (max-width: 460px) {
@@ -4009,7 +4085,7 @@ button.rdp-video.is-active {
   box-shadow: inset 1px 1px 0 var(--bevel-hi), inset -1px -1px 0 var(--bevel-panel-lo), 3px 3px 0 var(--panel-shadow);
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.4;
 }
 
@@ -4029,9 +4105,9 @@ button.rdp-video.is-active {
   box-shadow: inset 1px 1px 0 var(--bevel-hi), inset -1px -1px 0 var(--bevel-lo);
   color: var(--text);
   font-family: var(--tessera-font);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 1.125rem;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4058,7 +4134,7 @@ button.rdp-video.is-active {
    Its title bar is inside the saved pane box, including when maximized. */
 :root[data-theme="operator"] {
   --operator-title-height: 32px;
-  --operator-ui-font: "Segoe UI", system-ui, sans-serif;
+  --operator-ui-font: var(--tessera-font);
   --board-bg: #070e0d;
   --pane-bg: #111c19;
   --chrome-bg: #192923;
@@ -4265,7 +4341,7 @@ button.rdp-video.is-active {
   position: relative; z-index: 3; display: flex; flex-wrap: wrap; gap: 6px;
   padding: 8px; margin: 4px; max-width: calc(100% - 8px);
   color: var(--text); background: var(--pane-bg); border: 1px solid var(--border-panel);
-  font: 12px monospace; cursor: default; overflow-wrap: anywhere;
+  font: 0.75rem var(--tessera-font); cursor: default; overflow-wrap: anywhere;
 }
 .terminal-file-panel {
   position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 4;
@@ -4279,10 +4355,10 @@ button.rdp-video.is-active {
 .shortcuts-panel { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .shortcuts-content { overflow-y: auto; min-height: 0; }
 .shortcuts-panel .settings-title { display: flex; justify-content: space-between; align-items: center; }
-.shortcuts-close { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 18px; }
-.shortcut-description { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.shortcuts-close { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 1.125rem; }
+.shortcut-description { margin: 0; color: var(--text-muted); font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
 .shortcut-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.shortcuts-panel button:not(.shortcuts-close) { min-height: 30px; padding: 4px 8px; border: 1px solid var(--divider); background: var(--chrome-bg); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.shortcuts-panel button:not(.shortcuts-close) { min-height: 30px; padding: 4px 8px; border: 1px solid var(--divider); background: var(--chrome-bg); color: var(--text); font: inherit; font-size: 0.75rem; cursor: pointer; }
 .shortcuts-panel button:disabled { color: var(--text-disabled); cursor: default; }
 .shortcuts-panel button:focus-visible, .shortcuts-panel input:focus-visible, .shortcuts-panel select:focus-visible { outline: 2px solid var(--focus-outline); outline-offset: 1px; }
 .shortcuts-list { display: grid; gap: 5px; max-height: 200px; overflow-y: auto; }
@@ -4292,12 +4368,12 @@ button.rdp-video.is-active {
 .shortcut-editor { border-top: 1px solid var(--divider); padding-top: 12px; }
 .shortcut-metadata { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 10px; }
 .shortcut-metadata label:nth-child(n+3) { grid-column: 1 / -1; }
-.shortcut-field { display: grid; gap: 4px; min-width: 0; color: var(--text-muted); font: 12px var(--tessera-font); }
-.shortcut-field small { font-size: 11px; }
+.shortcut-field { display: grid; gap: 4px; min-width: 0; color: var(--text-muted); font: 0.75rem var(--tessera-font); }
+.shortcut-field small { font-size: 0.6875rem; }
 .shortcut-field input:not([type=checkbox]), .shortcut-field select { min-width: 0; width: 100%; box-sizing: border-box; min-height: 30px; padding: 4px 6px; border: 1px solid var(--divider); background: var(--input-bg); color: var(--text); font: inherit; }
 .shortcut-field input[type=checkbox] { justify-self: start; margin: 4px 0; }
 .shortcut-input-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 10px; border: 1px solid var(--divider); }
-.shortcut-input-row legend { color: var(--text-muted); font: 12px var(--tessera-font); }
+.shortcut-input-row legend { color: var(--text-muted); font: 0.75rem var(--tessera-font); }
 .shortcut-input-row .shortcut-actions { grid-column: 1 / -1; }
 @media (max-width: 480px) { .shortcuts-modal { padding: 8px; } .shortcut-input-row { grid-template-columns: minmax(0, 1fr); } }
 
@@ -4384,10 +4460,10 @@ button.rdp-video.is-active {
   display: none !important;
 }
 
-/* The phone view's lettering is the theme's, as on the desktop: the app font,
-   or Operator's interface font. */
+/* Phone controls use the selected app font in every theme. */
 :root {
   --phone-ui-font: var(--tessera-font);
+  --phone-header-height: max(48px, 3rem);
 }
 
 :root[data-theme="operator"] {
@@ -4395,7 +4471,6 @@ button.rdp-video.is-active {
 }
 
 .phone-view {
-  --phone-header-height: 48px;
   font-family: var(--phone-ui-font);
   color: var(--text);
 }
@@ -4406,6 +4481,24 @@ button.rdp-video.is-active {
    view only pans; Aa sizes its text. */
 html[data-phone-view] {
   touch-action: pan-x pan-y;
+}
+
+/* Keyboard expansion can briefly reveal the page/safe-area behind the fixed
+   terminal. Match the active terminal (including light/program colors), not
+   a light workspace wallpaper or Safari's default white page background. */
+html[data-phone-view="terminal"],
+html[data-phone-view="terminal"] body,
+html[data-phone-view="terminal"] .board {
+  background-color: var(--phone-terminal-bg, var(--terminal-bg));
+}
+
+html[data-phone-view="terminal"] .board {
+  background-image: none;
+}
+
+/* A smaller interface must not invite iOS's automatic form-field zoom. */
+html[data-phone-view] :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select) {
+  font-size: max(16px, 1rem);
 }
 
 html[data-phone-view] .deskbar-button,
@@ -4462,7 +4555,7 @@ html[data-phone-view="inbox"] .rectangle {
   border: 0;
   background: none;
   color: var(--text);
-  font: 600 17px/1.2 var(--phone-ui-font);
+  font: 600 1.0625rem/1.2 var(--phone-ui-font);
   text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4489,11 +4582,11 @@ html[data-phone-view="inbox"] .rectangle {
   border-radius: 8px;
   background: none;
   color: var(--text);
-  font: 400 22px/1 var(--phone-ui-font);
+  font: 400 1.375rem/1 var(--phone-ui-font);
 }
 
 .phone-text-button {
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: var(--text-muted);
 }
 
@@ -4507,7 +4600,7 @@ html[data-phone-view="inbox"] .rectangle {
 .phone-others {
   margin: 16px 4px;
   color: var(--text-muted);
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.4;
 }
 
@@ -4562,7 +4655,7 @@ html[data-phone-view="inbox"] .rectangle {
 
 .phone-card-title {
   overflow: hidden;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4582,7 +4675,7 @@ html[data-phone-view="inbox"] .rectangle {
 }
 
 .phone-card-state {
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.35;
   color: var(--text-muted);
   overflow-wrap: anywhere;
@@ -4595,7 +4688,7 @@ html[data-phone-view="inbox"] .rectangle {
 .phone-card-directory {
   overflow: hidden;
   font-family: var(--tessera-font);
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-faint);
   direction: rtl;
   text-align: left;
@@ -4610,7 +4703,7 @@ html[data-phone-view="inbox"] .rectangle {
   background: var(--terminal-bg);
   color: var(--terminal-text);
   font-family: var(--tessera-font);
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.4;
   white-space: pre;
   overflow: hidden;
@@ -4660,6 +4753,50 @@ html[data-phone-view="inbox"] .rectangle {
   border-bottom: 1px solid var(--divider);
 }
 
+.phone-mode-button {
+  flex: none;
+  min-height: 44px;
+  padding: 0 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.phone-mode-button[aria-pressed="true"] {
+  background: var(--selection-bg);
+  color: var(--text);
+}
+
+.phone-page-controls {
+  position: fixed;
+  inset: auto 0 var(--phone-keyboard-inset, 0px);
+  z-index: 80000;
+  display: flex;
+  gap: 8px;
+  padding: 4px max(8px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  border-top: 1px solid var(--divider);
+  background: var(--chrome-bg);
+}
+
+.phone-page-controls[hidden] { display: none; }
+
+.phone-compose.phone-selection-controls { display: flex; align-items: center; gap: 8px; }
+.phone-page-controls > .phone-selection-controls { flex: 1; min-width: 0; }
+.phone-selection-hint { flex: 1; min-width: 0; color: var(--text-muted); font-size: 0.75rem; }
+.phone-selection-controls .phone-text-button { padding-inline: 8px; white-space: nowrap; }
+
+.phone-page-button {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--phone-ui-font);
+  color: var(--text);
+}
+
+html[data-phone-mode="scroll"] .phone-reading {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* The whole height of the header and wider than the other buttons: it's the
    way out, so it should be hard to miss. */
 .phone-back {
@@ -4667,7 +4804,7 @@ html[data-phone-view="inbox"] .rectangle {
   min-width: 64px;
   min-height: var(--phone-header-height, 48px);
   padding: 0 14px 4px;
-  font-size: 40px;
+  font-size: 2.5rem;
 }
 
 .phone-terminal-heading {
@@ -4684,12 +4821,12 @@ html[data-phone-view="inbox"] .rectangle {
 }
 
 .phone-terminal-title {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
 }
 
 .phone-terminal-state {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-muted);
 }
 
@@ -4715,7 +4852,7 @@ html[data-phone-view="inbox"] .rectangle {
   border-radius: 6px;
   background: none;
   color: var(--text);
-  font: 16px var(--phone-ui-font);
+  font: 1rem var(--phone-ui-font);
   text-align: left;
 }
 
@@ -4810,7 +4947,7 @@ html[data-phone-bar] {
 .phone-bar .phone-back {
   min-width: 56px;
   padding: 0 10px 4px;
-  font-size: 36px;
+  font-size: 2.25rem;
 }
 
 .phone-replies,
@@ -4839,7 +4976,7 @@ html[data-phone-bar] {
   border-radius: 7px;
   background: var(--pane-bg);
   color: var(--text);
-  font: 500 15px/1 var(--tessera-font);
+  font: 500 0.9375rem/1 var(--tessera-font);
   touch-action: manipulation;
 }
 
@@ -4852,7 +4989,7 @@ html[data-phone-bar] {
 
 .phone-key-hide {
   display: none;
-  font-size: 20px;
+  font-size: 1.25rem;
 }
 
 html[data-phone-keyboard="open"] .phone-key-hide {
@@ -4861,7 +4998,7 @@ html[data-phone-keyboard="open"] .phone-key-hide {
 
 .phone-key-mode {
   font-family: var(--phone-ui-font);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .phone-reply {
@@ -4869,11 +5006,7 @@ html[data-phone-keyboard="open"] .phone-key-hide {
   min-width: 0;
   height: 40px;
   padding: 0;
-  font-size: 17px;
-}
-
-.phone-input[data-waiting="true"] .phone-reply {
-  border-color: var(--running-border);
+  font-size: 1.0625rem;
 }
 
 .phone-compose {
@@ -4896,8 +5029,9 @@ html[data-phone-keyboard="open"] .phone-key-hide {
   border-radius: 10px;
   background: var(--input-bg);
   color: var(--text);
-  /* 16px keeps iOS from zooming the page when the field takes focus. */
-  font: 16px/1.3 var(--phone-ui-font);
+  /* Interface sizes below the default must not drop this under iOS's
+     16px no-auto-zoom threshold when the field takes focus. */
+  font: max(16px, 1rem)/1.3 var(--phone-ui-font);
   resize: none;
 }
 
@@ -4910,7 +5044,7 @@ html[data-phone-keyboard="open"] .phone-key-hide {
   border-radius: 10px;
   background: var(--pane-bg);
   color: var(--text);
-  font: 500 15px var(--phone-ui-font);
+  font: 500 0.9375rem var(--phone-ui-font);
   touch-action: manipulation;
 }
 
@@ -4948,13 +5082,13 @@ html[data-phone-keyboard="open"] .phone-key-hide {
 
 .phone-sheet-title {
   margin: 0;
-  font-size: 17px;
+  font-size: 1.0625rem;
 }
 
 .phone-sheet-section h3 {
   margin: 16px 0 8px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -4985,7 +5119,7 @@ html[data-phone-keyboard="open"] .phone-key-hide {
   border: 0;
   background: none;
   color: var(--text);
-  font: 15px var(--phone-ui-font);
+  font: 0.9375rem var(--phone-ui-font);
   text-align: left;
 }
 
@@ -5001,7 +5135,7 @@ html[data-phone-keyboard="open"] .phone-key-hide {
 .phone-sheet-command {
   overflow: hidden;
   font-family: var(--tessera-font);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5013,7 +5147,7 @@ html[data-phone-keyboard="open"] .phone-key-hide {
 .phone-sheet-note {
   margin: 4px 0;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.4;
 }
 
@@ -5030,7 +5164,7 @@ html[data-phone-keyboard="open"] .phone-key-hide {
   display: grid;
   gap: 4px;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .phone-field {
@@ -5041,12 +5175,12 @@ html[data-phone-keyboard="open"] .phone-key-hide {
   border-radius: 8px;
   background: var(--input-bg);
   color: var(--text);
-  font: 16px/1.35 var(--phone-ui-font);
+  font: 1rem/1.35 var(--phone-ui-font);
 }
 
 .phone-snippet-text {
   font-family: var(--tessera-font);
-  font-size: 16px;
+  font-size: 1rem;
   resize: vertical;
 }
 
@@ -5069,6 +5203,10 @@ html[data-phone-view="terminal"] .rectangle.is-phone-open .terminal-container {
   padding: 4px;
 }
 
+html[data-phone-view="terminal"][data-phone-mode="scroll"] .rectangle.is-phone-open .terminal-container {
+  touch-action: none;
+}
+
 html[data-phone-view="terminal"] .rectangle.is-phone-open .terminal-container canvas {
   margin-inline: 0;
 }
@@ -5085,7 +5223,7 @@ html[data-phone-view="terminal"] .rectangle.is-phone-open .terminal-container ca
   padding: 8px max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
   background: var(--terminal-bg);
   color: var(--terminal-text);
-  font: 13px/1.45 var(--tessera-font);
+  font: 0.8125rem/1.45 var(--tessera-font);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
@@ -5096,21 +5234,21 @@ html[data-phone-view="inbox"] .phone-reading {
   display: none;
 }
 
-/* Select: over the terminal, and over the text view's live copy. */
-.phone-copy {
-  z-index: 79999;
-  -webkit-touch-callout: default;
+html[data-phone-selecting] .is-phone-open .terminal-container {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  cursor: crosshair;
 }
 
 .phone-view-button {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 600;
 }
 
 .phone-menu-note {
   margin: 4px 12px 6px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .phone-menu-item[aria-checked="true"]::before {
@@ -5136,7 +5274,7 @@ html[data-phone-view="inbox"] .phone-reading {
   min-height: 32px;
   padding: 0 4px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .phone-input-notice-text {
@@ -5150,6 +5288,6 @@ html[data-phone-view="inbox"] .phone-reading {
 .phone-input-notice-action {
   flex: none;
   min-height: 32px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text);
 }

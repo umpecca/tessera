@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
-import vm from "node:vm";
+
+import { RDPController } from "./rdp-controller.mjs";
+import { featureFixture } from "./application.test-support.mjs";
 
 import {
   fetchKeptRDPSessions,
@@ -97,13 +98,9 @@ test("describes the idle limit", () => {
 });
 
 test("Detach leaves a kept session on the host; Disconnect ends it", () => {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  const ctx = vm.createContext({ ended: 0, rdpKeptListCache: {} });
-  for (const name of ["detachRDPPane", "disconnectRDPPane"]) {
-    const start = source.indexOf(`function ${name}(`);
-    vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), ctx);
-  }
-  vm.runInContext("function endKeptRDP() { ended += 1; }", ctx);
+  let ended = 0;
+  const controller = new RDPController({ context: () => ({ workspaceID: "w" }),
+    fetch: async () => { ended++; return { ok: true, json: async () => ({}) }; } });
   const pane = (kept) => {
     const view = { kept, shutdowns: 0, intentionalDisconnect: false, detached: false };
     view.session = { shutdown: () => { view.shutdowns += 1; } };
@@ -111,25 +108,24 @@ test("Detach leaves a kept session on the host; Disconnect ends it", () => {
   };
 
   const detached = pane(true);
-  ctx.detachRDPPane(detached);
+  controller.detach(detached);
   assert.equal(detached.rdp.shutdowns, 1);
   assert.equal(detached.rdp.detached, true);
-  assert.equal(ctx.ended, 0);
+  assert.equal(ended, 0);
 
   const inPage = pane(false);
-  ctx.detachRDPPane(inPage);
+  controller.detach(inPage);
   assert.equal(inPage.rdp.shutdowns, 0, "a session run in the page has nothing on the host to keep");
 
   const disconnected = pane(true);
-  ctx.disconnectRDPPane(disconnected);
+  controller.disconnect(disconnected);
   assert.equal(disconnected.rdp.shutdowns, 1);
-  assert.equal(ctx.ended, 1);
+  assert.equal(ended, 1);
 });
 
 test("a dropped kept viewer attaches again once the page can be seen", () => {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const timers = [], listeners = new Set(), attached = [];
-  const ctx = vm.createContext({
+  const ctx = featureFixture(["reattachKeptRDPWhenShown"], {
     rdpReattachDelayMs: 2000,
     window: { setTimeout: (callback) => timers.push(callback) },
     document: {
@@ -140,8 +136,6 @@ test("a dropped kept viewer attaches again once the page can be seen", () => {
     autoAttachKeptRDP: async (rect) => { attached.push(rect); },
     setRDPMessage() {}, rdpFailureMessage: String,
   });
-  const start = source.indexOf("function reattachKeptRDPWhenShown(");
-  vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), ctx);
 
   const hidden = { rdp: { session: null, connecting: false } };
   ctx.reattachKeptRDPWhenShown(hidden);

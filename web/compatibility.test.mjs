@@ -46,3 +46,11 @@ test("diagnostics contain compatibility facts and omit URLs and clipboard conten
   assert.match(report, /60\.0% fast.*30\.0% hybrid.*10\.0% original/);
   assert.doesNotMatch(report, /secret-host|https?:\/\//);
 });
+
+test("native iPad clipboard is identified separately from a browser extension over HTTP", () => {
+  const info = detectCompatibility({ secureContext: false, extension: { native: true, version: "1.0.0", terminal: false } });
+  assert.equal(info.nativeClipboard, false, "the web Clipboard API is still unavailable over HTTP");
+  assert.equal(info.extension, "Native iPad app (v1.0.0)");
+  assert.equal(info.terminalClipboard, "Disabled");
+  assert.match(compatibilityDiagnostics(info), /Clipboard bridge: Native iPad app/);
+});

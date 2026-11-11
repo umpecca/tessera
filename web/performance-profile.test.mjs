@@ -1,19 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-import { normalizeTerminalBacklogLimit } from "./terminal-replica.mjs";
-
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+import { createPreferences } from "./preferences.mjs";
+import { featureFixture } from "./application.test-support.mjs";
 
 function loadBrowserPerformanceSettings(localStorage) {
-  const start = source.indexOf("const olderMacModeStorageKey =");
-  const end = source.indexOf("\nconst terminalAudioPlayer =", start);
-  assert.ok(start >= 0 && end > start);
-  return { ...vm.runInNewContext(`${source.slice(start, end)}
-    ({ olderMacMode, experimentalTerminalRenderer, terminalPaintCoalescing, terminalOutputCoalescing })`, {
-    window: { localStorage }, normalizeTerminalBacklogLimit,
-  }) };
+  const preferences = createPreferences({}, { window: { localStorage } });
+  preferences.initializeFallbackPaneFontSize();
+  const { olderMacMode, experimentalTerminalRenderer, terminalPaintCoalescing, terminalOutputCoalescing } = preferences;
+  return { olderMacMode, experimentalTerminalRenderer, terminalPaintCoalescing, terminalOutputCoalescing };
 }
 
 test("new browsers default to Standard, Experimental, paint coalescing on, and server coalescing off", () => {
@@ -56,11 +50,7 @@ test("unavailable browser storage retains the standard performance defaults", ()
 });
 
 function loadFunction(name, globals) {
-  const start = source.indexOf(`function ${name}(`);
-  const end = source.indexOf("\n}\n", start) + 2;
-  const context = vm.createContext(globals);
-  vm.runInContext(source.slice(start, end), context);
-  return context;
+  return featureFixture([name], globals);
 }
 
 test("Older Mac mode updates open terminals and persists only in this browser", () => {

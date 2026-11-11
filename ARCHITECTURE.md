@@ -88,7 +88,38 @@ tessera/
   internal/version/
     version.go                 # build-time version value
   web/
-    app.js                     # SPA state, pane UI, interactions, and API calls
+    app.js                     # explicit feature composition and ordered startup only
+    application-events.mjs     # browser/desktop event registration
+    desktop-*.mjs              # pane lifecycle, geometry and pointer interactions
+    session-navigation.mjs     # account/session routing and startup transactions
+    workspace-lifecycle.mjs    # restoration, conflicts and persistence composition
+    workspace-background.mjs   # background compression/upload and display modes
+    preferences.mjs            # preference ownership, storage and live effects
+    workspace-document.mjs     # pure workspace serialization and archive preservation
+    workspace-persistence.mjs  # workspace autosave, revisions, conflicts and reconnect
+    settings-persistence.mjs   # independent account-settings save lifecycle
+    settings-dialog.mjs        # settings layout, focus, disclosures and diagnostics lifetime
+    terminal-connections.mjs  # socket generations, replay attachment and retry policy
+    browser-controller.mjs     # Browser proxy navigation and capability cleanup
+    vnc-controller.mjs         # noVNC connections, preferences and clipboard lifecycle
+    rdp-controller.mjs         # scoped kept-session cache, proxy requests and teardown
+    rdp-session.mjs            # connection attempts, kept viewers and codec lifecycle
+    rdp-view.mjs               # canvas, input, controls and remote clipboard
+    rdp-dialogs.mjs            # certificate/credential prompts and focus containment
+    browser-view.mjs           # Browser DOM, frame routing and controller composition
+    vnc-view.mjs               # VNC DOM, dialogs and controller composition
+    terminal-view.mjs          # terminal creation, replica UI, sizing, focus and cleanup
+    terminal-input-bridge.mjs   # terminal DOM mouse, paste and keyboard integration
+    phone-workspace.mjs        # phone list/terminal integration and device-local sizing
+    settings-view.mjs          # settings row builders, diagnostics and dialog wiring
+    command-palette.mjs        # commands, codes, ranking and palette presentation
+    *-dialog.mjs               # session, directory, help and Local HTTPS dialogs
+    *-list-view.mjs            # window/session lists, ordering, focus and keyboard input
+    window-switcher-view.mjs   # transient switching and overlay focus restoration
+    workspace-menus.mjs        # workspace/dock/terminal/type menus and their actions
+    deskbar.mjs                # Deskbar rendering and keyboard navigation
+    clipboard-access.mjs       # browser clipboard fallback, saving and setup prompts
+    server-connectivity.mjs    # health, wake recovery, offline and update UI
     shortcuts.mjs              # shortcut manager and invocation modal
     phone-view.mjs             # phone terminal list and full-screen terminal
     phone-input.mjs            # phone compose field, key row, replies, snippets
@@ -103,7 +134,8 @@ tessera/
     assets/                    # fonts, application icons, and pane icons
   apple/                       # native iPad/Mac thin client (see apple/README.md)
     Tessera/                   # SwiftUI app around a WKWebView of a chosen server
-    TesseraCore/               # Swift package: address parsing, download names
+    TesseraCore/               # Swift package: addresses, download names, profiles, shortcuts, recovery
+    TesseraUITests/            # disposable-iPad loopback fixture UI tests
   migrations/
     embed.go                   # embeds the ordered SQL sequence
     001_*.sql ... 047_*.sql     # append-only application schema migrations
@@ -112,9 +144,34 @@ tessera/
     release.yml                # platform CI and tagged Tessera releases
 ```
 
-The Go backend is separated by concrete responsibility. The frontend currently
-keeps most application behavior in `web/app.js`; this preserves directness but
-is the main modularization pressure point as features grow.
+The Go backend is separated by concrete responsibility. The frontend keeps
+workspace and account-settings persistence in independent controllers with
+explicit document/status callbacks and injectable transport/timers. They own
+their revisions, debouncing, in-flight saves and reset lifetimes; a response
+from a previous workspace or account cannot mutate the newly loaded state.
+Workspace serialization is a pure module, separate from pane DOM and transport.
+Terminal transport, Browser proxy navigation and VNC connections have explicit
+controllers. RDP's request/cache and teardown controller keeps detach (leave the
+host session alive) separate from disconnect (end it). Settings modal layout,
+focus restoration/trapping, disclosures and diagnostics timers are owned by a
+dialog module; `settings-view.mjs` supplies row builders and `preferences.mjs`
+owns their effects. Pane mounting, RDP connection flow, terminal application
+effects and session/window orchestration also have concrete feature modules.
+
+`web/app.js` is only a composition root. Its 29 feature factories are inert:
+construction does not touch DOM, storage or the network. Each instance owns its
+feature's state, declares its dependencies, and accepts browser capabilities for
+testing. Lazy feature providers allow cyclic UI actions without a global service
+locator or generic application-state container. Explicit initialization steps
+restore preferences/controllers, mount DOM and register listeners before startup
+loads the first account/session. Native terminal rendering/scheduling and the
+existing protocol modules remain separate; no framework or bundle pipeline was
+introduced.
+
+Application scenario tests import real factories through a test-only fixture
+adapter rather than slicing/evaluating `app.js`. Architecture tests enforce inert
+construction, independent state, complete dependency wiring and the composition
+root boundary. Embedded-module tests follow transitive and lazy imports.
 
 ## High-Level System Diagram
 
@@ -277,7 +334,8 @@ Per-user settings also carry a wheel sensitivity multiplier for
 Terminal panes, the selected
 terminal font and color mode, and the validated `TERM` capability name used
 when new Unix terminal PTYs are created. JetBrains Mono is bundled and selected
-by default, with Fira Code, IBM Plex Mono, Commit Mono and Departure Mono as alternatives.
+by default, with Fira Code, IBM Plex Mono, Commit Mono, Departure Mono, Spleen,
+Pixel Operator Mono, scientifica and Cozette as alternatives.
 The browser's font list (`web/terminal-font.mjs`) and the server's
 `store.NormalizeTerminalFont` must name the same fonts, or a saved choice
 falls back to JetBrains Mono. Noto Sans Symbols 2 is
@@ -640,10 +698,11 @@ runs the Go test suite on every target runner.
 
 - Implement the authentication and robust authorization plan described above
   before treating Tessera as safe for untrusted or public network access.
-- Split `web/app.js` into direct feature modules for API/persistence, workspace
-  interaction, pane kinds, and overlays as frontend behavior continues to grow.
-- Add focused browser automation for session routing, persistence, pane
-  geometry, fullscreen, Deskbar, terminal attachment, and terminal file-transfer flows.
+- Preserve the frontend feature boundaries as behavior grows; keep new feature
+  logic out of the composition root and directly test its owning module.
+- Extend the browser checks in `scripts/frontend-smoke.mjs` and the specialized
+  terminal/shortcut smoke scripts, including live VNC/RDP host coverage where
+  remote-desktop test servers are available.
 - Keep applied migration files immutable and append a new numbered SQL file for
   every future schema change; extend migration tests with each persisted field.
 - Package and sign macOS releases as `.app` bundles; consider platform-native

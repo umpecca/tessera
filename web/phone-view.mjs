@@ -12,7 +12,7 @@ export const phoneViewMaxWidth = 600;
 export const phoneViewStorageKey = "tessera.phone-view.v1";
 const retryDelaysMs = [1000, 2000, 5000, 10000, 30000];
 const clockTickMs = 10000;
-// An open terminal's quick replies follow its quiet seconds more closely.
+// Keep the open terminal's status age current.
 const openClockTickMs = 2000;
 const readingRefreshMs = 1000;
 // Two taps closer than this are a double-tap, which iOS takes as zoom.
@@ -20,6 +20,11 @@ const doubleTapMs = 350;
 // Longer than the keyboard takes to slide in or out.
 const viewportFollowMs = 1000;
 export const phoneReadingStorageKey = "tessera.phone-reading.v1";
+export const phoneInteractionModeStorageKey = "tessera.phone-interaction-mode.v1";
+
+export function normalizePhoneInteractionMode(value) {
+  return value === "scroll" ? "scroll" : "interaction";
+}
 
 // The font size at which the shell's columns fill width, given the cell
 // width at fontSize, then times zoom: in quarter points, from 4 to largest.
@@ -75,8 +80,9 @@ export function phoneViewPathOverride(pathname) {
 
 // A phone shows the phone view whichever way it is turned, wider in
 // landscape; other touch screens show it in a narrow window.
-export function shouldUsePhoneView({ width, coarsePointer, override, phone = false }) {
+export function shouldUsePhoneView({ width, coarsePointer, override, phone = false, tablet = false }) {
   const chosen = normalizePhoneViewOverride(override);
+  if (!chosen && tablet) return false;
   if (chosen) return chosen === "phone";
   if (phone) return true;
   return Boolean(coarsePointer) && Number(width) > 0 && Number(width) < phoneViewMaxWidth;
@@ -204,6 +210,9 @@ function element(document, tag, className, text) {
 //   sessionName()      its name, for the header
 //   onOpen(id)         show that terminal; the view has already set itself up
 //   onBack(id)         the terminal stopped being shown
+//   onModeChange(id, mode) cancel gestures and hold the shell's grid while UI changes
+//   onComposeViewport(id, held), followComposeViewport(id) keep the canvas/grid stable while composing
+//   scrollPage(id, direction) scroll local canvas history without terminal input
 //   onInterrupt(id), onRename(id), onClose(id), onNewTerminal()
 //   onSessions(), onDesktop()
 //   onShellsChanged()  the host's shells and the page's panes disagree, as
@@ -214,7 +223,8 @@ function element(document, tag, className, text) {
 //   stepFontSize(id, step) this phone's font size for the terminal, a point at a time
 //   refreshTerminal(id) the open terminal is on screen; keep its view current
 //   readingText(id)    its lines of text, or null for a full-screen program
-//   selectText(id)     its lines of text, a full-screen program's screen too
+//   onSelectionChange(id, on), copySelection(id) local canvas selection
+//   scrollSelection(id, direction) send explicit mouse-wheel navigation to a TUI
 //   storage            { get(key), set(key, value) }, for the chosen view
 
 export class PhoneView {
@@ -232,10 +242,14 @@ export class PhoneView {
     this.retry = 0;
     this.clock = null;
     this.menu = null;
+    this.menuAnchor = null;
+    this.composePaneID = "";
+    this.selecting = false;
     this.mismatch = "";
     // The screen unless this browser chose text: a terminal opened on the
     // phone fits the shell to it, so the screen reads at the phone's width.
     this.reading = this.options.storage?.get?.(phoneReadingStorageKey) === "text";
+    this.mode = normalizePhoneInteractionMode(this.options.storage?.get?.(phoneInteractionModeStorageKey));
     this.readingTimer = null;
     this.build();
   }
@@ -281,6 +295,8 @@ export class PhoneView {
     const view = element(doc, "button", "phone-icon-button phone-view-button", "Aa");
     view.type = "button";
     view.setAttribute("aria-label", "View");
+    view.setAttribute("aria-haspopup", "menu");
+    view.setAttribute("aria-expanded", "false");
     view.addEventListener("click", (event) => {
       event.stopPropagation();
       this.showViewMenu(view);
@@ -288,35 +304,58 @@ export class PhoneView {
     const more = element(doc, "button", "phone-icon-button", "⋯");
     more.type = "button";
     more.setAttribute("aria-label", "Terminal actions");
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
     more.addEventListener("click", (event) => {
       event.stopPropagation();
       this.showMenu(this.openPaneID, more);
     });
     this.terminalHeader.append(heading);
+    this.backButton = back;
+    this.viewButton = view;
+    this.moreButton = more;
+    this.terminalHeading = heading;
+    this.modeButton = element(doc, "button", "phone-text-button phone-mode-button");
+    this.modeButton.type = "button";
+    this.modeButton.addEventListener("click", () => this.setMode(this.mode === "scroll" ? "interaction" : "scroll"));
+
+    this.pageControls = element(doc, "div", "phone-page-controls");
+    this.pageControls.setAttribute("role", "group");
+    this.pageControls.setAttribute("aria-label", "Scroll history");
+    for (const [label, direction] of [["Page Up", -1], ["Page Down", 1]]) {
+      const page = element(doc, "button", "phone-text-button phone-page-button", label);
+      page.type = "button";
+      page.title = "Scroll local history one screen at a time";
+      page.addEventListener("pointerdown", event => event.preventDefault());
+      page.addEventListener("click", () => this.scrollPage(direction));
+      this.pageControls.append(page);
+    }
+    this.pageButtons = [...this.pageControls.children];
+    this.scrollSelectButton = element(doc, "button", "phone-text-button phone-page-button", "Select");
+    this.scrollSelectButton.type = "button";
+    this.scrollSelectButton.setAttribute("aria-label", "Select text to copy");
+    this.scrollSelectButton.setAttribute("aria-pressed", "false");
+    this.scrollSelectButton.addEventListener("pointerdown", event => event.preventDefault());
+    this.scrollSelectButton.addEventListener("click", () => this.setSelecting(true));
+    this.pageControls.append(this.scrollSelectButton);
 
     this.readingView = element(doc, "div", "phone-reading");
     this.readingView.hidden = true;
     this.readingView.setAttribute("role", "log");
     this.readingView.setAttribute("aria-label", "Terminal output as text");
 
-    // Select: the terminal's text as a still page over it, for the phone's
-    // own selection handles and Copy. One finger scrolls it, and nothing
-    // reaches the terminal, so selecting can't press or scroll the program.
-    this.copyView = element(doc, "div", "phone-reading phone-copy");
-    this.copyView.hidden = true;
-    this.copyView.setAttribute("aria-label", "Terminal text to select");
-
-    this.input = this.options.input ? new PhoneInput(doc, { ...this.options.input, select: (on) => this.setSelecting(on) }) : null;
+    this.input = this.options.input ? new PhoneInput(doc, {
+      ...this.options.input,
+      select: on => this.setSelecting(on),
+      copySelection: () => this.options.copySelection?.(this.openPaneID),
+      pasteClipboard: () => this.options.pasteClipboard?.(this.openPaneID),
+      scrollSelection: direction => this.options.scrollSelection?.(this.openPaneID, direction),
+    }) : null;
     // With the input area, the open terminal's buttons sit at the ends of its
     // key row and the terminal takes the top of the screen; the title and
     // state head the actions menu. Without it, they head the screen.
-    if (this.input) {
-      this.input.barStart.append(back);
-      this.input.barEnd.append(view, more);
-    } else {
-      this.terminalHeader.replaceChildren(back, heading, view, more);
-    }
-    this.root.append(this.inbox, this.terminalHeader, this.readingView, this.copyView, ...(this.input ? [this.input.element] : []));
+    this.renderMode();
+    this.root.append(this.inbox, this.terminalHeader, this.readingView, this.pageControls, ...(this.input ? [this.input.element] : []));
     this.onVisibility = () => {
       if (!this.active) return;
       if (this.document.hidden) this.stopPolling();
@@ -327,14 +366,20 @@ export class PhoneView {
     };
     this.onPageShow = () => this.restoreViewport();
     this.onOutsidePointer = (event) => {
-      if (this.menu && !this.menu.contains(event.target)) this.hideMenu();
+      // The trigger's click toggles its menu. Closing it on pointerdown first
+      // would make that same click immediately reopen it instead.
+      if (this.menu && !this.menu.contains(event.target) && !this.menuAnchor?.contains(event.target)) this.hideMenu();
     };
-    this.onViewport = () => this.followViewport();
+    this.onViewport = (event) => {
+      if (event?.type === "focusin" && event.target === this.input?.field
+          && this.active && this.openPaneID && this.mode === "interaction") this.setComposeViewportHold(true);
+      this.followViewport();
+    };
     // iOS can zoom the page despite touch-action (see styles.css), so its
     // pinch events are refused, and so is the second tap of a double-tap
     // that lands on nothing that takes taps. Buttons, fields and terminals
     // get every tap: two quick presses of a key are two keys.
-    this.onGesture = (event) => event.preventDefault();
+    this.onGesture = event => event.preventDefault();
     this.onTouchEnd = (event) => {
       const now = Date.now();
       const quick = this.lastTouchEnd !== undefined && now - this.lastTouchEnd < doubleTapMs;
@@ -345,7 +390,9 @@ export class PhoneView {
       event.preventDefault();
     };
     if (this.input && typeof globalThis.ResizeObserver === "function") {
-      new globalThis.ResizeObserver(this.onViewport).observe(this.input.element);
+      const observer = new globalThis.ResizeObserver(this.onViewport);
+      observer.observe(this.input.element);
+      observer.observe(this.pageControls);
     }
   }
 
@@ -357,15 +404,37 @@ export class PhoneView {
     if (!style?.setProperty) return;
     const viewport = globalThis.visualViewport;
     const keyboard = viewport ? Math.max(0, Math.round(globalThis.innerHeight - viewport.height - viewport.offsetTop)) : 0;
-    const input = this.input && !this.input.element.hidden ? this.input.element.offsetHeight || 0 : 0;
-    if (keyboard === this.keyboardInset && input === this.inputHeight) return;
-    this.keyboardInset = keyboard;
-    this.inputHeight = input;
-    // More than iPadOS's shortcut bar for a hardware keyboard.
-    if (keyboard > 80) this.document.documentElement.dataset.phoneKeyboard = "open";
-    else delete this.document.documentElement.dataset.phoneKeyboard;
-    style.setProperty("--phone-keyboard-inset", `${keyboard}px`);
-    style.setProperty("--phone-input-height", `${input}px`);
+    const base = this.input && !this.input.element.hidden ? this.input.element.offsetHeight || 0
+      : !this.pageControls.hidden ? this.pageControls.offsetHeight || 0 : 0;
+    const input = base;
+    if (keyboard !== this.keyboardInset || input !== this.inputHeight || base !== this.baseInputHeight) {
+      this.keyboardInset = keyboard;
+      this.inputHeight = input;
+      this.baseInputHeight = base;
+      // More than iPadOS's shortcut bar for a hardware keyboard.
+      if (keyboard > 80) this.document.documentElement.dataset.phoneKeyboard = "open";
+      else delete this.document.documentElement.dataset.phoneKeyboard;
+      style.setProperty("--phone-keyboard-inset", `${keyboard}px`);
+      style.setProperty("--phone-input-height", `${input}px`);
+      style.setProperty("--phone-base-input-height", `${base}px`);
+    }
+    if (this.openPaneID) this.syncTerminalBackground();
+    if (this.composePaneID) this.options.followComposeViewport?.(this.composePaneID);
+  }
+
+  syncTerminalBackground() {
+    const background = this.options.terminalView?.(this.openPaneID)?.background || "var(--terminal-bg)";
+    if (background === this.terminalBackground) return;
+    this.terminalBackground = background;
+    this.document.documentElement.style?.setProperty?.("--phone-terminal-bg", background);
+  }
+
+  setComposeViewportHold(on) {
+    const paneID = on ? this.openPaneID : "";
+    if (this.composePaneID === paneID) return;
+    if (this.composePaneID) this.options.onComposeViewport?.(this.composePaneID, false);
+    this.composePaneID = paneID;
+    if (paneID) this.options.onComposeViewport?.(paneID, true);
   }
 
   // iOS can report the viewport before the keyboard has finished coming or
@@ -379,6 +448,8 @@ export class PhoneView {
       this.followFrame = 0;
       this.measure();
       if (this.active && Date.now() < this.followUntil) this.followFrame = globalThis.requestAnimationFrame(step);
+      else if (this.composePaneID && this.document.activeElement !== this.input?.field
+          && (this.keyboardInset <= 80 || this.input?.direct || this.mode !== "interaction")) this.setComposeViewportHold(false);
     };
     this.followFrame = globalThis.requestAnimationFrame(step);
   }
@@ -405,7 +476,7 @@ export class PhoneView {
     this.active = true;
     this.root.hidden = false;
     this.document.documentElement.dataset.phoneView = this.openPaneID ? "terminal" : "inbox";
-    if (this.input) this.document.documentElement.dataset.phoneBar = "bottom";
+    this.renderMode();
     this.document.addEventListener("visibilitychange", this.onVisibility);
     globalThis.addEventListener?.("pageshow", this.onPageShow);
     this.document.addEventListener("pointerdown", this.onOutsidePointer, true);
@@ -431,6 +502,7 @@ export class PhoneView {
     delete this.document.documentElement.dataset.phoneView;
     delete this.document.documentElement.dataset.phoneKeyboard;
     delete this.document.documentElement.dataset.phoneBar;
+    delete this.document.documentElement.dataset.phoneMode;
     this.document.removeEventListener("visibilitychange", this.onVisibility);
     globalThis.removeEventListener?.("pageshow", this.onPageShow);
     this.document.removeEventListener("pointerdown", this.onOutsidePointer, true);
@@ -468,15 +540,15 @@ export class PhoneView {
 
   open(paneID) {
     if (!this.active || !paneID) return;
+    this.setComposeViewportHold(false);
     this.hideMenu();
     const previous = this.openPaneID;
+    this.setSelecting(false);
     this.openPaneID = paneID;
     this.document.documentElement.dataset.phoneView = "terminal";
     this.inbox.hidden = true;
-    this.terminalHeader.hidden = Boolean(this.input);
-    const card = this.cards().terminals.find((candidate) => candidate.id === paneID);
-    this.setSelecting(false);
-    this.input?.attach(paneID, { alerted: Boolean(card?.summary?.alert) });
+    this.input?.attach(paneID);
+    this.renderMode();
     this.measure();
     this.renderTerminalHeader();
     this.startClock();
@@ -497,6 +569,7 @@ export class PhoneView {
   }
 
   showInbox() {
+    this.setComposeViewportHold(false);
     this.hideMenu();
     this.setSelecting(false);
     this.input?.detach();
@@ -508,29 +581,95 @@ export class PhoneView {
     if (this.active) this.document.documentElement.dataset.phoneView = "inbox";
     this.inbox.hidden = false;
     this.terminalHeader.hidden = true;
+    this.pageControls.hidden = true;
   }
 
-  // The text is taken once, so new output doesn't move a selection. It
-  // opens at the end, where the terminal was.
-  setSelecting(on) {
-    const lines = on && this.openPaneID ? this.options.selectText?.(this.openPaneID) : null;
-    const view = this.copyView;
-    this.input?.showSelecting(Boolean(lines));
-    if (!lines) {
-      view.hidden = true;
-      view.textContent = "";
-      return;
+  setMode(value) {
+    const mode = normalizePhoneInteractionMode(value);
+    if (this.mode === mode) return;
+    // Tell the pane before changing layout or dismissing its keyboard: neither
+    // the bar nor the keyboard animation should resize the shared shell.
+    if (this.openPaneID) this.options.onModeChange?.(this.openPaneID, mode);
+    this.mode = mode;
+    this.options.storage?.set?.(phoneInteractionModeStorageKey, mode);
+    this.hideMenu();
+    this.setSelecting(false);
+    this.renderMode();
+    this.measure();
+    this.followViewport();
+  }
+
+  renderMode() {
+    const scrolling = this.mode === "scroll";
+    const dataset = this.document.documentElement.dataset;
+    if (this.active) dataset.phoneMode = this.mode;
+    if (this.active && this.input && !scrolling) dataset.phoneBar = "bottom";
+    else delete dataset.phoneBar;
+    this.modeButton.textContent = scrolling ? "Scroll" : "Interact";
+    this.modeButton.setAttribute("aria-pressed", String(scrolling));
+    this.modeButton.setAttribute("aria-label", scrolling
+      ? "Scroll mode; switch to interaction mode" : "Interaction mode; switch to scroll mode");
+    this.modeButton.title = scrolling ? "One finger: text history. Two fingers: application mouse scroll." : "Show keyboard controls and interact with the terminal.";
+    if (this.input && !scrolling) {
+      this.input.barStart.append(this.backButton);
+      this.input.barEnd.append(this.modeButton, this.viewButton, this.moreButton);
+    } else {
+      this.terminalHeader.replaceChildren(this.backButton, this.terminalHeading, this.modeButton, this.viewButton, this.moreButton);
     }
-    // The keyboard would leave little room to select in.
-    this.document.activeElement?.blur?.();
-    this.applyFontSize(view);
-    view.textContent = lines.join("\n");
-    view.hidden = false;
-    view.scrollTop = view.scrollHeight;
+    this.terminalHeader.hidden = !this.openPaneID || Boolean(this.input && !scrolling);
+    this.pageControls.hidden = !this.openPaneID || !scrolling;
+    const scrollSelecting = scrolling && this.selecting;
+    for (const button of this.pageButtons) button.hidden = scrollSelecting;
+    this.scrollSelectButton.hidden = scrollSelecting || !this.input;
+    this.scrollSelectButton.setAttribute("aria-pressed", String(this.selecting));
+    if (this.input) {
+      const parent = scrollSelecting ? this.pageControls : this.input.element;
+      if (!parent.contains(this.input.selectionControls)) parent.append(this.input.selectionControls);
+    }
+    this.input?.setSuspended(scrolling);
+  }
+
+  // Paging is navigation, never a PageUp/PageDown key sent to a running shell
+  // or TUI. Keep a little overlap so the reader doesn't lose their place.
+  scrollPage(direction) {
+    if (this.mode !== "scroll" || !this.openPaneID || ![-1, 1].includes(direction)) return;
+    this.hideMenu();
+    const surface = !this.readingView.hidden ? this.readingView : null;
+    if (surface) {
+      const step = Math.max(1, Math.floor(surface.clientHeight * 0.9));
+      surface.scrollTop = Math.max(0, Math.min(Math.max(0, surface.scrollHeight - surface.clientHeight), surface.scrollTop + direction * step));
+    } else {
+      this.options.scrollPage?.(this.openPaneID, direction);
+    }
+  }
+
+  // Keep the real canvas visible, including full-screen TUI layout/colors.
+  setSelecting(on) {
+    on = Boolean(on && this.openPaneID);
+    if (on === this.selecting) return;
+    this.options.onSelectionChange?.(this.openPaneID, on);
+    this.selecting = on;
+    if (on) {
+      this.document.activeElement?.blur?.();
+      this.input?.setDirect(false, { focus: false });
+      this.document.documentElement.dataset.phoneSelecting = "true";
+    } else delete this.document.documentElement.dataset.phoneSelecting;
+    this.input?.showSelecting(on);
+    this.renderMode();
+    this.renderSelectionScrollControls();
+    this.renderReading();
+    this.measure();
+    this.followViewport();
+  }
+
+  renderSelectionScrollControls() {
+    const terminal = this.openPaneID ? this.options.terminalView?.(this.openPaneID) : null;
+    const visible = this.selecting && terminal?.alternate && terminal?.mouseTracking && Boolean(this.options.scrollSelection);
+    for (const button of this.input?.selectionScrollButtons || []) button.hidden = !visible;
   }
 
   applyFontSize(view) {
-    const size = this.openPaneID ? this.options.terminalView?.(this.openPaneID)?.fontSize : 0;
+    let size = this.openPaneID ? this.options.terminalView?.(this.openPaneID)?.fontSize : 0;
     view.style.fontSize = size ? `${size}px` : "";
   }
 
@@ -546,7 +685,7 @@ export class PhoneView {
   // so it shows as the screen.
   renderReading({ follow = false } = {}) {
     const paneID = this.openPaneID;
-    const lines = this.reading && paneID ? this.options.readingText?.(paneID) : null;
+    const lines = this.reading && !this.selecting && paneID ? this.options.readingText?.(paneID) : null;
     if (!lines) {
       this.readingView.hidden = true;
       globalThis.clearInterval(this.readingTimer);
@@ -621,6 +760,16 @@ export class PhoneView {
     const more = element(doc, "button", "phone-icon-button phone-card-more", "⋯");
     more.type = "button";
     more.setAttribute("aria-label", `Actions for ${card.title}`);
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.dataset.paneId = card.id;
+    // Status polling rebuilds the cards. Keep an open menu associated with
+    // the replacement trigger so a later second tap still closes it.
+    if (this.menu && this.menuAnchor?.dataset.paneId === card.id) {
+      this.menuAnchor.setAttribute("aria-expanded", "false");
+      this.menuAnchor = more;
+      more.setAttribute("aria-expanded", "true");
+    }
     more.addEventListener("click", (event) => {
       event.stopPropagation();
       this.showMenu(card.id, more);
@@ -643,6 +792,8 @@ export class PhoneView {
   }
 
   renderTerminalHeader() {
+    this.syncTerminalBackground();
+    this.renderSelectionScrollControls();
     const card = this.cards().terminals.find((candidate) => candidate.id === this.openPaneID);
     const pane = this.options.panes().find((candidate) => candidate.id === this.openPaneID);
     this.terminalTitle.textContent = card?.title || pane?.title || "Terminal";
@@ -652,7 +803,7 @@ export class PhoneView {
     const status = terminalCardStatus(summary, elapsed);
     this.terminalState.textContent = status.label;
     this.terminalHeader.dataset.state = status.state;
-    this.input?.update(card?.summary || null, elapsed);
+    this.input?.update(card?.summary || null);
     if (this.openPaneID) this.options.refreshTerminal?.(this.openPaneID);
   }
 
@@ -700,6 +851,10 @@ export class PhoneView {
   }
 
   showItems(anchor, items, className = "") {
+    if (this.menu && this.menuAnchor === anchor) {
+      this.hideMenu();
+      return;
+    }
     this.hideMenu();
     const doc = this.document;
     const menu = element(doc, "div", `phone-menu ${className}`.trim());
@@ -729,12 +884,16 @@ export class PhoneView {
     menu.style.right = `${Math.max(8, Math.round(doc.documentElement.clientWidth - box.right))}px`;
     this.root.append(menu);
     this.menu = menu;
+    this.menuAnchor = anchor;
+    anchor.setAttribute("aria-expanded", "true");
     menu.querySelector("button")?.focus({ preventScroll: true });
   }
 
   hideMenu() {
+    this.menuAnchor?.setAttribute("aria-expanded", "false");
     this.menu?.remove();
     this.menu = null;
+    this.menuAnchor = null;
   }
 
   // One request stays open at a time. It comes back when the shells change,

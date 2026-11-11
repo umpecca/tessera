@@ -33,3 +33,19 @@ test("the scroll keeps every finger until the last lifts", () => {
   assert.equal(scroll.up(touch(3, 20)), true);
   assert.equal(scroll.down(touch(4, 0)), false, "a new touch starts over");
 });
+
+test("one-finger scrolling can be enabled, but adding a second finger latches the two-finger gesture", () => {
+  const scroll = new TerminalTouchScroll();
+  assert.equal(scroll.down(touch(1, 100), 1), true);
+  assert.equal(scroll.move(touch(1, 80)), -20);
+  scroll.down(touch(2, 100), 1);
+  assert.equal(scroll.move(touch(1, 60)), -10);
+  assert.equal(scroll.up(touch(2, 100)), true);
+  assert.equal(scroll.move(touch(1, 40)), 0);
+  scroll.up(touch(1, 40));
+  assert.equal(scroll.down(touch(3, 100), 1), true);
+  assert.equal(scroll.move(touch(3, 90)), -10);
+  scroll.reset();
+  assert.equal(scroll.move(touch(3, 80)), null);
+  assert.equal(scroll.down(touch(4, 100)), false);
+});

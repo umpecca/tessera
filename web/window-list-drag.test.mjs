@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+import { featureFixture } from "./application.test-support.mjs";
 import { placeWindowPaneBefore } from "./window-switcher.mjs";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 function setup() {
   const panes = ["build", "editor", "notes", "guide"].map(id => ({ id, kind: "worksheet", minimized: id === "notes" }));
   const rows = panes.map((pane, index) => {
@@ -29,10 +27,7 @@ function setup() {
     placeWindowPaneBefore, setWindowListSelection: index => { globals.selection = index; },
     finishWindowOrderMove: (pane, moved) => { if (moved) saves++; },
   };
-  for (const name of ["startWindowListDrag", "clearWindowListDropIndicator", "clearWindowListDrag", "updateWindowListDrop", "updateWindowListDropIndicator", "scrollWindowListDrag", "dropWindowListEntry", "handleWindowListKeyboard"]) {
-    const start = source.indexOf(`function ${name}(`), end = source.indexOf("\n}\n", start) + 2;
-    vm.runInNewContext(source.slice(start, end), globals);
-  }
+  featureFixture(["startWindowListDrag", "clearWindowListDropIndicator", "clearWindowListDrag", "updateWindowListDrop", "updateWindowListDropIndicator", "scrollWindowListDrag", "dropWindowListEntry", "handleWindowListKeyboard"], globals);
   const event = (y, row = rows[0]) => ({ clientX: 50, clientY: y, currentTarget: row, button: 0, isPrimary: true, pointerId: 1, target: { closest: () => null },
     preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } });
   return { globals, panes, rows, event, saves: () => saves };

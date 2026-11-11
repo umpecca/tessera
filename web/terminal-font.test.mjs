@@ -7,6 +7,7 @@ import {
   normalizeTerminalFont,
   terminalFontDescriptors,
   terminalFontFamily,
+  terminalFonts,
   terminalPrimaryFontFamily,
   terminalSymbolFontFamily,
   terminalSymbolProbe,
@@ -52,3 +53,39 @@ test("waits for regular, bold, and deterministic symbol fallback faces", async (
     [`bold 15px ${terminalSymbolFontFamily}`, terminalSymbolProbe],
   ]);
 });
+
+for (const [id, label, family] of [
+  ["spleen", "Spleen", "Spleen"],
+  ["pixel-operator-mono", "Pixel Operator Mono", "Pixel Operator Mono"],
+  ["scientifica", "scientifica", "scientifica"],
+  ["cozette", "Cozette", "Cozette"],
+]) {
+  test(`${label} is selectable and loads both weights before terminal measurement`, async () => {
+    assert.equal(normalizeTerminalFont(id), id);
+    assert.equal(terminalFonts[id].label, label);
+    assert.equal(terminalPrimaryFontFamily(id), `"${family}", monospace`);
+    const descriptors = [
+      `16px "${family}", ${terminalSymbolFontFamily}, monospace`,
+      `bold 16px "${family}", ${terminalSymbolFontFamily}, monospace`,
+    ];
+    assert.deepEqual(terminalFontDescriptors(id, 16), descriptors);
+    const pending = [], loaded = [];
+    const loading = loadTerminalFont({ load: (...request) => {
+      loaded.push(request);
+      return new Promise(resolve => pending.push(resolve));
+    } }, id, 16);
+    assert.deepEqual(loaded, [
+      ...descriptors.map(descriptor => [descriptor, "M"]),
+      [`16px ${terminalSymbolFontFamily}`, terminalSymbolProbe],
+      [`bold 16px ${terminalSymbolFontFamily}`, terminalSymbolProbe],
+    ]);
+    let ready = false;
+    loading.then(() => { ready = true; });
+    for (const resolve of pending.slice(0, -1)) resolve([]);
+    await Promise.resolve();
+    assert.equal(ready, false, "terminal must wait for every font load");
+    pending.at(-1)([]);
+    await loading;
+    assert.equal(ready, true);
+  });
+}

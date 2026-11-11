@@ -60,6 +60,26 @@ Database schema changes belong in the next contiguous numbered SQL file under
 order using SQLite `PRAGMA user_version`. Treat applied migration files as
 immutable; append a new migration instead of editing an existing one.
 
+## Bundled pixel fonts
+
+The optional pixel terminal fonts are stored in `web/assets/`, with their
+upstream licenses beside them. Font bytes are unmodified (some filenames are
+normalized); there is no CDN request or font conversion in the build:
+
+| Font | Upstream source | Bundled faces | License |
+| --- | --- | --- | --- |
+| Spleen | [2.2.0 release](https://github.com/fcambus/spleen/releases/tag/2.2.0), `spleen-2.2.0.tar.gz` | `spleen-8x16.woff2` → `Spleen-8x16.woff2`; regular only | `Spleen-LICENSE.txt` (BSD-2-Clause) |
+| Pixel Operator Mono | [Author's download](https://www.dafont.com/pixel-operator.font), `pixel_operator.zip`, version 2018.10.04-1 | `PixelOperatorMono.ttf` → `PixelOperatorMono-Regular.ttf`, plus `PixelOperatorMono-Bold.ttf` | Archive's `LICENSE.txt` → `PixelOperator-CC0.txt` (CC0-1.0) |
+| scientifica | [v2.3 release](https://github.com/oppiliappan/scientifica/releases/tag/v2.3), `scientifica.tar` | `ttf/scientifica.ttf` → `scientifica-Regular.ttf`; `ttf/scientificaBold.ttf` → `scientifica-Bold.ttf` | [Tagged LICENSE](https://github.com/oppiliappan/scientifica/blob/v2.3/LICENSE) → `scientifica-LICENSE.txt` (OFL-1.1) |
+| Cozette | [v.1.30.0 release](https://github.com/the-moonwitch/Cozette/releases/tag/v.1.30.0) | `CozetteVector.woff2`; regular only | Release's `LICENSE` → `Cozette-LICENSE.txt` (MIT) |
+
+Pixel Operator is by Jayvee Enaguas (HarvettFox96). Its original NotABug source
+URL is no longer available, so the fonts and CC0 license come from the author's
+DaFont upload. Cozette's vector export is necessary for browser use; upstream
+warns that it may not render as crisply as its native bitmap formats. Cozette's
+upstream bold export has a wider character advance than regular, so Tessera uses
+browser-synthesized bold to preserve terminal alignment, as it does for Spleen.
+
 ## Releases and self-update
 
 The **CI and Release** workflow runs only when a `v*` tag is pushed; branch

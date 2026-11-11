@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+import { featureFixture } from "./application.test-support.mjs";
 
 import {
   browseLocalPortHelpCommand,
@@ -46,11 +45,8 @@ test("local-port help examples are valid and expose the command-palette route", 
 });
 
 function openTerminalLinkWith(rectangles) {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8");
-  const start = source.indexOf("function openTerminalLink(");
-  const end = source.indexOf("\n}\n", start) + 2;
   const calls = { tabs: [], created: [], navigated: [], raised: [] };
-  const open = vm.runInNewContext(`(${source.slice(start, end)})`, {
+  const { openTerminalLink: open } = featureFixture(["openTerminalLink"], {
     normalizeBrowserAddress, rectangles, browserPaneKind: "browser",
     window: { open: (url) => calls.tabs.push(url) },
     paneSpawnPoint: () => ({ x: 48, y: 80 }),
@@ -86,10 +82,7 @@ test("other terminal links open in a new tab", () => {
 });
 
 test("an escaped frame navigation goes back through the pane's proxy session", () => {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  const start = source.indexOf("function handleBrowserPaneEscape(");
-  const ctx = vm.createContext({ browserPaneKind: "browser", rectangles: [] });
-  vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), ctx);
+  const ctx = featureFixture(["handleBrowserPaneEscape"], { browserPaneKind: "browser", rectangles: [] });
   const replaced = [];
   const frameWindow = { location: { replace: url => replaced.push(url) } };
   ctx.rectangles.push({ kind: "browser", browser: { sessionID: "abc", frame: { contentWindow: frameWindow } } });
@@ -101,10 +94,7 @@ test("an escaped frame navigation goes back through the pane's proxy session", (
 });
 
 test("relayed keys from a frame inside a page belong to the pane holding it", () => {
-  const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  const start = source.indexOf("function browserPaneHoldingWindow(");
-  const ctx = vm.createContext({ browserPaneKind: "browser", rectangles: [] });
-  vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), ctx);
+  const ctx = featureFixture(["browserPaneHoldingWindow"], { browserPaneKind: "browser", rectangles: [] });
   const top = {};
   top.parent = top;
   const page = { parent: top }, inner = { parent: page }, deeper = { parent: inner };

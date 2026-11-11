@@ -1,4 +1,4 @@
-// Real modal, palette/wheel, server and PTY. Optional --playwright=<module>.
+// Real modal, palette, server and PTY. Optional --playwright=<module>.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -31,12 +31,12 @@ const baseURL = await new Promise((resolve, reject) => {
 const source = await readFile(path.join(root, "web/app.js"), "utf8");
 const instrumentation = `
 window.shortcutSmoke = {
- ready: () => Boolean(currentSessionID) && !isLoadingWorkspace,
- items: () => structuredClone(shortcutsUI.items),
- active: () => getActivePane()?.id,
- count: () => rectangles.filter(p=>p.kind==='terminal').length,
- save: () => flushAllPersistence(),
- user: () => currentUser,
+ ready: () => Boolean(navigation.currentSessionID) && !workspace.isLoadingWorkspace,
+ items: () => structuredClone(navigation.shortcutsUI.items),
+ active: () => desktop.getActivePane()?.id,
+ count: () => desktop.rectangles.filter(p=>p.kind==='terminal').length,
+ save: () => workspace.flushAllPersistence(),
+ user: () => navigation.currentUser,
 };`;
 const quote = v => "'" + v.replaceAll("'", process.platform === "win32" ? "''" : "'\\''") + "'";
 const command = (process.platform === "win32" ? "& " : "") + quote(probe);
@@ -96,7 +96,7 @@ try {
     await page.evaluate(()=>window.shortcutSmoke.save()); await page.reload(); await page.waitForFunction(()=>window.shortcutSmoke?.ready());
     // Restored terminals must not execute their old startup command again.
     await page.waitForTimeout(600); assert.equal((await readLaunches(directory)).length,1);
-    await page.keyboard.press("Control+;"); await page.keyboard.press("c"); await page.keyboard.press("e");
+    await palette("CE");
     await modal.getByRole("button",{name:"Launch",exact:true}).waitFor();
     await modal.getByLabel("Extra (optional)",{exact:true}).fill("");
     await modal.getByRole("button",{name:"Launch",exact:true}).click();
@@ -124,7 +124,7 @@ try {
     page.once("dialog",dialog=>dialog.accept()); await modal.getByRole("button",{name:"Reload shortcuts",exact:true}).click();
     await modal.getByLabel("Name",{exact:true}).waitFor({state:"detached"}); assert.equal(await modal.getByLabel("Name",{exact:true}).count(),0);
     assert.deepEqual(errors,[]);
-    results.push({browser:name,version:browser.version(),checks:["CRUD and duplicate","palette CE","wheel CE","literal CLI values and cwd","optional omission and boolean switches","new terminal","restore without rerun","cancel","draft test without save","concurrent conflict preserves draft"]});
+    results.push({browser:name,version:browser.version(),checks:["CRUD and duplicate","palette CE","palette code after reload","literal CLI values and cwd","optional omission and boolean switches","new terminal","restore without rerun","cancel","draft test without save","concurrent conflict preserves draft"]});
     await context.close(); await browser.close(); browser=null;
   }
   await writeFile(path.join(output,"results.json"),JSON.stringify(results,null,2)); console.log(JSON.stringify(results,null,2));

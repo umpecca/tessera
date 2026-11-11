@@ -1,17 +1,12 @@
+import { featureFixture } from "./application.test-support.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
 
-const source = readFileSync(new URL("./app.js", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const source = readFileSync(new URL("./command-palette.mjs", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 function load(names, context) {
-  vm.createContext(context);
-  for (const name of names) {
-    const start = source.indexOf(`function ${name}(`), end = source.indexOf("\n}\n", start) + 2;
-    assert.ok(start >= 0, name);
-    vm.runInContext(source.slice(start, end), context);
-  }
-  return context;
+  const fixtureContext = featureFixture(names, context);
+  return fixtureContext;
 }
 
 test("a new terminal takes half the board each way, centered", () => {
@@ -60,8 +55,8 @@ test("New Browser and New VNC from the palette open centered at half the board; 
     ["browser", 48, 64, 720, 480],
     ["vnc", 80, 24, 720, 480],
   ]);
-  assert.match(source, /id: "new-browser"[^\n]*run: \(\) => createBrowserPane\(\) \}/);
-  assert.match(source, /id: "new-vnc"[^\n]*run: \(\) => createVNCPane\(\) \}/);
+  assert.match(source, /id: "new-browser"[^\n]*run: \(\) => dependencies\.desktop\(\)\.createBrowserPane\(\) \}/);
+  assert.match(source, /id: "new-vnc"[^\n]*run: \(\) => dependencies\.desktop\(\)\.createVNCPane\(\) \}/);
 });
 
 test("new Browser, VNC and RDP windows offer localhost on the protocol's default port", () => {

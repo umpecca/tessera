@@ -6,7 +6,11 @@ import SwiftUI
 struct TesseraApp: App {
     var body: some Scene {
         WindowGroup {
+            #if os(iOS)
+            IPadRootView()
+            #else
             ContentView()
+            #endif
         }
         #if os(macOS)
         .defaultSize(width: 1280, height: 820)
