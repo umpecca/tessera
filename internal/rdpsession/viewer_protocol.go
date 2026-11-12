@@ -30,6 +30,8 @@ import "errors"
 //	                 window is in use (see wiggle.go)
 //	ViewShown        [shown u8]: 1 the window can be seen, 0 it can't, and the
 //	                 server's display updates pause until it can
+//	ViewPressure     [behind u8]: 1 the browser's presentation queue is behind,
+//	                 0 it has drained; handled by the WebSocket viewer
 const (
 	ViewDesktopSize = 1
 	ViewH264        = 2
@@ -37,11 +39,12 @@ const (
 	ViewEnded       = 4
 	ViewDetached    = 5
 
-	ViewInput   = 1
-	ViewResize  = 2
-	ViewRefresh = 3
-	ViewWiggle  = 4
-	ViewShown   = 5
+	ViewInput    = 1
+	ViewResize   = 2
+	ViewRefresh  = 3
+	ViewWiggle   = 4
+	ViewShown    = 5
+	ViewPressure = 6
 )
 
 // Bounds on a resize request: RDP allows 200 to 8192 pixels each way.
@@ -53,8 +56,9 @@ const (
 // ErrViewerMessage means a viewer sent a message the protocol doesn't allow.
 var ErrViewerMessage = errors.New("invalid RDP viewer message")
 
-// ViewFrame turns a module event into the message for the viewer, and
-// reports false for events viewers don't get.
+// ViewFrame copies a borrowed module event into an owned message for the
+// viewer. The result is safe to queue after the event callback returns.
+// It reports false for events viewers don't get.
 func ViewFrame(kind uint32, payload []byte) ([]byte, bool) {
 	var viewType byte
 	switch kind {
@@ -62,7 +66,8 @@ func ViewFrame(kind uint32, payload []byte) ([]byte, bool) {
 		if len(payload) < 4 {
 			return nil, false
 		}
-		return append([]byte{ViewDesktopSize}, payload[:4]...), true
+		viewType = ViewDesktopSize
+		payload = payload[:4]
 	case eventH264:
 		viewType = ViewH264
 	case eventImage:
@@ -72,7 +77,10 @@ func ViewFrame(kind uint32, payload []byte) ([]byte, bool) {
 	default:
 		return nil, false
 	}
-	return append([]byte{viewType}, payload...), true
+	frame := make([]byte, len(payload)+1)
+	frame[0] = viewType
+	copy(frame[1:], payload)
+	return frame, true
 }
 
 // DetachedFrame is the message telling a viewer another viewer took over.

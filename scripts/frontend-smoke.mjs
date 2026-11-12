@@ -123,9 +123,9 @@ try {
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Close settings");
   await page.keyboard.press("Shift+Tab");
   assert.ok(await dialog.evaluate(node => node.contains(document.activeElement)));
-  await dialog.locator("#settings-diagnostics > summary").click();
+  await dialog.locator("#settings-category-diagnostics").click();
   await dialog.getByRole("button", { name: "Copy diagnostics", exact: true }).waitFor({ state: "visible" });
-  await dialog.locator("#settings-diagnostics > summary").click();
+  await dialog.locator("#settings-category-appearance").click();
   const attachments = await page.evaluate(() => window.smokeAttachments);
   await page.evaluate(() => window.smokeSockets.at(-1).close());
   await page.waitForFunction(before => window.smokeAttachments > before, attachments);
@@ -140,7 +140,8 @@ try {
 
   await palette("Settings");
   await dialog.waitFor({ state: "visible" });
-  for (const [id, family] of [["fira-code", "Fira Code"], ["spleen", "Spleen"], ["cozette", "Cozette"]]) {
+  await dialog.locator("#settings-category-fonts").click();
+  for (const [id, family] of [["fira-code", "Fira Code"], ["spleen", "Spleen"], ["hack", "Hack"], ["cascadia-code", "Cascadia Code"], ["iosevka", "Iosevka"], ["victor-mono", "Victor Mono"], ["inconsolata", "Inconsolata"], ["cozette", "Cozette"]]) {
     const saved = page.waitForResponse(response => response.request().method() === "PUT"
       && new URL(response.url()).pathname === "/api/users/default/settings");
     await dialog.getByRole("combobox", { name: "Application font", exact: true }).selectOption(id);
@@ -149,6 +150,7 @@ try {
       && document.querySelector(".terminal-container canvas")?.getContext("2d")?.font.includes(family), family);
     await assertInterfaceFont(page, family);
   }
+  await dialog.locator("#settings-category-appearance").click();
   const currentTheme = dialog.locator("select").filter({ has: page.locator('option[value="studio"]') }).nth(1);
   for (const theme of ["operator", "hacker", "oled-terminal", "studio"]) {
     const saved = page.waitForResponse(response => response.request().method() === "PUT"
@@ -160,6 +162,7 @@ try {
   const canvasBeforeSize = await page.locator(`${pane} canvas`).evaluate(node => ({ width: node.width, height: node.height, font: node.getContext("2d").font }));
   await page.waitForTimeout(250); // Settle font/theme grid fits before testing UI-only changes.
   const beforeSizeMessages = await page.evaluate(() => window.smokeMessages.length);
+  await dialog.locator("#settings-category-fonts").click();
   for (const [target, clicks, direction] of [[18, 6, "Increase"], [10, 8, "Decrease"], [15, 5, "Increase"]]) {
     const saved = page.waitForResponse(response => response.request().method() === "PUT"
       && new URL(response.url()).pathname === "/api/users/default/settings"

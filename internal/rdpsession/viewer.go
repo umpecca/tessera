@@ -24,6 +24,8 @@ type Viewer interface {
 	// keep up should drop the connection. A newly attached viewer first gets
 	// an eventConnected carrying the current desktop size, which may arrive
 	// after a later size event, so sizes are always the latest one received.
+	// payload is read-only and borrowed until Event returns. A viewer retaining
+	// an event (including a queued WebSocket write) must first make an owned copy.
 	Event(kind uint32, payload []byte)
 	// Detached tells the viewer it is no longer attached, because another
 	// viewer took over.

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"tessera/internal/rdpsession"
 )
 
 // viewerPair returns a wsViewer on the server end of a WebSocket and the
@@ -117,5 +120,73 @@ func TestAViewerFarBehindIsDropped(t *testing.T) {
 	case <-viewer.done:
 	case <-time.After(time.Second):
 		t.Fatal("a viewer past the backlog wasn't dropped")
+	}
+}
+
+func TestBrowserPressureSurvivesDrainingTheSocket(t *testing.T) {
+	viewer, browser := viewerPair(t)
+	reports := behindReports(viewer)
+	for range rdpKeptViewerBehindFrames {
+		viewer.enqueue([]byte{2, 0})
+	}
+	waitForReports(t, reports, true)
+	if handled, err := viewer.handlePressure([]byte{rdpsession.ViewPressure, 1}); !handled || err != nil {
+		t.Fatalf("browser pressure: handled=%v, error=%v", handled, err)
+	}
+	go viewer.writeLoop()
+	for range rdpKeptViewerBehindFrames {
+		readFrame(t, browser)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for viewer.behind.Load() || viewer.queued.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("socket backlog did not drain")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Force a report-loop round trip while browser pressure is still set.
+	viewer.pressureChanged()
+	time.Sleep(20 * time.Millisecond)
+	waitForReports(t, reports, true)
+	viewer.handlePressure([]byte{rdpsession.ViewPressure, 0})
+	waitForReports(t, reports, true, false)
+}
+
+func TestBrowserCatchingUpDoesNotClearNetworkPressure(t *testing.T) {
+	viewer, _ := viewerPair(t)
+	reports := behindReports(viewer)
+	viewer.handlePressure([]byte{rdpsession.ViewPressure, 1})
+	waitForReports(t, reports, true)
+	viewer.setBehind(true)
+	viewer.handlePressure([]byte{rdpsession.ViewPressure, 0})
+	time.Sleep(20 * time.Millisecond)
+	waitForReports(t, reports, true)
+	viewer.setBehind(false)
+	waitForReports(t, reports, true, false)
+}
+
+func TestViewerPressureMessagesAreValidated(t *testing.T) {
+	viewer, _ := viewerPair(t)
+	for _, message := range [][]byte{
+		{rdpsession.ViewPressure},
+		{rdpsession.ViewPressure, 2},
+		{rdpsession.ViewPressure, 0, 0},
+	} {
+		if handled, err := viewer.handlePressure(message); !handled || !errors.Is(err, rdpsession.ErrViewerMessage) {
+			t.Fatalf("pressure %v: handled=%v, error=%v", message, handled, err)
+		}
+		if viewer.browserBehind.Load() {
+			t.Fatal("invalid pressure message changed the viewer")
+		}
+	}
+	for _, message := range [][]byte{nil, {rdpsession.ViewInput, 6}, {rdpsession.ViewShown, 0}} {
+		if handled, err := viewer.handlePressure(message); handled || err != nil {
+			t.Fatalf("session message %v: handled=%v, error=%v", message, handled, err)
+		}
+	}
+	viewer.handlePressure([]byte{rdpsession.ViewPressure, 1})
+	next, _ := viewerPair(t)
+	if next.browserBehind.Load() {
+		t.Fatal("a new viewer inherited old browser pressure")
 	}
 }

@@ -135,6 +135,21 @@ workspace on its next change.
 choice is kept per browser. Reaching Tessera from away from home is best done
 over Tailscale or another VPN with [sign-in](sign-in.md) on.
 
+## Focus after returning to the app
+
+In an installed Home Screen web app, returning to the foreground restores keyboard
+focus to the current visible foreground pane when focus was lost. Ordinary browser
+tabs keep their existing behavior. The updated native iPad app does the same after
+foreground entry or device unlock; update both the app and Tessera server.
+
+This does not select/raise another pane, send a keystroke or force a shell resize.
+Dialogs, menus, existing form fields and selected browser text are left alone.
+In Phone view, Scroll/Select/compose modes do not become direct typing; only a
+terminal already in **Type** mode is eligible. A hardware keyboard can resume
+typing without a pane click, but iPadOS may still require a tap to show its software
+keyboard, especially in Home Screen web apps. This is keyboard-target restoration,
+not a bypass of browser keyboard or clipboard permission rules.
+
 ## Native iPad and Mac app
 
 A native iPad and Mac app is in early development in [`apple/`](../apple/README.md).

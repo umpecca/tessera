@@ -311,6 +311,7 @@ class Terminal extends GhosttyTerminal {
         const lost = () => {
           this.canvasContextLost = true;
           this.fullRedrawPending = true;
+          this.renderer.clearTesseraScrollCache?.();
           // Cancelling a 2D contextlost event prevents automatic restoration.
         };
         const restored = () => {
@@ -346,6 +347,7 @@ class Terminal extends GhosttyTerminal {
       return;
     }
     if (this.canvasContextLost || this.renderer.ctx?.isContextLost?.()) {
+      this.renderer.clearTesseraScrollCache?.();
       this.fullRedrawPending = true;
       return;
     }
@@ -382,6 +384,7 @@ class Terminal extends GhosttyTerminal {
       this.cursorRedrawPending = false;
     }
     if (this.canvasContextLost || this.renderer.ctx?.isContextLost?.()) {
+      this.renderer.clearTesseraScrollCache?.();
       this.fullRedrawPending = true;
       return;
     }
@@ -1027,6 +1030,7 @@ class Terminal extends GhosttyTerminal {
   }
 
   requestFullRedraw() {
+    this.renderer?.clearTesseraScrollCache?.();
     this.fullRedrawPending = true;
     this.requestRender();
   }
@@ -1049,6 +1053,7 @@ class Terminal extends GhosttyTerminal {
 
   setRenderPaused(paused) {
     if (paused) {
+      this.renderer?.clearTesseraScrollCache?.();
       this.smoothScroll.cancel();
       this.resetPredictions();
     }
@@ -1058,6 +1063,7 @@ class Terminal extends GhosttyTerminal {
   }
 
   dispose() {
+    this.renderer?.clearTesseraScrollCache?.();
     globalThis.clearTimeout(this.predictionTimer);
     globalThis.clearTimeout(this.searchTimer);
     globalThis.clearTimeout(this.synchronizedOutputTimer);
@@ -1104,7 +1110,10 @@ class Terminal extends GhosttyTerminal {
 function setTerminalDocumentVisible(visible) {
   renderScheduler.setEnabled(visible);
   for (const terminal of renderScheduler.entries.keys()) {
-    if (!visible) terminal.smoothScroll.cancel();
+    if (!visible) {
+      terminal.smoothScroll.cancel();
+      terminal.renderer?.clearTesseraScrollCache?.();
+    }
     terminal.cursorBlink.setVisible(visible && !terminal.renderPaused);
   }
 }

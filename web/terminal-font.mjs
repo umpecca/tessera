@@ -19,6 +19,26 @@ export const terminalFonts = Object.freeze({
     label: "Commit Mono",
     family: '"Commit Mono", monospace',
   }),
+  hack: Object.freeze({
+    label: "Hack",
+    family: '"Hack", monospace',
+  }),
+  "cascadia-code": Object.freeze({
+    label: "Cascadia Code",
+    family: '"Cascadia Code", monospace',
+  }),
+  iosevka: Object.freeze({
+    label: "Iosevka",
+    family: '"Iosevka", monospace',
+  }),
+  "victor-mono": Object.freeze({
+    label: "Victor Mono",
+    family: '"Victor Mono", monospace',
+  }),
+  inconsolata: Object.freeze({
+    label: "Inconsolata",
+    family: '"Inconsolata", monospace',
+  }),
   "departure-mono": Object.freeze({
     label: "Departure Mono",
     family: '"Departure Mono", monospace',

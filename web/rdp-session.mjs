@@ -186,12 +186,17 @@ export function createRdp(dependencies, platform = globalThis) {
       return;
     }
     const workspaceID = dependencies.navigation().workspaceID;
+    const user = dependencies.navigation().currentUser;
+    const account = dependencies.navigation().signedInAccount;
     const attempt = ++view.attempt;
     const current = () => feature.rdpConnectionIsCurrent(rect, view, attempt)
-      && dependencies.navigation().workspaceID === workspaceID;
+      && dependencies.navigation().workspaceID === workspaceID
+      && dependencies.navigation().currentUser === user
+      && dependencies.navigation().signedInAccount === account;
     // This attempt's H.264 presenter; view.h264 may belong to a newer attempt.
     let h264 = null;
     view.connecting = true;
+    view.videoFailure = "";
     view.intentionalDisconnect = false;
     dependencies.rdpDialogs().hideRDPDialog(rect);
     dependencies.rdpView().updateRDPControls(rect);
@@ -208,13 +213,30 @@ export function createRdp(dependencies, platform = globalThis) {
       if (rect.rdpStatusInput) {
         rect.rdpStatusInput.value = rect.rdpTarget;
       }
-      const trust = rdpCertificateTrust({ trustedTarget: rect.rdpTrustedTarget, trustedFingerprint: rect.rdpTrustedFingerprint }, certificate.target, certificate.fingerprint);
+      // Account-level approval takes precedence over stale pane settings. Older
+      // servers omit these fields and retain their existing per-pane behavior.
+      const remembered = certificate.trustedFingerprint || "";
+      const trust = rdpCertificateTrust(remembered
+        ? { trustedTarget: certificate.target, trustedFingerprint: remembered }
+        : certificate.allowPaneTrust === false ? null
+          : { trustedTarget: rect.rdpTrustedTarget, trustedFingerprint: rect.rdpTrustedFingerprint }, certificate.target, certificate.fingerprint);
       if (trust !== "trusted") {
         if (!await dependencies.rdpDialogs().confirmRDPCertificate(rect, certificate, trust)) {
           if (current()) dependencies.rdpView().setRDPMessage(rect, "Connection cancelled.");
           return;
         }
         if (!current()) return;
+      }
+      if (Object.hasOwn(certificate, "trustedFingerprint") && remembered !== certificate.fingerprint) {
+        // Explicitly accepted now, or the matching legacy pane was accepted
+        // earlier by this user. Never overwrite newer trust from another client.
+        await feature.rdpProxyRequest("/api/rdp-proxy/trust", {
+          workspaceId: workspaceID, target: certificate.target, fingerprint: certificate.fingerprint,
+          previousFingerprint: remembered,
+        });
+        if (!current()) return;
+      }
+      if (rect.rdpTrustedTarget !== certificate.target || rect.rdpTrustedFingerprint !== certificate.fingerprint) {
         rect.rdpTrustedTarget = certificate.target;
         rect.rdpTrustedFingerprint = certificate.fingerprint;
         dependencies.workspace().scheduleWorkspaceSave();
@@ -330,6 +352,13 @@ export function createRdp(dependencies, platform = globalThis) {
             feature.scheduleRDPScaledLayout(view, current);
           },
           onPicture: () => feature.noteRDPScaledPicture(view),
+          onBacklogExceeded: () => {
+            if (!current()) return;
+            // IronRDP's in-page API cannot suppress video. Do not leave a live
+            // but permanently frozen canvas when the bounded queue fills.
+            view.videoFailure = "RDP video could not keep up. Choose Connect to reconnect, or disable Full color (4:4:4).";
+            view.session?.shutdown();
+          },
           fullColor: credentials.fullColor,
           onFullColor: () => {
             view.h264FullColor = true;
@@ -349,6 +378,10 @@ export function createRdp(dependencies, platform = globalThis) {
         h264?.close();
         session.shutdown();
         return;
+      }
+      if (view.videoFailure) {
+        session.shutdown();
+        throw new Error(view.videoFailure);
       }
       view.kept = false;
       feature.activateRDPSession(rect, view, session);
@@ -383,6 +416,11 @@ export function createRdp(dependencies, platform = globalThis) {
     }
     if (rect.rdp !== view || view.session !== session) {
       return;
+    }
+    if (view.videoFailure) {
+      text = view.videoFailure;
+      failed = true;
+      view.videoFailure = "";
     }
     platform.window.clearTimeout(view.resizeTimer);
     feature.closeRDPH264(view);

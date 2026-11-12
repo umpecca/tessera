@@ -1,4 +1,5 @@
 import { browseLocalPortHelpCommand } from "./browser-pane.mjs";
+import { createPaletteIcon } from "./command-palette-icons.mjs";
 
 // Command construction, shortcut matching, ranking and presentation.
 // State is owned here. Dependencies are lazy feature providers, so construction
@@ -122,12 +123,12 @@ export function createPalette(dependencies, platform = globalThis) {
     }
     for (const session of dependencies.navigation().sessions) {
       if (session.id !== dependencies.navigation().currentSessionID) {
-        commands.push({ label: `Switch Session: ${session.name}`, hint: "session", run: () => void dependencies.navigation().switchSession(session) });
+        commands.push({ label: `Switch Session: ${session.name}`, icon: "switch", hint: "session", run: () => void dependencies.navigation().switchSession(session) });
       }
     }
     commands.push({ id: "manage-shortcuts", label: "Shortcuts...", hint: "manage terminal launchers", run: dependencies.navigation().openShortcuts });
     for (const shortcut of dependencies.navigation().shortcutsUI.items) {
-      commands.push({ id: `shortcut:${shortcut.id}`, label: `Create ${shortcut.name}`, aliases: [shortcut.name], code: shortcut.code, shortcut: true, hint: "terminal shortcut", run: () => dependencies.navigation().invokeShortcut(shortcut) });
+      commands.push({ id: `shortcut:${shortcut.id}`, label: `Create ${shortcut.name}`, icon: "terminal", aliases: [shortcut.name], code: shortcut.code, shortcut: true, hint: "terminal shortcut", run: () => dependencies.navigation().invokeShortcut(shortcut) });
     }
     commands.push({ id: "new-terminal", label: "New Terminal", hint: "create", run: () => dependencies.desktop().createTerminalPane() });
     commands.push({ id: "new-browser", label: "New Browser", hint: "localhost development server", run: () => dependencies.desktop().createBrowserPane() });
@@ -187,12 +188,14 @@ export function createPalette(dependencies, platform = globalThis) {
       commands.push({
         id: "maximize-toggle",
         label: dockTarget.isFull ? "Restore Window" : "Maximize Window",
+        icon: dockTarget.isFull ? "restore" : "maximize",
         hint: "Alt+F10",
         run: () => dependencies.geometry().toggleFullRestore(dockTarget),
       });
       commands.push({
         id: "minimize-toggle",
         label: dockTarget.minimized ? "Restore Window" : "Minimize Window",
+        icon: dockTarget.minimized ? "restore" : "minimize",
         hint: "Alt+F9",
         run: () => dependencies.geometry().toggleMinimize(dockTarget),
       });
@@ -214,7 +217,7 @@ export function createPalette(dependencies, platform = globalThis) {
     if (dependencies.navigation().multiUser && dependencies.navigation().authMode !== "file") {
       for (const name of dependencies.navigation().userRoster) {
         if (name !== dependencies.navigation().currentUser) {
-          commands.push({ label: `Switch user: ${name}`, hint: "user", run: () => void dependencies.navigation().jumpToUser(name) });
+          commands.push({ label: `Switch user: ${name}`, icon: "user", hint: "user", run: () => void dependencies.navigation().jumpToUser(name) });
         }
       }
     }
@@ -222,6 +225,8 @@ export function createPalette(dependencies, platform = globalThis) {
     for (const rect of panes) {
       commands.push({
         label: dependencies.menus().workspaceMenuLabel(rect),
+        icon: rect.kind === "rdp" || rect.kind === "vnc" ? "remote"
+          : rect.kind === "terminal" || rect.kind === "browser" ? rect.kind : "window",
         hint: rect.minimized ? "window, minimized" : "window",
         run: () => {
           dependencies.geometry().setMinimized(rect, false);
@@ -308,7 +313,12 @@ export function createPalette(dependencies, platform = globalThis) {
         row.classList.add("is-selected");
       }
       const label = platform.document.createElement("span");
-      label.textContent = command.label;
+      label.className = "command-palette-label";
+      const text = platform.document.createElement("span");
+      text.className = "command-palette-label-text";
+      text.textContent = command.label;
+      label.appendChild(createPaletteIcon(command, platform.document));
+      label.appendChild(text);
       const meta = platform.document.createElement("span");
       meta.className = "command-palette-item-meta";
       if (command.code) {

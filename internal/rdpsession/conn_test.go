@@ -105,7 +105,7 @@ type eventRecorder struct {
 func (l *eventRecorder) record(kind uint32, payload []byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.events = append(l.events, recordedEvent{kind, payload})
+	l.events = append(l.events, recordedEvent{kind, append([]byte(nil), payload...)})
 }
 
 func (l *eventRecorder) ended(t *testing.T) (End, string) {

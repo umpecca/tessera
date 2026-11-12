@@ -214,7 +214,7 @@ test("row spacing can be selected before opening and refits metrics without clea
 
 test("canvas context loss retains output and redraws text and images on restoration", () => {
   const canvas = new EventTarget(), paints = [], requests = [], resizes = [];
-  let lost = false, painted = 0, writes = 0, clearImages = 0, loseDuringPaint = false;
+  let lost = false, painted = 0, writes = 0, clearImages = 0, clearScrollCache = 0, loseDuringPaint = false;
   class GhosttyTerminal {
     constructor(options) {
       this.options = options; this.cols = 80; this.rows = 24;
@@ -226,6 +226,7 @@ test("canvas context loss retains output and redraws text and images on restorat
     open() {
       this.isOpen = true;
       this.renderer = { canvas, ctx: { isContextLost: () => lost }, devicePixelRatio: 1,
+        clearTesseraScrollCache() { clearScrollCache++; },
         resize(...args) { resizes.push(args); },
         render(_buffer, force) { paints.push(force); if (loseDuringPaint) lost = true; } };
     }
@@ -241,10 +242,12 @@ test("canvas context loss retains output and redraws text and images on restorat
   lost = true; // The context can become lost before the event is dispatched.
   term.write("output while graphics unavailable"); term.renderScheduledFrame();
   assert.equal(writes, 1); assert.equal(paints.length, 1); assert.equal(painted, 1);
+  assert.equal(clearScrollCache, 1, "a lost context releases scroll pixels before its event arrives");
   const event = new Event("contextlost", { cancelable: true });
   canvas.dispatchEvent(event);
   assert.equal(event.defaultPrevented, false, "2D automatic restoration remains enabled");
   assert.equal(term.fullRedrawPending, true);
+  assert.equal(clearScrollCache, 2);
   const requestsBeforeRestore = requests.length;
   lost = false; canvas.dispatchEvent(new Event("contextrestored"));
   assert.deepEqual(resizes, [[80, 24]]); assert.equal(clearImages, 1);
@@ -259,6 +262,25 @@ test("canvas context loss retains output and redraws text and images on restorat
   canvas.dispatchEvent(new Event("contextrestored")); canvas.dispatchEvent(new Event("contextlost"));
   assert.equal(resizes.length, resizeCount); assert.equal(requests.length, requestCount);
   assert.equal(term.canvasContextRecovery, null, "disposed terminals release their recovery listeners");
+});
+
+test("explicit redraw, hiding and disposal release cached scroll pixels", () => {
+  class GhosttyTerminal {
+    constructor(options) { this.options = options; }
+    onScroll() {}
+    dispose() {}
+  }
+  const Terminal = loadTerminalClass({ GhosttyTerminal,
+    renderScheduler: { request() {}, setPaused() {}, unregister() {} } });
+  const term = new Terminal({ cursorBlinkEnabled: false });
+  let clears = 0;
+  term.renderer = { clearTesseraScrollCache() { clears++; } };
+  term.requestFullRedraw();
+  assert.equal(clears, 1);
+  term.setRenderPaused(true);
+  assert.equal(clears, 2);
+  term.dispose();
+  assert.equal(clears, 3);
 });
 
 test("same-grid geometry forces a full redraw after clearing the canvas", () => {

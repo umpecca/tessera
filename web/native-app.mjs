@@ -103,6 +103,7 @@ export function createNativeApp(dependencies, platform = globalThis) {
 
   async function perform(command, payload = {}) {
     if (command === "suspend") {
+      dependencies.events().cancelForegroundFocus();
       snapshot(); holdSize(); active = false; win.tesseraNativeSuspended = true;
       platform.document.activeElement?.blur?.();
       return { ok: true };
@@ -111,9 +112,10 @@ export function createNativeApp(dependencies, platform = globalThis) {
       active = true; win.tesseraNativeSuspended = false;
       dependencies.connectivity().handleBrowserOnline();
       restore();
+      if (payload.restoreFocus === true) dependencies.events().restoreForegroundFocus({ native: true });
       return { ok: true };
     }
-    if (command === "holdSize") { holdSize(); return { ok: true }; }
+    if (command === "holdSize") { dependencies.events().cancelForegroundFocus(); holdSize(); return { ok: true }; }
     if (command === "refreshPreference") { refreshPreference(payload.highRefresh); return { ok: true }; }
     if (!active || platform.document.hidden) return { ok: false };
     const commands = { palette: () => dependencies.palette().openCommandPalette(), windows: () => dependencies.windows().openWindowList(),

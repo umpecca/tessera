@@ -39,7 +39,8 @@ func CertificateFingerprint(der []byte) string {
 type serverConn struct {
 	host        string
 	fingerprint string
-	onEvent     func(kind uint32, payload []byte)
+	// Runs synchronously with a borrowed, read-only event payload.
+	onEvent func(kind uint32, payload []byte)
 
 	tcp    net.Conn
 	conn   net.Conn // tcp, then the TLS connection

@@ -37,7 +37,8 @@ function fakes() {
     }
     // Delivers the picture for the chunk at `index`.
     emit(index) {
-      const picture = { timestamp: this.chunks[index].timestamp, closed: false, close() { this.closed = true; } };
+      const picture = { timestamp: this.chunks[index].timestamp, closed: false, closeCalls: 0,
+        close() { this.closed = true; this.closeCalls++; } };
       this.output(picture);
       return picture;
     }
@@ -149,6 +150,21 @@ test("after a decoder error, resumes at the next key frame", () => {
   assert.equal(env.decoders.length, 2);
 });
 
+test("late errors from a replaced or closed decoder cannot reset its replacement", () => {
+  const env = fakes();
+  const h264 = presenter(env);
+  h264.push(idr(), Uint16Array.of(0, 0, 8, 8));
+  h264.push(idr(otherSps), Uint16Array.of(0, 0, 8, 8));
+  env.decoders[0].error(new Error("late old decoder error"));
+  assert.equal(env.decoders[1].state, "configured");
+  assert.equal(h264.stats().errors, 0);
+  env.decoders[1].emit(0);
+  assert.equal(env.draws.length, 1);
+  h264.close();
+  env.decoders[1].error(new Error("late closed decoder error"));
+  assert.equal(h264.stats().errors, 0);
+});
+
 test("after a decode call throws, resumes at the next key frame", () => {
   const env = fakes();
   const h264 = presenter(env);
@@ -178,7 +194,7 @@ test("reports the first drawn picture once", () => {
   assert.equal(reports, 1);
 });
 
-test("gives up a picture the decoder never outputs once later ones pile up", () => {
+test("does not skip a delayed picture when later decoded pictures pile up", () => {
   const env = fakes();
   const h264 = presenter(env);
   h264.push(idr(), Uint16Array.of(0, 0, 8, 8));
@@ -186,17 +202,25 @@ test("gives up a picture the decoder never outputs once later ones pile up", () 
   for (let i = 1; i <= 8; i += 1) env.decoders[0].emit(i);
   assert.deepEqual(env.draws, []);
   env.decoders[0].emit(9);
-  assert.equal(env.draws.length, 9);
+  assert.equal(env.draws.length, 0, "later damage cannot overtake missing output");
+  env.decoders[0].emit(0);
+  assert.equal(env.draws.length, 10);
+  assert.equal(h264.stats().dropped, 0);
+  h264.close();
 });
 
-test("forgets the oldest pictures when the decoder never outputs them", () => {
+test("ends the view instead of dropping deltas when the decoder never outputs", () => {
   const env = fakes();
-  const h264 = presenter(env);
+  let exceeded = 0;
+  const h264 = presenter(env, { onBacklogExceeded: () => { exceeded++; } });
   h264.push(idr(), Uint16Array.of(0, 0, 8, 8));
   for (let i = 0; i < 100; i += 1) h264.push(delta(), Uint16Array.of(0, 0, 8, 8));
   const forgotten = env.decoders[0].emit(0);
   assert.equal(forgotten.closed, true);
   assert.deepEqual(env.draws, []);
+  assert.equal(exceeded, 1);
+  assert.equal(env.decoders[0].chunks.length, 64, "admission is bounded even without decoder output");
+  assert.equal(h264.stats().backlog, 0);
 });
 
 test("ignores pictures after close", () => {
@@ -249,6 +273,179 @@ function fullColorPresenter(env, options = {}) {
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("bounds the entire pipeline when an AVC444 plane copy never settles", async () => {
+  const env = fakes();
+  let unblock;
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  const pressure = [];
+  let exceeded = 0, reads = 0;
+  const { h264, combiner } = fullColorPresenter(env, {
+    readPlanes: () => { reads++; return blocked; },
+    onPressure: behind => pressure.push(behind),
+    onBacklogExceeded: () => { exceeded++; },
+  });
+  const pictures = [];
+  h264.push(idr(), Uint16Array.of(0, 0, 16, 16), main);
+  pictures.push(env.decoders[0].emit(0));
+  for (let i = 1; i < 64; i++) {
+    h264.push(delta(), Uint16Array.of(0, 0, 16, 16), main);
+    pictures.push(env.decoders[0].emit(i));
+  }
+  assert.equal(reads, 1, "only one async copy runs, without a chain per picture");
+  assert.equal(h264.stats().waiting, 0);
+  assert.equal(h264.stats().compositing, 64);
+  assert.equal(h264.stats().backlog, 64);
+  assert.deepEqual(pressure, [true]);
+  assert.equal(exceeded, 0);
+  h264.push(delta(), Uint16Array.of(0, 0, 16, 16), main);
+  assert.equal(exceeded, 1);
+  assert.equal(env.decoders[0].chunks.length, 64);
+  assert.ok(pictures.every(picture => picture.closeCalls === 1), "close releases even the in-progress copy immediately");
+  assert.equal(h264.stats().compositing, 0);
+  assert.equal(h264.stats().queuedBytes, 0);
+  for (let i = 0; i < 200; i++) h264.push(delta(), new Uint16Array(), main);
+  assert.equal(exceeded, 1, "overflow is reported once");
+  unblock({ id: 0, data: new Uint8Array(1) });
+  await settle();
+  assert.deepEqual(combiner.calls, [["close"]], "late copy completion cannot touch the combiner");
+  assert.deepEqual(env.draws, []);
+  assert.ok(pictures.every(picture => picture.closeCalls === 1));
+  assert.equal(h264.stats().presented, 0);
+});
+
+test("pressure has hysteresis and clears as ordered presentation catches up", async () => {
+  const env = fakes();
+  const pressure = [];
+  const copies = [];
+  const timers = new Map();
+  let nextTimer = 0;
+  const { h264 } = fullColorPresenter(env, {
+    readPlanes: () => new Promise(resolve => copies.push(resolve)),
+    onPressure: behind => pressure.push(behind),
+    setTimer: (callback, delay) => {
+      assert.equal(delay, 5000);
+      timers.set(++nextTimer, callback);
+      return nextTimer;
+    },
+    clearTimer: timer => timers.delete(timer),
+  });
+  const pictures = [];
+  for (let i = 0; i < 8; i++) {
+    h264.push(i ? delta() : idr(), Uint16Array.of(i, 0, 1, 1), main);
+    pictures.push(env.decoders[0].emit(i));
+  }
+  assert.deepEqual(pressure, [true]);
+  assert.equal(h264.stats().backpressured, true);
+  assert.equal(timers.size, 1);
+  for (let i = 0; i < 8; i++) {
+    assert.equal(copies.length, i + 1);
+    copies[i]({ id: i, data: new Uint8Array(1) });
+    await settle();
+    assert.deepEqual(pressure, i < 5 ? [true] : [true, false]);
+    assert.equal(timers.size, i < 5 ? 1 : 0, "progress rearms the watchdog; catching up cancels it");
+  }
+  assert.equal(h264.stats().backlog, 0);
+  assert.equal(h264.stats().compositing, 0);
+  assert.equal(h264.stats().backpressured, false);
+  assert.equal(h264.stats().dropped, 0);
+  assert.deepEqual(env.draws.map(args => args[0]), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.ok(pictures.every(picture => picture.closeCalls === 1));
+  h264.close();
+});
+
+test("a paused pipeline with no progress recovers without further video arrivals", async () => {
+  for (const stalledCopy of [false, true]) {
+    const env = fakes();
+    let expire, unblock;
+    let exceeded = 0, cleared = 0;
+    const blocked = new Promise(resolve => { unblock = resolve; });
+    const { h264 } = fullColorPresenter(env, {
+      readPlanes: () => blocked,
+      onBacklogExceeded: () => { exceeded++; },
+      setTimer: (callback, delay) => { assert.equal(delay, 5000); expire = callback; return 1; },
+      clearTimer: () => { cleared++; },
+    });
+    const pictures = [];
+    for (let i = 0; i < 8; i++) {
+      h264.push(i ? delta() : idr(), Uint16Array.of(0, 0, 16, 16), main);
+      if (stalledCopy) pictures.push(env.decoders[0].emit(i));
+    }
+    assert.equal(h264.stats().backpressured, true);
+    assert.equal(h264.stats().backlog, 8, "the server can pause below the hard limit");
+    expire();
+    assert.equal(exceeded, 1);
+    assert.equal(h264.stats().backlog, 0);
+    assert.equal(env.decoders[0].state, "closed");
+    assert.ok(pictures.every(picture => picture.closeCalls === 1));
+    assert.equal(cleared, 0, "the expired timer is not left armed");
+    unblock(null);
+    await settle();
+    assert.deepEqual(env.draws, []);
+    assert.equal(exceeded, 1);
+  }
+});
+
+test("closing releases active, queued and out-of-order pictures before a copy finishes", async () => {
+  for (const rejected of [false, true]) {
+    const env = fakes();
+    let resolve, reject;
+    const blocked = new Promise((done, fail) => { resolve = done; reject = fail; });
+    const { h264, combiner } = fullColorPresenter(env, { readPlanes: () => blocked });
+    for (let i = 0; i < 4; i++) h264.push(i ? delta() : idr(), Uint16Array.of(0, 0, 16, 16), main);
+    const pictures = [env.decoders[0].emit(0), env.decoders[0].emit(1), env.decoders[0].emit(3)];
+    h264.close();
+    h264.close();
+    assert.ok(pictures.every(picture => picture.closeCalls === 1));
+    assert.equal(h264.stats().waiting, 0);
+    assert.equal(h264.stats().backlog, 0);
+    const late = env.decoders[0].emit(2);
+    assert.equal(late.closeCalls, 1);
+    if (rejected) reject(new Error("copy aborted"));
+    else resolve(null);
+    await settle();
+    assert.deepEqual(combiner.calls, [["close"]]);
+    assert.equal(h264.stats().compositing, 0);
+    assert.deepEqual(env.draws, []);
+  }
+});
+
+test("bounds surface operations queued behind missing decoder output", () => {
+  const env = fakes();
+  let exceeded = 0;
+  const h264 = presenter(env, { onBacklogExceeded: () => { exceeded++; } });
+  h264.push(idr(), Uint16Array.of(0, 0, 16, 16));
+  for (let i = 0; i < 300; i++) h264.push(new Uint8Array(), new Uint16Array(), rdpH264View.surfaceCopy);
+  assert.equal(exceeded, 1);
+  assert.equal(env.decoders[0].state, "closed");
+  assert.deepEqual(env.draws, []);
+});
+
+test("bounds retained payload bytes even with few queued pictures", () => {
+  const env = fakes();
+  let exceeded = 0;
+  const h264 = presenter(env, { onBacklogExceeded: () => { exceeded++; } });
+  // A region payload alone exceeds the shared byte bound; no frame is decoded.
+  h264.push(idr(), new Uint16Array(8 * 1024 * 1024));
+  assert.equal(exceeded, 1);
+  assert.equal(env.decoders[0].chunks.length, 0);
+  assert.equal(h264.stats().queuedBytes, 0);
+});
+
+test("a large encoded picture reports byte pressure before the picture watermark", () => {
+  const env = fakes();
+  const pressure = [];
+  const h264 = presenter(env, { onPressure: behind => pressure.push(behind) });
+  const data = new Uint8Array((1 << 20) + idr().length);
+  data.set(idr());
+  h264.push(data, Uint16Array.of(0, 0, 16, 16));
+  assert.deepEqual(pressure, [true]);
+  assert.equal(h264.stats().backlog, 1);
+  env.decoders[0].emit(0);
+  assert.deepEqual(pressure, [true, false]);
+  assert.equal(h264.stats().queuedBytes, 0);
+  h264.close();
+});
 
 test("without full color, draws an AVC444 main view and only decodes its auxiliary view", () => {
   const env = fakes();
@@ -371,6 +568,33 @@ test("remembers the full color choice, off by default", async () => {
 });
 
 const { surfaceOutput, surfaceCopy, surfacesReset } = rdpH264View;
+
+test("a stalled AVC444 copy keeps auxiliary views and surface copies in order", async () => {
+  const env = fakes();
+  let unblock;
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  let reads = 0;
+  const { h264, combiner } = fullColorPresenter(env, {
+    readPlanes: () => reads++ === 0 ? blocked : Promise.resolve({ id: 1, data: new Uint8Array(1) }),
+  });
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 0, 0), surfaceOutput, 0);
+  h264.push(idr(), Uint16Array.of(0, 0, 16, 16), main | auxiliaryFollows, 65532);
+  h264.push(delta(), Uint16Array.of(0, 0, 16, 16), auxiliary, 65532);
+  h264.push(new Uint8Array(), Uint16Array.of(0, 0, 16, 16, 4, 4, 0, 0), surfaceCopy, 65532);
+  h264.push(new Uint8Array(), Uint16Array.of(10, 20, 0, 0), surfaceOutput, 0);
+  env.decoders[0].emit(0);
+  env.decoders[0].emit(1);
+  await settle();
+  assert.deepEqual(env.draws, []);
+  assert.deepEqual(combiner.calls, []);
+  unblock({ id: 0, data: new Uint8Array(1) });
+  await settle();
+  assert.deepEqual(combiner.calls.map(([call]) => call), ["main", "auxiliary", "paint"]);
+  assert.deepEqual(env.draws[0], [0, 0, 16, 16, 4, 4, 16, 16], "copy applies before the mapping moves");
+  assert.equal(h264.stats().backlog, 0);
+  assert.equal(h264.stats().dropped, 0);
+  h264.close();
+});
 
 // Canvases that record what is drawn onto them, by name.
 function fakeCanvases() {

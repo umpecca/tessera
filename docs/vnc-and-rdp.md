@@ -42,6 +42,29 @@ expiry and SHA-256 fingerprint; Tessera refuses to relay a connection whose
 certificate differs from the one you accepted. Like the VNC bridge, the RDP
 gateway can reach any TCP destination, so the same trusted-users rule applies.
 
+**Trust and continue** remembers the accepted SHA-256 certificate fingerprint in
+Tessera's database for that user and normalized server host/IP plus port. The same
+certificate needs no new approval in another window, session, browser or native
+client, or after a Tessera restart. With sign-in enabled, trust belongs to the
+signed-in account; with sign-in off, it belongs to the selected Tessera profile
+(or the shared default profile). Different ports and accounts have separate trust.
+Hostnames and IP addresses are separate targets, even if they reach the same host.
+
+Existing matching window approvals are reused and remembered across windows when
+the window belongs to the current user. A shared window's legacy approval is not
+imported into a different signed-in account. System sign-in's older pane approvals
+have no recorded approving account, so they require verification once more.
+Newer account-level trust takes
+precedence over older window settings. If the certificate changes, verify the new
+fingerprint before choosing **Trust the new certificate**; cancelling keeps the
+previous approval. Simultaneous conflicting approvals are rejected rather than
+silently overwriting each other. A certificate probe or failed login never approves
+a certificate by itself. An explicit certificate approval remains remembered even
+if you subsequently cancel sign-in. Passwords are not stored with these approvals.
+Both in-page and kept connections still check the certificate fingerprint on the
+actual connection; this does not bypass TLS checks for Tessera's own HTTPS server.
+Update Tessera and reload the web/native client to use account-wide remembering.
+
 **Fit** scales the remote desktop into the window, **1:1** shows native pixels
 with scrolling, and **Resize** asks the server to change its resolution to
 match the window (servers without the Display Control channel keep their
@@ -89,7 +112,10 @@ browser and applies to every RDP window, in the page or kept on the host:
   while full color is being combined.
 - **decode**: from handing a picture to the browser's decoder to getting it
   back, on average and at most; **queue** is pictures the decoder holds, and
-  **waiting** is decoded pictures waiting for an earlier one.
+  **waiting** is decoded pictures waiting for an earlier one. **compositing**
+  includes decoded pictures queued for drawing and the one whose full-color
+  rows are currently being copied; **behind** means the presentation backlog
+  has crossed the browser's pressure watermark.
 - **push**, **draw** and **read**: time on the page's main thread to hand over
   each picture and to draw it, and, in full color, to copy its rows out of the
   decoder.
@@ -99,7 +125,9 @@ browser and applies to every RDP window, in the page or kept on the host:
 - **dropped** and **errors**: pictures given up on, as while waiting for a key
   frame, and decoder failures.
 - **from host** (kept sessions): messages and data from the host, and bitmap
-  updates drawn without H.264.
+  updates drawn without H.264. Bytes are application messages after WebSocket
+  inflation, not compressed network bytes; bitmap wire savings do not lower
+  this counter.
 
 Safari times in whole milliseconds, so there the per-picture times below about
 1 ms are averages of rounded values. The in-page client's other work, such as
@@ -170,6 +198,22 @@ this browser.
   waiting, and asks for the whole screen again once the browser has caught
   up, so a slow connection shows fewer pictures instead of dropping. A
   browser still 256 frames behind is disconnected and attaches again.
+- The browser also reports when decoding or full-color compositing falls
+  behind, even on a fast network. Video pauses with 8 pictures, 32 picture/surface
+  entries or 1 MB of encoded data and region metadata outstanding, and resumes
+  once at most 2 pictures, 8 entries and 256 KB remain and the network backlog
+  has drained. A hidden window stays paused regardless. AVC444 main and auxiliary
+  views count as separate pictures, and surface operations retain their order.
+- One browser view admits at most 64 outstanding H.264 pictures, 256 total
+  picture/surface entries and 16 MB of encoded data and region metadata across
+  decoding and compositing. These byte limits do not measure decoded pixel
+  storage. If another update would exceed a limit, the browser closes the view
+  and attaches again for a fresh display rather than skipping dependent updates.
+  A paused presentation queue that makes no progress for five seconds also
+  reattaches, so a stalled decoder or full-color copy cannot freeze it forever.
+  In-page sessions have the same limits but cannot pause video through IronRDP's
+  current API; an overflow disconnects them with a message asking you to choose
+  **Connect** again or disable full color.
 - Only the account that kept a session can see or end it. Signing out closes
   the view but leaves the session running until it is ended or idles out.
 - Clipboard text isn't available in kept sessions yet.
@@ -183,3 +227,23 @@ session runs, the host holds a logged-in connection to the RDP server, so a
 Tessera account is as powerful as the remote desktops it keeps. The server's
 own lock screen is unaffected: anyone at a Mac's own keyboard still has to log
 in.
+
+Kept sessions copy video/bitmap events directly into owned outbound messages,
+without an intermediate full-payload clone. Bitmap pixels in the browser use
+the received message's storage and are made opaque in place. This reduces
+allocation and memory traffic independently of transport compression.
+
+Kept viewers negotiate WebSocket `permessage-deflate` where supported. Only bitmap
+messages of at least 1,024 bytes are candidates: a bounded pixel sample selects
+flat/text-like updates and skips noisy-looking ones. Selected messages use fast
+lossless compression without context takeover; the browser inflates them before
+the existing viewer protocol sees them. H.264, small bitmap and control messages
+stay uncompressed, and clients without compression support still work normally.
+This mainly saves bandwidth on bitmap-heavy desktops, not typical H.264 traffic.
+Compression adds host CPU and browser inflation work. The sample is conservative,
+not a guarantee: some compressible updates stay raw and mixed noisy content can
+still incur compression cost. Queue limits count original application bytes,
+not compressed wire bytes. In-page RDP connections are unchanged.
+
+Live checks for these changes are part of the
+[combined performance acceptance checklist](performance-acceptance.md).

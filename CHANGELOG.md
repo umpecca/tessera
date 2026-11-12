@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- Accepted RDP certificate fingerprints are remembered per user and host/port
+  across windows, sessions and devices. Changed certificates still require
+  explicit approval; stale approvals cannot overwrite newer trust. RDP passwords
+  are not stored.
+
+- Command palette items now show theme-aware outline icons for actions, terminal
+  shortcuts, session/account switching and window types.
+
+- The updated native iPad app and installed Home Screen web app restore lost
+  keyboard focus to the current foreground pane on return, while respecting
+  dialogs, native privacy/sheets, text fields and phone non-typing modes.
+  Reconnects/resizes do not steal focus; software-keyboard display remains
+  controlled by iPadOS. The native integration needs both app and server updates.
+
+- Settings now uses a macOS-inspired category sidebar and focused pages, with a
+  compact category picker on phones. Navigation preserves edit focus and scroll;
+  diagnostics runs only while its page is selected. Existing preferences and
+  account/browser save scopes are unchanged.
+
+- Application font choices now include locally bundled Hack, Cascadia Code,
+  Iosevka, Victor Mono and Inconsolata, with regular/bold faces for offline use
+  and saved desktop/iPad and phone preferences.
+
+- Kept RDP viewers negotiate lossless WebSocket compression for large,
+  flat/text-like bitmap updates. Small/noisy-looking bitmaps, H.264 and control
+  messages stay raw; clients without compression support remain compatible.
+  Compressed viewer input is bounded after inflation as well as on the wire.
+
+- Kept RDP sessions avoid an intermediate host payload copy and a full bitmap
+  clone in the browser. Outbound frames retain independent ownership and bitmap
+  alpha is corrected in place, with no wire-format or compression changes.
+
+- Smooth terminal history scrolling reuses text pixels on eligible pixel-aligned
+  grids instead of repainting the whole viewport each frame. Row crossings repaint
+  boundary bands where safe; images, decorations and unsupported grids retain
+  the full-render fallback. Cached backings are bounded and released when hidden.
+
+- RDP presentation queues are bounded across decoding and full-color compositing.
+  Kept sessions pause video when the browser falls behind, not just when network
+  writes back up. If a hard limit is reached, the view reattaches for a fresh
+  display instead of accumulating decoded pictures or skipping dependent updates;
+  in-page sessions offer a reconnect message. Stats now show the compositing queue.
+
 - Phone-layout finger scrolling is 35% faster for terminal history, text reading
   and application/TUI wheel scrolling, without changing selection precision,
   desktop/tablet layouts, mouse/trackpad wheels or page-button distances.

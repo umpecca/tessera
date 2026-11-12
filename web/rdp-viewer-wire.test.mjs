@@ -7,6 +7,7 @@ import {
   inputRecords,
   maxViewerMessageBytes,
   parseViewerFrame,
+  pressureMessage,
   refreshMessage,
   shownMessage,
   wiggleMessage,
@@ -54,6 +55,8 @@ test("builds viewer messages", () => {
   assert.deepEqual(bytes(...wiggleMessage(false, true)), [4, 2]);
   assert.deepEqual(bytes(...shownMessage(true)), [5, 1]);
   assert.deepEqual(bytes(...shownMessage(false)), [5, 0]);
+  assert.deepEqual(bytes(...pressureMessage(true)), [6, 1]);
+  assert.deepEqual(bytes(...pressureMessage(false)), [6, 0]);
 });
 
 test("parses frames from the host", () => {
@@ -92,4 +95,32 @@ test("rejects malformed frames", () => {
   ]) {
     assert.equal(parseViewerFrame(malformed), null);
   }
+});
+
+test("bitmap parsing borrows exactly the unaligned pixel range without copying or mutating it", () => {
+  const buffer = frame(viewImage, 0x23, 1, 0x45, 2, 2, 0, 1, 0, 10, 20, 30, 0, 40, 50, 60, 128);
+  const before = Array.from(new Uint8Array(buffer));
+  const image = parseViewerFrame(buffer);
+  assert.equal(image.rgba.buffer, buffer);
+  assert.equal(image.rgba.byteOffset, 9);
+  assert.equal(image.rgba.byteLength, 8);
+  assert.equal(image.rgba.byteOffset % 4, 1);
+  assert.deepEqual(Array.from(new Uint8Array(buffer)), before, "parsing is read-only");
+  image.rgba[0] = 77;
+  assert.equal(new Uint8Array(buffer)[9], 77, "the pixels are a view, not a cloned payload");
+  assert.deepEqual(Array.from(new Uint8Array(buffer, 0, 9)), before.slice(0, 9));
+});
+
+test("video regions and data keep their wire order and independent message lifetime", () => {
+  const buffer = frame(viewH264, 7, 0, 9, 1, 0, 2, 1, 3, 2, 10, 3, 5, 4, 0, 0, 0, 1, 0x65);
+  const picture = parseViewerFrame(buffer);
+  assert.deepEqual(Array.from(picture.regions), [0x102, 0x203, 0x30a, 0x405]);
+  assert.notEqual(picture.regions.buffer, buffer, "small metadata must not pin the encoded packet after decoder submission");
+  assert.equal(picture.regions.byteLength, 8);
+  assert.equal(picture.data.buffer, buffer);
+  assert.equal(picture.data.byteOffset, 14);
+  parseViewerFrame(frame(viewH264, 8, 0, 0, 0, 0, 0xaa));
+  new Uint8Array(buffer).fill(0, 6, 14);
+  assert.deepEqual(Array.from(picture.regions), [0x102, 0x203, 0x30a, 0x405]);
+  assert.deepEqual(Array.from(picture.data), [0, 0, 0, 1, 0x65]);
 });

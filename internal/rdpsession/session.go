@@ -193,6 +193,7 @@ type Session struct {
 // NewSession returns a session that is not yet connected. onEvent, if set,
 // receives every event the module reports, in order, after the session has
 // updated its own state from it.
+// The observer receives its own payload copy, which it may retain.
 func NewSession(runner Runner, target Target, onEvent func(kind uint32, payload []byte)) *Session {
 	return &Session{runner: runner, target: target, onEvent: onEvent, state: StateConnecting}
 }

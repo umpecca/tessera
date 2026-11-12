@@ -28,13 +28,13 @@ test("describes the second between two readings", () => {
   const current = reading({
     pictures: 40, bytes: 4 << 20, decoded: 40, presented: 40, dropped: 1,
     decodeMs: 160, decodeMaxMs: 9.5, pushMs: 4, drawMs: 40, readMs: 15, latencyMs: 300, latencyMaxMs: 21,
-    decodeQueue: 2, waiting: 1, fullColor: true,
+    decodeQueue: 2, waiting: 1, compositing: 8, backpressured: true, fullColor: true,
   });
   const lines = rdpStatsLines(previous, current, 1000, { count: 60, longestMs: 34 }, "in page · 2560×1440");
   assert.deepEqual(lines, [
     "in page · 2560×1440",
     "pictures 30/s · 3.0 MB/s · 4:4:4",
-    "decode 4.0 ms · max 9.5 · queue 2 · waiting 1",
+    "decode 4.0 ms · max 9.5 · queue 2 · waiting 1 · compositing 8 · behind",
     "push 0.1 ms · draw 1.0 ms · read 0.5 ms",
     "shown after 8.0 ms · max 21",
     "page 60 fps · longest frame 34 ms · pictures 3.3%",

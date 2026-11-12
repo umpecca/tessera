@@ -42,9 +42,9 @@ final class IPadAppModel {
     }
     var library: ServerProfiles
     let privacy: IPadPrivacy
-    var sheet: IPadSheet?
+    var sheet: IPadSheet? { didSet { if sheet != nil { perform("holdSize") } } }
     var failure: ConnectionAdvice?
-    var notice: String?
+    var notice: String? { didSet { if notice != nil { perform("holdSize") } } }
     var downloadNotice: String?
     var ready = false
     var online = true
@@ -60,8 +60,8 @@ final class IPadAppModel {
     var fullScreen = false
     var highRefresh: Bool { didSet { defaults.set(highRefresh, forKey: "ipad.high-refresh"); configureRendering() } }
     var downloads: [IPadDownload] = []
-    var importFiles = false
-    var importPhotos = false
+    var importFiles = false { didSet { if importFiles { perform("holdSize") } } }
+    var importPhotos = false { didSet { if importPhotos { perform("holdSize") } } }
     var measuring = false
     var refreshReport = "Not measured. Measure while the workspace is visible."
     var recovery = AppRecovery()
@@ -151,6 +151,7 @@ final class IPadAppModel {
     }
 
     func setActive(_ active: Bool, background: Bool = false) {
+        let wasActive = recovery.active
         privacy.setActive(active, background: background)
         // System permission sheets can make the scene briefly inactive. Keep
         // pending paste consent intact; only real backgrounding revokes it.
@@ -161,7 +162,22 @@ final class IPadAppModel {
         let reload = recovery.setActive(active)
         configureRendering()
         if reload { self.reload() }
-        else if active { perform("resume") }
+        else if active { resumeWorkspace(restoringFocus: !wasActive) }
+    }
+
+    // Public responder APIs only. Resuming a socket or changing layout does not
+    // request text focus; only foreground entry/unlock or a completed page load.
+    func resumeWorkspace(restoringFocus: Bool) {
+        var restore = false
+        if restoringFocus, recovery.active, privacy.allowsAccess, !privacy.covered,
+           sheet == nil, !importFiles, !importPhotos, notice == nil, ready,
+           let webView, let profile = selected, let url = webView.url,
+           webView.window?.windowScene?.activationState == .foregroundActive,
+           ServerAddress.sameOrigin(profile.address, url), ClipboardPolicy.isAppDocument(url) {
+            webView.becomeFirstResponder()
+            restore = true
+        }
+        perform("resume", payload: ["restoreFocus": restore])
     }
 
     func processTerminated() {
@@ -209,7 +225,7 @@ final class IPadAppModel {
             suspend()
         } else if recovery.active {
             if reloadAfterUnlock { reloadAfterUnlock = false; reload() }
-            else { perform("resume") }
+            else { resumeWorkspace(restoringFocus: true) }
         }
     }
 

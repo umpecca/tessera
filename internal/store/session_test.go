@@ -136,7 +136,7 @@ func TestTerminalRowSpacingPersistenceAndDefault(t *testing.T) {
 
 func TestTerminalFontNormalization(t *testing.T) {
 	// Every font the browser offers (web/terminal-font.mjs) must survive a save.
-	for _, value := range []string{"jetbrains-mono", "fira-code", "ibm-plex-mono", "commit-mono", "departure-mono", "spleen", "pixel-operator-mono", "scientifica", "cozette"} {
+	for _, value := range []string{"jetbrains-mono", "fira-code", "ibm-plex-mono", "commit-mono", "departure-mono", "spleen", "pixel-operator-mono", "scientifica", "cozette", "hack", "cascadia-code", "iosevka", "victor-mono", "inconsolata"} {
 		if got := NormalizeTerminalFont(value); got != value {
 			t.Errorf("NormalizeTerminalFont(%q) = %q", value, got)
 		}
@@ -148,14 +148,14 @@ func TestTerminalFontNormalization(t *testing.T) {
 	}
 }
 
-func TestPixelTerminalFontPersistence(t *testing.T) {
+func TestBundledTerminalFontPersistence(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, filepath.Join(t.TempDir(), "pixel-fonts.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	for _, font := range []string{"spleen", "pixel-operator-mono", "scientifica", "cozette"} {
+	for _, font := range []string{"spleen", "pixel-operator-mono", "scientifica", "cozette", "hack", "cascadia-code", "iosevka", "victor-mono", "inconsolata"} {
 		t.Run(font, func(t *testing.T) {
 			settings, err := st.LoadUserSettings(ctx, "alice")
 			if err != nil {

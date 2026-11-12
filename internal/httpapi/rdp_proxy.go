@@ -137,8 +137,18 @@ func (a *API) decodeRDPProxyRequest(w http.ResponseWriter, r *http.Request) (rdp
 // certificate, so the pane can ask the user to trust it before any
 // credentials leave the browser.
 func (a *API) rdpProxyCertificate(w http.ResponseWriter, r *http.Request) {
-	_, target, ok := a.decodeRDPProxyRequest(w, r)
+	request, target, ok := a.decodeRDPProxyRequest(w, r)
 	if !ok {
+		return
+	}
+	owner, allowPaneTrust, err := a.rdpTrustOwner(r, request.WorkspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load RDP certificate trust")
+		return
+	}
+	trustedFingerprint, err := a.Store.RDPCertificateFingerprint(r.Context(), owner, target)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load RDP certificate trust")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), rdpConnectTimeout+rdpHandshakeTimeout)
@@ -151,12 +161,14 @@ func (a *API) rdpProxyCertificate(w http.ResponseWriter, r *http.Request) {
 	_ = upstream.conn.Close()
 	leaf := upstream.chain[0]
 	writeJSON(w, http.StatusOK, map[string]any{
-		"target":      target,
-		"fingerprint": rdpCertificateFingerprint(leaf.Raw),
-		"subject":     leaf.Subject.String(),
-		"issuer":      leaf.Issuer.String(),
-		"notBefore":   leaf.NotBefore.UTC().Format(time.RFC3339),
-		"notAfter":    leaf.NotAfter.UTC().Format(time.RFC3339),
+		"target":             target,
+		"fingerprint":        rdpCertificateFingerprint(leaf.Raw),
+		"subject":            leaf.Subject.String(),
+		"issuer":             leaf.Issuer.String(),
+		"notBefore":          leaf.NotBefore.UTC().Format(time.RFC3339),
+		"notAfter":           leaf.NotAfter.UTC().Format(time.RFC3339),
+		"trustedFingerprint": trustedFingerprint,
+		"allowPaneTrust":     allowPaneTrust,
 	})
 }
 

@@ -118,6 +118,22 @@ test("draws image regions opaque and H.264 pictures through the presenter", asyn
   assert.equal(presenters[0].pushed[1].view, 2 | 4, "the view reaches the presenter");
 });
 
+test("opaque bitmap drawing touches only alpha bytes inside the received pixel view", async () => {
+  const { connecting, drawn, socket } = setup();
+  socket().frame(...sizeFrame);
+  const session = await connecting;
+  const bytes = Uint8Array.from([viewImage, 4, 0, 6, 0, 2, 0, 1, 0, 10, 20, 30, 0, 40, 50, 60, 128]);
+  const header = Array.from(bytes.subarray(0, 9));
+  socket().emit("message", { data: bytes.buffer });
+  assert.equal(drawn[0].image.data.buffer, bytes.buffer);
+  assert.equal(drawn[0].image.data.byteOffset, 9);
+  assert.deepEqual(Array.from(drawn[0].image.data), [10, 20, 30, 255, 40, 50, 60, 255]);
+  assert.deepEqual(Array.from(bytes.subarray(0, 9)), header);
+  socket().frame(viewImage, 0, 0, 0, 0, 1, 0, 1, 0, 70, 80, 90, 0);
+  assert.deepEqual(Array.from(drawn[0].image.data), [10, 20, 30, 255, 40, 50, 60, 255], "later messages cannot overwrite retained pixels");
+  session.shutdown();
+});
+
 test("sends input, resize, refresh, shown and release-all", async () => {
   const { connecting, socket } = setup();
   socket().frame(...sizeFrame);
@@ -255,4 +271,23 @@ test("counts what the host sent for the stats overlay", async () => {
   assert.equal(reading.images, 1);
   assert.equal(reading.imageMs, 2);
   assert.equal(reading.pictures, undefined, "no presenter before the first picture");
+});
+
+test("reports presentation pressure independently of visibility and detaches on overflow", async () => {
+  const { connecting, presenters, socket } = setup();
+  socket().frame(...sizeFrame);
+  const session = await connecting;
+  socket().frame(viewH264, 0, 0, 0, 0, 0);
+  const { onPressure, onBacklogExceeded } = presenters[0].options;
+  onPressure(true);
+  session.setShown(false);
+  onPressure(false);
+  assert.deepEqual(socket().sent, [[6, 1], [5, 0], [6, 0]]);
+  onBacklogExceeded();
+  assert.equal(presenters[0].closed, true);
+  assert.equal(socket().closeCode, 1000);
+  const info = await session.run();
+  assert.equal(info.stillOnHost, true, "overflow uses existing automatic reattachment, not session disconnect");
+  onPressure(false);
+  assert.equal(socket().sent.length, 3, "late pressure callbacks cannot send on a closed view");
 });

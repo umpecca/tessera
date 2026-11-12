@@ -197,7 +197,9 @@ func (s *Session) handleEvent(kind uint32, payload []byte) {
 	forward, viewer := s.onEvent, s.viewer
 	s.mu.Unlock()
 	if forward != nil {
-		forward(kind, payload)
+		// Preserve the optional observer's owned-payload lifetime. Ordinary kept
+		// sessions have no observer; viewers copy only when queueing a wire frame.
+		forward(kind, append([]byte(nil), payload...))
 	}
 	if viewer != nil {
 		viewer.Event(kind, payload)

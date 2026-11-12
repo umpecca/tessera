@@ -573,6 +573,89 @@
   font-display: swap;
 }
 
+/* Official unmodified regular/bold web faces: Hack 3.003, Cascadia Code
+ * 2407.24, Iosevka 34.9.1 and Victor Mono 1.5.6. See docs/development.md. */
+@font-face {
+  font-family: "Hack";
+  src: url("/assets/Hack-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Hack";
+  src: url("/assets/Hack-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Cascadia Code";
+  src: url("/assets/CascadiaCode-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Cascadia Code";
+  src: url("/assets/CascadiaCode-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Iosevka";
+  src: url("/assets/Iosevka-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Iosevka";
+  src: url("/assets/Iosevka-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Victor Mono";
+  src: url("/assets/VictorMono-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Victor Mono";
+  src: url("/assets/VictorMono-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+/* Inconsolata 3.000, the upstream standard-width TTFs unchanged. */
+@font-face {
+  font-family: "Inconsolata";
+  src: url("/assets/Inconsolata-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inconsolata";
+  src: url("/assets/Inconsolata-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 /* Departure Mono 1.500, the release's woff2 unchanged. It is a pixel font
  * with a single regular weight, so the browser synthesizes bold. */
 @font-face {
@@ -2876,14 +2959,154 @@ button.rdp-video.is-active {
 }
 
 .settings-main-panel {
+  width: min(960px, calc(100vw - 48px));
+  height: min(740px, calc(100dvh - 48px));
   max-height: calc(100dvh - 48px);
+  box-sizing: border-box;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border-radius: 12px;
 }
 
-.settings-main-panel > .settings-content {
+.settings-main-panel > .settings-title {
+  min-height: 42px;
+  padding: 4px 12px 4px 16px;
+  background: var(--chrome-bg);
+  box-shadow: none;
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
-  overflow-y: auto;
+}
+
+.settings-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  padding: 16px 10px;
+  overflow: auto;
+  border-right: 1px solid var(--divider);
+  background: var(--chrome-bg);
+}
+
+.settings-category-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  flex-shrink: 0;
+  min-height: 42px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 7px 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-category-button:hover {
+  background: var(--pane-bg);
+}
+
+.settings-category-button[aria-current="page"] {
+  background: var(--highlight-bg);
+  border-color: var(--accent-border);
+  font-weight: 700;
+}
+
+.settings-category-button:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: -3px;
+}
+
+.settings-category-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--settings-category-color, #5267b8);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.settings-category-button[data-category="appearance"] { --settings-category-color: #7456ac; }
+.settings-category-button[data-category="fonts"] { --settings-category-color: #336fb0; }
+.settings-category-button[data-category="terminal"] { --settings-category-color: #426a50; }
+.settings-category-button[data-category="input"] { --settings-category-color: #846332; }
+.settings-category-button[data-category="clipboard"] { --settings-category-color: #497583; }
+.settings-category-button[data-category="performance"] { --settings-category-color: #a34f53; }
+.settings-category-button[data-category="security"] { --settings-category-color: #557591; }
+.settings-category-button[data-category="advanced"] { --settings-category-color: #656975; }
+.settings-category-button[data-category="diagnostics"] { --settings-category-color: #387570; }
+
+.settings-category-picker {
+  display: none;
+}
+
+.settings-category-content {
+  min-width: 0;
+  min-height: 0;
+  align-content: start;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 24px;
+  gap: 20px;
+  background: var(--pane-bg);
+}
+
+.settings-page-header {
+  display: grid;
+  gap: 7px;
+}
+
+.settings-page-header h3 {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.3;
+}
+
+.settings-page-header p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.settings-main-panel .settings-section {
+  min-width: 0;
+  gap: 0;
+  border: 1px solid var(--divider);
+  border-radius: 9px;
+}
+
+.settings-main-panel .settings-section > h4 {
+  padding: 12px;
+}
+
+.settings-main-panel .settings-section > .settings-row {
+  border: 0;
+  border-top: 1px solid var(--divider);
+  padding: 12px;
+}
+
+.settings-main-panel .settings-section > :not(h4):not(.settings-row) {
+  margin: 0 12px 12px;
+}
+
+.settings-diagnostics-page {
+  display: grid;
+  gap: 16px;
 }
 
 .settings-section {
@@ -2891,7 +3114,8 @@ button.rdp-video.is-active {
   gap: 6px;
 }
 
-.settings-section h3 {
+.settings-section h3,
+.settings-section h4 {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.6875rem;
@@ -2920,6 +3144,37 @@ button.rdp-video.is-active {
   display: grid;
   gap: 14px;
   padding: 4px 8px 8px;
+}
+
+@media (max-width: 640px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-sidebar {
+    display: none;
+  }
+
+  .settings-category-picker {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--divider);
+    font-size: 0.75rem;
+  }
+
+  .settings-category-picker .settings-theme-select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .settings-category-content {
+    padding: 16px;
+  }
 }
 
 @media (max-width: 520px) {
@@ -3844,11 +4099,39 @@ button.rdp-video.is-active {
   color: var(--accent-strong-text);
 }
 
+.command-palette-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.command-palette-label-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-palette-icon {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .command-palette-item-meta {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 6px;
+  max-width: 45%;
+  min-width: 0;
 }
 
 .command-palette-code {
@@ -3868,7 +4151,11 @@ button.rdp-video.is-active {
 }
 
 .command-palette-hint {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-faint);
   font-size: 0.6875rem;
 }

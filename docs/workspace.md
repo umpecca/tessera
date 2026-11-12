@@ -47,6 +47,8 @@ Current pane types:
 - Use `Ctrl+K`/`Cmd+K` to search commands, pane types, sessions, themes, and
   open windows. Exact shortcut codes appear first. Use ↑/↓ to select a result
   and Enter to run it; typing never runs a palette command automatically.
+  Small outline icons identify actions and window types without replacing their
+  labels, hints or shortcut codes.
   Search aliases include `preferences` for Settings, `rename` for Set Window
   Title, and `close` for Destroy Window.
 - Use `Ctrl+;`/`Cmd+;` for the **Session List**: your sessions, most
@@ -82,9 +84,24 @@ this order. Reordering preserves window positions, stacking, and contents;
 minimized windows keep their place and can be moved in the list. Cycling skips
 minimized windows. New windows append, and reorder controls stop at the ends.
 
+## Settings
+
+Open **Settings** from the Deskbar or command palette. A category sidebar on
+desktops and iPads keeps each page focused; narrow screens use a **Category**
+picker instead. The pages are **Appearance**, **Fonts**, **Terminal**,
+**Input & Shortcuts**, **Clipboard**, **Performance**, **Sign-in & Devices**,
+**Advanced**, and **Diagnostics**. All existing settings keep their original
+account/browser/device scope and save behavior. Choosing a category does not
+change any preference.
+
+The dialog remembers its category while the page remains open, preserves focus
+and per-category scroll through edits, and returns focus when closed. Keyboard
+users can navigate the sidebar with arrow keys/Home/End; Tab stays inside the
+dialog and Escape closes it. Diagnostics runs only while its page is selected.
+
 ## Themes
 
-Choose **Operator** under **Settings → Theme → Current** for charcoal surfaces,
+Choose **Operator** under **Settings → Appearance → Theme → Current** for charcoal surfaces,
 mint accents, a softly lit active pane, and dotted title-bar grips. Windows stay
 movable and resizable, with 32px desktop title bars (48px for touch), ordinary
 titles for new panes, and minimize, maximize/restore, and close controls. The

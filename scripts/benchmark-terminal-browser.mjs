@@ -1,6 +1,7 @@
 // node scripts/benchmark-terminal-browser.mjs --playwright=<module path>
-//   --chrome=<executable path> --output=<directory> [--group=paint|images|parse|load|memory]
+//   --chrome=<executable path> --output=<directory> [--group=paint|images|parse|load|memory|scroll]
 //   [--baseline=<saved terminal bundle>] [--repeats=3] [--headed=true] [--graphics=software]
+//   [--browser=chromium|webkit]
 import { createServer } from "node:http";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -11,7 +12,10 @@ import { pathToFileURL } from "node:url";
 const arg = (name, fallback) => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3) || fallback;
 const root = path.resolve(import.meta.dirname, ".."), output = path.resolve(arg("output", ".cache/review/terminal-performance"));
 const playwright = arg("playwright", "playwright"), chrome = arg("chrome");
-const { chromium } = await import(path.isAbsolute(playwright) ? pathToFileURL(playwright).href : playwright);
+const engines = await import(path.isAbsolute(playwright) ? pathToFileURL(playwright).href : playwright);
+const browserName = arg("browser", "chromium");
+if (!["chromium", "webkit"].includes(browserName)) throw new Error("Unknown --browser");
+if (chrome && browserName !== "chromium") throw new Error("--chrome requires --browser=chromium");
 const baseline = arg("baseline"), group = arg("group"), repeats = Number(arg("repeats", "3"));
 const filter = JSON.parse(arg("filter", "{}")), debug = arg("debug", "false") === "true";
 const headless = arg("headed", "false") !== "true";
@@ -20,7 +24,7 @@ const durationMs = Number(arg("duration-ms", "4000"));
 if (!Number.isInteger(durationMs) || durationMs < 1000 || durationMs > 3600000) throw new Error("Invalid --duration-ms");
 if (!["default", "software"].includes(graphics)) throw new Error("--graphics must be default or software");
 if (!Number.isInteger(repeats) || repeats < 1) throw new Error("--repeats must be a positive integer");
-if (group && !["paint", "images", "parse", "load", "memory"].includes(group)) throw new Error("Unknown benchmark group");
+if (group && !["paint", "images", "parse", "load", "memory", "scroll"].includes(group)) throw new Error("Unknown benchmark group");
 await mkdir(output, { recursive: true });
 const paths = new Map([
   ["/", "scripts/terminal-benchmark/browser.html"], ["/benchmark.mjs", "scripts/terminal-benchmark/browser.mjs"],
@@ -39,9 +43,9 @@ const server = createServer(async (request, response) => {
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const launchArgs = graphics === "software" ? ["--disable-gpu"] : [];
-const browser = await chromium.launch({ headless, args: launchArgs, ...(chrome ? { executablePath: chrome } : {}) });
+const browser = await engines[browserName].launch({ headless, ...(browserName === "chromium" ? { args: launchArgs } : {}), ...(chrome ? { executablePath: chrome } : {}) });
 const checksum = async file => createHash("sha256").update(await readFile(file)).digest("hex");
-const metadata = { timestamp: new Date().toISOString(), browser: browser.version(), platform: os.platform(),
+const metadata = { timestamp: new Date().toISOString(), browserName, browser: browser.version(), platform: os.platform(),
   release: os.release(), cpu: os.cpus()[0].model, logicalCPUs: os.cpus().length, RAMGiB: os.totalmem() / 1024 ** 3,
   font: "JetBrains Mono (bundled), 14px", deviceScaleFactor: 2, headless, graphics, launchArgs,
   terminalBundleSHA256: await checksum(path.resolve(root, paths.get("/web/vendor/terminal.js"))),
@@ -68,6 +72,9 @@ const images = [
   { group: "images", cols: 160, rows: 60, experimental: true, ratio: 1.25, scenario: "image-history" },
 ];
 const cases = [...paints, ...images, ...["progress", "build", "unicode"].map(workload => ({ group: "parse", workload })), ...loads,
+  ...[80, 160].flatMap(cols => [1, 1.25, 1.5, 2].flatMap(ratio => [false, true].flatMap(experimental =>
+    ["ascii", "unicode"].map(scenario => ({ group: "scroll", cols, rows: cols === 80 ? 24 : 60, ratio, experimental, scenario }))))),
+  { group: "scroll", cols: 160, rows: 60, ratio: 1.5, experimental: true, fontSize: 15, scenario: "unicode" },
   { group: "memory" }].filter(entry => (!group || entry.group === group) && Object.entries(filter).every(([key, value]) => entry[key] === value))
   .flatMap(entry => baseline && entry.group === "load" ? [{ ...entry, version: "before" }, { ...entry, version: "current" }] : [entry]);
 const results = [];

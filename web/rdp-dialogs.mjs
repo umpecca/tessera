@@ -26,6 +26,7 @@ export function createRdpDialogs(dependencies, platform = globalThis) {
     note.textContent = trust === "changed"
       ? "The server presented a different certificate from the one you trusted. Continue only if you know why it changed."
       : "Check the fingerprint against the server before sending your password.";
+    note.textContent += " Acceptance is remembered for your Tessera user and this host/port across windows and devices.";
     const details = platform.document.createElement("dl");
     details.className = "rdp-certificate";
     for (const [label, value] of [

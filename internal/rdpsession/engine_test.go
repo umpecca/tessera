@@ -61,7 +61,7 @@ func (l *scriptedLink) UpgradeTLS() ([]byte, error) {
 func (l *scriptedLink) Event(kind uint32, payload []byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.events = append(l.events, recordedEvent{kind, payload})
+	l.events = append(l.events, recordedEvent{kind, append([]byte(nil), payload...)})
 }
 
 func (l *scriptedLink) ended(t *testing.T) (End, string) {

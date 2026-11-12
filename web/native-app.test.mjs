@@ -29,6 +29,7 @@ function fixture({ native = true } = {}) {
     clipboard: () => ({ saveClipboardDialog: dialog }), menus: () => ({ hideAllMenus: () => effects.push("hide menus") }),
     palette: () => ({ openCommandPalette: () => effects.push("palette") }), windows: () => ({ openWindowList: () => effects.push("windows") }),
     sessionList: () => ({ openSessionList: () => effects.push("sessions") }), settings: () => ({ openSettingsModal: () => effects.push("settings") }),
+    events: () => ({ cancelForegroundFocus: () => effects.push("cancel foreground focus"), restoreForegroundFocus: options => effects.push(["foreground focus", options]) }),
   };
   const feature = createNativeApp(dependencies, { window, document });
   feature.initialize();
@@ -54,7 +55,7 @@ test("native app commands invoke existing controllers without synthetic typing",
   f.feature.dispose();
 });
 
-test("background/native layout changes hold shell sizing, preserve view state and resume without focus or reload", async () => {
+test("background/native layout changes preserve view state and ordinary reconnect resume does not request focus", async () => {
   const f = fixture();
   await f.feature.perform("suspend");
   assert.equal(f.rect.terminal.nativeUIHold, true);
@@ -68,6 +69,25 @@ test("background/native layout changes hold shell sizing, preserve view state an
   assert.equal(f.window.tesseraNativeSuspended, false);
   assert.deepEqual(f.effects, ["reconnect", ["scroll", 4]]);
   assert.equal(f.storage.size, 0);
+  f.feature.dispose();
+});
+
+test("native resume requests guarded focus only on an explicitly authorized foreground transition", async () => {
+  const f = fixture();
+  await f.feature.perform("resume");
+  assert.equal(f.effects.some(effect => effect[0] === "foreground focus"), false);
+  await f.feature.perform("resume", { restoreFocus: true });
+  assert.deepEqual(f.effects.at(-1), ["foreground focus", { native: true }]);
+  f.feature.dispose();
+});
+
+test("native suspension and UI holds cancel pending foreground focus", async () => {
+  const f = fixture();
+  for (const command of ["suspend", "holdSize"]) {
+    f.effects.length = 0;
+    await f.feature.perform(command);
+    assert.equal(f.effects[0], "cancel foreground focus");
+  }
   f.feature.dispose();
 });
 

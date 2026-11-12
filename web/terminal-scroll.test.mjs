@@ -127,6 +127,204 @@ test("failed fractional paints restore canvas state and renderer methods", () =>
   assert.equal(Object.hasOwn(f.renderer, "renderScrollbar"), false);
 });
 
+function cachedRendererFixture() {
+  const rows = [], bars = [], blits = [], made = [], reads = [];
+  let graphemes = false;
+  let graphemeIndex = null;
+  const metrics = { width: 9, height: 20, baseline: 15 };
+  const dimensions = { cols: 80, rows: 24 };
+  const context = name => ({
+    save() {}, restore() {}, setTransform() {}, translate() {},
+    fillRect() {}, beginPath() {}, rect() {}, clip() {},
+    drawImage(...args) { blits.push([name, ...args.slice(1)]); },
+  });
+  const output = context("output");
+  class Renderer {
+    constructor() {
+      this.ctx = output;
+      this.canvas = { width: 1440, height: 960, ownerDocument: {} };
+      this.devicePixelRatio = 2;
+      this.theme = { background: "#000" };
+      this.cursorVisible = true;
+      this.fontSize = 14;
+      this.fontFamily = "monospace";
+    }
+    getMetrics() { return metrics; }
+    render(buffer, _force, whole, provider, opacity) {
+      if (this.fail) throw Error("cache paint failed");
+      for (let row = 0; row < dimensions.rows; row++) {
+        const cells = row < whole ? provider.getScrollbackLine(provider.history - whole + row) : buffer.getLine(row - whole);
+        if (cells) this.renderLine(cells, row, dimensions.cols);
+      }
+      this.renderScrollbar(whole, provider.history, dimensions.rows, opacity);
+      buffer.dirty = false;
+    }
+    renderLine(cells, row) { rows.push([cells, row]); }
+    renderScrollbar(...args) { bars.push(args); }
+  }
+  installTerminalScrollRenderer(Renderer, { createCanvas: () => {
+    const canvas = { width: 0, height: 0, getContext: () => context("cache") };
+    made.push(canvas);
+    return canvas;
+  } });
+  const renderer = new Renderer();
+  const cells = index => { reads.push(index); return [{ codepoint: 65, grapheme_len: graphemes || index === graphemeIndex ? 1 : 0 }]; };
+  const buffer = { handle: 1, dirty: true, getDimensions: () => dimensions, isDirty() { return this.dirty; }, getLine: cells };
+  const provider = { history: 500, getScrollbackLength() { return this.history; }, getScrollbackLine: cells };
+  return { renderer, output, buffer, provider, rows, bars, blits, made, reads, metrics, dimensions,
+    graphemes() { graphemes = true; buffer.dirty = true; },
+    graphemeAt(index) { graphemeIndex = index; },
+    paint(y, force = false, opacity = 1) { rows.length = bars.length = blits.length = reads.length = 0; renderer.render(buffer, force, y, provider, opacity); } };
+}
+
+test("fractional text frames reuse a bounded backing viewport and preserve exact scrollbar coordinates", () => {
+  const f = cachedRendererFixture();
+  f.paint(2.123);
+  assert.equal(f.rows.length, 26);
+  assert.equal(f.made.length, 1);
+  assert.equal(f.made[0].height, 1000, "only one extra physical row is retained");
+  assert.equal(f.renderer.ctx, f.output);
+  assert.equal(f.renderer.cursorVisible, true);
+  assert.equal(Object.hasOwn(f.renderer, "renderLine"), false);
+  f.paint(2.456);
+  assert.equal(f.rows.length, 1, "only the bottom clip-edge row needs fresh rasterization");
+  assert.equal(f.reads.length, 0, "the cached boundary row needs no native cell read");
+  assert.deepEqual(f.bars, [[2.456, 500, 24, 1]]);
+  assert.deepEqual(f.blits, [["output", 0, 22, 1440, 960, 0, 0, 1440, 960]]);
+  assert.equal(f.made.length, 1);
+});
+
+test("crossing history rows shifts cached pixels and repaints boundary bands in either direction", () => {
+  const f = cachedRendererFixture();
+  f.paint(10.25);
+  for (const y of [11.25, 10.75, 12.125, 11.875]) {
+    f.paint(y);
+    assert.ok(f.rows.length > 0 && f.rows.length < 24);
+    assert.equal(f.blits[0][0], "cache");
+    assert.equal(f.blits.at(-1)[0], "output");
+    assert.equal(f.rows.at(-2)[1], -1, "the partial top row is last within the backing paint");
+    assert.equal(f.rows.at(-1)[1], 23, "the actual canvas clip-edge row is repaired afterwards");
+    assert.ok(f.reads.length < 24, "unchanged middle rows are not read from the core");
+    assert.equal(f.made.length, 1);
+  }
+  f.paint(100.5);
+  assert.equal(f.rows.length, 26, "large jumps use a complete cache repaint");
+});
+
+test("multi-codepoint graphemes reuse fractional frames but repaint at row crossings", () => {
+  const f = cachedRendererFixture();
+  f.graphemes();
+  f.paint(2.25); f.paint(2.5);
+  assert.equal(f.rows.length, 1);
+  f.paint(3.25);
+  assert.equal(f.rows.length, 26, "row-relative grapheme lookups cannot be shifted");
+  assert.equal(f.blits.filter(([name]) => name === "cache").length, 0);
+});
+
+test("newly exposed graphemes abandon edge reuse before showing incomplete pixels", () => {
+  const f = cachedRendererFixture();
+  f.graphemeAt(496);
+  f.paint(2.25);
+  assert.equal(f.renderer.tesseraScrollCache.shiftSafe, true);
+  f.paint(3.25);
+  assert.equal(f.renderer.tesseraScrollCache.shiftSafe, false);
+  assert.ok(f.rows.length >= 26, "a complete repaint replaces the provisional edge paint");
+  f.paint(3.5);
+  assert.equal(f.rows.length, 1);
+});
+
+test("native damage, history, handles, fonts, themes and forced paints invalidate cached rows", () => {
+  const f = cachedRendererFixture();
+  f.paint(2.25);
+  const changes = [
+    () => { f.buffer.dirty = true; },
+    () => { f.provider.history++; },
+    () => { f.buffer.handle++; },
+    () => { f.renderer.fontFamily = "other monospace"; },
+    () => { f.renderer.theme.background = "#fff"; },
+    () => { f.metrics.baseline++; },
+  ];
+  for (const change of changes) {
+    change(); f.paint(2.5);
+    assert.equal(f.rows.length, 26);
+    f.paint(2.75);
+    assert.equal(f.rows.length, 1);
+  }
+  f.paint(2.5, true);
+  assert.equal(f.rows.length, 26);
+});
+
+test("decorations, images, unsupported grids and leaving fractional history release the cache", () => {
+  const changes = [
+    f => { f.renderer.selectionManager = { hasSelection: () => true }; },
+    f => { f.renderer.currentSelectionCoords = {}; },
+    f => { f.renderer.hoveredHyperlinkId = 1; },
+    f => { f.renderer.hoveredLinkRange = {}; },
+    f => { f.provider.searchNeedle = "found"; },
+    f => { f.renderer.tesseraSearchRows = new Map([[0, []]]); },
+    f => { f.buffer.exports = { tessera_sixel_image_count: () => 1 }; },
+    f => { f.provider.sixelRenderer = { needsFullRender: true }; },
+    f => { f.buffer.isAlternateScreen = () => true; },
+    f => { f.metrics.width = 9.25; },
+    f => { f.metrics.height = 20.25; },
+  ];
+  for (const change of changes) {
+    const f = cachedRendererFixture();
+    f.paint(2.25); change(f); f.paint(2.5);
+    assert.equal(f.renderer.tesseraScrollCache, null);
+    assert.equal(f.made[0].width, 0);
+    assert.ok(f.rows.length >= 24, "the full renderer handles unsupported states");
+  }
+  for (const y of [0, 2]) {
+    const f = cachedRendererFixture(); f.paint(2.25); f.paint(y);
+    assert.equal(f.renderer.tesseraScrollCache, null);
+    assert.equal(f.made[0].height, 0);
+  }
+  const large = cachedRendererFixture();
+  large.dimensions.cols = 1000; large.dimensions.rows = 200;
+  large.renderer.canvas.width = 18000; large.renderer.canvas.height = 8000;
+  large.paint(2.25);
+  assert.equal(large.made.length, 0, "oversized backings are never allocated");
+});
+
+test("failed cache paints restore renderer methods, discard pixels and repaint fully on retry", () => {
+  const f = cachedRendererFixture();
+  const historyLine = f.provider.getScrollbackLine, bufferLine = f.buffer.getLine;
+  f.paint(2.25);
+  f.renderer.fail = true;
+  assert.throws(() => f.paint(3.25), /cache paint failed/);
+  assert.equal(f.renderer.ctx, f.output);
+  assert.equal(f.renderer.cursorVisible, true);
+  assert.equal(Object.hasOwn(f.renderer, "renderLine"), false);
+  assert.equal(Object.hasOwn(f.renderer, "renderScrollbar"), false);
+  assert.equal(f.provider.getScrollbackLine, historyLine);
+  assert.equal(f.buffer.getLine, bufferLine);
+  assert.equal(f.renderer.tesseraScrollCache, null);
+  assert.equal(f.made[0].width, 0);
+  f.renderer.fail = false;
+  f.paint(3.25);
+  assert.equal(f.rows.length, 26);
+});
+
+test("cache allocation failure uses the full renderer without changing scroll behavior", () => {
+  const f = cachedRendererFixture();
+  // The installer uses the instance's ownerDocument only for eligibility; the
+  // injected factory is exercised separately here to simulate a denied context.
+  class Renderer {
+    constructor() { Object.assign(this, f.renderer); }
+    getMetrics() { return f.metrics; }
+    render() { f.rows.push("full fallback"); }
+    renderLine() {}
+    renderScrollbar(...args) { f.bars.push(args); }
+  }
+  installTerminalScrollRenderer(Renderer, { createCanvas: () => { throw Error("allocation denied"); } });
+  const renderer = new Renderer();
+  renderer.render(f.buffer, false, 2.5, f.provider, 1);
+  assert.ok(f.rows.includes("full fallback"));
+  assert.equal(renderer.tesseraScrollCache, null);
+  assert.deepEqual(f.bars, [[2.5, 500, 24, 1]]);
+});
+
 test("link hit testing tracks physical scroll pixels and preserves native event methods", () => {
   let prevented = false;
   const event = { clientY: 100, get ctrlKey() { assert.equal(this, event); return true; },

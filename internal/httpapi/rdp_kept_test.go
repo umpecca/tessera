@@ -259,6 +259,16 @@ func TestKeptSessionViewerCarriesTheProtocol(t *testing.T) {
 	if frame := readFrame(t, conn); !bytes.Equal(frame, []byte{rdpsession.ViewDesktopSize, 0xc0, 0x04, 0x80, 0x02}) {
 		t.Fatalf("first frame = %v, want the 1216x640 desktop size", frame)
 	}
+	// Browser pressure is viewer-level control, not input for the RDP module.
+	// It can change independently of visibility without closing the socket.
+	for _, message := range [][]byte{
+		{rdpsession.ViewPressure, 1}, {rdpsession.ViewShown, 0},
+		{rdpsession.ViewPressure, 0}, {rdpsession.ViewShown, 1},
+	} {
+		if err := conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// Input goes to the module, which echoes it back as an H.264 event.
 	input := []byte{4, 0x1e, 0x00, 1} // key 0x1e pressed
 	if err := conn.WriteMessage(websocket.BinaryMessage, append([]byte{rdpsession.ViewInput}, input...)); err != nil {
@@ -289,6 +299,12 @@ func TestKeptSessionViewerCarriesTheProtocol(t *testing.T) {
 	defer again.Close()
 	if frame := readFrame(t, again); frame[0] != rdpsession.ViewDesktopSize {
 		t.Fatalf("first frame of the second viewer = %v", frame)
+	}
+	if err := again.WriteMessage(websocket.BinaryMessage, []byte{rdpsession.ViewPressure, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := again.ReadMessage(); !websocket.IsCloseError(err, websocket.CloseProtocolError) {
+		t.Fatalf("invalid browser pressure: %v, want a protocol error close", err)
 	}
 }
 

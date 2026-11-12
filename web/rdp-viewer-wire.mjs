@@ -13,6 +13,7 @@ export const viewResize = 2;
 export const viewRefresh = 3;
 export const viewWiggle = 4;
 export const viewShown = 5;
+export const viewPressure = 6;
 
 // How a session ended (rdpsession.End).
 export const endQuit = 0;
@@ -122,10 +123,19 @@ export function shownMessage(shown) {
   return Uint8Array.of(viewShown, shown ? 1 : 0);
 }
 
+// Independent of visibility: draining network writes must not resume video
+// while decoded pictures are still waiting for the browser's compositor.
+export function pressureMessage(behind) {
+  return Uint8Array.of(viewPressure, behind ? 1 : 0);
+}
+
 const decoder = new TextDecoder();
 
 // A frame from the host as an object, or null if it is malformed or of a type
 // this client doesn't know.
+// The caller owns the received ArrayBuffer. Encoded video and bitmap pixels
+// borrow it; no view uses scratch storage shared with later messages. The viewer
+// may normalize bitmap alpha in place after parsing has validated its bounds.
 export function parseViewerFrame(buffer) {
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 1) return null;
   const view = new DataView(buffer);
@@ -139,6 +149,8 @@ export function parseViewerFrame(buffer) {
       const count = view.getUint16(4, true);
       const dataStart = 6 + count * 8;
       if (length < dataStart) return null;
+      // Keep this small copy: regions outlive decoder submission. Borrowing
+      // them would pin the whole encoded packet until presentation finishes.
       const regions = new Uint16Array(count * 4);
       for (let i = 0; i < regions.length; i += 1) regions[i] = view.getUint16(6 + i * 2, true);
       return {
@@ -153,13 +165,14 @@ export function parseViewerFrame(buffer) {
       if (length < 9) return null;
       const [x, y, width, height] = [1, 3, 5, 7].map((offset) => view.getUint16(offset, true));
       if (length !== 9 + width * height * 4) return null;
-      return { type: "image", x, y, width, height, rgba: new Uint8ClampedArray(buffer.slice(9)) };
+      const rgba = new Uint8ClampedArray(buffer, 9);
+      return { type: "image", x, y, width, height, rgba };
     }
     case viewEnded:
       if (length < 2) return null;
-      return { type: "ended", end: view.getUint8(1), reason: decoder.decode(buffer.slice(2)) };
+      return { type: "ended", end: view.getUint8(1), reason: decoder.decode(new Uint8Array(buffer, 2)) };
     case viewDetached:
-      return { type: "detached", reason: decoder.decode(buffer.slice(1)) };
+      return { type: "detached", reason: decoder.decode(new Uint8Array(buffer, 1)) };
     default:
       return null;
   }

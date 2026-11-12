@@ -60,7 +60,22 @@ Database schema changes belong in the next contiguous numbered SQL file under
 order using SQLite `PRAGMA user_version`. Treat applied migration files as
 immutable; append a new migration instead of editing an existing one.
 
-## Bundled pixel fonts
+## Bundled application fonts
+
+The additional outline families below ship official, unmodified regular and bold
+font bytes and their upstream licenses in `web/assets/`. No runtime CDN requests
+or build-time conversions are used. They use normal-style faces; italic text
+follows the existing browser-synthesis behavior.
+
+| Font | Pinned upstream source | Bundled faces | License |
+| --- | --- | --- | --- |
+| Hack | [v3.003](https://github.com/source-foundry/Hack/tree/v3.003/build/web/fonts), full `hack-regular.woff2` and `hack-bold.woff2` | `Hack-Regular.woff2`, `Hack-Bold.woff2` | Tagged `LICENSE.md` → `Hack-LICENSE.txt` (MIT + Bitstream Vera notices) |
+| Cascadia Code | [v2407.24](https://github.com/microsoft/cascadia-code/releases/tag/v2407.24), `CascadiaCode-2407.24.zip`, `woff2/static/` | `CascadiaCode-Regular.woff2`, `CascadiaCode-Bold.woff2`; original Code, not Mono/PL/NF | Tagged `LICENSE` → `CascadiaCode-OFL.txt` (OFL-1.1) |
+| Iosevka | [v34.9.1](https://github.com/be5invis/Iosevka/releases/tag/v34.9.1), `PkgWebFont-Iosevka-34.9.1.zip`, `WOFF2/` | `Iosevka-Regular.woff2`, `Iosevka-Bold.woff2`; standard width | Tagged `LICENSE.md` → `Iosevka-OFL.txt` (OFL-1.1) |
+| Victor Mono | [v1.5.6](https://github.com/rubjo/victor-mono/tree/v1.5.6/dist/woff2) | `VictorMono-Regular.woff2`, `VictorMono-Bold.woff2` | Tagged `LICENSE` → `VictorMono-OFL.txt` (OFL-1.1) |
+| Inconsolata | [v3.000](https://github.com/googlefonts/Inconsolata/tree/v3.000/fonts/ttf) | `Inconsolata-Regular.ttf`, `Inconsolata-Bold.ttf`; standard width | Tagged `OFL.txt` → `Inconsolata-OFL.txt` (OFL-1.1) |
+
+### Pixel fonts
 
 The optional pixel terminal fonts are stored in `web/assets/`, with their
 upstream licenses beside them. Font bytes are unmodified (some filenames are

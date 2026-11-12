@@ -7,6 +7,7 @@ import {
   inputMessage,
   inputRecords,
   parseViewerFrame,
+  pressureMessage,
   refreshMessage,
   resizeMessage,
   shownMessage,
@@ -150,14 +151,22 @@ export function connectRDPViewer({
         if (canvas.height !== frame.height) canvas.height = frame.height;
         break;
       case "h264":
-        presenter ||= createPresenter({ canvas, onFirstPicture, fullColor, onFullColor });
+        presenter ||= createPresenter({
+          canvas, onFirstPicture, fullColor, onFullColor,
+          onPressure: (behind) => {
+            if (!closed && socket.readyState === 1) socket.send(pressureMessage(behind));
+          },
+          // Closing only the view leaves the session on the host. The pane's
+          // existing dropped-view recovery attaches again with a fresh display.
+          onBacklogExceeded: closeAll,
+        });
         presenter.push(frame.data, frame.regions, frame.view, frame.surface);
         break;
       case "image": {
         const started = now();
-        // The composited image's alpha isn't reliable, so make it opaque.
-        const pixels = new Uint32Array(frame.rgba.buffer);
-        for (let i = 0; i < pixels.length; i += 1) pixels[i] |= 0xff000000;
+        // The unchanged wire header leaves this zero-copy view at byte offset
+        // 9, unaligned for Uint32Array. Touch only its alpha bytes in place.
+        for (let i = 3; i < frame.rgba.length; i += 4) frame.rgba[i] = 255;
         context.putImageData(new ImageDataImpl(frame.rgba, frame.width, frame.height), frame.x, frame.y);
         received.images += 1;
         received.imageMs += now() - started;

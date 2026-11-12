@@ -138,7 +138,30 @@ const pixelFontAssets = [
   },
 ];
 
-for (const { family, faces, license, notices } of pixelFontAssets) {
+const addedFontAssets = [
+  {
+    family: "Hack", faces: [["Hack-Regular.woff2", 400], ["Hack-Bold.woff2", 700]],
+    license: "Hack-LICENSE.txt", notices: [/Copyright 2018 Source Foundry Authors/, /MIT License/, /BITSTREAM VERA LICENSE/],
+  },
+  {
+    family: "Cascadia Code", faces: [["CascadiaCode-Regular.woff2", 400], ["CascadiaCode-Bold.woff2", 700]],
+    license: "CascadiaCode-OFL.txt", notices: [/Microsoft Corporation/, /SIL OPEN FONT LICENSE Version 1\.1/],
+  },
+  {
+    family: "Iosevka", faces: [["Iosevka-Regular.woff2", 400], ["Iosevka-Bold.woff2", 700]],
+    license: "Iosevka-OFL.txt", notices: [/Renzhi Li/, /SIL Open Font License v1\.1/],
+  },
+  {
+    family: "Victor Mono", faces: [["VictorMono-Regular.woff2", 400], ["VictorMono-Bold.woff2", 700]],
+    license: "VictorMono-OFL.txt", notices: [/Rune Bjørnerås/, /SIL OPEN FONT LICENSE Version 1\.1/],
+  },
+  {
+    family: "Inconsolata", faces: [["Inconsolata-Regular.ttf", 400], ["Inconsolata-Bold.ttf", 700]],
+    license: "Inconsolata-OFL.txt", notices: [/The Inconsolata Project Authors/, /SIL OPEN FONT LICENSE Version 1\.1/],
+  },
+];
+
+for (const { family, faces, license, notices } of [...pixelFontAssets, ...addedFontAssets]) {
   test(`${family} has locally registered font files and redistribution notices`, () => {
     const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
     const definitions = [...styles.matchAll(/@font-face\s*\{([^}]+)\}/g)].map(match => match[1]);

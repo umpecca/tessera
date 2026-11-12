@@ -406,4 +406,88 @@ async function runRecovery(options) {
   } finally { recovered.dispose(); reference.dispose(); }
 }
 
-window.runTerminalBenchmark = options => ({ paint: runPaint, images: runPaint, parse: runParse, load: runLoad, memory: runMemory, recovery: runRecovery })[options.group](options);
+async function runScroll(options) {
+  const content = "\x1b[?25l" + Array.from({ length: 300 }, (_, row) => {
+    const label = `${row.toString().padStart(4, "0")} ${options.scenario === "unicode" ? "Å界é नमस्ते " : ""}abcdefghijklmnopqrstuvwxyz 0123456789 `;
+    return `\x1b[${row % 2 ? "1;32" : "2;36"}m${label.repeat(4).slice(0, options.cols - 1)}\x1b[0m`;
+  }).join("\r\n");
+  const cached = create(Terminal, options), reference = create(Terminal, options);
+  reference.term.renderer.tesseraScrollCacheDisabled = true;
+  const setPosition = (term, y) => {
+    term.smoothScroll.cancel(); term.viewportY = y; term.targetViewportY = y; paint(term);
+  };
+  let checked = 0, reused = 0;
+  try {
+    // Stable CPU readback contexts are correctness oracles only, not timed.
+    for (const { term } of [cached, reference]) {
+      const canvas = document.createElement("canvas");
+      term.renderer.canvas = canvas;
+      term.renderer.ctx = canvas.getContext("2d", { alpha: true, willReadFrequently: true });
+      term.renderer.resize(options.cols, options.rows);
+      write(term, content); paint(term);
+    }
+    const positions = [0, .125, .5, .875, 1.125, 2.25, 3.75, 8.125, 7.875, 6.5,
+      6.125, 5.875, 2.25, 1.5, .5, 0, 20.25, 21.125, 19.875, 100.5,
+      4.25, 4.5, 4.75, 4.875, 4.5, 4.25, 4.5, 4.75, 4.5, 4.25];
+    for (let i = 0; i < positions.length; i++) {
+      for (const { term } of [cached, reference]) {
+        if (i === 6) write(term, "\r\nlive output while reading history");
+        if (i === 9) write(term, "\x1b[2;1H\x1b[31mchanged cells\x1b[0m");
+        if (i === 12) term.applyGeometry(options.cols, options.rows, cached.metrics.width, cached.metrics.height);
+        if (i === 14) write(term, "\x1b]11;rgb:10/18/20\x07");
+        if (i === 21) term.select(2, 2, 8);
+        if (i === 22) term.clearSelection();
+        if (i === 23) term.search("abc", { reveal: false });
+        if (i === 24) term.search("");
+        if (i === 25) term.renderer.setHoveredLinkRange({ startX: 2, startY: 2, endX: 8, endY: 2 });
+        if (i === 26) term.renderer.setHoveredLinkRange(null);
+        if (i === 27) write(term, "\x1b[3;1H" + sixel);
+        if (i === 28) term.clearImages();
+        setPosition(term, positions[i]);
+      }
+      if (cached.term.renderer.tesseraScrollCache) reused++;
+      const a = cached.term.renderer, b = reference.term.renderer;
+      const actual = a.ctx.getImageData(0, 0, a.canvas.width, a.canvas.height);
+      const expected = b.ctx.getImageData(0, 0, b.canvas.width, b.canvas.height);
+      if (hash(cached.term, actual) !== hash(reference.term, expected)) {
+        cached.term.requestFullRedraw(); setPosition(cached.term, positions[i]);
+        const rebuilt = a.ctx.getImageData(0, 0, a.canvas.width, a.canvas.height);
+        window.terminalBenchmarkMismatch = { partial: a.canvas.toDataURL(), full: b.canvas.toDataURL(),
+          position: positions[i], metrics: cached.metrics, rebuiltDifference: pixelDifference(rebuilt, expected), ...pixelDifference(actual, expected) };
+        throw new Error(`Scroll cache pixels differ at ${positions[i]}: ${JSON.stringify(pixelDifference(actual, expected))}`);
+      }
+      checked++;
+    }
+  } finally { cached.dispose(); reference.dispose(); }
+
+  const current = create(Terminal, options);
+  const before = create(baseline?.Terminal || Terminal, options);
+  if (!baseline) before.term.renderer.tesseraScrollCacheDisabled = true;
+  current.box.style.left = `${options.cols * current.metrics.width + 16}px`;
+  const fixtures = [before, current], results = [];
+  try {
+    for (const fixture of fixtures) {
+      write(fixture.term, content); paint(fixture.term);
+      const line = fixture.term.renderer.renderLine;
+      fixture.rows = 0; fixture.frames = [];
+      fixture.term.renderer.renderLine = function(...args) { fixture.rows++; return line.apply(this, args); };
+    }
+    for (let tick = 0; tick < 96; tick++) {
+      await frame();
+      const position = tick < 48 ? 5.03125 + tick / 8 : 11.03125 - (tick - 48) / 8;
+      for (const fixture of tick % 2 ? [...fixtures].reverse() : fixtures) {
+        fixture.rows = 0;
+        const start = performance.now(); setPosition(fixture.term, position);
+        if (tick >= 16) fixture.frames.push({ ms: performance.now() - start, rows: fixture.rows });
+      }
+    }
+    for (const fixture of fixtures) results.push({ version: fixture === before ? "before" : "current",
+      paintMs: summary(fixture.frames.map(value => value.ms)), rows: summary(fixture.frames.map(value => value.rows)),
+      cacheBytes: fixture.term.renderer.tesseraScrollCache
+        ? fixture.term.renderer.tesseraScrollCache.canvas.width * fixture.term.renderer.tesseraScrollCache.canvas.height * 4 : 0,
+      frames: fixture.frames });
+    return { ...options, metrics: current.metrics, exactPixelChecks: checked, cacheEligibleFrames: reused, results };
+  } finally { fixtures.forEach(fixture => fixture.dispose()); }
+}
+
+window.runTerminalBenchmark = options => ({ paint: runPaint, images: runPaint, parse: runParse, load: runLoad, memory: runMemory, recovery: runRecovery, scroll: runScroll })[options.group](options);

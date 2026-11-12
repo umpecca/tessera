@@ -32,9 +32,15 @@ export function saveRDPFullColorPreference(storage, fullColor) {
   }
 }
 
-// Pictures waiting for decoder output; a decoder that drops pictures must not
-// grow this without bound.
+// Limits cover the whole pipeline, including pictures held by an asynchronous
+// AVC444 copy, not just entries still waiting for the decoder. Leave headroom
+// after reporting pressure for video already travelling from the server.
 const maxPendingPictures = 64;
+const maxPendingEntries = 256;
+const maxPendingBytes = 16 * 1024 * 1024;
+const pressurePictures = 8;
+const pressureBytes = 1024 * 1024;
+const presentationStallMilliseconds = 5000;
 
 // Whether this page can decode RDP's H.264. WebCodecs exists only in a secure
 // context (HTTPS or localhost).
@@ -103,12 +109,16 @@ export function createRDPH264Presenter({
   onFirstPicture = () => {},
   // Called after each picture is drawn.
   onPicture = () => {},
+  onPressure = () => {},
+  onBacklogExceeded = () => {},
   fullColor = false,
   onFullColor = () => {},
   createCombiner = createRDPAVC444Combiner,
   readPlanes = readVideoFramePlanes,
   createCanvas = defaultSurfaceCanvas,
   now = () => performance.now(),
+  setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
+  clearTimer = (timer) => globalThis.clearTimeout(timer),
 }) {
   // Pictures and operations by push order: a picture waits here for its
   // decoder output.
@@ -137,10 +147,16 @@ export function createRDPH264Presenter({
   // The AVC444 combiner: undefined until an AVC444 view needs it, null when
   // it can't be used.
   let combiner = fullColor ? undefined : null;
-  // Entries run in order through this chain while any of them is
-  // asynchronous: reading a picture's planes is.
-  let queue = Promise.resolve();
-  let busy = 0;
+  // Every admitted entry stays tracked until applied or released. Only one
+  // asynchronous operation runs at a time; queued entries own no promise chain.
+  const retained = new Set();
+  let queue = [];
+  let active = null;
+  let pictures = 0;
+  let retainedBytes = 0;
+  let compositing = 0;
+  let pressured = false;
+  let stallTimer = null;
   let planeBuffer = null;
   // Whether pictures must be copied out whole (readVideoFramePlanes).
   const copyState = {};
@@ -156,6 +172,42 @@ export function createRDPH264Presenter({
     pushMs: 0, decodeMs: 0, decodeMaxMs: 0, readMs: 0, drawMs: 0, latencyMs: 0, latencyMaxMs: 0,
   };
 
+  function reportPressure() {
+    if (closed) return;
+    const next = pressured
+      ? pictures > 2 || retainedBytes > pressureBytes / 4 || retained.size > 8
+      : pictures >= pressurePictures || retainedBytes >= pressureBytes || retained.size >= 32;
+    if (next !== pressured) {
+      pressured = next;
+      watchProgress();
+      onPressure(next);
+    }
+  }
+
+  function watchProgress() {
+    if (stallTimer !== null) clearTimer(stallTimer);
+    stallTimer = null;
+    if (!pressured || closed) return;
+    // Once the host pauses there may be no more arrivals to hit a hard bound.
+    // A lost decoder output or stuck copy must still have a recovery path.
+    stallTimer = setTimer(() => {
+      stallTimer = null;
+      if (closed) return;
+      close();
+      onBacklogExceeded();
+    }, presentationStallMilliseconds);
+    stallTimer?.unref?.();
+  }
+
+  function release(entry) {
+    if (!retained.delete(entry)) return;
+    retainedBytes -= entry.bytes;
+    if (!entry.op) pictures -= 1;
+    if (entry.compositing) compositing -= 1;
+    entry.picture?.close();
+    entry.picture = null;
+  }
+
   // Forgets pictures waiting for the decoder; operations stay.
   function reset() {
     if (decoder && decoder.state !== "closed") {
@@ -166,14 +218,15 @@ export function createRDPH264Presenter({
     for (const [stamp, entry] of pending) {
       if (entry.op) continue;
       if (entry.picture) {
-        entry.picture.close();
         waiting -= 1;
       }
       pending.delete(stamp);
+      release(entry);
       metrics.dropped += 1;
     }
     deferred = [];
     drain();
+    reportPressure();
   }
 
   function presented(entry) {
@@ -400,6 +453,7 @@ export function createRDPH264Presenter({
       } catch {
         planes = null;
       }
+      if (closed) return;
       metrics.readMs += now() - readStarted;
       if (!planes) giveUpCombining();
     }
@@ -453,56 +507,60 @@ export function createRDPH264Presenter({
     }
   }
 
-  // Runs one entry: at once when nothing asynchronous is in the way, else
-  // after what is.
+  // Surface operations and pictures use the same FIFO. Never skip a queued
+  // copy or an AVC444 auxiliary view just to catch up.
   function run(entry) {
-    const task = () => {
-      if (entry.op) {
-        applyOperation(entry);
-        return undefined;
-      }
-      const picture = entry.picture;
-      if (combiner === null) {
-        const drawStarted = now();
-        try {
-          drawDirect(picture, entry);
-        } finally {
-          picture.close();
-          metrics.drawMs += now() - drawStarted;
-          presented(entry);
-        }
-        return undefined;
-      }
-      return combine(picture, entry).finally(() => {
-        picture.close();
-        presented(entry);
-      });
-    };
-    if (busy === 0 && (entry.op || combiner === null)) {
-      if (!closed) task();
-      else entry.picture?.close();
-      return;
+    if (!entry.op) {
+      entry.compositing = true;
+      compositing += 1;
     }
-    busy += 1;
-    queue = queue
-      .then(() => (closed ? entry.picture?.close() : task()))
-      .catch(() => {})
-      .finally(() => {
-        busy -= 1;
-      });
+    queue.push(entry);
+    applyQueued();
   }
 
-  // Runs entries in push order as they become ready. A picture the decoder
-  // never outputs is given up once later pictures pile up behind it.
+  function finish(entry) {
+    if (!closed && !entry.op) presented(entry);
+    release(entry);
+    active = null;
+    reportPressure();
+    if (pressured) watchProgress();
+  }
+
+  function applyQueued() {
+    if (active || closed) return;
+    while (queue.length && !closed) {
+      const entry = queue.shift();
+      active = entry;
+      if (!entry.op && combiner !== null) {
+        combine(entry.picture, entry)
+          .catch(() => { metrics.errors += 1; })
+          .finally(() => {
+            finish(entry);
+            applyQueued();
+          });
+        return;
+      }
+      const started = entry.op ? 0 : now();
+      try {
+        if (entry.op) applyOperation(entry);
+        else drawDirect(entry.picture, entry);
+      } catch {
+        metrics.errors += 1;
+      } finally {
+        if (!entry.op) metrics.drawMs += now() - started;
+        finish(entry);
+      }
+    }
+  }
+
+  // Runs entries in push order as they become ready. Missing decoder output
+  // must not let copies of an incomplete surface overtake the missing picture;
+  // the shared hard limit recovers a decoder that never produces it.
   function drain() {
     while (nextStamp < timestamp) {
       const entry = pending.get(nextStamp);
       if (entry && !entry.op && !entry.picture) {
-        if (waiting <= maxWaitingPictures) break;
-        pending.delete(nextStamp);
-        nextStamp += 1;
-        metrics.dropped += 1;
-        continue;
+        break;
       }
       pending.delete(nextStamp);
       nextStamp += 1;
@@ -525,35 +583,40 @@ export function createRDPH264Presenter({
     metrics.decodeMs += decodeMs;
     metrics.decodeMaxMs = Math.max(metrics.decodeMaxMs, decodeMs);
     drain();
+    reportPressure();
   }
 
   function open(data, nals, sps) {
     // An error closes the decoder; decoding resumes at the next key frame.
-    decoder = new VideoDecoder({
+    const opened = new VideoDecoder({
       output,
       error: () => {
+        if (closed || decoder !== opened) return;
         metrics.errors += 1;
         reset();
       },
     });
+    decoder = opened;
     decoder.configure({ codec: h264CodecString(data, nals) || rdpH264ProbeCodec, ...decoderConfig });
     decoderSps = sps.slice();
   }
 
   function add(entry) {
+    if (retained.size >= maxPendingEntries || (!entry.op && pictures >= maxPendingPictures)
+      || retainedBytes + entry.bytes > maxPendingBytes) {
+      // Dropping arbitrary deltas or surface operations leaves stale pixels.
+      // End this view instead: a kept viewer reattaches with a fresh display.
+      if (!entry.op) metrics.dropped += 1;
+      close();
+      onBacklogExceeded();
+      return null;
+    }
+    retained.add(entry);
+    retainedBytes += entry.bytes;
+    if (!entry.op) pictures += 1;
     pending.set(timestamp, entry);
     timestamp += 1;
-    if (pending.size > maxPendingPictures) {
-      const [oldest, dropped] = pending.entries().next().value;
-      if (!dropped.op) {
-        if (dropped.picture) {
-          dropped.picture.close();
-          waiting -= 1;
-        }
-        pending.delete(oldest);
-        metrics.dropped += 1;
-      }
-    }
+    reportPressure();
     return timestamp - 1;
   }
 
@@ -579,7 +642,9 @@ export function createRDPH264Presenter({
     } catch {
       // An SPS this can't parse is decoded as it is, with the decoder's delay.
     }
-    const stamp = add({ op: false, view, regions, surfaceId, picture: null, pushedAt });
+    const stamp = add({ op: false, view, regions, surfaceId, picture: null, pushedAt,
+      bytes: data.byteLength + (regions?.byteLength ?? 0) });
+    if (stamp === null || closed) return;
     try {
       decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: stamp, data: chunk }));
     } catch {
@@ -588,11 +653,39 @@ export function createRDPH264Presenter({
     }
   }
 
+  function close() {
+    if (closed) return;
+    closed = true;
+    if (stallTimer !== null) clearTimer(stallTimer);
+    stallTimer = null;
+    if (decoder && decoder.state !== "closed") decoder.close();
+    decoder = null;
+    decoderSps = null;
+    for (const entry of retained) {
+      if (!entry.op) metrics.dropped += 1;
+      release(entry);
+    }
+    queue = [];
+    active = null;
+    pending.clear();
+    waiting = 0;
+    deferred = [];
+    pressured = false;
+    planeBuffer = null;
+    spsCache.clear();
+    outputSurface = null;
+    combinerSurface = null;
+    combinerCanvas = null;
+    surfaces.clear();
+    combiner?.close();
+    combiner = null;
+  }
+
   return {
     push(data, regions, view = rdpH264View.avc420, surfaceId = 0) {
       if (closed) return;
       if (view >= rdpH264View.surfaceOutput) {
-        add({ op: true, view, regions, surfaceId });
+        add({ op: true, view, regions, surfaceId, bytes: regions?.byteLength ?? 0 });
         drain();
         return;
       }
@@ -609,29 +702,17 @@ export function createRDPH264Presenter({
     // pictures decoded but not yet drawn. The maxima are since the last
     // reading.
     stats() {
-      const reading = { ...metrics, decodeQueue: decoder?.decodeQueueSize ?? 0, waiting, fullColor: fullColorDrawn && Boolean(combiner) };
+      const reading = { ...metrics, decodeQueue: decoder?.decodeQueueSize ?? 0, waiting,
+        compositing, backlog: pictures, queuedBytes: retainedBytes, backpressured: pressured,
+        fullColor: fullColorDrawn && Boolean(combiner) };
       metrics.decodeMaxMs = 0;
       metrics.latencyMaxMs = 0;
       return reading;
     },
-    close() {
-      closed = true;
-      reset();
-      pending.clear();
-      outputSurface = null;
-      combinerSurface = null;
-      combinerCanvas = null;
-      surfaces.clear();
-      combiner?.close();
-      combiner = null;
-    },
+    close,
   };
 
 }
-
-// Decoded pictures that may wait behind one the decoder hasn't output before
-// that one is given up.
-const maxWaitingPictures = 8;
 
 function defaultSurfaceCanvas(width, height) {
   if (typeof OffscreenCanvas === "function") {

@@ -1,3 +1,5 @@
+import { createForegroundFocus } from "./foreground-focus.mjs";
+
 // Browser/desktop event registration and application startup wiring.
 // State is owned here. Dependencies are lazy feature providers, so construction
 // has no DOM/network effects and the composition root can link cyclic UI actions.
@@ -11,6 +13,7 @@
  *   menus: () => ReturnType<typeof import("./workspace-menus.mjs").createMenus>,
  *   navigation: () => ReturnType<typeof import("./session-navigation.mjs").createNavigation>,
  *   preferences: () => ReturnType<typeof import("./preferences.mjs").createPreferences>,
+ *   phone: () => ReturnType<typeof import("./phone-workspace.mjs").createPhone>,
  *   rdpView: () => ReturnType<typeof import("./rdp-view.mjs").createRdpView>,
  *   sessionList: () => ReturnType<typeof import("./session-list-view.mjs").createSessionList>,
  *   settings: () => ReturnType<typeof import("./settings-view.mjs").createSettings>,
@@ -23,6 +26,7 @@
  * @param {typeof globalThis} [platform] Browser capabilities; injectable for tests.
  */
 export function createEvents(dependencies, platform = globalThis) {
+  const foregroundFocus = createForegroundFocus(dependencies, platform);
   // Initialize fields in the explicit startup phases below; factories are inert.
   const feature = {
     controlClickPending: undefined,
@@ -33,7 +37,18 @@ export function createEvents(dependencies, platform = globalThis) {
       dependencies.connectivity().checkForBrowserWake();
       void dependencies.clipboard().refreshClipboardBridgeAndPrompt();
       dependencies.terminal().updateTerminalFocus();
+      foregroundFocus.request();
     });
+    platform.window.addEventListener("blur", foregroundFocus.cancel);
+    platform.window.addEventListener("pagehide", foregroundFocus.cancel);
+    platform.document.addEventListener("visibilitychange", () => {
+      if (platform.document.hidden) foregroundFocus.cancel();
+      else foregroundFocus.request();
+    });
+    platform.window.addEventListener("pageshow", event => { if (event.persisted) foregroundFocus.request(); });
+    // A user's next choice always beats pending foreground work.
+    platform.document.addEventListener("pointerdown", foregroundFocus.cancel, { capture: true });
+    platform.document.addEventListener("keydown", foregroundFocus.cancel, { capture: true });
   }
 
   function registerDesktopEvents() {
@@ -130,6 +145,8 @@ export function createEvents(dependencies, platform = globalThis) {
   }
 
   Object.assign(feature, {
+    restoreForegroundFocus: foregroundFocus.request,
+    cancelForegroundFocus: foregroundFocus.cancel,
     registerFocus,
     registerDesktopEvents,
   });

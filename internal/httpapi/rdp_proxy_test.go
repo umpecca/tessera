@@ -428,8 +428,9 @@ type fakeRDPServer struct {
 	confirm     []byte
 	requests    chan []byte
 
-	mu       sync.Mutex
-	received []byte // what the client sent after TLS
+	mu             sync.Mutex
+	received       []byte // what the client sent after TLS
+	tlsCertificate tls.Certificate
 }
 
 func (s *fakeRDPServer) receivedOverTLS() []byte {
@@ -466,7 +467,13 @@ func startFakeRDPServer(t *testing.T, confirm []byte) *fakeRDPServer {
 	}
 	t.Cleanup(func() { listener.Close() })
 	server := &fakeRDPServer{address: listener.Addr().String(), certificate: certificate, confirm: confirm, requests: make(chan []byte, 8)}
-	config := &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	server.tlsCertificate = tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	config := &tls.Config{GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		certificate := server.tlsCertificate
+		return &certificate, nil
+	}}
 	go func() {
 		for {
 			conn, err := listener.Accept()

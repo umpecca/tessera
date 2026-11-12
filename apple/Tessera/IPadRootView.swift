@@ -433,6 +433,7 @@ struct IPadHelpView: View {
                 Section("iPad windows & input") {
                     Text("Distraction-Free Full Screen is enabled by default in the app menu and App Diagnostics → Display. It hides the status bar and requests auto-hiding of the Home indicator only while the workspace fills the display and is active. Windowed multitasking keeps its normal system controls. You can turn it off; this native preference does not change Home Screen web apps.")
                     Text("The workspace stays in tablet/desktop layout in Split View and Stage Manager. The native menu is always reachable by touch. Rotate or resize normally; the app does not reload the workspace or focus a text field. A floating or hardware keyboard does not force the phone layout.")
+                    Text("Returning to the app restores keyboard focus to the foreground workspace window when no dialog, native sheet or other text field owns focus. Update the app and server for this behavior. Software-keyboard display still follows iPadOS rules; Phone Scroll and Select modes never switch to typing automatically.")
                     Text("Use a trackpad's secondary click for terminal menus. Native controls support VoiceOver and Dynamic Type; workspace text is independently configured in Settings → Font. File and photo imports open a review/save dialog and never execute a shell command automatically.")
                 }
                 Section("Install & update") {

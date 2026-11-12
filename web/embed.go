@@ -15,6 +15,7 @@ import "embed"
 //go:embed settings-dialog.mjs
 //go:embed interface-font.mjs
 //go:embed native-app.mjs
+//go:embed foreground-focus.mjs
 //go:embed terminal-connections.mjs
 //go:embed rdp-controller.mjs
 //go:embed desktop-panes.mjs desktop-geometry.mjs desktop-interactions.mjs
@@ -23,6 +24,7 @@ import "embed"
 //go:embed terminal-view.mjs terminal-input-bridge.mjs phone-workspace.mjs
 //go:embed workspace-menus.mjs deskbar.mjs sessions-dialog.mjs settings-view.mjs
 //go:embed local-https-dialog.mjs help-dialog.mjs command-palette.mjs
+//go:embed command-palette-icons.mjs
 //go:embed window-list-view.mjs session-list-view.mjs window-switcher-view.mjs
 //go:embed server-connectivity.mjs clipboard-access.mjs directory-dialog.mjs application-events.mjs
 //go:embed rdp-pane.mjs rdp-avc444.mjs rdp-h264.mjs rdp-h264-sps.mjs rdp-kept.mjs rdp-stats.mjs rdp-viewer.mjs rdp-viewer-wire.mjs

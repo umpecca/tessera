@@ -1,7 +1,19 @@
 import { renderSignedInDevices } from "./sign-in.mjs";
 import { renderSignInSettings } from "./sign-in-settings.mjs";
 
-// Modal focus, disclosures and diagnostics lifetime are independent of the
+export const settingsCategories = Object.freeze([
+  { id: "appearance", label: "Appearance", icon: "◐", detail: "Themes, window styling and workspace background." },
+  { id: "fonts", label: "Fonts", icon: "Aa", detail: "Font family and text sizes for your workspace." },
+  { id: "terminal", label: "Terminal", icon: ">_", detail: "Terminal appearance, typing and shell behavior." },
+  { id: "input", label: "Input & Shortcuts", icon: "⌘", detail: "Scrolling sensitivity and launch shortcuts." },
+  { id: "clipboard", label: "Clipboard", icon: "▣", detail: "Copy, paste and browser clipboard access." },
+  { id: "performance", label: "Performance", icon: "↗", detail: "Choose the rendering profile for this browser." },
+  { id: "security", label: "Sign-in & Devices", icon: "●", detail: "Host sign-in, secure connections and remembered devices." },
+  { id: "advanced", label: "Advanced", icon: "⚙", detail: "Technical terminal and transport options." },
+  { id: "diagnostics", label: "Diagnostics", icon: "+", detail: "Inspect browser support, rendering costs and keyboard input." },
+].map(category => Object.freeze(category)));
+
+// Modal focus, category navigation and diagnostics lifetime are independent of the
 // preference effects. Row builders and actions are supplied by the application.
 export class SettingsDialog {
   constructor({ modal, state, rows, actions, hideDeskbar, otherOverlay, focusWorkspace, metrics,
@@ -11,6 +23,9 @@ export class SettingsDialog {
       metrics, recovery, document, window, renderSignIn, renderDevices });
     this.returnFocus = null;
     this.diagnosticsTimer = null;
+    this.category = "appearance";
+    this.renderedCategory = null;
+    this.pageScroll = new Map();
   }
 
   ownsFocus() {
@@ -44,8 +59,9 @@ export class SettingsDialog {
   open(options = {}) {
     if (this.modal.hidden) this.returnFocus = this.document.activeElement;
     this.hideDeskbar();
-    this.render();
+    if (options.clipboard) this.category = "clipboard";
     this.modal.hidden = false;
+    this.render();
     this.window.requestAnimationFrame(() => {
       if (!this.ownsFocus()) return;
       const row = options.clipboard ? this.modal.querySelector("#settings-clipboard") : null;
@@ -65,7 +81,7 @@ export class SettingsDialog {
   }
 
   diagnosticsOpen() {
-    return !this.modal.hidden && this.modal.querySelector("#settings-diagnostics")?.open === true;
+    return !this.modal.hidden && this.renderedCategory === "diagnostics";
   }
 
   close() {
@@ -74,6 +90,8 @@ export class SettingsDialog {
     this.clearDiagnostics();
     this.modal.hidden = true;
     this.modal.replaceChildren();
+    this.renderedCategory = null;
+    this.pageScroll.clear();
     this.metrics(false);
     if (!wasOpen) return;
     this.window.requestAnimationFrame(() => {
@@ -88,20 +106,112 @@ export class SettingsDialog {
   section(titleText, rows) {
     const section = this.document.createElement("section");
     section.className = "settings-section";
-    const title = this.document.createElement("h3");
+    const title = this.document.createElement("h4");
     title.textContent = titleText;
     section.append(title, ...rows);
     return section;
   }
 
+  selectCategory(id, focusNavigation = false) {
+    if (this.modal.hidden || !settingsCategories.some(category => category.id === id) || id === this.category) return;
+    this.category = id;
+    this.render();
+    if (focusNavigation) this.modal.querySelector(`#settings-category-${id}`)?.focus({ preventScroll: true });
+  }
+
+  renderPage(content, state) {
+    const { rows, actions } = this;
+    switch (this.category) {
+    case "fonts":
+      content.appendChild(this.section("Font", [
+        rows.terminalFont(),
+        rows.interfaceFontSize(),
+        rows.font("Terminal default", "Text size for new terminal panes in all sessions; does not change menus.", state.defaultPaneFontSize, next => {
+          actions.defaultPaneFontSize(next); this.render();
+        }), rows.currentPaneFont(),
+      ]));
+      break;
+    case "appearance":
+      content.appendChild(this.section("Theme", [
+        rows.theme("Default", `Used for new windows in all of this user's sessions, ${state.scope}.`, state.defaultTheme, actions.defaultTheme),
+        rows.theme("Current", `Applied across this user's sessions immediately, ${state.scope}.`, state.themeID, actions.theme),
+        rows.oledBorder(),
+        rows.toggle("Wobbly windows", "Gentle elasticity when dragging Operator windows. Applies to this browser; reduced motion and Older Mac mode disable the effect.", state.windowWobbleEnabled, actions.windowWobble),
+      ]));
+      content.appendChild(this.section("Background", [rows.background(), rows.backgroundMode()]));
+      break;
+    case "terminal":
+      content.appendChild(this.section("Terminal", [
+        rows.rowSpacing(), rows.terminalColor(), rows.prediction(),
+        rows.toggle("Shell integration", "Starts zsh and bash set up to mark their prompts and commands and report their directory, for prompt jumps, Copy Command Output, the window's directory and command finished notices. Applies to new terminals.", state.terminalShellIntegration, actions.shellIntegration),
+        rows.toggle("Command finished notices", "A notice when a command that ran for 5 seconds or more finishes in a window you aren't looking at. Needs the shell's prompt marks (Shell integration). Saved in this browser.", state.commandNoticesEnabled, actions.commandNotices),
+        ...("Notification" in this.window ? [rows.notifications()] : []),
+      ]));
+      break;
+    case "input": {
+      content.appendChild(this.section("Scroll wheel", [
+        rows.wheel("Terminal", "Controls terminal scrollback and wheel input in full-screen terminal apps.", state.terminalWheelSensitivity, actions.terminalWheel),
+        rows.wheel("Remote desktop", "Wheel and two-finger scrolling in RDP windows. Lower it if a scroll moves too far. Applies to this browser.", state.rdpWheelSpeed, actions.rdpWheel, state.rdpWheelSpeedOptions),
+      ]));
+      const shortcuts = this.document.createElement("button");
+      shortcuts.type = "button"; shortcuts.className = "settings-background-button"; shortcuts.textContent = "Manage shortcuts...";
+      shortcuts.addEventListener("click", actions.shortcuts);
+      content.appendChild(this.section("Shortcuts", [shortcuts]));
+      break;
+    }
+    case "clipboard":
+      content.appendChild(this.section("Clipboard", [rows.clipboard()]));
+      break;
+    case "performance":
+      content.appendChild(this.section("Performance", [rows.performance()]));
+      break;
+    case "security": {
+      const signIn = this.section("Sign-in", []);
+      content.appendChild(signIn);
+      void this.renderSignIn(signIn, { recovery: this.recovery });
+      if (state.authMode !== "off") {
+        const devices = this.section("Signed-in devices", []);
+        content.appendChild(devices);
+        void this.renderDevices(devices);
+      }
+      break;
+    }
+    case "advanced":
+      content.append(
+        this.section("Terminal", [rows.term()]),
+        this.section("Performance", [
+          rows.renderer(),
+          rows.toggle("Paint coalescing", "While terminal output is streaming, wait up to one frame for a 3 ms pause before painting so animation frames split across many writes are not drawn in pieces. Applies to this browser only.", state.terminalPaintCoalescing, actions.paintCoalescing),
+          rows.toggle("Server output coalescing", "Ask the server to join terminal output that arrives within 2 ms (holding at most 8 ms) into one WebSocket message. Applies to this browser's connections only.", state.terminalOutputCoalescing, actions.outputCoalescing),
+          rows.backlog(),
+        ]),
+      );
+      break;
+    case "diagnostics": {
+      const diagnostics = this.document.createElement("div");
+      diagnostics.id = "settings-diagnostics";
+      diagnostics.className = "settings-diagnostics-page";
+      content.appendChild(diagnostics);
+      diagnostics.append(rows.compatibility(), rows.keyReadout());
+      break;
+    }
+    }
+  }
+
   render() {
-    const { modal, document, rows, actions } = this;
+    // Late preference callbacks or stale controls must not remount a closed
+    // Diagnostics page and restart its timer/metrics behind the hidden modal.
+    if (this.modal.hidden) return;
+    const { modal, document } = this;
     const state = this.state();
-    const scrollTop = modal.querySelector(".settings-content")?.scrollTop || 0;
-    const advancedOpen = modal.querySelector("#settings-advanced")?.open === true;
-    const diagnosticsOpen = modal.querySelector("#settings-diagnostics")?.open === true;
+    const previous = modal.querySelector(".settings-content");
+    if (previous && this.renderedCategory) this.pageScroll.set(this.renderedCategory, previous.scrollTop);
     const focused = modal.contains(document.activeElement) ? document.activeElement : null;
     this.clearDiagnostics();
+    const category = settingsCategories.find(category => category.id === this.category) || settingsCategories[0];
+    this.category = category.id;
+    this.renderedCategory = category.id;
+    this.metrics(this.category === "diagnostics");
     modal.replaceChildren();
     const panel = document.createElement("section");
     panel.className = "settings-panel settings-main-panel";
@@ -113,85 +223,69 @@ export class SettingsDialog {
     const title = document.createElement("h2");
     title.id = "settings-title"; title.textContent = "Settings";
     const close = document.createElement("button");
-    close.type = "button"; close.className = "settings-close"; close.textContent = "X";
+    close.type = "button"; close.className = "settings-close"; close.textContent = "×";
     close.setAttribute("aria-label", "Close settings");
     close.addEventListener("click", () => this.close());
     titleBar.append(title, close);
-    panel.appendChild(titleBar);
-    const content = document.createElement("div");
-    content.className = "settings-content";
-    content.appendChild(this.section("Font", [
-      rows.terminalFont(),
-      rows.interfaceFontSize(),
-      rows.font("Terminal default", "Text size for new terminal panes in all sessions; does not change menus.", state.defaultPaneFontSize, next => {
-        actions.defaultPaneFontSize(next); this.render();
-      }), rows.currentPaneFont(),
-    ]));
-    content.appendChild(this.section("Theme", [
-      rows.theme("Default", `Used for new windows in all of this user's sessions, ${state.scope}.`, state.defaultTheme, actions.defaultTheme),
-      rows.theme("Current", `Applied across this user's sessions immediately, ${state.scope}.`, state.themeID, actions.theme),
-      rows.oledBorder(),
-      rows.toggle("Wobbly windows", "Gentle elasticity when dragging Operator windows. Applies to this browser; reduced motion and Older Mac mode disable the effect.", state.windowWobbleEnabled, actions.windowWobble),
-    ]));
-    content.appendChild(this.section("Terminal", [
-      rows.rowSpacing(), rows.terminalColor(), rows.prediction(),
-      rows.toggle("Shell integration", "Starts zsh and bash set up to mark their prompts and commands and report their directory, for prompt jumps, Copy Command Output, the window's directory and command finished notices. Applies to new terminals.", state.terminalShellIntegration, actions.shellIntegration),
-      rows.toggle("Command finished notices", "A notice when a command that ran for 5 seconds or more finishes in a window you aren't looking at. Needs the shell's prompt marks (Shell integration). Saved in this browser.", state.commandNoticesEnabled, actions.commandNotices),
-      ...("Notification" in this.window ? [rows.notifications()] : []),
-    ]));
-    content.appendChild(this.section("Scroll wheel", [
-      rows.wheel("Terminal", "Controls terminal scrollback and wheel input in full-screen terminal apps.", state.terminalWheelSensitivity, actions.terminalWheel),
-      rows.wheel("Remote desktop", "Wheel and two-finger scrolling in RDP windows. Lower it if a scroll moves too far. Applies to this browser.", state.rdpWheelSpeed, actions.rdpWheel, state.rdpWheelSpeedOptions),
-    ]));
-    const shortcuts = document.createElement("button");
-    shortcuts.type = "button"; shortcuts.textContent = "Manage shortcuts...";
-    shortcuts.addEventListener("click", actions.shortcuts);
-    content.appendChild(this.section("Shortcuts", [shortcuts]));
-    content.appendChild(this.section("Background", [rows.background(), rows.backgroundMode()]));
-    content.appendChild(this.section("Clipboard", [rows.clipboard()]));
-    content.appendChild(this.section("Performance", [rows.performance()]));
-    const signIn = this.section("Sign-in", []);
-    void this.renderSignIn(signIn, { recovery: this.recovery });
-    content.appendChild(signIn);
-    if (state.authMode !== "off") {
-      const devices = this.section("Signed-in devices", []);
-      void this.renderDevices(devices); content.appendChild(devices);
+    const layout = document.createElement("div");
+    layout.className = "settings-layout";
+    const navigation = document.createElement("nav");
+    navigation.className = "settings-sidebar";
+    navigation.setAttribute("aria-label", "Settings categories");
+    const compact = document.createElement("div");
+    compact.className = "settings-category-picker";
+    const compactLabel = document.createElement("label");
+    compactLabel.textContent = "Category"; compactLabel.htmlFor = "settings-category-picker";
+    const picker = document.createElement("select");
+    picker.id = "settings-category-picker";
+    picker.className = "settings-theme-select";
+    picker.setAttribute("aria-label", "Settings category");
+    for (const item of settingsCategories) {
+      const button = document.createElement("button");
+      button.type = "button"; button.id = `settings-category-${item.id}`;
+      button.className = "settings-category-button";
+      button.setAttribute("aria-current", item.id === this.category ? "page" : "false");
+      button.setAttribute("aria-controls", "settings-category-content");
+      button.setAttribute("data-category", item.id);
+      const icon = document.createElement("span");
+      icon.className = "settings-category-icon"; icon.textContent = item.icon;
+      icon.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span"); label.textContent = item.label;
+      button.append(icon, label);
+      button.addEventListener("click", () => this.selectCategory(item.id));
+      button.addEventListener("keydown", event => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        const index = settingsCategories.indexOf(item);
+        let next;
+        if (event.key === "ArrowDown") next = (index + 1) % settingsCategories.length;
+        else if (event.key === "ArrowUp") next = (index + settingsCategories.length - 1) % settingsCategories.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = settingsCategories.length - 1;
+        else return;
+        event.preventDefault();
+        this.selectCategory(settingsCategories[next].id, true);
+      });
+      navigation.appendChild(button);
+      const option = document.createElement("option");
+      option.value = item.id; option.textContent = item.label; option.selected = item.id === this.category;
+      picker.appendChild(option);
     }
-    const advanced = document.createElement("details");
-    advanced.id = "settings-advanced"; advanced.className = "settings-disclosure"; advanced.open = advancedOpen;
-    const advancedSummary = document.createElement("summary");
-    advancedSummary.textContent = "Advanced";
-    const advancedContent = document.createElement("div");
-    advancedContent.className = "settings-disclosure-content";
-    advancedContent.append(
-      this.section("Terminal", [rows.term()]),
-      this.section("Performance", [
-        rows.renderer(),
-        rows.toggle("Paint coalescing", "While terminal output is streaming, wait up to one frame for a 3 ms pause before painting so animation frames split across many writes are not drawn in pieces. Applies to this browser only.", state.terminalPaintCoalescing, actions.paintCoalescing),
-        rows.toggle("Server output coalescing", "Ask the server to join terminal output that arrives within 2 ms (holding at most 8 ms) into one WebSocket message. Applies to this browser's connections only.", state.terminalOutputCoalescing, actions.outputCoalescing),
-        rows.backlog(),
-      ]),
-    );
-    advanced.append(advancedSummary, advancedContent);
-    const diagnostics = document.createElement("details");
-    diagnostics.id = "settings-diagnostics"; diagnostics.className = "settings-disclosure"; diagnostics.open = diagnosticsOpen;
-    const diagnosticsSummary = document.createElement("summary");
-    diagnosticsSummary.textContent = "Diagnostics";
-    const diagnosticsContent = document.createElement("div");
-    diagnosticsContent.className = "settings-disclosure-content";
-    let rendered = null;
-    const update = () => {
-      if (!diagnostics.isConnected || modal.hidden || rendered === diagnostics.open) return;
-      rendered = diagnostics.open;
-      this.clearDiagnostics();
-      this.metrics(diagnostics.open);
-      diagnosticsContent.replaceChildren();
-      if (diagnostics.open) diagnosticsContent.append(rows.compatibility(), rows.keyReadout());
-    };
-    diagnostics.addEventListener("toggle", update);
-    diagnostics.append(diagnosticsSummary, diagnosticsContent);
-    content.append(advanced, diagnostics); panel.appendChild(content); modal.appendChild(panel);
-    update();
+    picker.addEventListener("change", () => this.selectCategory(picker.value));
+    compact.append(compactLabel, picker);
+    const content = document.createElement("div");
+    content.className = "settings-content settings-category-content";
+    content.id = "settings-category-content";
+    content.setAttribute("role", "region");
+    content.setAttribute("aria-labelledby", "settings-category-heading");
+    const header = document.createElement("header");
+    header.className = "settings-page-header";
+    const heading = document.createElement("h3");
+    heading.id = "settings-category-heading"; heading.textContent = category.label;
+    const description = document.createElement("p"); description.textContent = category.detail;
+    header.append(heading, description); content.appendChild(header);
+    layout.append(navigation, compact, content);
+    panel.append(titleBar, layout); modal.appendChild(panel);
+    this.renderPage(content, state);
     if (focused && this.ownsFocus()) {
       const controls = this.controls();
       const replacement = controls.find(control => {
@@ -202,6 +296,6 @@ export class SettingsDialog {
       });
       (replacement || controls[0])?.focus({ preventScroll: true });
     }
-    content.scrollTop = scrollTop;
+    content.scrollTop = this.pageScroll.get(this.category) || 0;
   }
 }

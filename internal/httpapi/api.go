@@ -90,6 +90,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/vnc-proxy/connect", a.vncProxyConnect)
 	mux.HandleFunc("/api/rdp-proxy", a.rdpProxyCreate)
 	mux.HandleFunc("/api/rdp-proxy/certificate", a.rdpProxyCertificate)
+	mux.HandleFunc("/api/rdp-proxy/trust", a.rdpTrustCertificate)
 	mux.HandleFunc("/api/rdp-proxy/connect/", a.rdpProxyConnect)
 	mux.HandleFunc("/", a.staticFiles())
 }

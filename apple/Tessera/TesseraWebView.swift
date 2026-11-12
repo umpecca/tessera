@@ -151,7 +151,7 @@ extension TesseraWebView {
             parent.onLoad()
             #if os(iOS)
             parent.app?.configureRendering()
-            parent.app?.perform("resume")
+            parent.app?.resumeWorkspace(restoringFocus: true)
             #endif
         }
 

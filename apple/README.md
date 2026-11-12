@@ -62,6 +62,14 @@ builds for iPadOS 18+ and macOS 15+.
   best-effort, not a guarantee against OS termination or host history trimming.
 - Narrow iPad windows retain tablet layout unless the workspace explicitly chose
   Phone view. Rotation and resizing do not intentionally focus a text field.
+- On foreground entry or device unlock, the updated app restores keyboard focus
+  to the current visible foreground pane, so a hardware keyboard can continue
+  without another click. Update both app and server for this integration. Native
+  sheets, privacy covers, web dialogs/menus and unrelated text fields take priority;
+  ordinary network reconnects and resizing do not request focus. The app uses
+  public WebKit/UIKit responder APIs, never a synthetic click or keystroke.
+  Phone Scroll/Select/compose modes remain unchanged. Software-keyboard display
+  is controlled by iPadOS and is not guaranteed by restoring DOM focus.
 - Downloads show progress/cancel, then Preview, Share and Save to Files. Files,
   Photos and drops open a web **Import Files to Host** review, never an automatic
   shell command. Imports allow eight files, 16 MiB each and 32 MiB per batch;

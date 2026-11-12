@@ -39,8 +39,20 @@ final class FixtureHTTPServer: @unchecked Sendable {
     document.querySelector('#cookie').textContent='previous-cookie:'+(document.cookie || 'empty');
     document.querySelector('#storage').textContent='previous-storage:'+(localStorage.getItem('token') || 'empty');
     document.cookie='token='+profile+';path=/'; localStorage.setItem('token',profile);
+    let focusRequests=0;
+    if(profile==='Focus'){
+      const input=document.createElement('input'); input.id='workspace-input'; input.setAttribute('aria-label','Workspace input'); document.body.append(input);
+      const status=document.createElement('p'); status.id='focus-status'; status.textContent='focus-requests:0'; document.body.append(status);
+    }
     window.tesseraNativeApp={
-      perform(command,payload){document.querySelector('#command').textContent='command:'+command+(payload.key?':'+payload.key:'');return {ok:true};},
+      perform(command,payload){
+        document.querySelector('#command').textContent='command:'+command+(payload.key?':'+payload.key:'');
+        if(profile==='Focus'){
+          if(command==='suspend')document.activeElement?.blur();
+          if(command==='resume'&&payload.restoreFocus===true){document.querySelector('#workspace-input').focus();document.querySelector('#focus-status').textContent='focus-requests:'+(++focusRequests);}
+        }
+        return {ok:true};
+      },
       measureRefreshRate(duration){return new Promise(resolve=>{let first=null,frames=0;function sample(t){if(first===null)first=t;else frames++;if(t-first>=duration)resolve({fps:frames*1000/(t-first)});else requestAnimationFrame(sample)}requestAnimationFrame(sample)});}
     };
     </script></body></html>
@@ -189,6 +201,33 @@ final class IPadAppUITests: XCTestCase {
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["tessera-app-menu"].waitForExistence(timeout: 15))
         XCTAssertFalse(statusBar.exists, "Hidden preference survives relaunch")
+        app.terminate()
+    }
+
+    func testForegroundRequestsWorkspaceFocusButNotBehindNativeSheets() throws {
+        let server = try FixtureHTTPServer()
+        let app = XCUIApplication()
+        app.launchArguments = ["--tessera-ui-tests"]
+        app.launch(); connect(app, server: server, profile: "Focus")
+        let input = app.webViews.textFields["Workspace input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        let status = app.webViews.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "focus-requests:")).firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        let load = app.webViews.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "page-load:")).firstMatch.label
+        let before = status.label
+        XCUIDevice.shared.press(.home); app.activate()
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", before), object: status)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 10), .completed)
+        app.typeText("foreground")
+        XCTAssertEqual(input.value as? String, "foreground", "Typing after return must not require a field tap")
+        XCTAssertEqual(app.webViews.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "page-load:")).firstMatch.label, load)
+        let focused = status.label
+        menu(app, "Saved Servers…")
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(app.navigationBars["Saved Servers"].waitForExistence(timeout: 10))
+        app.buttons["Done"].tap()
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertEqual(status.label, focused, "Native sheets must not request workspace text focus")
         app.terminate()
     }
 

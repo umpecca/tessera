@@ -45,6 +45,24 @@ func TestAppModuleImportsAreEmbedded(t *testing.T) {
 	}
 }
 
+func TestAdditionalApplicationFontsAreEmbedded(t *testing.T) {
+	for _, font := range []struct {
+		stem, extension, license string
+	}{
+		{"Hack", ".woff2", "Hack-LICENSE.txt"},
+		{"CascadiaCode", ".woff2", "CascadiaCode-OFL.txt"},
+		{"Iosevka", ".woff2", "Iosevka-OFL.txt"},
+		{"VictorMono", ".woff2", "VictorMono-OFL.txt"},
+		{"Inconsolata", ".ttf", "Inconsolata-OFL.txt"},
+	} {
+		for _, name := range []string{font.stem + "-Regular" + font.extension, font.stem + "-Bold" + font.extension, font.license} {
+			if info, err := fs.Stat(Files, "assets/"+name); err != nil || info.Size() == 0 {
+				t.Errorf("missing or empty embedded font asset %s: %v", name, err)
+			}
+		}
+	}
+}
+
 func TestWebAppIconAssets(t *testing.T) {
 	expectedSizes := map[string]int{
 		"assets/tessera-app-icon-180.png":          180,

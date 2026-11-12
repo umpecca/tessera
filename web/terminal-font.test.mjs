@@ -55,6 +55,11 @@ test("waits for regular, bold, and deterministic symbol fallback faces", async (
 });
 
 for (const [id, label, family] of [
+  ["hack", "Hack", "Hack"],
+  ["cascadia-code", "Cascadia Code", "Cascadia Code"],
+  ["iosevka", "Iosevka", "Iosevka"],
+  ["victor-mono", "Victor Mono", "Victor Mono"],
+  ["inconsolata", "Inconsolata", "Inconsolata"],
   ["spleen", "Spleen", "Spleen"],
   ["pixel-operator-mono", "Pixel Operator Mono", "Pixel Operator Mono"],
   ["scientifica", "scientifica", "scientifica"],

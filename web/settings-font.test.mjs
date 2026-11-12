@@ -26,12 +26,13 @@ test("Settings offers every application font and explains that the choice applie
   assert.deepEqual(select.children.map(option => [option.value, option.textContent]),
     Object.entries(terminalFonts).map(([id, font]) => [id, font.label]));
   assert.deepEqual(select.children.filter(option => option.selected).map(option => option.value), ["cozette"]);
-  for (const id of ["spleen", "pixel-operator-mono", "scientifica", "cozette"]) {
+  const ids = ["spleen", "pixel-operator-mono", "scientifica", "cozette", "hack", "cascadia-code", "iosevka", "victor-mono", "inconsolata"];
+  for (const id of ids) {
     assert.ok(select.children.some(option => option.value === id), `${id} is missing from Settings`);
     select.value = id;
     select.dispatchEvent(new Event("change"));
   }
-  assert.deepEqual(changed, ["spleen", "pixel-operator-mono", "scientifica", "cozette"]);
+  assert.deepEqual(changed, ids);
 });
 
 function fontFixture(fontSet = { load: async () => [] }) {
@@ -67,6 +68,20 @@ test("font choices update the shared interface family immediately and open termi
   assert.deepEqual(f.fits, [rect]);
   assert.equal(rect.fontSize, 16, "choosing a family must not change pane text size");
 });
+
+for (const id of ["hack", "cascadia-code", "iosevka", "victor-mono", "inconsolata"]) {
+  test(`${id} uses the existing interface, terminal-refit and saved-preference path`, async () => {
+    const f = fontFixture();
+    const rect = f.addTerminal();
+    await f.preferences.setTerminalFont(id);
+    assert.equal(f.preferences.terminalFont, id);
+    assert.equal(f.properties.get("--tessera-font"), terminalFontFamily(id));
+    assert.deepEqual(f.changes, [[terminalPrimaryFontFamily(id), terminalFontFamily(id)]]);
+    assert.deepEqual(f.fits, [rect]);
+    assert.equal(f.saves.length, 1);
+    assert.equal(rect.fontSize, 16);
+  });
+}
 
 test("font changes load interface faces with no terminals and normalize invalid saved choices", async () => {
   const loaded = [];

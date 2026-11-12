@@ -58,7 +58,7 @@ export function rdpStatsLines(previous, current, elapsedMs, frames, title) {
   const mainMs = delta("pushMs") + delta("drawMs") + delta("imageMs");
   lines.push(
     `pictures ${Math.round(pictures / seconds)}/s · ${rate(delta("bytes"), seconds)}${current.fullColor ? " · 4:4:4" : ""}`,
-    `decode ${ms(per("decodeMs", decoded))} ms · max ${ms(current.decodeMaxMs)} · queue ${current.decodeQueue} · waiting ${current.waiting}`,
+    `decode ${ms(per("decodeMs", decoded))} ms · max ${ms(current.decodeMaxMs)} · queue ${current.decodeQueue} · waiting ${current.waiting} · compositing ${current.compositing ?? 0}${current.backpressured ? " · behind" : ""}`,
     `push ${ms(per("pushMs", pictures))} ms · draw ${ms(per("drawMs", presented))} ms${delta("readMs") > 0 ? ` · read ${ms(per("readMs", presented))} ms` : ""}`,
     `shown after ${ms(per("latencyMs", presented))} ms · max ${ms(current.latencyMaxMs)}`,
     `page ${main} · pictures ${ms((100 * mainMs) / elapsedMs)}%`,

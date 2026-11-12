@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SettingsDialog } from "./settings-dialog.mjs";
+import { SettingsDialog, settingsCategories } from "./settings-dialog.mjs";
 
-// Small DOM model for the Settings lifecycle. Real tab order and disclosure
+// Small DOM model for the Settings lifecycle. Real tab order and responsive
 // visibility are also checked in a browser; no DOM dependency is needed here.
-function fixture() {
+function fixture({ authMode = "off" } = {}) {
   const document = {};
   class Element extends EventTarget {
     constructor(tag) {
@@ -78,9 +78,9 @@ function fixture() {
   const deskbarButton = new Element("button");
   document.body.append(settingsModal, deskbarButton);
   const frames = [], metrics = [], intervals = new Set();
-  let diagnosticsCreated = 0, paneFocusCount = 0;
+  let diagnosticsCreated = 0, paneFocusCount = 0, signInCreated = 0, devicesCreated = 0;
   const context = {
-    authMode: "off", document, settingsModal, deskbarButton, signInRecovery: {}, renderSignInSettings: async () => {},
+    authMode, document, settingsModal, deskbarButton, signInRecovery: {}, renderSignInSettings: async () => {},
     commandPalette: { hidden: true }, windowList: { hidden: true }, sessionList: { hidden: true },
     compatibilityUpdateTimer: null, settingsReturnFocus: null,
     defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,
@@ -127,7 +127,7 @@ function fixture() {
     renderSettingsWheelRow: label => row(`${label} wheel speed`),
     renderSettingsBackgroundRow: () => row("Set background", "button"),
     renderSettingsBackgroundModeRow: () => row("Background display"),
-    renderSettingsClipboardRow: () => { const control = row("Check clipboard", "button"); control.id = "settings-clipboard"; return control; },
+    renderSettingsClipboardRow: () => { const section = new Element("div"); section.id = "settings-clipboard"; section.append(row("Check clipboard", "button")); return section; },
     renderSettingsPerformanceRow: () => row("Performance profile"),
     renderSettingsTerminalTERMRow: () => row("Terminal TERM value", "input"),
     renderSettingsExperimentalRendererRow: () => row("Terminal renderer"),
@@ -154,7 +154,8 @@ function fixture() {
     actions: { shortcuts() {} }, hideDeskbar() {},
     otherOverlay: () => !context.commandPalette.hidden || !context.windowList.hidden || !context.sessionList.hidden,
     focusWorkspace: () => context.focusPane(), metrics: enabled => metrics.push(enabled),
-    renderSignIn() {}, renderDevices() {},
+    renderSignIn(section) { signInCreated++; section.append(row("Sign-in settings")); },
+    renderDevices(section) { devicesCreated++; section.append(row("Signed-in devices")); },
   });
   Object.assign(context, {
     openSettingsModal: options => dialog.open(options), hideSettingsModal: () => dialog.close(),
@@ -166,7 +167,11 @@ function fixture() {
     context, document, settingsModal, deskbarButton, metrics, intervals,
     flush: () => { for (const callback of frames.splice(0)) callback(); },
     row,
+    selectCategory: id => dialog.selectCategory(id),
+    get category() { return dialog.category; },
     get diagnosticsCreated() { return diagnosticsCreated; },
+    get signInCreated() { return signInCreated; },
+    get devicesCreated() { return devicesCreated; },
     get paneFocusCount() { return paneFocusCount; },
   };
 }
@@ -181,55 +186,51 @@ function key(context, name, options = {}) {
   return event;
 }
 
-test("Settings leads with everyday preferences and hides technical controls by default", () => {
+test("Settings has a category sidebar and only renders the selected page", () => {
   const f = fixture();
   f.context.openSettingsModal();
   f.flush();
   const content = f.settingsModal.querySelector(".settings-content");
-  assert.deepEqual(content.children.map(child => child.children[0].textContent), [
-    "Font", "Theme", "Terminal", "Scroll wheel", "Shortcuts", "Background", "Clipboard", "Performance", "Sign-in", "Advanced", "Diagnostics",
-  ]);
-  const advanced = f.settingsModal.querySelector("#settings-advanced");
-  assert.equal(advanced.open, false);
+  assert.equal(f.settingsModal.querySelector("#settings-category-heading").textContent, "Appearance");
+  assert.deepEqual(content.children.slice(1).map(child => child.children[0].textContent), ["Theme", "Background"]);
+  const buttons = f.settingsModal.querySelector(".settings-sidebar").children;
+  assert.deepEqual(buttons.map(button => button.id), settingsCategories.map(category => `settings-category-${category.id}`));
+  assert.deepEqual(buttons.filter(button => button.getAttribute("aria-current") === "page").map(button => button.id), ["settings-category-appearance"]);
+  assert.equal(f.signInCreated, 0, "inactive pages must not start sign-in requests");
+  assert.equal(f.diagnosticsCreated, 0);
+  assert.equal(f.intervals.size, 0);
+  assert.equal(f.document.activeElement.getAttribute("aria-label"), "Close settings");
+  f.selectCategory("fonts");
   const labels = f.context.settingsFocusControls().map(control => control.getAttribute("aria-label"));
   assert.ok(labels.includes("Application font"));
   assert.ok(labels.includes("Interface font size"));
   assert.ok(labels.includes("Terminal default font size"));
-  assert.equal(content.children[0].children[1].getAttribute("aria-label"), "Application font");
-  assert.ok(labels.includes("Terminal row spacing"));
-  assert.ok(labels.includes("Shell integration"));
-  assert.ok(labels.includes("Command finished notices"));
   for (const label of ["Terminal renderer", "Paint coalescing", "Server output coalescing", "Terminal output backlog", "Terminal TERM value"]) {
     assert.ok(!labels.includes(label), label);
-    assert.ok(advanced.querySelectorAll("select, input").some(control => control.getAttribute("aria-label") === label));
   }
-  assert.equal(f.diagnosticsCreated, 0);
-  assert.equal(f.intervals.size, 0);
-  assert.equal(f.document.activeElement.getAttribute("aria-label"), "Close settings");
 });
 
-test("Tab and Shift+Tab wrap, ignore disabled and collapsed controls, and preserve normal movement", () => {
+test("Tab and Shift+Tab wrap, ignore disabled and inactive controls, and preserve normal movement", () => {
   const f = fixture();
   f.context.openSettingsModal();
   f.flush();
   const first = f.document.activeElement;
-  const diagnostics = f.settingsModal.querySelector("#settings-diagnostics");
-  const last = diagnostics.children[0];
+  const last = f.context.settingsFocusControls().at(-1);
   assert.equal(key(f.context, "Tab", { shiftKey: true }).defaultPrevented, true);
   assert.equal(f.document.activeElement, last);
   assert.equal(key(f.context, "Tab").defaultPrevented, true);
   assert.equal(f.document.activeElement, first);
   assert.equal(key(f.context, "Tab").defaultPrevented, false);
-  const advanced = f.settingsModal.querySelector("#settings-advanced");
-  advanced.open = true;
-  const input = advanced.querySelector("input");
+  f.selectCategory("advanced");
+  const input = f.settingsModal.querySelector("input");
   input.focus();
   assert.equal(key(f.context, "ArrowLeft").defaultPrevented, false);
   assert.equal(key(f.context, "Tab").defaultPrevented, false);
   input.disabled = true;
   assert.ok(!f.context.settingsFocusControls().includes(input));
+  f.context.settingsFocusControls().at(-1).focus();
   assert.equal(key(f.context, "Tab").defaultPrevented, true);
-  assert.equal(f.document.activeElement, first);
+  assert.equal(f.document.activeElement.getAttribute("aria-label"), "Close settings");
 });
 
 test("unexpected background focus returns to Settings; other modals retain their keyboard input", () => {
@@ -283,53 +284,118 @@ test("closing falls back to the active pane when the invoking control is hidden"
   assert.equal(f.paneFocusCount, 1);
 });
 
-test("redraw preserves focused preference, scroll, and disclosures; reopening resets them", () => {
+test("redraw preserves the page, focused preference and per-page scroll; reopening remembers the category", () => {
   const f = fixture();
   f.context.openSettingsModal();
   f.flush();
-  f.settingsModal.querySelector("#settings-advanced").open = true;
+  f.selectCategory("fonts");
   const controls = f.context.settingsFocusControls();
   controls.find(control => control.getAttribute("aria-label") === "Terminal default font size").focus();
   f.settingsModal.querySelector(".settings-content").scrollTop = 175;
   f.context.renderSettingsModal();
   assert.equal(f.document.activeElement.getAttribute("aria-label"), "Terminal default font size");
   assert.equal(f.settingsModal.querySelector(".settings-content").scrollTop, 175);
-  assert.equal(f.settingsModal.querySelector("#settings-advanced").open, true);
+  assert.equal(f.category, "fonts");
+  f.selectCategory("terminal");
+  assert.equal(f.settingsModal.querySelector(".settings-content").scrollTop, 0);
+  f.settingsModal.querySelector(".settings-content").scrollTop = 80;
+  f.selectCategory("fonts");
+  assert.equal(f.settingsModal.querySelector(".settings-content").scrollTop, 175);
   f.context.hideSettingsModal();
   f.context.openSettingsModal();
   f.flush();
-  assert.equal(f.settingsModal.querySelector("#settings-advanced").open, false);
+  assert.equal(f.category, "fonts");
   assert.equal(f.settingsModal.querySelector(".settings-content").scrollTop, 0);
   assert.equal(f.settingsModal.hidden, false);
 });
 
-test("Diagnostics starts checks and metrics on disclosure, then cleans up on collapse and close", () => {
+test("Diagnostics starts checks on its page, then cleans up on navigation and close", () => {
   const f = fixture();
   f.context.openSettingsModal();
   f.flush();
-  let diagnostics = f.settingsModal.querySelector("#settings-diagnostics");
-  diagnostics.open = true;
-  diagnostics.dispatchEvent(new Event("toggle"));
+  f.selectCategory("diagnostics");
   assert.equal(f.context.settingsDiagnosticsOpen(), true);
   assert.equal(f.diagnosticsCreated, 1);
   assert.equal(f.metrics.at(-1), true);
   assert.equal(f.intervals.size, 1);
   f.context.renderSettingsModal();
   assert.equal(f.intervals.size, 1);
-  diagnostics = f.settingsModal.querySelector("#settings-diagnostics");
   const createdAfterRedraw = f.diagnosticsCreated;
-  diagnostics.dispatchEvent(new Event("toggle"));
+  f.selectCategory("diagnostics");
   assert.equal(f.diagnosticsCreated, createdAfterRedraw);
-  diagnostics.open = false;
-  diagnostics.dispatchEvent(new Event("toggle"));
+  f.selectCategory("fonts");
   assert.equal(f.context.settingsDiagnosticsOpen(), false);
   assert.equal(f.metrics.at(-1), false);
   assert.equal(f.intervals.size, 0);
-  diagnostics.open = true;
-  diagnostics.dispatchEvent(new Event("toggle"));
+  f.selectCategory("diagnostics");
   f.context.hideSettingsModal();
   assert.equal(f.metrics.at(-1), false);
   assert.equal(f.intervals.size, 0);
-  diagnostics.dispatchEvent(new Event("toggle"));
   assert.equal(f.intervals.size, 0);
+});
+
+test("every existing control remains reachable in its category", () => {
+  const f = fixture({ authMode: "file" });
+  f.context.openSettingsModal(); f.flush();
+  const pages = {
+    appearance: ["Default theme", "Current theme", "OLED border", "Wobbly windows", "Set background", "Background display"],
+    fonts: ["Application font", "Interface font size", "Terminal default font size", "Current font size"],
+    terminal: ["Terminal row spacing", "Terminal colors", "Typing prediction", "Shell integration", "Command finished notices"],
+    input: ["Terminal wheel speed", "Remote desktop wheel speed"],
+    clipboard: ["Check clipboard"], performance: ["Performance profile"],
+    security: ["Sign-in settings", "Signed-in devices"],
+    advanced: ["Terminal TERM value", "Terminal renderer", "Paint coalescing", "Server output coalescing", "Terminal output backlog"],
+    diagnostics: ["Copy diagnostics", "Key test"],
+  };
+  for (const [id, expected] of Object.entries(pages)) {
+    f.selectCategory(id);
+    const labels = f.context.settingsFocusControls().map(control => control.getAttribute("aria-label"));
+    for (const label of expected) assert.ok(labels.includes(label), `${id}: ${label}`);
+  }
+  assert.equal(f.signInCreated, 1);
+  assert.equal(f.devicesCreated, 1);
+});
+
+test("sidebar arrow/Home/End keys navigate categories without capturing input arrows", () => {
+  const f = fixture(); f.context.openSettingsModal(); f.flush();
+  const press = (id, key) => {
+    const button = f.settingsModal.querySelector(`#settings-category-${id}`);
+    button.focus();
+    const event = new Event("keydown", { cancelable: true });
+    Object.assign(event, { key }); button.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true);
+  };
+  press("appearance", "ArrowDown");
+  assert.equal(f.category, "fonts");
+  assert.equal(f.document.activeElement.id, "settings-category-fonts");
+  press("fonts", "End"); assert.equal(f.category, "diagnostics");
+  press("diagnostics", "ArrowDown"); assert.equal(f.category, "appearance");
+  press("appearance", "ArrowUp"); assert.equal(f.category, "diagnostics");
+  press("diagnostics", "Home"); assert.equal(f.category, "appearance");
+});
+
+test("compact navigation and clipboard deep-link select the matching page", () => {
+  const f = fixture(); f.context.openSettingsModal(); f.flush();
+  const picker = f.settingsModal.querySelector("#settings-category-picker");
+  assert.deepEqual(picker.children.map(option => option.value), settingsCategories.map(category => category.id));
+  picker.value = "advanced"; picker.dispatchEvent(new Event("change"));
+  assert.equal(f.category, "advanced");
+  f.context.openSettingsModal({ clipboard: true }); f.flush();
+  assert.equal(f.category, "clipboard");
+  assert.equal(f.document.activeElement.getAttribute("aria-label"), "Check clipboard");
+  assert.equal(f.signInCreated, 0);
+  f.selectCategory("not-a-category"); assert.equal(f.category, "clipboard");
+});
+
+test("late rerenders and stale navigation cannot restart diagnostics after close", () => {
+  const f = fixture(); f.context.openSettingsModal(); f.flush();
+  const staleButton = f.settingsModal.querySelector("#settings-category-diagnostics");
+  f.selectCategory("diagnostics");
+  f.context.hideSettingsModal();
+  f.context.renderSettingsModal();
+  staleButton.dispatchEvent(new Event("click"));
+  assert.equal(f.settingsModal.hidden, true);
+  assert.equal(f.settingsModal.children.length, 0);
+  assert.equal(f.intervals.size, 0);
+  assert.equal(f.metrics.at(-1), false);
 });

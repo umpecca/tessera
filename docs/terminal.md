@@ -41,6 +41,16 @@ respond promptly. Scrolling into history keeps that view while output arrives;
 typing resumes following live output. System reduced-motion preferences disable
 the scroll animation.
 
+Smooth text-only history scrolling reuses a bounded backing viewport when cell
+edges align to physical pixels. Ordinary row crossings repaint boundary bands;
+multi-codepoint graphemes keep same-row reuse but repaint at crossings. The
+bottom clip-edge row is painted directly to preserve font rasterization. Images,
+selection, search/hover decorations and unsupported grids use the existing full
+renderer. Each backing is at most 32 MiB and is released when hidden, disposed,
+or leaving the eligible path. Output and display changes invalidate cached pixels.
+See the [combined terminal/RDP acceptance checklist](performance-acceptance.md)
+for hands-on validation.
+
 Terminal windows follow application titles sent with OSC 0 or OSC 2. The title
 appears in the window tab and window lists and recovers when a terminal view
 reconnects. Apps that do not send titles keep the current name. Manual renaming
@@ -305,9 +315,10 @@ pane's text size. A brief indicator shows the size as a percentage of the
 configured default; `Ctrl+0`/`Cmd+0` restores that default and shows 100%.
 
 Tessera uses the locally bundled JetBrains Mono font by default. Choose
-JetBrains Mono, Fira Code, IBM Plex Mono, Commit Mono, Departure Mono, Spleen,
-Pixel Operator Mono, scientifica or Cozette under
-**Settings → Font**; the per-user choice is persisted separately for phones
+JetBrains Mono, Fira Code, IBM Plex Mono, Commit Mono, Hack, Cascadia Code,
+Iosevka, Victor Mono, Inconsolata, Departure Mono, Spleen, Pixel Operator Mono,
+scientifica or Cozette under
+**Settings → Fonts**; the per-user choice is persisted separately for phones
 and desktops/iPads, and applies immediately throughout Tessera, including
 terminals, window titles, menus, settings and phone controls in every theme.
 Existing text sizes stay unchanged. Embedded websites and remote desktops keep
@@ -316,6 +327,9 @@ the regular and bold faces before creating a terminal so the canvas starts
 with stable character-cell measurements. A bundled Noto Sans Symbols 2 face is
 used only when the selected monospace font lacks a symbol, avoiding platform
 fallback metrics that can overlap terminal cells in legacy Firefox/macOS.
+The five added outline families include real regular and bold faces. Iosevka
+uses its standard narrow design, not the Extended or Term variant. These additions
+do not enable ligature shaping in the terminal's cell-by-cell canvas renderer.
 
 Pixel fonts are sharpest at their native sizes and integer multiples. Spleen
 uses the 8×16 design (start at 16px); Pixel Operator Mono also targets 16px.
@@ -326,7 +340,7 @@ faces; Spleen, Departure Mono and Cozette use synthesized bold. Cozette's upstre
 bold face is wider than its regular face, so Tessera does not use it. Changing
 the font does not change the pane's text size.
 
-Under **Settings → Font**, **Interface** independently scales menus, window
+Under **Settings → Fonts**, **Interface** independently scales menus, window
 titles, settings and phone controls (10–18px, default 12px). **Terminal default**
 sets text size for new terminal panes; **Current terminal** changes only the
 selected terminal. Interface sizing does not change terminal text, the shared
@@ -427,12 +441,15 @@ terminal rendering scale, and Tessera server status. **Copy diagnostics**
 creates a troubleshooting summary without workspace, session, host, or
 clipboard contents.
 
-Settings opens with everyday font, theme, terminal appearance, scrolling, and
-background preferences. **Advanced** holds TERM, renderer experiments, and
-output/paint coalescing. **Advanced** and **Diagnostics** start collapsed;
-live diagnostic checks and rendering measurements run only while Diagnostics
-is expanded. Tab and Shift+Tab stay within visible Settings controls, Escape
-closes the dialog, and closing returns focus to its invoking control or pane.
+Settings has a category sidebar on desktops/iPads and a **Category** picker on
+narrow screens. **Fonts** holds the application family and text sizes;
+**Appearance** holds themes and backgrounds. **Advanced** holds TERM, renderer
+experiments and output/paint coalescing. Live diagnostic checks and rendering
+measurements run only on the **Diagnostics** page and stop when you leave it.
+The selected category is remembered until the page reloads; edits preserve the
+current control and each category's scroll position. Tab and Shift+Tab stay within
+visible Settings controls, Escape closes the dialog, and closing returns focus to
+its invoking control or pane. Arrow keys and Home/End navigate sidebar categories.
 
 New browsers use the **Standard** performance profile, **Experimental** terminal
 renderer, **Paint coalescing On**, and **Server output coalescing Off**. These

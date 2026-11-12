@@ -338,6 +338,7 @@ const events = createEvents({
   menus: () => menus,
   navigation: () => navigation,
   preferences: () => preferences,
+  phone: () => phone,
   rdpView: () => rdpView,
   sessionList: () => sessionList,
   settings: () => settings,
@@ -353,6 +354,7 @@ const nativeApp = createNativeApp({
   preferences: () => preferences, connectivity: () => connectivity, phone: () => phone,
   clipboard: () => clipboard, menus: () => menus, palette: () => palette,
   windows: () => windows, sessionList: () => sessionList, settings: () => settings,
+  events: () => events,
 });
 
 // Preserve startup ordering: preferences/controllers, DOM, event routing, startup.

@@ -36,6 +36,8 @@ type Link interface {
 	// UpgradeTLS upgrades the connection to TLS, verifying the server's
 	// certificate, and returns the server's public key for CredSSP.
 	UpgradeTLS() ([]byte, error)
+	// Event is synchronous. payload is borrowed from the module's memory,
+	// read-only and valid only until Event returns; retained bytes must be copied.
 	Event(kind uint32, payload []byte)
 }
 
@@ -136,8 +138,10 @@ func (e *Engine) event(_ context.Context, m api.Module, kind, ptr, length uint32
 	if l == nil || !ok {
 		return
 	}
-	// The module's memory is reused after the call.
-	l.Event(kind, append([]byte(nil), payload...))
+	// Session/viewer callbacks consume these bytes synchronously. The viewer
+	// creates its owned, framed copy before enqueueing; copying here as well
+	// doubles allocation and memory traffic for every video/bitmap payload.
+	l.Event(kind, payload[:len(payload):len(payload)])
 }
 
 // Instance is one module instance: one RDP client, which keeps the server's
