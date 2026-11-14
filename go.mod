@@ -1,6 +1,6 @@
 module tessera
 
-go 1.26.1
+go 1.27.4
 
 require (
 	github.com/creack/pty v1.1.24

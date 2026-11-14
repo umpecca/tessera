@@ -217,7 +217,7 @@ Primary data flows:
    deleting its persisted workspace.
 ## Technology Used
 
-- **Go 1.26:** executable entry point, HTTP server, lifecycle management,
+- **Go 1.27:** executable entry point, HTTP server, lifecycle management,
   concurrency, shell execution, terminal sessions, and updater.
 - **`net/http`:** API routing and embedded static-file delivery.
 - **SQLite via `modernc.org/sqlite`:** embedded durable state without a separate
