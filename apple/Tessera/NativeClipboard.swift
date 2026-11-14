@@ -40,10 +40,11 @@ final class NativeClipboard: NSObject, WKScriptMessageHandlerWithReply {
         switch operation {
         case "hello":
             // Capability checks must never inspect or prompt for clipboard data.
-            replyHandler(["version": "1.0.0", "native": true, "images": true, "terminal": false], nil)
+            replyHandler(["version": "1.0.0", "native": true, "images": true, "terminal": true], nil)
         case "writeText":
-            guard body["terminal"] as? Bool != true,
-                  let text = body["text"] as? String,
+            // A terminal program's copy (OSC 52) is sent only for the terminal
+            // being looked at; the checks above keep it to the foreground app.
+            guard let text = body["text"] as? String,
                   text.utf8.count <= ClipboardPolicy.maxTextBytes else {
                 replyHandler(nil, "Invalid or disallowed clipboard text write.")
                 return

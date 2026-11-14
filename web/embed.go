@@ -28,7 +28,7 @@ import "embed"
 //go:embed window-list-view.mjs session-list-view.mjs window-switcher-view.mjs
 //go:embed server-connectivity.mjs clipboard-access.mjs directory-dialog.mjs application-events.mjs
 //go:embed rdp-pane.mjs rdp-avc444.mjs rdp-h264.mjs rdp-h264-sps.mjs rdp-kept.mjs rdp-stats.mjs rdp-viewer.mjs rdp-viewer-wire.mjs
-//go:embed window-wobble.mjs screensaver.mjs terminal-touch-scroll.mjs
+//go:embed window-wobble.mjs screensaver.mjs screensaver-polygons.mjs terminal-touch-scroll.mjs
 //go:embed terminal-audio.mjs terminal-files.mjs clipboard-image.mjs save-clipboard.mjs
 //go:embed terminal-audio-stream.mjs terminal-working-directory.mjs terminal-attention.mjs terminal-progress.mjs terminal-kitty-keyboard.mjs terminal-find.mjs
 //go:embed startup.js

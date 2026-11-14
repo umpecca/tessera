@@ -42,6 +42,8 @@ final class IPadAppModel {
     }
     var library: ServerProfiles
     let privacy: IPadPrivacy
+    let certificateConsent = IPadCertificateConsent()
+    @ObservationIgnored private var connectionAttempts: [UUID: IPadConnectionAttempt] = [:]
     var sheet: IPadSheet? { didSet { if sheet != nil { perform("holdSize") } } }
     var failure: ConnectionAdvice?
     var notice: String? { didSet { if notice != nil { perform("holdSize") } } }
@@ -82,6 +84,7 @@ final class IPadAppModel {
         persistProfiles()
         loadFinishedDownloads()
         privacy.onAccessChanged = { [weak self] in self?.privacyAccessChanged() }
+        certificateConsent.onPresent = { [weak self] in self?.perform("holdSize") }
         monitor.pathUpdateHandler = { [weak self] path in
             let connected = path.status == .satisfied
             Task { @MainActor in
@@ -100,7 +103,7 @@ final class IPadAppModel {
 
     var hidesSystemUI: Bool {
         IPadPresentation.hidesSystemUI(enabled: distractionFree, fullScreen: fullScreen, active: recovery.active,
-            workspace: selected != nil && privacy.allowsAccess, presentingNativeUI: sheet != nil || importFiles || importPhotos || notice != nil || privacy.covered)
+            workspace: selected != nil && privacy.allowsAccess, presentingNativeUI: sheet != nil || importFiles || importPhotos || notice != nil || privacy.covered || certificateConsent.presenting)
     }
 
     func updateFullScreen(_ value: Bool) {
@@ -117,16 +120,18 @@ final class IPadAppModel {
 
     func select(_ id: UUID) {
         guard library.profiles.contains(where: { $0.id == id }), selected?.id != id else { sheet = nil; return }
+        cancelConnections()
         suspend()
         library.selectedID = id
         persistProfiles()
         failure = nil; ready = false; sheet = nil
     }
 
-    func saveServer(name: String, address: URL, editing id: UUID?) {
+    func saveServer(name: String, address: URL, editing id: UUID?, certificatePin: ServerCertificatePin? = nil) {
+        cancelConnections()
         let previous = selected
         suspend()
-        library.save(name: name, address: address, editing: id)
+        library.save(name: name, address: address, editing: id, certificatePin: certificatePin)
         persistProfiles()
         failure = nil; sheet = nil
         if selected?.id != previous?.id || selected?.address != previous?.address { ready = false }
@@ -134,12 +139,14 @@ final class IPadAppModel {
     }
 
     func removeServer(_ id: UUID) {
+        cancelConnections()
         if id == selected?.id { suspend(); ready = false; failure = nil }
         library.remove(id)
         persistProfiles()
     }
 
     func reload() {
+        cancelConnections()
         suspend()
         failure = nil; ready = false; reloadCount += 1
     }
@@ -151,6 +158,7 @@ final class IPadAppModel {
     }
 
     func setActive(_ active: Bool, background: Bool = false) {
+        if !active { cancelConnections() }
         let wasActive = recovery.active
         privacy.setActive(active, background: background)
         // System permission sheets can make the scene briefly inactive. Keep
@@ -222,11 +230,45 @@ final class IPadAppModel {
     private func privacyAccessChanged() {
         webView?.isUserInteractionEnabled = privacy.allowsAccess
         if !privacy.allowsAccess {
+            cancelConnections()
             suspend()
         } else if recovery.active {
             if reloadAfterUnlock { reloadAfterUnlock = false; reload() }
             else { resumeWorkspace(restoringFocus: true) }
         }
+    }
+
+    func connectionAttempt(current: @escaping @MainActor () -> Bool) -> IPadConnectionAttempt {
+        let attempt = IPadConnectionAttempt(consent: certificateConsent, current: { [weak self] in
+            guard let self else { return false }
+            return self.recovery.active && self.privacy.allowsAccess && !self.privacy.covered && current()
+        })
+        connectionAttempts[attempt.id] = attempt
+        return attempt
+    }
+
+    func finishConnection(_ attempt: IPadConnectionAttempt) { connectionAttempts.removeValue(forKey: attempt.id) }
+
+    private func cancelConnections() {
+        for attempt in connectionAttempts.values { attempt.cancel() }
+        connectionAttempts.removeAll()
+        certificateConsent.cancel()
+    }
+
+    func rememberCertificate(_ pin: ServerCertificatePin, profileID: UUID) {
+        guard let index = library.profiles.firstIndex(where: { $0.id == profileID }),
+              pin.applies(to: library.profiles[index].address) else { return }
+        library.profiles[index].certificatePin = pin
+        persistProfiles()
+    }
+
+    func forgetCertificate(_ id: UUID) {
+        cancelConnections()
+        library.forgetCertificate(id)
+        persistProfiles()
+        // A fresh, cookie-free preflight on reload must review the certificate
+        // even if WebKit still has a live TLS connection in its network process.
+        if selected?.id == id { reload() }
     }
 
     func sendKey(_ key: String, ctrl: Bool = false, alt: Bool = false) {

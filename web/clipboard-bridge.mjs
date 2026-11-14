@@ -108,7 +108,7 @@ export class NativeClipboardBridge {
     try {
       const response = await this.request("hello");
       this.status = !this.closed && response?.native === true && response?.version === "1.0.0"
-        ? { version: response.version, terminal: false, native: true, images: response.images === true } : null;
+        ? { version: response.version, terminal: response.terminal === true, native: true, images: response.images === true } : null;
     } catch { this.status = null; }
     return this.status;
   }
@@ -150,9 +150,10 @@ export class NativeClipboardBridge {
     } }] : [];
   }
 
+  // terminal marks a write a terminal program asked for (OSC 52); the caller
+  // sends one only for the terminal being looked at.
   async writeText(text, terminal = false) {
-    if (terminal) throw new Error("Terminal-initiated native clipboard writes are disabled.");
-    const response = await this.request("writeText", { text: this.validateText(text) });
+    const response = await this.request("writeText", { text: this.validateText(text), ...(terminal ? { terminal: true } : {}) });
     if (response?.ok !== true) throw new Error("Native clipboard write failed.");
   }
 

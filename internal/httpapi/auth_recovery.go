@@ -11,8 +11,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"tessera/internal/auth"
 )
 
 const (
@@ -132,7 +130,7 @@ func (g *authGate) redeemLink(w http.ResponseWriter, r *http.Request) {
 			g.renderLogin(w, http.StatusUnauthorized, view)
 			return
 		}
-		tag = auth.CredentialTag(account.Hash)
+		tag = g.credentialTag(account)
 	}
 	secret, err := g.createSignIn(r, link.account, tag, false)
 	if err != nil {

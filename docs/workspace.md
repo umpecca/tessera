@@ -61,6 +61,12 @@ Current pane types:
   slowly shifting mosaic, Matrix-style digital rain and a tile clock. Any
   key, click, tap or mouse movement returns to the workspace. It doesn't
   lock anything.
+- Run **Polygon Screensaver** for an ASCII one instead: two four-cornered
+  outlines drift, bounce off the screen's edges and pass through each other,
+  each trailed by fading copies of itself, with `*` where they cross. It is
+  drawn in the terminal font and the default terminal colors (**Settings →
+  Terminal → Colors**), at the default terminal text size, and returns to the
+  workspace the same way. With reduced motion it moves slowly.
 - Cycle active panes with `Ctrl+]` and `Ctrl+[`.
 - Move the active window earlier/later with `Ctrl+Shift+Up`/`Ctrl+Shift+Down`
   (`Cmd+Shift+Up/Down` on macOS). Open **Window List** with `Ctrl+L`/`Cmd+L`

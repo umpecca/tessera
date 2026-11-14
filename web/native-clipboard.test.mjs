@@ -23,7 +23,7 @@ test("native clipboard discovery uses a top-frame WebKit capability, not the use
     return { version: "1.0.0", native: true, images: true, terminal: true };
   });
   assert.ok(f.bridge instanceof NativeClipboardBridge);
-  assert.deepEqual(await f.bridge.check(), { version: "1.0.0", native: true, images: true, terminal: false });
+  assert.deepEqual(await f.bridge.check(), { version: "1.0.0", native: true, images: true, terminal: true });
   f.bridge.dispose();
   f.host.top = {};
   const child = createClipboardBridge(f.host);
@@ -48,7 +48,8 @@ test("native clipboard reads/writes Unicode and empty text and rejects oversized
   text = null;
   await assert.rejects(f.bridge.readText(), /Invalid native clipboard text/);
   await assert.rejects(f.bridge.writeText("🌍".repeat(300000)), /1 MiB/);
-  await assert.rejects(f.bridge.writeText("background", true), /disabled/);
+  await f.bridge.writeText("from vim", true);
+  assert.deepEqual(f.calls.at(-1), { operation: "writeText", text: "from vim", terminal: true });
   f.bridge.dispose();
 });
 
@@ -143,6 +144,63 @@ test("native copy failures report failure without invoking browser fallbacks", a
   assert.equal(await clipboard.writeClipboardText("new copy"), false);
   assert.equal(clipboard.clipboardText, "new copy");
   assert.equal(statuses[0][1], "Copy failed");
+  f.bridge.dispose();
+});
+
+// A bridge that has answered hello, with or without terminal writes (older apps).
+async function checkedNative(terminal, respond = () => ({ ok: true })) {
+  const f = nativeFixture(message => message.operation === "hello"
+    ? { version: "1.0.0", native: true, images: true, terminal } : respond(message));
+  await f.bridge.check();
+  return f;
+}
+
+function terminalWriteFixture(bridge, browserWrites) {
+  const statuses = [];
+  const clipboard = createClipboard({ workspace: () => ({ setWorkspaceStatus: (...args) => statuses.push(args) }) }, {
+    navigator: { clipboard: { writeText: async text => { browserWrites.push(text); } } },
+    window: { setTimeout, clearTimeout },
+  });
+  clipboard.clipboardBridge = bridge;
+  clipboard.terminalClipboardWrites = Promise.resolve();
+  clipboard.copyTextWithHiddenField = () => false;
+  return { clipboard, statuses };
+}
+
+test("a terminal program's copy reaches the iPad clipboard only from the terminal in view", async () => {
+  const f = await checkedNative(true);
+  const browserWrites = [];
+  const { clipboard, statuses } = terminalWriteFixture(f.bridge, browserWrites);
+  await clipboard.applyTerminalClipboardWrite("in view", true);
+  assert.deepEqual(f.calls.at(-1), { operation: "writeText", text: "in view", terminal: true });
+  assert.deepEqual(statuses, []);
+
+  const before = f.calls.length;
+  await clipboard.applyTerminalClipboardWrite("background", false);
+  assert.equal(f.calls.length, before, "a window not in view never reaches the native bridge");
+  assert.deepEqual(browserWrites, [], "nor the browser clipboard");
+  assert.equal(clipboard.clipboardText, "background", "Tessera's own Paste still has it");
+  assert.equal(statuses[0][1], "Clipboard blocked");
+  assert.match(statuses[0][2], /weren't viewing/);
+  f.bridge.dispose();
+});
+
+test("a refused native terminal write reports only its own failure", async () => {
+  const f = await checkedNative(true, () => { throw new Error("App is inactive"); });
+  const { clipboard, statuses } = terminalWriteFixture(f.bridge, []);
+  await clipboard.applyTerminalClipboardWrite("copy", true);
+  assert.deepEqual(statuses.map(status => status[1]), ["Copy failed"]);
+  f.bridge.dispose();
+});
+
+test("an app without native terminal writes keeps the browser fallback for terminal copies", async () => {
+  const f = await checkedNative(false);
+  const browserWrites = [];
+  const { clipboard, statuses } = terminalWriteFixture(f.bridge, browserWrites);
+  await clipboard.applyTerminalClipboardWrite("over https", true);
+  assert.ok(f.calls.every(call => call.operation !== "writeText"));
+  assert.deepEqual(browserWrites, ["over https"]);
+  assert.deepEqual(statuses, []);
   f.bridge.dispose();
 });
 

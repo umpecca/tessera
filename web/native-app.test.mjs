@@ -204,3 +204,24 @@ test("import review bypasses clipboard access and ignores replies from an earlie
   assert.deepEqual(dialog.entries.map(entry => entry.name), ["file.txt"]);
   assert.equal(dialog.title.textContent, "Import Files to Host");
 });
+
+test("only the active, visible terminal of a browser in use counts as in view", () => {
+  const rect = { id: "a" }, other = { id: "b" };
+  let active = rect, unseen = false, inUse = true;
+  const phoneView = { active: false };
+  const terminal = createTerminal({ phone: () => ({ phoneView }), desktop: () => ({ getActivePane: () => active }) });
+  terminal.browserInUse = () => inUse;
+  terminal.paneUnseen = () => unseen;
+  assert.equal(terminal.terminalInView(rect), true);
+  active = other;
+  assert.equal(terminal.terminalInView(rect), false, "an inactive window");
+  phoneView.active = true;
+  assert.equal(terminal.terminalInView(rect), true, "the phone view's open terminal, which paneUnseen checks");
+  phoneView.active = false;
+  active = rect;
+  unseen = true;
+  assert.equal(terminal.terminalInView(rect), false, "minimized, covered or a hidden page");
+  unseen = false;
+  inUse = false;
+  assert.equal(terminal.terminalInView(rect), false, "a suspended app or an unfocused page");
+});

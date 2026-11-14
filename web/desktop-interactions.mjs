@@ -227,7 +227,7 @@ export function createInteractions(dependencies, platform = globalThis) {
     // Dialogs and pickers own keyboard input, including relayed iframe keys.
     if ([dependencies.settings().settingsModal, dependencies.https().localHTTPSModal, dependencies.desktop().renameWindowModal, dependencies.sessionsDialog().sessionsModal, dependencies.sessionsDialog().sessionActionModal,
       dependencies.connectivity().serverUpdateModal, dependencies.connectivity().serverConnectionModal, dependencies.workspace().workspaceConflictModal, dependencies.help().helpModal,
-      dependencies.directory().directoryBrowser, dependencies.navigation().userSelect, dependencies.navigation().shortcutsUI.element, dependencies.preferences().screensaver.element, dependencies.clipboard().saveClipboardDialog.element].some((overlay) => !overlay.hidden)) {
+      dependencies.directory().directoryBrowser, dependencies.navigation().userSelect, dependencies.navigation().shortcutsUI.element, dependencies.preferences().screensaver.element, dependencies.preferences().polygonScreensaver.element, dependencies.clipboard().saveClipboardDialog.element].some((overlay) => !overlay.hidden)) {
       return null;
     }
     const primary = (keys.ctrlKey || keys.metaKey) && !keys.altKey && !keys.shiftKey;

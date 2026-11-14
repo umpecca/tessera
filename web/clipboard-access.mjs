@@ -121,15 +121,20 @@ export function createClipboard(dependencies, platform = globalThis) {
   // Returns whether the text reached the real system clipboard. Tessera's own
   // buffer is updated either way, so pasting back inside Tessera still works
   // when the browser refuses the write.
-  async function writeClipboardText(text, { terminal = false } = {}) {
+  async function writeClipboardText(text, { terminal = false, inView = false } = {}) {
     feature.clipboardText = text;
-    if (feature.clipboardBridge?.kind === "native" && !terminal) {
-      try { await feature.clipboardBridge.writeText(text); return true; }
+    const bridge = feature.clipboardBridge;
+    // An app too old to take terminal writes keeps the browser fallbacks below.
+    const nativeTerminal = bridge?.kind === "native" && bridge.status?.terminal === true;
+    if (bridge?.kind === "native" && (!terminal || (nativeTerminal && inView))) {
+      try { await bridge.writeText(text, terminal); return true; }
       catch (error) {
         dependencies.workspace().setWorkspaceStatus("error", "Copy failed", error.message);
         return false;
       }
     }
+    // A program in a window nobody is looking at doesn't replace the iPad clipboard.
+    if (terminal && nativeTerminal) return false;
     if (feature.clipboardBridge.status && (!terminal || feature.clipboardBridge.status.terminal)) {
       try {
         await feature.clipboardBridge.writeText(text, terminal);
@@ -150,16 +155,22 @@ export function createClipboard(dependencies, platform = globalThis) {
     return feature.copyTextWithHiddenField(text);
   }
 
-  function applyTerminalClipboardWrite(text) {
+  // inView: the terminal was the one being looked at when its program copied.
+  function applyTerminalClipboardWrite(text, inView = false) {
     feature.terminalClipboardWrites = feature.terminalClipboardWrites
       .then(async () => {
-        if (await feature.writeClipboardText(text, { terminal: true })) {
+        if (await feature.writeClipboardText(text, { terminal: true, inView })) {
           return;
         }
+        const nativeTerminal = feature.clipboardBridge?.kind === "native" && feature.clipboardBridge.status?.terminal === true;
+        // A failed native write has already said why.
+        if (nativeTerminal && inView) return;
         dependencies.workspace().setWorkspaceStatus(
           "error",
           "Clipboard blocked",
-          "A Terminal program copied text, but this browser would not write the system clipboard. The text is available to Tessera's own Paste.",
+          nativeTerminal
+            ? "A Terminal program in a window you weren't viewing copied text. It is available to Tessera's own Paste, not the iPad clipboard."
+            : "A Terminal program copied text, but this browser would not write the system clipboard. The text is available to Tessera's own Paste.",
         );
       })
       .catch(() => {});

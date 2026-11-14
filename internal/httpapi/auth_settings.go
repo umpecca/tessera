@@ -53,6 +53,7 @@ type authSettingsView struct {
 	CanMove         bool   `json:"canMoveWorkspaces"`
 	Exposed         bool   `json:"exposed"`
 	NoAdmins        bool   `json:"noAdmins"`
+	CLIAccount      bool   `json:"cliAccount"`
 }
 
 // settingsAPI shows and changes the sign-in mode: GET and PUT
@@ -64,6 +65,7 @@ func (g *authGate) settingsAPI(w http.ResponseWriter, r *http.Request, signIn st
 		mode := g.mode()
 		view := authSettingsView{
 			Mode: mode, Locked: g.opts.ModeLocked, Account: signIn.Account,
+			CLIAccount:      g.opts.RuntimeAccount != nil,
 			CanManage:       mode == AuthOff || g.authAdmin(r.Context(), signIn),
 			SystemAccount:   g.opts.SystemAccount,
 			SystemAvailable: g.opts.SystemAccount != "" && g.opts.VerifySystem != nil,
@@ -71,7 +73,7 @@ func (g *authGate) settingsAPI(w http.ResponseWriter, r *http.Request, signIn st
 			CanMove:         !g.opts.MultiUser,
 			Exposed:         listensBeyondHost(g.opts.ListenAddress),
 		}
-		if mode == AuthFile {
+		if mode == AuthFile && g.opts.RuntimeAccount == nil {
 			accounts, _ := g.store.Accounts(r.Context())
 			view.NoAdmins = !slices.ContainsFunc(accounts, func(a auth.Account) bool { return a.Admin })
 		}
@@ -114,7 +116,7 @@ func (g *authGate) changeMode(w http.ResponseWriter, r *http.Request, signIn sto
 	from := g.current
 	switch {
 	case g.opts.ModeLocked:
-		writeError(w, http.StatusConflict, "Sign-in is set with -auth when Tessera starts.")
+		writeError(w, http.StatusConflict, "Sign-in is set on the command line when Tessera starts.")
 		return
 	case from != AuthOff && !g.adminLocked(r.Context(), signIn, from):
 		writeError(w, http.StatusForbidden, "Only an admin can change sign-in.")
@@ -312,6 +314,14 @@ func (g *authGate) accountsAPI(w http.ResponseWriter, r *http.Request, signIn st
 	}
 	if !g.authAdmin(r.Context(), signIn) {
 		writeError(w, http.StatusForbidden, "Only an admin can manage accounts.")
+		return
+	}
+	if account := g.opts.RuntimeAccount; account != nil {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/auth/accounts" {
+			writeJSON(w, http.StatusOK, map[string]any{"accounts": []accountView{{Name: account.Name, Admin: true, Current: true}}})
+		} else {
+			writeError(w, http.StatusConflict, "The account and password are set with -username on the command line; saved accounts are inactive.")
+		}
 		return
 	}
 	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/auth/accounts"), "/")

@@ -83,6 +83,7 @@ export function createPalette(dependencies, platform = globalThis) {
       ? { id: "desktop-view", label: "Desktop View", aliases: ["windows"], hint: "this browser", run: () => dependencies.phone().setPhoneViewOverride("desktop") }
       : { id: "phone-view", label: "Phone View", aliases: ["mobile", "terminal list"], hint: "this browser", run: () => dependencies.phone().setPhoneViewOverride("phone") });
     commands.push({ id: "screensaver", label: "Screensaver", aliases: ["screen saver", "mosaic"], hint: "any key returns", run: () => dependencies.preferences().screensaver.open() });
+    commands.push({ id: "polygon-screensaver", label: "Polygon Screensaver", aliases: ["screen saver", "polygons", "lines", "ascii"], hint: "any key returns", run: () => dependencies.preferences().polygonScreensaver.open() });
     commands.push({
       id: "deskbar-button-toggle",
       label: dependencies.preferences().deskbarButtonEnabled ? "Hide Deskbar Button" : "Show Deskbar Button",

@@ -129,7 +129,7 @@ test("loading account settings restores the selected interface font for each dev
   assert.equal(f.preferences.interfaceFontSize, 14);
   navigation.applyUserSettings({});
   assert.equal(f.properties.get("--tessera-font"), terminalFontFamily(defaultTerminalFont));
-  assert.equal(f.preferences.interfaceFontSize, 12);
+  assert.equal(f.preferences.interfaceFontSize, 14);
   assert.deepEqual(f.saves, [], "restoring a choice must not resave settings");
 });
 

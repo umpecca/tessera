@@ -13,7 +13,9 @@ import {
   terminalSymbolProbe,
 } from "./terminal-font.mjs";
 
-test("normalizes terminal font IDs to the JetBrains Mono default", () => {
+test("normalizes terminal font IDs to the Departure Mono default", () => {
+  assert.equal(defaultTerminalFont, "departure-mono");
+  assert.equal(normalizeTerminalFont("jetbrains-mono"), "jetbrains-mono");
   assert.equal(normalizeTerminalFont("fira-code"), "fira-code");
   assert.equal(normalizeTerminalFont("ibm-plex-mono"), "ibm-plex-mono");
   assert.equal(normalizeTerminalFont("JetBrains Mono"), defaultTerminalFont);

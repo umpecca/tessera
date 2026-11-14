@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- In the iPad app, a terminal program's copy (OSC 52, as Vim, Helix, tmux and
+  Claude Code send) reaches the iPad clipboard over plain HTTP too, instead of
+  "Clipboard blocked". Only the terminal you are looking at can do it; copies
+  from windows not in view, or while the app is in the background, go only to
+  Tessera's own Paste. Needs the updated app and server.
+
+- **Polygon Screensaver** in the command palette: an ASCII screensaver of two
+  drifting outlines that twist, cross and trail fading copies of themselves,
+  drawn in the default terminal text color on the terminal background.
+
+- Fixed in-page RDP connections that could fail right after signing in with
+  "read frame: … invalid `fastPathLength` …", most often from an iPad. The
+  browser's RDP client dropped data that arrived in the same message as the
+  end of the connection sequence, which Tessera's merged RDP messages made
+  likely; it now keeps it.
+
+- New users now default to Departure Mono and 14px interface text (previously
+  JetBrains Mono and 12px). Terminal panes still default to 14px. Saved font
+  and size choices are unchanged; pick JetBrains Mono under **Settings → Fonts**
+  to switch back.
+
+- Native iPad server entry prefers HTTPS/7332 for a bare hostname, falling back
+  to HTTP/7331 only when HTTPS is unreachable. Explicit schemes/custom ports are
+  respected; existing profiles and Mac defaults are unchanged. Unverified/changed
+  certificates offer a fingerprint-based accept/cancel decision. Accepted SHA-256
+  fingerprints persist per server profile, with a forget-approval control; declining
+  never downgrades to HTTP. Discovery/reconnect checks send no saved credentials.
+
+- Server startup and Local HTTPS listener reloads print HTTP/HTTPS endpoints
+  and effective sign-in mode/account names to stdout, never passwords.
+  `-username` with `-password-stdin` (or `-password`) supplies a run-only admin
+  account that supersedes saved accounts and their cookies without changing
+  saved credentials/preferences. Settings cannot replace CLI-owned credentials.
+
+- Native iPad app's top-right **…** button fades away after five idle seconds.
+  Tap the same corner to reveal it, then tap again to open it. Open menus and
+  VoiceOver/Switch Control keep it visible; workspace typing and scrolling do
+  not bring it back or reset its timer. No server update is needed.
+
 - Accepted RDP certificate fingerprints are remembered per user and host/port
   across windows, sessions and devices. Changed certificates still require
   explicit approval; stale approvals cannot overwrite newer trust. RDP passwords

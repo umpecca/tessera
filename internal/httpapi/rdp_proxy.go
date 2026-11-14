@@ -276,6 +276,8 @@ func relayRDP(websocketConnection *websocket.Conn, server net.Conn) {
 		}
 	}()
 
+	// Merging puts the server's first session PDUs in the same message as the
+	// last connection PDU at times; IronRDP patch 0013 keeps them (task 269).
 	readErr := relayToWebSocket(func(message []byte) error {
 		return websocketConnection.WriteMessage(websocket.BinaryMessage, message)
 	}, server)

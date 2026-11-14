@@ -31,8 +31,9 @@ func TestInterfaceFontSizesPersistIndependentlyFromTerminalSizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.InterfaceFontSize != 12 || settings.Phone.InterfaceFontSize != 12 {
-		t.Fatalf("default interface font sizes = %+v", settings)
+	// The column's SQL default is 12, so a new row must store 14 explicitly.
+	if settings.InterfaceFontSize != 14 || settings.Phone.InterfaceFontSize != 14 || settings.TerminalFont != "departure-mono" || settings.Phone.TerminalFont != "departure-mono" {
+		t.Fatalf("new user text defaults = %+v, phone: %+v", settings, settings.Phone)
 	}
 	settings.InterfaceFontSize = 18
 	settings.DefaultPaneFontSize = 15
@@ -68,7 +69,7 @@ func TestInterfaceFontSizesPersistIndependentlyFromTerminalSizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err = st.LoadUserSettings(ctx, "alice")
-	if err != nil || loaded.InterfaceFontSize != 12 || loaded.Phone.InterfaceFontSize != 12 {
+	if err != nil || loaded.InterfaceFontSize != 14 || loaded.Phone.InterfaceFontSize != 14 {
 		t.Fatalf("invalid stored sizes were not normalized: %+v, %v", loaded, err)
 	}
 }
@@ -104,7 +105,9 @@ VALUES ('alice', 18, 'cozette', '{"defaultPaneFontSize":16,"terminalFont":"splee
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.InterfaceFontSize != 12 || settings.Phone.InterfaceFontSize != 12 || settings.DefaultPaneFontSize != 18 || settings.Phone.DefaultPaneFontSize != 16 || settings.TerminalFont != "cozette" || settings.Phone.TerminalFont != "spleen" {
+	// Existing desktop rows keep the column's 12px; phone settings saved before
+	// the column existed have no interface size and take the current default.
+	if settings.InterfaceFontSize != 12 || settings.Phone.InterfaceFontSize != 14 || settings.DefaultPaneFontSize != 18 || settings.Phone.DefaultPaneFontSize != 16 || settings.TerminalFont != "cozette" || settings.Phone.TerminalFont != "spleen" {
 		t.Fatalf("migration changed existing text settings: %+v, phone: %+v", settings, settings.Phone)
 	}
 }

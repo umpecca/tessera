@@ -51,6 +51,9 @@ type AuthOptions struct {
 	// Settings unless ModeLocked, which -auth sets.
 	Mode       string
 	ModeLocked bool
+	// RuntimeAccount supersedes all saved accounts for this process. Only its
+	// salted hash is retained; neither it nor the mode is saved to Settings.
+	RuntimeAccount *auth.Account
 	// MultiUser is set by -users, which keeps workspaces per roster name and
 	// so cannot be combined with AuthFile.
 	MultiUser bool
@@ -151,6 +154,12 @@ func SignedInAccount(ctx context.Context) string {
 // the few resources reachable before it. With AuthOff it passes requests on
 // untouched, apart from the sign-in settings, until Settings turns it on.
 func NewAuthHandler(next http.Handler, st *store.Store, opts AuthOptions) http.Handler {
+	if opts.RuntimeAccount != nil {
+		account := *opts.RuntimeAccount
+		account.Admin = true
+		opts.RuntimeAccount = &account
+		opts.Mode, opts.ModeLocked = AuthFile, true
+	}
 	if opts.Mode == "" {
 		opts.Mode = AuthOff
 	}
@@ -295,7 +304,7 @@ func (g *authGate) accountCurrent(ctx context.Context, signIn store.SignIn) bool
 	switch g.mode() {
 	case AuthFile:
 		account, ok := g.account(ctx, signIn.Account)
-		return ok && signIn.CredentialTag != "" && auth.CredentialTag(account.Hash) == signIn.CredentialTag
+		return ok && signIn.CredentialTag != "" && g.credentialTag(account) == signIn.CredentialTag
 	case AuthSystem:
 		return signIn.Account == g.opts.SystemAccount && signIn.CredentialTag == ""
 	}
@@ -305,11 +314,24 @@ func (g *authGate) accountCurrent(ctx context.Context, signIn store.SignIn) bool
 // account looks up one of Tessera's own accounts. One that can't be read
 // is not found, so nobody signs in as it.
 func (g *authGate) account(ctx context.Context, name string) (auth.Account, bool) {
+	if account := g.opts.RuntimeAccount; account != nil {
+		return *account, name == account.Name
+	}
 	account, ok, err := g.store.Account(ctx, name)
 	if err != nil {
 		log.Printf("read account: %v", err)
 	}
 	return account, ok
+}
+
+func (g *authGate) credentialTag(account auth.Account) string {
+	tag := auth.CredentialTag(account.Hash)
+	if g.opts.RuntimeAccount != nil {
+		// A saved-account cookie must never authenticate against an override,
+		// even when both accounts happen to have the same name and hash.
+		tag = "cli:" + tag
+	}
+	return tag
 }
 
 const unavailableMessage = "This host could not check its account password. On the host, run `tessera login` for a one-time sign-in link, or start Tessera with -auth=file."
@@ -329,8 +351,10 @@ func (g *authGate) login(w http.ResponseWriter, r *http.Request) {
 			view.Unavailable = unavailableMessage
 		}
 	case AuthFile:
-		if err := AccountsProblem(r.Context(), g.store); err != nil {
-			view.Unavailable = "Nobody can sign in: " + err.Error() + ". Reload this page once that is done."
+		if g.opts.RuntimeAccount == nil {
+			if err := AccountsProblem(r.Context(), g.store); err != nil {
+				view.Unavailable = "Nobody can sign in: " + err.Error() + ". Reload this page once that is done."
+			}
 		}
 	}
 	view.HTTPBlocked = !g.passwordTransportAllowed(r)
@@ -489,7 +513,7 @@ func (g *authGate) verify(ctx context.Context, mode, name string, password []byt
 		if err != nil || !ok || !found {
 			return "", errors.New("incorrect")
 		}
-		return auth.CredentialTag(account.Hash), nil
+		return g.credentialTag(account), nil
 	case AuthSystem:
 		if g.opts.VerifySystem == nil {
 			return "", ErrSystemAuthUnavailable

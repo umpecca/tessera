@@ -9,6 +9,45 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries, data flow,
 deployment details, and the security roadmap, and [CHANGELOG.md](CHANGELOG.md)
 for recent changes.
 
+## Start with a hostname and a CLI sign-in
+
+For example, use `studio.example.com` (replace it with a DNS name pointing to
+your Tessera host), HTTP port **7331**, and Local HTTPS port **7332**:
+
+```sh
+# Bash/zsh: read the password without echo or putting it in shell history.
+printf 'Tessera password: ' >&2
+read -r -s TESSERA_PASSWORD
+printf '\n' >&2
+printf '%s\n' "$TESSERA_PASSWORD" | tessera \
+  -addr 0.0.0.0:7331 -allowed-host studio.example.com \
+  -username alice -password-stdin
+unset TESSERA_PASSWORD
+```
+
+Open **`https://studio.example.com:7332`** after enabling **Settings → Local
+HTTPS**, setting its listen address to `0.0.0.0:7332` and certificate DNS name
+to `studio.example.com`, and trusting Tessera's CA on your devices. These HTTPS
+settings are saved in the database; **`-allowed-host` permits a hostname but
+does not enable HTTPS or configure DNS**. See [Local HTTPS setup](docs/remote-access.md#local-https-for-ipados).
+
+The HTTP endpoint is **`http://studio.example.com:7331`**. Remote password
+sign-in requires HTTPS; add `-allow-http-sign-in` only if the HTTP connection
+is already protected by Tailscale or another VPN. Never use that flag to send
+passwords over an unencrypted LAN/public connection.
+
+Startup prints the actual HTTP and HTTPS URLs (or **HTTPS: disabled**) and
+active sign-in mode/account names to **stdout**, never passwords. Wildcard
+addresses such as `0.0.0.0` mean all host interfaces; use your hostname from
+another device. Listener reloads print updated endpoints too.
+
+While `-username` and its password are supplied, **only that CLI admin account
+can sign in**. Saved accounts and their cookies cannot bypass it. Saved
+credentials and sign-in preferences remain unchanged and take effect again
+after restarting without these flags. Settings cannot change the CLI account.
+Workspaces still belong to account names; this does not change the OS account
+that runs terminals or migrate existing workspaces. See [CLI sign-in](docs/sign-in.md#cli-account-for-one-run).
+
 ## What it does
 
 - **Terminals** that keep running on the host and restore their text and Sixel
@@ -105,6 +144,9 @@ Useful flags:
 -tray bool      enable native tray controls when supported
 -users string   comma-separated local workspace roster
 -auth string    sign-in: off (default), system, or file
+-username string              sole admin sign-in account for this run; supersedes Settings
+-password-stdin bool          read its password from the first line of stdin (recommended)
+-password string              its password in arguments (exposes it in process lists/history)
 -auth-file string             accounts file from older versions, imported once
 -allow-http-sign-in bool      accept passwords over plain HTTP from other devices
 -signin-idle duration         unused time before a remembered sign-in ends (default 720h)

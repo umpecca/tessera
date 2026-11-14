@@ -9,6 +9,7 @@ import { terminalFindShortcut } from "./terminal-find.mjs";
 function appFunction(name, globals = {}) {
   globals.shortcutsUI ||= { element: { hidden: true } };
   globals.screensaver ||= { element: { hidden: true } };
+  globals.polygonScreensaver ||= { element: { hidden: true } };
   globals.saveClipboardDialog ||= { element: { hidden: true }, close() {} };
   globals.terminalFindShortcut ||= terminalFindShortcut;
   globals.appleKeyboardLayout ??= false;

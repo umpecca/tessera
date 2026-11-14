@@ -68,9 +68,11 @@
  */
 :root {
   /* Settings replaces this family for the whole interface and terminal text. */
-  /* rem text sizes scale the interface without changing terminal canvas sizes. */
+  /* rem text sizes scale the interface without changing terminal canvas sizes.
+   * Styles use a 12px base; the default interface size is 14px. */
+  --tessera-ui-font-scale: calc(14 / 12);
   font-size: calc(16px * var(--tessera-ui-font-scale, 1));
-  --tessera-font: "JetBrains Mono", "Noto Sans Symbols 2", monospace;
+  --tessera-font: "Departure Mono", "Noto Sans Symbols 2", monospace;
   --tessera-mono-font: var(--tessera-font);
   --oled-window-border-size: 10px;
 
@@ -526,7 +528,7 @@
   height: var(--oled-window-border-size);
 }
 
-/* JetBrains Mono is the desktop Ghostty default used by Tessera terminals.
+/* JetBrains Mono is the desktop Ghostty default and a Tessera font choice.
  * The variable Google Fonts face supplies regular through bold weights and is
  * stored locally so terminal startup never depends on a CDN. */
 @font-face {

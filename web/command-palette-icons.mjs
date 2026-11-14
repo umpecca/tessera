@@ -44,7 +44,7 @@ const commandIcons = {
   help: "help", "browse-local-port-help": "network", "window-list": "windows",
   "session-list": "sessions", sessions: "sessions", "new-session": "add",
   "destroy-session": "trash", "desktop-view": "desktop", "phone-view": "phone",
-  screensaver: "screensaver", "deskbar-button-toggle": "deskbar",
+  screensaver: "screensaver", "polygon-screensaver": "screensaver", "deskbar-button-toggle": "deskbar",
   "save-clipboard": "clipboard", "delete-clipboard-save": "trash", settings: "settings",
   "manage-shortcuts": "keyboard", "new-terminal": "terminal", "new-browser": "browser",
   "new-vnc": "remote", "new-rdp": "remote", "next-window": "next", "previous-window": "previous",

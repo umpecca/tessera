@@ -34,7 +34,7 @@ export function createRdp(dependencies, platform = globalThis) {
       // A prebuilt, patched IronRDP (third_party/ironrdp). It inlines its
       // WebAssembly as a data: URL, which the CSP permits (connect-src data:,
       // script-src 'wasm-unsafe-eval').
-      feature.rdpModulePromise = import("./vendor/rdp.js?v=ironrdp-7fc80c4d-tessera.3").then(async (module) => {
+      feature.rdpModulePromise = import("./vendor/rdp.js?v=ironrdp-7fc80c4d-tessera.4").then(async (module) => {
         await module.init("warn");
         return module;
       });

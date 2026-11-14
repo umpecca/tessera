@@ -38,7 +38,7 @@ export function createSwitcher(dependencies, platform = globalThis) {
       // List from the command palette). The overlay that is still open owns
       // keyboard focus, so returning it to the pane would swallow its arrow keys.
       if ([dependencies.palette().commandPalette, dependencies.windows().windowList, dependencies.sessionList().sessionList, dependencies.settings().settingsModal, dependencies.https().localHTTPSModal,
-        dependencies.desktop().renameWindowModal, dependencies.sessionsDialog().sessionsModal, dependencies.sessionsDialog().sessionActionModal, dependencies.help().helpModal, dependencies.navigation().shortcutsUI.element, dependencies.preferences().screensaver.element].some(modal => !modal.hidden)) {
+        dependencies.desktop().renameWindowModal, dependencies.sessionsDialog().sessionsModal, dependencies.sessionsDialog().sessionActionModal, dependencies.help().helpModal, dependencies.navigation().shortcutsUI.element, dependencies.preferences().screensaver.element, dependencies.preferences().polygonScreensaver.element].some(modal => !modal.hidden)) {
         return;
       }
       const focused = platform.document.activeElement;

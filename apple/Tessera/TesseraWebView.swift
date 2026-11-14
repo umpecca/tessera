@@ -13,6 +13,7 @@ struct TesseraWebView {
     let onLoad: () -> Void
     #if os(iOS)
     var app: IPadAppModel? = nil
+    var connectionActive = true
     #endif
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -73,6 +74,7 @@ extension TesseraWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView { makeWebView(coordinator: context.coordinator) }
     func updateUIView(_ webView: WKWebView, context: Context) { updateWebView(webView, coordinator: context.coordinator) }
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.cancelConnection()
         coordinator.nativeClipboard?.invalidate()
         coordinator.cancelNativeDownloads()
         webView.configuration.userContentController.removeScriptMessageHandler(forName: NativeClipboard.handlerName, contentWorld: .page)
@@ -94,6 +96,11 @@ extension TesseraWebView {
         var clipboardServerURL: URL { parent.url }
         #if os(iOS)
         var nativeClipboard: NativeClipboard?
+        private var connectionTask: Task<Void, Never>?
+        private var connectionAttempt: IPadConnectionAttempt?
+        private var trustOwner = UUID()
+        private var mainTrustURL: URL?
+        private var pendingCertificatePin: (profileID: UUID, pin: ServerCertificatePin, previous: ServerCertificatePin?, owner: UUID)?
         #endif
 
         init(_ parent: TesseraWebView) {
@@ -103,16 +110,93 @@ extension TesseraWebView {
         /// Loads a new server, or reloads when asked to.
         func show(_ view: TesseraWebView, in webView: WKWebView) {
             parent = view
-            if shownURL != view.url {
-                shownURL = view.url
-                shownReloadCount = view.reloadCount
-                webView.load(URLRequest(url: view.url))
-            } else if shownReloadCount != view.reloadCount {
-                shownReloadCount = view.reloadCount
-                // A first load that failed has nothing to reload.
-                if webView.url == nil { webView.load(URLRequest(url: view.url)) } else { webView.reload() }
+            let newURL = shownURL != view.url
+            #if os(iOS)
+            guard view.connectionActive else { return }
+            let interrupted = connectionAttempt?.cancelled == true
+            #else
+            let interrupted = false
+            #endif
+            guard newURL || shownReloadCount != view.reloadCount || interrupted else { return }
+            shownURL = view.url; shownReloadCount = view.reloadCount
+            #if os(iOS)
+            cancelConnection()
+            trustOwner = UUID()
+            if let app = view.app, view.url.scheme == "https", let profile = app.selected {
+                let owner = trustOwner, reload = view.reloadCount
+                let current: @MainActor () -> Bool = { [weak self, weak app, weak webView] in
+                    guard let self, let app, webView != nil else { return false }
+                    return self.trustOwner == owner && self.shownReloadCount == reload
+                        && app.selected?.id == profile.id && app.selected?.address == view.url
+                        && app.recovery.active && app.privacy.allowsAccess && !app.privacy.covered
+                }
+                let attempt = app.connectionAttempt(current: current)
+                connectionAttempt = attempt
+                connectionTask = Task { @MainActor [weak self, weak webView] in
+                    defer { app.finishConnection(attempt) }
+                    do {
+                        // A fresh ephemeral preflight checks pins even if WebKit
+                        // has a cached TLS session after forgetting an approval.
+                        let (_, pin) = try await attempt.resolve([view.url], pin: profile.certificatePin)
+                        guard current(), !Task.isCancelled, let self, let webView else { return }
+                        if let pin { app.rememberCertificate(pin, profileID: profile.id) }
+                        self.mainTrustURL = view.url
+                        self.load(view, in: webView, newURL: newURL)
+                    } catch {
+                        guard current(), !Task.isCancelled else { return }
+                        self?.report(error, includingCancellation: true)
+                    }
+                }
+                return
             }
+            mainTrustURL = view.url
+            #endif
+            load(view, in: webView, newURL: newURL)
         }
+
+        private func load(_ view: TesseraWebView, in webView: WKWebView, newURL: Bool) {
+            if newURL || webView.url == nil { webView.load(URLRequest(url: view.url)) }
+            else { webView.reload() }
+        }
+
+        #if os(iOS)
+        func cancelConnection() {
+            connectionTask?.cancel(); connectionTask = nil
+            if let connectionAttempt { connectionAttempt.cancel(); parent.app?.finishConnection(connectionAttempt) }
+            connectionAttempt = nil
+            parent.app?.certificateConsent.cancel(owner: trustOwner)
+            mainTrustURL = nil
+            pendingCertificatePin = nil
+        }
+
+        func webView(_ webView: WKWebView, respondTo challenge: URLAuthenticationChallenge) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+            guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+                  let app = parent.app, let profile = app.selected,
+                  profile.address == parent.url else { return (.performDefaultHandling, nil) }
+            let host = challenge.protectionSpace.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
+            guard parent.url.scheme == "https", host == parent.url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased(),
+                  challenge.protectionSpace.port == (parent.url.port ?? 443) else {
+                return (.performDefaultHandling, nil)
+            }
+            let owner = trustOwner, savedPin = profile.certificatePin
+            let pin = pendingCertificatePin.flatMap { $0.owner == owner && $0.profileID == profile.id ? $0.pin : nil } ?? savedPin
+            let current: @MainActor () -> Bool = { [weak self, weak app] in
+                guard let self, let app else { return false }
+                return self.trustOwner == owner && app.selected?.id == profile.id
+                    && app.selected?.address == profile.address && app.selected?.certificatePin == savedPin
+                    && app.recovery.active && app.privacy.allowsAccess && !app.privacy.covered
+            }
+            let result = await app.certificateConsent.answer(challenge, url: profile.address, pin: pin,
+                owner: owner, allowPrompt: mainTrustURL != nil, current: current)
+            guard current() else { return (.cancelAuthenticationChallenge, nil) }
+            if let approved = result.2, approved != profile.certificatePin {
+                pendingCertificatePin = (profile.id, approved, savedPin, owner)
+            }
+            return (result.0, result.1)
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { mainTrustURL = nil }
+        #endif
 
         // MARK: Navigation
 
@@ -128,6 +212,12 @@ extension TesseraWebView {
             // Frames inside the page (browser panes, download targets) load
             // whatever the page gives them.
             guard action.targetFrame?.isMainFrame ?? true else { return .allow }
+            #if os(iOS)
+            // Only a selected server's top-level entry/app/login navigation may
+            // trigger a new consent prompt. Other origins use platform trust.
+            mainTrustURL = ServerAddress.sameOrigin(url, parent.url)
+                && (url == parent.url || ClipboardPolicy.isAppDocument(url) || url.path == "/login" || url.path == "/login/link") ? url : nil
+            #endif
             if ServerAddress.sameOrigin(url, parent.url) || url.scheme == "about" { return .allow }
             Platform.openExternally(url)
             return .cancel
@@ -148,6 +238,14 @@ extension TesseraWebView {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            #if os(iOS)
+            if let pending = pendingCertificatePin, let app = parent.app, pending.owner == trustOwner,
+               app.selected?.id == pending.profileID, app.selected?.certificatePin == pending.previous,
+               app.recovery.active, app.privacy.allowsAccess, !app.privacy.covered {
+                app.rememberCertificate(pending.pin, profileID: pending.profileID)
+            }
+            pendingCertificatePin = nil
+            #endif
             parent.onLoad()
             #if os(iOS)
             parent.app?.configureRendering()
@@ -163,13 +261,14 @@ extension TesseraWebView {
             report(error)
         }
 
-        private func report(_ error: Error) {
+        private func report(_ error: Error, includingCancellation: Bool = false) {
             let error = error as NSError
             // A cancelled load, or one that turned into a download, is not a
             // failure to reach the server.
-            if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled { return }
+            if !includingCancellation && error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled { return }
             if error.domain == WKError.errorDomain && error.code == 102 { return } // frame load interrupted
             #if os(iOS)
+            pendingCertificatePin = nil; mainTrustURL = nil
             parent.app?.failure = ConnectionAdvice(errorCode: error.code, description: error.localizedDescription)
             #endif
             parent.onFailure(error.localizedDescription)

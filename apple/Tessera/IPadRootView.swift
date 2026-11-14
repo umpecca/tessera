@@ -15,6 +15,7 @@ struct IPadRootView: View {
         presentedContent
             .background(IPadWindowGeometryObserver(onChange: app.updateFullScreen))
             .background(IPadPrivacyAnchor(privacy: app.privacy))
+            .background(IPadCertificateAnchor(consent: app.certificateConsent))
             .statusBarHidden(app.hidesSystemUI)
             .persistentSystemOverlays(app.hidesSystemUI ? .hidden : .automatic)
             .fileImporter(isPresented: $app.importFiles, allowedContentTypes: [.item], allowsMultipleSelection: true, onCompletion: importFiles)
@@ -36,7 +37,8 @@ struct IPadRootView: View {
 
     private func workspace(_ profile: ServerProfile) -> some View {
         TesseraWebView(url: profile.address, reloadCount: app.reloadCount,
-            onFailure: { _ in app.ready = false }, onLoad: { app.ready = true; app.failure = nil }, app: app)
+            onFailure: { _ in app.ready = false }, onLoad: { app.ready = true; app.failure = nil }, app: app,
+            connectionActive: app.recovery.active && app.privacy.allowsAccess && !app.privacy.covered)
             .id(profile.id)
             .ignoresSafeArea(.container)
             .overlay { if let failure = app.failure { connectionFailure(failure) } }
@@ -100,35 +102,33 @@ struct IPadRootView: View {
     }
 
     private var appMenu: some View {
-        Menu {
-            Text(app.selected?.displayName ?? "Tessera")
-            Label(app.online ? "Network available" : "Network offline", systemImage: app.online ? "network" : "network.slash")
-            Button("Saved Servers…", systemImage: "server.rack") { app.sheet = .servers }
-            Button("Reload Page", systemImage: "arrow.clockwise", action: app.reload)
-            Divider()
-            Button("Command Palette", systemImage: "command") { app.perform("palette") }.disabled(!app.ready)
-            Button("Window List", systemImage: "rectangle.on.rectangle") { app.perform("windows") }.disabled(!app.ready)
-            Button("Session List", systemImage: "rectangle.stack") { app.perform("sessions") }.disabled(!app.ready)
-            Button("Workspace Settings", systemImage: "gearshape") { app.perform("settings") }.disabled(!app.ready)
-            Toggle("Terminal Key Row", isOn: $app.keyboardVisible)
-            Toggle("Distraction-Free Full Screen", isOn: $app.distractionFree)
-                .accessibilityIdentifier("distraction-free-menu")
-            Button("Keyboard Shortcuts…", systemImage: "keyboard") { app.sheet = .keyboard }
-            Divider()
-            Button("Downloads…", systemImage: "arrow.down.circle") { app.sheet = .downloads }
-            Button("Import from Files…", systemImage: "folder") { app.importFiles = true }.disabled(!app.ready)
-            Button("Import Photos…", systemImage: "photo") { app.importPhotos = true }.disabled(!app.ready)
-            Button("App Diagnostics…", systemImage: "waveform.path.ecg") { app.sheet = .diagnostics }
-            Button("Privacy…", systemImage: "lock.shield") { app.sheet = .privacy }
-            Button("Connection & Installation Help…", systemImage: "questionmark.circle") { app.sheet = .help }
-        } label: {
-            Image(systemName: "ellipsis.circle.fill").font(.title2).symbolRenderingMode(.palette)
-                .foregroundStyle(.primary, .background).frame(minWidth: 44, minHeight: 44)
-                .background(.regularMaterial, in: Circle())
-        }
-        .accessibilityLabel("Tessera app menu")
-        .accessibilityHint("Server, reload, keyboard, downloads and app help")
-        .accessibilityIdentifier("tessera-app-menu")
+        IPadAppMenu(menu: UIMenu(title: app.selected?.displayName ?? "Tessera", children: [
+            menuAction(app.online ? "Network available" : "Network offline", app.online ? "network" : "network.slash", enabled: false) {},
+            menuAction("Saved Servers…", "server.rack") { app.sheet = .servers },
+            menuAction("Reload Page", "arrow.clockwise", action: app.reload),
+            UIMenu(options: .displayInline, children: [
+                menuAction("Command Palette", "command", enabled: app.ready) { app.perform("palette") },
+                menuAction("Window List", "rectangle.on.rectangle", enabled: app.ready) { app.perform("windows") },
+                menuAction("Session List", "rectangle.stack", enabled: app.ready) { app.perform("sessions") },
+                menuAction("Workspace Settings", "gearshape", enabled: app.ready) { app.perform("settings") },
+                menuAction("Terminal Key Row", "keyboard", checked: app.keyboardVisible) { app.keyboardVisible.toggle() },
+                menuAction("Distraction-Free Full Screen", "arrow.up.left.and.arrow.down.right", checked: app.distractionFree) { app.distractionFree.toggle() },
+                menuAction("Keyboard Shortcuts…", "keyboard") { app.sheet = .keyboard },
+            ]),
+            UIMenu(options: .displayInline, children: [
+                menuAction("Downloads…", "arrow.down.circle") { app.sheet = .downloads },
+                menuAction("Import from Files…", "folder", enabled: app.ready) { app.importFiles = true },
+                menuAction("Import Photos…", "photo", enabled: app.ready) { app.importPhotos = true },
+                menuAction("App Diagnostics…", "waveform.path.ecg") { app.sheet = .diagnostics },
+                menuAction("Privacy…", "lock.shield") { app.sheet = .privacy },
+                menuAction("Connection & Installation Help…", "questionmark.circle") { app.sheet = .help },
+            ]),
+        ]), active: scenePhase == .active)
+        .frame(width: 44, height: 44)
+    }
+
+    private func menuAction(_ title: String, _ image: String, enabled: Bool = true, checked: Bool = false, action: @escaping () -> Void) -> UIAction {
+        UIAction(title: title, image: UIImage(systemName: image), attributes: enabled ? [] : .disabled, state: checked ? .on : .off) { _ in action() }
     }
 
     private func connectionFailure(_ advice: ConnectionAdvice) -> some View {
@@ -191,6 +191,10 @@ struct ServerProfilesView: View {
     @State private var address = ""
     @State private var problem: String?
     @State private var removing: ServerProfile?
+    @State private var checking = false
+    @State private var operationID: UUID?
+    @State private var connectionTask: Task<Void, Never>?
+    @State private var attempt: IPadConnectionAttempt?
 
     var body: some View {
         NavigationStack {
@@ -212,22 +216,32 @@ struct ServerProfilesView: View {
                                     .buttonStyle(.borderless).accessibilityLabel("Remove \(profile.displayName)")
                             }
                         }
-                    }
+                    }.disabled(checking)
                 }
                 Section(editing == nil ? "Add a server" : "Edit server") {
-                    TextField("Name (optional)", text: $name).accessibilityIdentifier("server-profile-name")
-                    TextField("studio.tailnet.ts.net or 100.64.0.2:7331", text: $address)
+                    TextField("Name (optional)", text: $name).accessibilityIdentifier("server-profile-name").disabled(checking)
+                    TextField("studio.tailnet.ts.net or https://host:7332", text: $address)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityLabel("Server address").accessibilityIdentifier("server-profile-address").onSubmit(save)
+                        .disabled(checking)
                     if let problem { Text(problem).foregroundStyle(.red).accessibilityAddTraits(.updatesFrequently) }
                     Button(editing == nil ? "Add and Connect" : "Save and Connect", action: save)
-                        .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(checking || address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityIdentifier("server-profile-connect")
-                    if editing != nil { Button("Cancel Editing") { editing = nil; name = ""; address = ""; problem = nil } }
+                    if checking {
+                        ProgressView("Checking server…")
+                        Button("Cancel Connection", action: cancelConnection).accessibilityIdentifier("server-connection-cancel")
+                    }
+                    if let editing, app.library.profiles.first(where: { $0.id == editing })?.certificatePin != nil {
+                        Button("Forget Accepted Certificate", role: .destructive) { app.forgetCertificate(editing) }
+                            .disabled(checking).accessibilityIdentifier("server-certificate-forget")
+                    }
+                    if editing != nil { Button("Cancel Editing") { cancelConnection(); editing = nil; name = ""; address = ""; problem = nil } }
                 }
                 Section("Privacy & connections") {
                     Text("Each new profile has its own sign-in cookies and website storage. Switching servers does not stop their running shells. The first migrated profile keeps the existing app's sign-in data.")
-                    Text("A bare hostname uses HTTP on port 7331. Use HTTP only over a trusted network or VPN such as Tailscale. Use a full https:// address for HTTPS. Passwords in addresses are not accepted.")
+                    Text("A bare hostname tries HTTPS on 7332 first, then HTTP on 7331 only if HTTPS is unreachable. Explicit https:// or http:// selects that protocol and its Tessera port; custom ports are kept. A bare host:port uses HTTP. Passwords in addresses are not accepted.")
+                    Text("Unverified or changed certificates ask for your approval. Verify the SHA-256 fingerprint with the server owner. Accepted fingerprints are saved only for this server profile; Edit → Forget Accepted Certificate resets that approval. Declining never falls back to HTTP. Use HTTP only over a trusted network or VPN such as Tailscale.")
                 }.font(.callout)
             }
             .navigationTitle(firstRun ? "Connect to Tessera" : "Saved Servers")
@@ -235,15 +249,48 @@ struct ServerProfilesView: View {
             .confirmationDialog("Remove this saved server? Its running shells will not be stopped.", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
                 Button("Remove Server", role: .destructive) { if let removing { app.removeServer(removing.id) }; removing = nil }
             }
+            .onChange(of: address) { _, _ in cancelConnection() }
+            .onChange(of: name) { _, _ in cancelConnection() }
+            .onDisappear(perform: cancelConnection)
         }
     }
 
     private func save() {
+        guard !checking else { return }
         guard editing != nil || app.library.profiles.count < 32 else { problem = "At most 32 servers can be saved."; return }
-        switch ServerAddress.parse(address) {
-        case .success(let url): app.saveServer(name: name, address: url, editing: editing); dismiss()
-        case .failure(let error): problem = error.description
+        let candidates: [URL]
+        do { candidates = try IPadServerAddress.candidates(address, preserving: app.library.profiles.first(where: { $0.id == editing })?.address) }
+        catch { problem = String(describing: error); return }
+        let token = UUID(), enteredAddress = address, enteredName = name, edited = editing
+        operationID = token; checking = true; problem = nil
+        let attempt = app.connectionAttempt(current: {
+            operationID == token && address == enteredAddress && name == enteredName && editing == edited
+                && (edited == nil || app.library.profiles.contains { $0.id == edited })
+        })
+        self.attempt = attempt
+        let pin = app.library.profiles.first(where: { $0.id == edited })?.certificatePin
+        connectionTask = Task { @MainActor in
+            defer {
+                app.finishConnection(attempt)
+                if operationID == token { checking = false; self.attempt = nil; connectionTask = nil }
+            }
+            do {
+                let (url, approved) = try await attempt.resolve(candidates, pin: pin)
+                guard operationID == token, !Task.isCancelled, !attempt.cancelled else { return }
+                app.saveServer(name: enteredName, address: url, editing: edited, certificatePin: approved)
+                dismiss()
+            } catch {
+                guard operationID == token else { return }
+                problem = error is CancellationError ? "Connection cancelled." : error.localizedDescription
+            }
         }
+    }
+
+    private func cancelConnection() {
+        operationID = nil
+        connectionTask?.cancel(); connectionTask = nil
+        if let attempt { attempt.cancel(); app.finishConnection(attempt) }
+        attempt = nil; checking = false
     }
 }
 
@@ -427,7 +474,8 @@ struct IPadHelpView: View {
             List {
                 Section("Connect safely") {
                     Text("HTTP is allowed for trusted LAN/VPN connections, including Tailscale; it is not encrypted by Tessera. Use HTTPS on other networks. Keep Tailscale connected and allow Tessera Local Network access in iPad Settings when using a LAN address.")
-                    Text("For Local HTTPS, use the exact server hostname, install the server's CA profile, then explicitly enable trust in Settings → General → About → Certificate Trust Settings. Do not trust an unknown CA. Certificate errors are never silently bypassed by this app.")
+                    Text("A bare hostname prefers HTTPS on port 7332, then HTTP on 7331 if HTTPS is unreachable. Explicit schemes and ports are respected. For a reverse proxy on 443, enter https://host:443. Existing saved URLs are unchanged.")
+                    Text("For Local HTTPS, use the exact server hostname and either install/trust a CA you control in iPad Settings, or verify and explicitly accept the certificate fingerprint in Tessera. Accepted certificates are remembered per saved server; changed certificates ask again. Saved Servers → Edit → Forget Accepted Certificate resets approval. Cancelling a certificate warning never falls back to HTTP or installs system trust.")
                     Button("Open iPad App Settings") { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) }
                 }
                 Section("iPad windows & input") {

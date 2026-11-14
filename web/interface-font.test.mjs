@@ -5,10 +5,10 @@ import { normalizeInterfaceFontSize } from "./interface-font.mjs";
 import { createPreferences } from "./preferences.mjs";
 import { createSettings } from "./settings-view.mjs";
 
-test("interface font sizes are bounded and legacy settings retain the current default", () => {
+test("interface font sizes are bounded and unset or invalid sizes use the 14px default", () => {
   for (const value of [10, 12, 14, 16, 18, "14"]) assert.equal(normalizeInterfaceFontSize(value), Number(value));
   for (const value of [undefined, null, "", 0, 9, 19, Infinity, NaN, 14.5, "bad"]) {
-    assert.equal(normalizeInterfaceFontSize(value), 12);
+    assert.equal(normalizeInterfaceFontSize(value), 14);
   }
 });
 
@@ -27,8 +27,10 @@ test("interface size changes scale only the interface and save independently of 
   assert.equal(preferences.defaultPaneFontSize, 17);
   assert.equal(preferences.userSettingsPayload().interfaceFontSize, 18);
   assert.equal(preferences.userSettingsPayload().defaultPaneFontSize, 17);
+  preferences.setInterfaceFontSize(12, { save: false });
+  assert.equal(properties.get("--tessera-ui-font-scale"), "1", "styles are drawn at the 12px base");
   preferences.setInterfaceFontSize(undefined, { save: false });
-  assert.equal(properties.get("--tessera-ui-font-scale"), "1");
+  assert.equal(properties.get("--tessera-ui-font-scale"), String(14 / 12));
   assert.equal(saves.length, 1);
 });
 
@@ -71,5 +73,6 @@ test("changing interface size holds a phone's shared-shell grid before changing 
 test("interface text sizes use scalable units instead of fixed pixels", () => {
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   assert.match(css, /font-size:\s*calc\(16px \* var\(--tessera-ui-font-scale, 1\)\)/);
+  assert.match(css, /--tessera-ui-font-scale:\s*calc\(14 \/ 12\)/, "pages show the 14px default before settings load");
   assert.doesNotMatch(css, /(?:^|[;{])\s*(?:font-size|font)\s*:\s*(?:\d+\s+)?\d+px/m);
 });

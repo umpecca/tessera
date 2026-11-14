@@ -278,7 +278,10 @@ sequences out of the terminal stream and writes the text to the system
 clipboard, which is what makes a copy inside an editor such as Fresh, Vim, or
 Helix available to other applications on the machine running the browser. A
 browser that refuses the write leaves the text on Tessera's own Paste and
-reports "Clipboard blocked". OSC 52 clipboard *reads* are ignored and never
+reports "Clipboard blocked". Browsers allow the write only over HTTPS. The
+iPad app writes the iPad clipboard over HTTP as well, but only for the
+terminal you are looking at; a copy from a window that isn't in view goes to
+Tessera's own Paste. OSC 52 clipboard *reads* are ignored and never
 answered: replying would let any program running in a Terminal pane read the
 operator's clipboard.
 
@@ -314,7 +317,7 @@ Use `Ctrl+Plus`/`Cmd+Plus` and `Ctrl+Minus`/`Cmd+Minus` to adjust the active
 pane's text size. A brief indicator shows the size as a percentage of the
 configured default; `Ctrl+0`/`Cmd+0` restores that default and shows 100%.
 
-Tessera uses the locally bundled JetBrains Mono font by default. Choose
+Tessera uses the locally bundled Departure Mono font by default. Choose
 JetBrains Mono, Fira Code, IBM Plex Mono, Commit Mono, Hack, Cascadia Code,
 Iosevka, Victor Mono, Inconsolata, Departure Mono, Spleen, Pixel Operator Mono,
 scientifica or Cozette under
@@ -341,9 +344,9 @@ bold face is wider than its regular face, so Tessera does not use it. Changing
 the font does not change the pane's text size.
 
 Under **Settings → Fonts**, **Interface** independently scales menus, window
-titles, settings and phone controls (10–18px, default 12px). **Terminal default**
-sets text size for new terminal panes; **Current terminal** changes only the
-selected terminal. Interface sizing does not change terminal text, the shared
+titles, settings and phone controls (10–18px, default 14px). **Terminal default**
+sets text size for new terminal panes (default 14px); **Current terminal**
+changes only the selected terminal. Interface sizing does not change terminal text, the shared
 shell's grid, embedded websites or remote desktops. Interface size is saved
 per user, separately for phones and desktops/iPads.
 

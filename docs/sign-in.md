@@ -1,7 +1,54 @@
 # Sign-in
 
 Sign-in is off until you turn it on in **Settings → Sign-in**, or start
-Tessera with `-auth=system` or `-auth=file`.
+Tessera with `-auth=system`, `-auth=file`, or CLI credentials.
+
+## CLI account for one run
+
+```sh
+printf '%s\n' "$TESSERA_PASSWORD" | tessera \
+  -addr 0.0.0.0:7331 -allowed-host studio.example.com \
+  -username alice -password-stdin
+```
+
+Read `TESSERA_PASSWORD` from a secret manager or a hidden terminal prompt;
+the [README example](../README.md#start-with-a-hostname-and-a-cli-sign-in) shows
+the prompt and both HTTP/HTTPS addresses. Only the first stdin line is read;
+LF/CRLF is removed, other whitespace is kept, and the password must be
+1–1024 bytes. Empty/incomplete credentials fail startup rather than disabling
+sign-in. `-password` is also supported, but **argument passwords can be seen in
+process listings and shell history**; prefer `-password-stdin`. Do not supply both.
+
+- These credentials supersede the saved sign-in mode and **all** saved accounts
+  for this run. The CLI account is an admin; saved accounts, their remembered
+  cookies and host-account cookies cannot bypass it. Existing saved accounts,
+  passwords and sign-in preferences are not overwritten. Restart without CLI
+  credentials to use the saved setup again.
+- Settings shows that the account/password are CLI-owned and cannot change
+  them or manage the dormant saved accounts. `tessera user` still manages the
+  saved accounts on disk, but those changes do not affect the CLI override.
+- Do not combine CLI credentials with `-users`, `-auth=off` or `-auth=system`.
+  `-auth=file` may be supplied but is not needed and is not persisted when CLI
+  credentials are present. Without CLI credentials, `-auth` retains its usual
+  persisted behavior below.
+- The CLI account sees workspaces belonging to its name, including existing
+  ones with that name. No workspaces are moved. Terminals still run as Tessera's
+  OS account; this is not OS-user isolation.
+- Password transport restrictions, login throttling and signed-in-device
+  controls still apply. `tessera login -account alice` can recover only the CLI
+  account while the override is active, not a dormant saved account.
+- CLI sign-ins are isolated from saved-account sign-ins and expire across a
+  fresh process launch (even with the same username/password). Passwords are
+  hashed in memory, not added to the account database.
+- An automatic self-update restart cannot replay an already-consumed stdin
+  password. With `-password-stdin`, restart manually and supply the password
+  again after updating; a failed replacement handoff restores the current
+  server without falling back to saved accounts.
+
+Startup reports actual HTTP/Local HTTPS URLs (or disabled HTTPS) and effective
+sign-in mode/account names on stdout; errors remain on stderr. Only enabled
+listeners are reported as URLs. Allowing a hostname does not enable HTTPS or
+alter DNS; configure Local HTTPS separately in Settings.
 
 ## Settings → Sign-in
 
@@ -85,7 +132,8 @@ printf '%s\n' "$PASSWORD" | tessera user add -password-stdin bob
 
 Pass the server's `-db` to the commands when it isn't the default. Changes
 apply to a running server without a restart. Passwords are stored as argon2id
-hashes and are never accepted as command arguments.
+hashes. These saved-account commands do not accept passwords as arguments;
+the separate runtime `-password` option above does, with the stated risks.
 
 Earlier versions kept accounts in a credentials file
 (`<user config dir>/Tessera/credentials`, or `-auth-file`). The server and

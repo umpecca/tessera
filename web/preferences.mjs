@@ -1,15 +1,16 @@
 import { WindowWobble } from "./window-wobble.mjs";
 import { MosaicScreensaver } from "./screensaver.mjs";
+import { PolygonScreensaver } from "./screensaver-polygons.mjs";
 import { normalizePredictionMode } from "./terminal-prediction.mjs";
 import { defaultTerminalTERM, normalizeTerminalTERM, defaultTerminalRowSpacing, normalizeTerminalRowSpacing } from "./terminal-settings.mjs";
 import { defaultTerminalFont, loadTerminalFont, normalizeTerminalFont, terminalFontFamily, terminalPrimaryFontFamily } from "./terminal-font.mjs";
-import { defaultTerminalColorMode, normalizeTerminalColorMode, recreateOpenTerminalViews, terminalColorModes } from "./terminal-colors.mjs";
+import { defaultTerminalColorMode, normalizeTerminalColorMode, recreateOpenTerminalViews, terminalColorModes, terminalColorTheme } from "./terminal-colors.mjs";
 import { defaultRDPWheelSpeed, normalizeRDPWheelSpeed } from "./rdp-pane.mjs";
 import { SettingsPersistence } from "./settings-persistence.mjs";
 import { normalizeTerminalBacklogLimit } from "./terminal-replica.mjs";
 import { defaultOLEDBorderSize, normalizeOLEDBorderSize } from "./oled-border-size.mjs";
 import { defaultWheelSensitivity, normalizeWheelSensitivity } from "./wheel-sensitivity.mjs";
-import { defaultInterfaceFontSize, normalizeInterfaceFontSize } from "./interface-font.mjs";
+import { baseInterfaceFontSize, defaultInterfaceFontSize, normalizeInterfaceFontSize } from "./interface-font.mjs";
 
 // Device/account preferences and their live application effects.
 // State is owned here. Dependencies are lazy feature providers, so construction
@@ -70,6 +71,7 @@ export function createPreferences(dependencies, platform = globalThis) {
     reducedWindowMotion: undefined,
     windowWobble: undefined,
     screensaver: undefined,
+    polygonScreensaver: undefined,
     rdpWheelSpeedStorageKey: undefined,
     rdpWheelSpeed: undefined,
   };
@@ -98,7 +100,7 @@ export function createPreferences(dependencies, platform = globalThis) {
       if (phone.phoneView?.active && phone.phoneView.openPaneID) phone.changePhoneInteractionMode(phone.phoneView.openPaneID);
     }
     feature.interfaceFontSize = normalizeInterfaceFontSize(value);
-    platform.document.documentElement.style.setProperty("--tessera-ui-font-scale", String(feature.interfaceFontSize / defaultInterfaceFontSize));
+    platform.document.documentElement.style.setProperty("--tessera-ui-font-scale", String(feature.interfaceFontSize / baseInterfaceFontSize));
     if (save) dependencies.workspace().scheduleUserSettingsSave();
   }
 
@@ -451,6 +453,13 @@ export function createPreferences(dependencies, platform = globalThis) {
     feature.screensaver = new MosaicScreensaver({
       reducedMotion: () => feature.reducedWindowMotion.matches,
       onClose: () => dependencies.switcher().restorePaneFocusAfterOverlayDismiss(feature.screensaver.element),
+    });
+    // Drawn in the default terminal colors at the default terminal text size.
+    feature.polygonScreensaver = new PolygonScreensaver({
+      reducedMotion: () => feature.reducedWindowMotion.matches,
+      colors: () => terminalColorTheme(feature.terminalColorMode),
+      fontSize: () => feature.defaultPaneFontSize || feature.fallbackPaneFontSize,
+      onClose: () => dependencies.switcher().restorePaneFocusAfterOverlayDismiss(feature.polygonScreensaver.element),
     });
     platform.document.addEventListener("visibilitychange", () => { if (platform.document.hidden) feature.windowWobble.stop(); });
     feature.rdpWheelSpeedStorageKey = "tessera.rdp-wheel-speed.v1";

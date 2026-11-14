@@ -46,6 +46,10 @@ canvas, so H.264 pixels never pass through WebAssembly:
     the server in the Display Control monitor layout (and the configuration may carry one for the
     connection, which Tessera leaves unset). Tessera's full-size sharp mode asks Remotr for a 2x
     layout this way, since Remotr honors the scale factor only in a layout.
+13. `0013` `ironrdp-web`: the session keeps the bytes the connection sequence read past its last
+    PDU. It used to drop them (`into_inner_no_leftover` checks only in debug builds), which broke
+    the session whenever Tessera's proxy merged the server's first session PDUs into the same
+    WebSocket message as the last connection PDU (task 269).
 
 `0004` and `0005` only add the crate, so `rdp.js` is the same built with or without them.
 
@@ -74,7 +78,7 @@ cd ../../web-client/iron-remote-desktop-rdp && npm install && npm run build-alon
 cp dist/iron-remote-desktop-rdp.js /path/to/tessera/web/vendor/rdp.js
 ```
 
-Then bump the `?v=` cache key on the `vendor/rdp.js` import in `web/app.js`, and run
+Then bump the `?v=` cache key on the `vendor/rdp.js` import in `web/rdp-session.mjs`, and run
 `TESSERA_RDP_INTEROP=1 go test ./internal/httpapi -run IronRDP` to drive the new client against
 the gateway.
 

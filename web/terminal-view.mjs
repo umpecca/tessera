@@ -330,7 +330,7 @@ export function createTerminal(dependencies, platform = globalThis) {
         stream: { epoch: "", offset: 0 },
       };
       rect.terminal.replica = new TerminalReplica(term, rect.terminal.output, term.coreID, (text) => {
-        void dependencies.clipboard().applyTerminalClipboardWrite(text);
+        void dependencies.clipboard().applyTerminalClipboardWrite(text, feature.terminalInView(rect));
       }, (error) => rect.terminal?.socket?.close(4500, error.message.slice(0, 100)), {
         backlogLimit: dependencies.preferences().terminalBacklogLimit,
         onBacklogExceeded: () => feature.recoverTerminalBacklog(rect),
@@ -800,6 +800,14 @@ export function createTerminal(dependencies, platform = globalThis) {
     return !platform.window?.tesseraNativeSuspended && !platform.document.hidden && platform.document.hasFocus();
   }
 
+  // Whether someone is looking at this terminal right now: this browser is in
+  // use and the terminal is the active window, on screen (in the phone view,
+  // the open one). Only then may a program in it write the iPad clipboard.
+  function terminalInView(rect) {
+    return feature.browserInUse() && !feature.paneUnseen(rect)
+      && (dependencies.phone().phoneView.active || dependencies.desktop().getActivePane() === rect);
+  }
+
   // Typing into or clicking a terminal takes its shell's size back for this
   // browser after another one, showing the same terminal, resized it.
   function claimTerminalSize(rect) {
@@ -990,6 +998,7 @@ export function createTerminal(dependencies, platform = globalThis) {
     refreshTerminalSizes,
     sendTerminalGridSize,
     browserInUse,
+    terminalInView,
     claimTerminalSize,
     requestTerminalGridSize,
     openTerminalFind,

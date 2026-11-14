@@ -1,4 +1,4 @@
-export const defaultTerminalFont = "jetbrains-mono";
+export const defaultTerminalFont = "departure-mono";
 export const terminalSymbolFontFamily = '"Noto Sans Symbols 2"';
 export const terminalSymbolProbe = "⏵⏸⮞⣿";
 

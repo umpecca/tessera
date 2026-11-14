@@ -19,6 +19,22 @@ public enum IPadPresentation {
     }
 }
 
+/// A timeout only changes decoration; the corner control remains reachable.
+public struct IdleAppMenu: Equatable, Sendable {
+    public static let delay: TimeInterval = 5
+    public private(set) var visible = true
+    public private(set) var open = false
+    public private(set) var active = true
+    public private(set) var accessibilityActive = false
+    public var canAutoHide: Bool { visible && active && !open && !accessibilityActive }
+    public init() {}
+    public mutating func reveal() { visible = true }
+    public mutating func setOpen(_ value: Bool) { open = value; reveal() }
+    public mutating func setActive(_ value: Bool) { active = value; if value { reveal() } }
+    public mutating func setAccessibilityActive(_ value: Bool) { accessibilityActive = value; reveal() }
+    public mutating func expire() { if canAutoHide { visible = false } }
+}
+
 public struct AppShortcut: Equatable, Sendable {
     public let command: String
     public let input: String
@@ -62,7 +78,7 @@ public struct ConnectionAdvice: Equatable, Sendable {
         case -1200, -1201, -1202, -1203, -1204, -1205, -1206:
             title = "HTTPS certificate could not be verified"
             detail = description
-            guidance = "Use the server's correct HTTPS hostname and a trusted, unexpired certificate. For Tessera Local HTTPS, install its CA profile and explicitly enable certificate trust in iPad Settings. The app never bypasses certificate validation."
+            guidance = "Use the server's correct HTTPS hostname. On iPad, retry to review the certificate fingerprint and accept only after verifying it with the server owner, or install and explicitly trust a CA you control in iPad Settings. Declining a certificate never falls back to HTTP. Other TLS protocol failures may require fixing the server."
         case -1003, -1006:
             title = "Server name could not be found"
             detail = description

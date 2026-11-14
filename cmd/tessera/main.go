@@ -62,6 +62,10 @@ serve:
 	auditRetention := flag.Int("audit-retention-days", 30, "audit-event retention in days when -audit-log is enabled; negative disables")
 	maxUploadSize := flag.Int64("max-upload-size", server.DefaultMaxUploadBytes, "maximum bytes per terminal file upload")
 	authMode := flag.String("auth", "", "sign-in: off, system (this host account's password), or file (accounts managed with `tessera user`); saved, and locked in Settings while given; without it, as set in Settings, off at first")
+	var credentials credentialFlags
+	flag.StringVar(&credentials.username, "username", "", "single sign-in account for this run; supersedes saved accounts without changing them")
+	flag.StringVar(&credentials.password, "password", "", "password for -username (visible in arguments/history; prefer -password-stdin)")
+	flag.BoolVar(&credentials.fromStdin, "password-stdin", false, "read the password for -username from the first line of stdin")
 	flag.String("auth-token", "", "no longer used: the host recovery token is kept in the database")
 	authFile := flag.String("auth-file", auth.DefaultCredentialsPath(), "credentials file from before accounts were kept in the database; its accounts are imported once")
 	allowHTTPSignIn := flag.Bool("allow-http-sign-in", false, "accept passwords over plain HTTP from other devices; only for already-encrypted links such as Tailscale or a VPN")
@@ -83,10 +87,29 @@ serve:
 		log.Fatalf("%v", err)
 	}
 	users := parseUsers(*usersFlag)
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "username":
+			credentials.usernameSet = true
+		case "password":
+			credentials.passwordSet = true
+		case "password-stdin":
+			credentials.stdinSet = true
+		}
+	})
+	runtimeAccount, err := credentials.account(*authMode, users, os.Stdin)
+	if err != nil {
+		_ = update.SignalReplacementFailure(err)
+		log.Fatalf("%v", err)
+	}
+	if runtimeAccount != nil {
+		*authMode = httpapi.AuthFile
+	}
 	authOptions, err := authOptionsFromFlags(*authMode, users, *allowHTTPSignIn, *signInIdle, *signInMax)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	authOptions.RuntimeAccount = runtimeAccount
 	useTray := *tray && desktop.TraySupported()
 	if *tray && !desktop.TraySupported() {
 		log.Printf("system tray is not supported on this platform; continuing without it")
@@ -123,6 +146,7 @@ serve:
 		RequestRestart:     requestLocalRestart,
 		Auth:               authOptions,
 		AccountsFile:       *authFile,
+		StartupOutput:      os.Stdout,
 	})
 	if err := controller.Start(context.Background()); err != nil {
 		if signalErr := update.SignalReplacementFailure(err); signalErr != nil {
@@ -134,7 +158,6 @@ serve:
 		log.Printf("signal update restart readiness: %v", err)
 	}
 
-	log.Printf("Tessera listening at %s", controller.URL())
 	log.Printf("SQLite database: %s", *dbPath)
 	if len(users) > 0 {
 		log.Printf("Multi-user mode: %s", strings.Join(users, ", "))
@@ -196,7 +219,6 @@ serve:
 					log.Printf("restored previous Local HTTPS settings at %s", controller.URL())
 					continue
 				}
-				log.Printf("Tessera listening at %s", controller.URL())
 			case <-exitTray:
 				shutdown <- struct{}{}
 				if useTray {

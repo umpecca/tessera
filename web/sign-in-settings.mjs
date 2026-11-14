@@ -395,11 +395,17 @@ export async function renderSignInSettings(section, { doc = globalThis.document,
   status.remove();
   const settings = loaded.payload;
   let detail = describeSignInMode(settings);
-  if (settings.locked) detail += " Set with -auth when Tessera starts.";
+  if (settings.locked) detail += settings.cliAccount
+    ? " Account and password set with -username on the command line for this run only."
+    : " Set with -auth when Tessera starts.";
   const controls = settings.canManage && !settings.locked
     ? [button(doc, "Change...", () => openChangeSignInDialog(settings, options))]
     : [];
   section.appendChild(settingsRow(doc, `Require sign-in: ${signInModeNames[settings.mode] || settings.mode}`, detail, controls));
+  if (settings.cliAccount) {
+    section.appendChild(settingsRow(doc, settings.account, "CLI admin account. Saved accounts are inactive and unchanged; restart without CLI credentials to use them again.", []));
+    return;
+  }
   if (settings.mode !== "file") return;
   if (settings.noAdmins) {
     section.appendChild(element(doc, "p", "settings-row-detail",

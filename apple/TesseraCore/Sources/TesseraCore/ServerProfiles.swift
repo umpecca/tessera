@@ -5,12 +5,14 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     public var name: String
     public var address: URL
     public var usesLegacyDataStore: Bool
+    public var certificatePin: ServerCertificatePin?
 
-    public init(id: UUID = UUID(), name: String, address: URL, usesLegacyDataStore: Bool = false) {
+    public init(id: UUID = UUID(), name: String, address: URL, usesLegacyDataStore: Bool = false, certificatePin: ServerCertificatePin? = nil) {
         self.id = id
         self.name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
         self.address = address
         self.usesLegacyDataStore = usesLegacyDataStore
+        self.certificatePin = certificatePin?.applies(to: address) == true ? certificatePin : nil
     }
 
     public var displayName: String { name.isEmpty ? address.host ?? "Tessera server" : name }
@@ -35,6 +37,9 @@ public struct ServerProfiles: Codable, Equatable, Sendable {
             }.prefix(32))
             var keptLegacyStore = false
             for index in library.profiles.indices {
+                if library.profiles[index].certificatePin?.applies(to: library.profiles[index].address) != true {
+                    library.profiles[index].certificatePin = nil
+                }
                 library.profiles[index].name = String(library.profiles[index].name.prefix(64))
                 if library.profiles[index].usesLegacyDataStore {
                     library.profiles[index].usesLegacyDataStore = !keptLegacyStore
@@ -51,7 +56,7 @@ public struct ServerProfiles: Codable, Equatable, Sendable {
         return ServerProfiles()
     }
 
-    public mutating func save(name: String, address: URL, editing id: UUID? = nil) {
+    public mutating func save(name: String, address: URL, editing id: UUID? = nil, certificatePin: ServerCertificatePin? = nil) {
         guard (try? ServerAddress.parse(address.absoluteString).get()) != nil else { return }
         if let id, let index = profiles.firstIndex(where: { $0.id == id }) {
             // Changing the origin must not reuse an authenticated cookie store,
@@ -59,13 +64,14 @@ public struct ServerProfiles: Codable, Equatable, Sendable {
             if ServerAddress.sameOrigin(profiles[index].address, address) {
                 profiles[index].name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
                 profiles[index].address = address
+                if let certificatePin, certificatePin.applies(to: address) { profiles[index].certificatePin = certificatePin }
                 selectedID = id
                 return
             }
             profiles.remove(at: index)
         }
         guard profiles.count < 32 else { return }
-        let profile = ServerProfile(name: name, address: address)
+        let profile = ServerProfile(name: name, address: address, certificatePin: certificatePin)
         profiles.append(profile)
         selectedID = profile.id
     }
@@ -73,5 +79,10 @@ public struct ServerProfiles: Codable, Equatable, Sendable {
     public mutating func remove(_ id: UUID) {
         profiles.removeAll { $0.id == id }
         if selected == nil { selectedID = profiles.first?.id }
+    }
+
+    public mutating func forgetCertificate(_ id: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        profiles[index].certificatePin = nil
     }
 }

@@ -10,7 +10,7 @@ builds for iPadOS 18+ and macOS 15+.
 - Asks for a server address on first launch (`studio`, `100.64.0.2:8080`, or
   a full `https://` URL). Without a scheme the address is HTTP; without a
   port it is 7331, Tessera's default. **Change Server…** (Shift+Cmd+,) and
-  **Reload Page** (Shift+Cmd+R) are in the Mac menu bar and iPad's always-visible
+  **Reload Page** (Shift+Cmd+R) are in the Mac menu bar and iPad's top-right
   **… app menu**.
 - Shows `confirm()` and `alert()` as native dialogs. A web view in an app
   otherwise answers them with Cancel, so closing a terminal from its title
@@ -29,6 +29,40 @@ builds for iPadOS 18+ and macOS 15+.
 
 - The touch **… app menu** opens saved servers, reload, palette/window/session
   lists, workspace settings, terminal keys, downloads, imports, diagnostics and help.
+- When adding/editing an iPad server, just enter its hostname or IP: the app
+  tries **HTTPS on 7332 first**, then **HTTP on 7331** only if the HTTPS
+  listener cannot be reached. `https://studio` selects HTTPS/7332 only;
+  `http://studio` selects HTTP/7331 only. Explicit ports are never replaced:
+  use `https://studio:443` for a reverse proxy on 443, or `studio:8080` for
+  custom HTTP. Paths/queries are kept. Existing saved URLs/sign-ins and the
+  Mac app's address defaults are unchanged. The server must still have Local
+  HTTPS enabled; this does not create an HTTPS listener or change DNS.
+- Unverified or changed HTTPS certificates show a native **Accept Certificate**
+  / **Cancel** decision with the hostname/port, validation problem and SHA-256
+  fingerprint. Verify the fingerprint with the server owner before accepting.
+  An approval is saved on the iPad for that server profile's exact hostname,
+  port and certificate, so matching certificates do not warn after relaunch.
+  A different certificate requires approval again, even for the same server.
+  **Saved Servers → Edit → Forget Accepted Certificate** clears an approval;
+  changing a profile to another origin never carries its approval across.
+  Cancelling never falls back to HTTP or replaces the old pin. This is not a
+  system-wide CA installation/trust change and does not approve other sites'
+  certificates, including embedded pages on other origins.
+- Endpoint discovery and HTTPS reconnect preflights use short-lived,
+  cookie/credential/cache-free HEAD requests without following redirects.
+  Cancelling, editing the address or leaving/backgrounding the form prevents
+  stale checks from connecting or saving a profile. A server reachable only
+  through plain HTTP still needs a trusted LAN/VPN; accepting a certificate
+  without verifying its fingerprint can expose sign-ins and host access to an
+  impersonator.
+- The **… button fades away after five seconds** of menu inactivity. Tap its
+  original top-right corner once to reveal it, then tap again to open the menu.
+  Typing, scrolling and other workspace touches do not reveal it or reset its
+  timer. Open menus never time out; closing one or returning to the app starts
+  a fresh five seconds. VoiceOver or Switch Control keeps the button visible.
+  Only the button's decoration changes, without resizing or reloading the
+  workspace or requesting keyboard focus. This applies in windowed mode too,
+  independently of the full-screen preference below.
 - **Distraction-Free Full Screen is on by default.** While Tessera's workspace
   fills the iPad's display and is active, the native app hides the clock/date/
   battery status bar and requests auto-hiding of the Home indicator. It uses the
@@ -93,7 +127,10 @@ Connection errors explain DNS/Tailscale, LAN permission and certificate failures
 Use Settings → Apps → Tessera to allow Local Network where needed. Local HTTPS
 requires the correct hostname and a trusted CA (install the profile and explicitly
 enable trust in Settings → General → About → Certificate Trust Settings).
-The app never disables TLS validation; only trust a CA you control.
+The app uses normal TLS validation unless you explicitly accept and pin that
+server's certificate as described above; it never accepts an unknown certificate
+silently. Only install a CA you control. Fingerprint exceptions apply to the
+native app, not Safari or other apps.
 
 ## Native iPad privacy
 
@@ -152,8 +189,12 @@ unsafe; use HTTPS or a trusted VPN.
 
 Text is limited to 1 MiB UTF-8. Images are limited to 16 MiB and 16 megapixels;
 native reads export PNG, and the bridge supports writing PNG/JPEG images.
-Terminal-initiated (OSC 52) **native** clipboard writes are disabled; ordinary
-browser/internal-buffer behavior is unchanged. Settings → Clipboard and
+A terminal program's copy (OSC 52) reaches the iPad clipboard through the
+bridge, over HTTP too, only from the terminal you are looking at: the active
+window, on screen, while the app is in the foreground and unlocked. A copy from
+a minimized, covered or inactive window, or while the app is in the
+background, goes only to Tessera's own Paste and says so. Terminal programs
+can never read the clipboard, and image writes from them are refused. Settings → Clipboard and
 Diagnostics identify the native bridge rather than suggesting an extension.
 
 Physical-iPad checks remain: Allow/Don't Allow paste permission, text and
@@ -204,7 +245,7 @@ not read a personal clipboard or approve the iPadOS paste permission dialog.
 
 `apple-ipad-tests.mjs` creates/removes a disposable iPad and runs the shared
 `Tessera-iPad` UI-test scheme: generated loopback fixtures test profile storage,
-touch commands, key row, status-bar hiding/restoration and persistence, rotation, download actions, frame measurement and native
+touch commands, idle-menu hiding/reveal/open-menu timing, key row, status-bar hiding/restoration and persistence, rotation, download actions, frame measurement and native
 accessibility descriptions at XXXL text. This is not physical-device certification.
 Check real keyboard reserved keys/Command hints, floating keyboard, trackpad,
 Split View/Stage Manager, paste permissions and 120 Hz/latency on an actual iPad.

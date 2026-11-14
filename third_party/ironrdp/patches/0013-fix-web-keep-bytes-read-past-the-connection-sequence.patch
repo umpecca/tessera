@@ -1,0 +1,113 @@
+From e9812165efd80b4e35badaaea801e3630518e5ea Mon Sep 17 00:00:00 2001
+From: jaxdad <atxhxag@gmail.com>
+Date: Fri, 13 Nov 2026 16:00:34 -0600
+Subject: [PATCH] fix(web): keep bytes read past the connection sequence
+
+`connect` read the connection sequence through its own `Framed`, then
+dropped that `Framed`'s buffer with `into_inner_no_leftover` and gave the
+session a fresh one. The leftover check is a `debug_assert`, so a release
+build silently discarded any bytes already read past the last connection
+PDU. A proxy that merges the server's TLS records into fewer WebSocket
+messages can put the server's first session PDUs in the same message as
+the last connection PDU; the session then started reading mid-stream and
+failed with "invalid `fastPathLength`".
+
+Hand the leftover bytes to the session's `Framed` with `new_with_leftover`.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ironrdp-web/src/session.rs | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/crates/ironrdp-web/src/session.rs b/crates/ironrdp-web/src/session.rs
+index 454581aa..35341c19 100644
+--- a/crates/ironrdp-web/src/session.rs
++++ b/crates/ironrdp-web/src/session.rs
+@@ -34,6 +34,7 @@ use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnect
+ use ironrdp_core::WriteBuf;
+ use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+ use ironrdp_egfx::decode::{Avc444Layout, DecodedFrame, DecoderError, DecoderResult, H264Decoder, PresentedView};
++use ironrdp_futures::bytes::BytesMut;
+ use ironrdp_futures::{FramedWrite, single_sequence_step_read};
+ use rgb::AsPixels as _;
+ use tap::prelude::*;
+@@ -576,7 +577,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
+ 
+         let use_display_control = self.0.borrow().use_display_control;
+ 
+-        let (connection_result, ws) = connect(ConnectParams {
++        let (connection_result, ws, leftover) = connect(ConnectParams {
+             ws,
+             config,
+             proxy_auth_token: auth_token,
+@@ -615,7 +616,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
+             set_cursor_style_callback_context,
+ 
+             input_events_rx: RefCell::new(Some(input_events_rx)),
+-            rdp_reader: RefCell::new(Some(rdp_reader)),
++            rdp_reader: RefCell::new(Some((rdp_reader, leftover))),
+             connection_result: RefCell::new(Some(connection_result)),
+             clipboard: RefCell::new(Some(clipboard)),
+             printer: RefCell::new(Some(printer)),
+@@ -666,7 +667,8 @@ pub(crate) struct Session {
+     // Consumed when `run` is called
+     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
+     connection_result: RefCell<Option<connector::ConnectionResult>>,
+-    rdp_reader: RefCell<Option<ReadHalf<WebSocket>>>,
++    /// The read half, with the bytes the connection sequence read past its last PDU.
++    rdp_reader: RefCell<Option<(ReadHalf<WebSocket>, BytesMut)>>,
+     clipboard: RefCell<Option<Option<WasmClipboard>>>,
+     printer: RefCell<Option<Option<WasmPrinter>>>,
+     /// The JavaScript callback that decodes and draws H.264 frames, and the frames for it.
+@@ -720,7 +722,7 @@ impl iron_remote_desktop::Session for Session {
+     type Error = IronError;
+ 
+     async fn run(&self) -> Result<Self::SessionTerminationInfo, Self::Error> {
+-        let rdp_reader = self
++        let (rdp_reader, leftover) = self
+             .rdp_reader
+             .borrow_mut()
+             .take()
+@@ -742,7 +744,7 @@ impl iron_remote_desktop::Session for Session {
+         let mut wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
+         let mut h264_frames = self.h264_frames.borrow_mut().take();
+ 
+-        let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
++        let mut framed = ironrdp_futures::LocalFuturesFramed::new_with_leftover(rdp_reader, leftover);
+ 
+         debug!("Initialize canvas");
+ 
+@@ -1756,7 +1758,7 @@ async fn connect(
+         enable_egfx,
+         h264_frames_tx,
+     }: ConnectParams,
+-) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
++) -> Result<(connector::ConnectionResult, WebSocket, BytesMut), IronError> {
+     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
+ 
+     // In web browser environments, we do not have an easy access to the local address of the socket.
+@@ -1837,9 +1839,11 @@ async fn connect(
+     .await?
+     .into_connected()?;
+ 
+-    let ws = framed.into_inner_no_leftover();
++    // The server's first session PDUs can arrive in the same WebSocket message
++    // as the last connection PDU; they belong to the session.
++    let (ws, leftover) = framed.into_inner();
+ 
+-    Ok((connection_result, ws))
++    Ok((connection_result, ws, leftover))
+ }
+ 
+ struct RDCleanPathConnectParams {
+@@ -2214,7 +2218,6 @@ impl JsPresentedH264 {
+ mod tests {
+     use futures_util::io::Cursor;
+     use iron_remote_desktop::IronError as _;
+-    use ironrdp_futures::bytes::BytesMut;
+ 
+     use super::*;
+ 
+-- 
+2.54.0 (Apple Git-157)
+

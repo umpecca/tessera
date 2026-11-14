@@ -95,10 +95,10 @@ func decodePhoneSettings(stored string) *DisplaySettings {
 const defaultWheelSensitivity = 1.5
 const defaultOLEDWindowBorderSize = 10
 const DefaultTerminalTERM = "xterm-256color"
-const DefaultTerminalFont = "jetbrains-mono"
+const DefaultTerminalFont = "departure-mono"
 const DefaultTerminalRowSpacing = "tight"
 const DefaultTerminalColorMode = "dark"
-const DefaultInterfaceFontSize = 12
+const DefaultInterfaceFontSize = 14
 
 func normalizeInterfaceFontSize(value int) int {
 	if value < 10 || value > 18 {
@@ -401,9 +401,10 @@ INSERT OR IGNORE INTO user_settings (
   user_id, default_pane_font_size, default_theme, theme_id,
   deskbar_button_enabled, terminal_wheel_sensitivity,
   oled_window_border_size, terminal_term, terminal_font,
-  terminal_row_spacing, terminal_color_mode, older_mac_mode, created_at, updated_at, revision
+  terminal_row_spacing, terminal_color_mode, older_mac_mode, created_at, updated_at, revision,
+  interface_font_size
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalRowSpacing, DefaultTerminalColorMode, false, now, now, newID()); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, defaultPaneFontSize, defaultThemeID, defaultThemeID, true, defaultWheelSensitivity, defaultOLEDWindowBorderSize, DefaultTerminalTERM, DefaultTerminalFont, DefaultTerminalRowSpacing, DefaultTerminalColorMode, false, now, now, newID(), DefaultInterfaceFontSize); err != nil {
 			return nil, fmt.Errorf("create user settings: %w", err)
 		}
 		return s.LoadUserSettings(ctx, userID)

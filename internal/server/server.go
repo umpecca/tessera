@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -69,6 +70,9 @@ type Options struct {
 	// AccountsFile is the credentials file accounts were kept in before
 	// they moved into the database. Its accounts are imported once.
 	AccountsFile string
+	// StartupOutput receives a secret-free summary after successful listener
+	// starts/reloads. Nil leaves reporting to the caller.
+	StartupOutput io.Writer
 }
 
 const DefaultMaxUploadBytes int64 = httpapi.DefaultMaxUploadBytes
@@ -88,6 +92,8 @@ type Server struct {
 	terminals      *terminal.Manager
 	rdpSessions    *rdpsession.Manager
 	serveErr       chan error
+	startupOutput  io.Writer
+	auth           httpapi.AuthOptions
 }
 
 func Start(ctx context.Context, opts Options) (*Server, error) {
@@ -128,7 +134,9 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		_ = st.Close()
 		return nil, err
 	}
-	ImportAccountsFile(ctx, st, opts.AccountsFile)
+	if opts.Auth.RuntimeAccount == nil {
+		ImportAccountsFile(ctx, st, opts.AccountsFile)
+	}
 	if err := resolveSignIn(ctx, st, &opts.Auth); err != nil {
 		_ = st.Close()
 		return nil, err
@@ -185,6 +193,8 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		terminals:      terminalManager,
 		rdpSessions:    rdpSessions,
 		serveErr:       make(chan error, 1),
+		startupOutput:  opts.StartupOutput,
+		auth:           opts.Auth,
 	}
 	if err := srv.startListeners(httpsConfig); err != nil {
 		terminalManager.Close()
@@ -259,6 +269,7 @@ func (s *Server) startListenersLocked(config localhttps.Config) error {
 	if httpsServer != nil {
 		s.serve(httpsServer, httpsListener)
 	}
+	s.reportStartup()
 	return nil
 }
 
@@ -382,6 +393,19 @@ func ImportAccountsFile(ctx context.Context, st *store.Store, path string) {
 // Settings. A mode that can never work stops the server rather than leaving
 // it open; unusable accounts only stop anyone signing in until they're fixed.
 func resolveSignIn(ctx context.Context, st *store.Store, options *httpapi.AuthOptions) error {
+	if account := options.RuntimeAccount; account != nil {
+		if options.Mode != "" && options.Mode != httpapi.AuthFile {
+			return errors.New("CLI credentials cannot be combined with -auth=off or -auth=system")
+		}
+		if err := auth.ValidateName(account.Name); err != nil {
+			return err
+		}
+		if _, err := auth.VerifyPassword(account.Hash, []byte("validate-runtime-hash")); err != nil {
+			return errors.New("invalid CLI credential hash")
+		}
+		options.Mode, options.ModeLocked = httpapi.AuthFile, true
+		return options.CheckMode(options.Mode)
+	}
 	if options.Mode == "" {
 		mode, err := st.LoadSignInMode(ctx)
 		if err != nil {

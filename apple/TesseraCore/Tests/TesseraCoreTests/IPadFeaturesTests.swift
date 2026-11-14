@@ -3,6 +3,56 @@ import Testing
 @testable import TesseraCore
 
 @Suite struct IPadFeaturesTests {
+    @Test func idleMenuExpiresAndCornerRevealStartsAnotherIdlePeriod() {
+        var menu = IdleAppMenu()
+        #expect(IdleAppMenu.delay == 5)
+        #expect(menu.visible && menu.canAutoHide)
+        menu.expire()
+        #expect(!menu.visible && !menu.canAutoHide)
+        menu.reveal()
+        #expect(menu.visible && menu.canAutoHide)
+        menu.expire()
+        #expect(!menu.visible)
+    }
+
+    @Test func openMenuCannotExpireAndDismissalRestartsTheIdlePeriod() {
+        var menu = IdleAppMenu()
+        menu.setOpen(true)
+        #expect(!menu.canAutoHide)
+        menu.expire()
+        #expect(menu.visible && menu.open)
+        menu.setOpen(false)
+        #expect(menu.visible && menu.canAutoHide)
+        menu.expire()
+        #expect(!menu.visible)
+    }
+
+    @Test func assistiveTechnologyRevealsTheMenuAndPreventsTimeout() {
+        var menu = IdleAppMenu()
+        menu.expire()
+        menu.setAccessibilityActive(true)
+        #expect(menu.visible && !menu.canAutoHide)
+        menu.expire()
+        #expect(menu.visible)
+        menu.setAccessibilityActive(false)
+        #expect(menu.visible && menu.canAutoHide)
+        menu.expire()
+        #expect(!menu.visible)
+    }
+
+    @Test func foregroundEntryRevealsTheMenuAndInactiveScenesDoNotRunTimeouts() {
+        var menu = IdleAppMenu()
+        menu.setActive(false)
+        menu.expire()
+        #expect(menu.visible && !menu.canAutoHide)
+        menu.setActive(true)
+        menu.expire()
+        #expect(!menu.visible)
+        menu.setActive(false)
+        menu.setActive(true)
+        #expect(menu.visible && menu.canAutoHide)
+    }
+
     @Test func distractionFreeDefaultsOnAndPreservesExplicitPreferences() {
         #expect(IPadPresentation.distractionFreePreference(saved: nil, legacyStatusBarHidden: nil))
         #expect(!IPadPresentation.distractionFreePreference(saved: false, legacyStatusBarHidden: true))
@@ -101,7 +151,7 @@ import Testing
     }
 
     @Test func connectionAdviceExplainsCertificateDNSAndLocalNetworkFailures() {
-        #expect(ConnectionAdvice(errorCode: -1202, description: "TLS").guidance.contains("never bypasses"))
+        #expect(ConnectionAdvice(errorCode: -1202, description: "TLS").guidance.contains("Declining a certificate never falls back to HTTP"))
         #expect(ConnectionAdvice(errorCode: -1003, description: "DNS").guidance.contains("MagicDNS"))
         #expect(ConnectionAdvice(errorCode: -1009, description: "Offline").guidance.contains("Local Network"))
         #expect(ConnectionAdvice(errorCode: -1004, description: "Refused").guidance.contains("7331") == false)
