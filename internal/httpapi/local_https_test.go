@@ -86,6 +86,14 @@ func TestLocalHTTPSSettingsAPIValidatesPersistsAndRequestsRestart(t *testing.T) 
 	if root.Code != http.StatusOK || !bytes.Contains(root.Body.Bytes(), []byte("BEGIN CERTIFICATE")) {
 		t.Fatalf("root response = %d, %s", root.Code, root.Body.String())
 	}
+	for _, path := range []string{"/api/host/https/ca.mobileconfig", "/local-https/tessera-local-ca.mobileconfig"} {
+		profile := httptest.NewRecorder()
+		mux.ServeHTTP(profile, httptest.NewRequest(http.MethodGet, path, nil))
+		if profile.Code != http.StatusOK || profile.Header().Get("Content-Type") != "application/x-apple-aspen-config" ||
+			!bytes.Contains(profile.Body.Bytes(), []byte("com.apple.security.root")) {
+			t.Fatalf("%s = %d, %s", path, profile.Code, profile.Body.String())
+		}
+	}
 }
 
 func requestLocalHTTPS(t *testing.T, handler http.Handler, config localhttps.Config) *httptest.ResponseRecorder {

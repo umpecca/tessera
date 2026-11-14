@@ -232,7 +232,11 @@ struct ServerProfilesView: View {
                         ProgressView("Checking server…")
                         Button("Cancel Connection", action: cancelConnection).accessibilityIdentifier("server-connection-cancel")
                     }
-                    if let editing, app.library.profiles.first(where: { $0.id == editing })?.certificatePin != nil {
+                    if let editing, let profile = app.library.profiles.first(where: { $0.id == editing }), let pin = profile.certificatePin {
+                        if let authority = pin.authority {
+                            NavigationLink("Trust in Safari & Other Apps…") { IPadSystemTrustView(profile: profile, authority: authority) }
+                                .disabled(checking).accessibilityIdentifier("server-system-trust")
+                        }
                         Button("Forget Accepted Certificate", role: .destructive) { app.forgetCertificate(editing) }
                             .disabled(checking).accessibilityIdentifier("server-certificate-forget")
                     }
@@ -241,7 +245,7 @@ struct ServerProfilesView: View {
                 Section("Privacy & connections") {
                     Text("Each new profile has its own sign-in cookies and website storage. Switching servers does not stop their running shells. The first migrated profile keeps the existing app's sign-in data.")
                     Text("A bare hostname tries HTTPS on 7332 first, then HTTP on 7331 only if HTTPS is unreachable. Explicit https:// or http:// selects that protocol and its Tessera port; custom ports are kept. A bare host:port uses HTTP. Passwords in addresses are not accepted.")
-                    Text("Unverified or changed certificates ask for your approval. Verify the SHA-256 fingerprint with the server owner. Accepted fingerprints are saved only for this server profile; Edit → Forget Accepted Certificate resets that approval. Declining never falls back to HTTP. Use HTTP only over a trusted network or VPN such as Tailscale.")
+                    Text("Unverified or changed certificates ask for your approval. Verify the SHA-256 fingerprint with the server owner; for Tessera Local HTTPS it is the certificate authority fingerprint shown in its Local HTTPS settings, and trusting it covers the server's monthly certificate renewals. Accepted fingerprints are saved only for this server profile; Edit → Forget Accepted Certificate resets that approval. Declining never falls back to HTTP. Use HTTP only over a trusted network or VPN such as Tailscale.")
                 }.font(.callout)
             }
             .navigationTitle(firstRun ? "Connect to Tessera" : "Saved Servers")
@@ -475,7 +479,7 @@ struct IPadHelpView: View {
                 Section("Connect safely") {
                     Text("HTTP is allowed for trusted LAN/VPN connections, including Tailscale; it is not encrypted by Tessera. Use HTTPS on other networks. Keep Tailscale connected and allow Tessera Local Network access in iPad Settings when using a LAN address.")
                     Text("A bare hostname prefers HTTPS on port 7332, then HTTP on 7331 if HTTPS is unreachable. Explicit schemes and ports are respected. For a reverse proxy on 443, enter https://host:443. Existing saved URLs are unchanged.")
-                    Text("For Local HTTPS, use the exact server hostname and either install/trust a CA you control in iPad Settings, or verify and explicitly accept the certificate fingerprint in Tessera. Accepted certificates are remembered per saved server; changed certificates ask again. Saved Servers → Edit → Forget Accepted Certificate resets approval. Cancelling a certificate warning never falls back to HTTP or installs system trust.")
+                    Text("For Local HTTPS, use the exact server hostname and either install/trust a CA you control in iPad Settings, or verify and explicitly accept the fingerprint in Tessera. A Tessera server offers its certificate authority, whose fingerprint matches its Local HTTPS settings; trusting it here covers renewed server certificates; Saved Servers → Edit → Trust in Safari & Other Apps then helps install it for Safari. Accepted certificates are remembered per saved server; changed ones ask again. Saved Servers → Edit → Forget Accepted Certificate resets approval. Cancelling a certificate warning never falls back to HTTP or installs system trust.")
                     Button("Open iPad App Settings") { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) }
                 }
                 Section("iPad windows & input") {

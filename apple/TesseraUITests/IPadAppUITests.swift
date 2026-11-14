@@ -9,11 +9,12 @@ final class FixtureHTTPServer: @unchecked Sendable {
     private let lock = NSLock()
     private var received: [String] = []
     var requests: [String] { lock.withLock { received } }
-    init(port: UInt16 = 0, identity: SecIdentity? = nil, extraHTML: String = "") throws {
+    init(port: UInt16 = 0, identity: SecIdentity? = nil, issuers: [SecCertificate] = [], extraHTML: String = "") throws {
         let parameters: NWParameters
         if let identity {
             let tls = NWProtocolTLS.Options()
-            sec_protocol_options_set_local_identity(tls.securityProtocolOptions, sec_identity_create(identity)!)
+            let local = issuers.isEmpty ? sec_identity_create(identity)! : sec_identity_create_with_certificates(identity, issuers as CFArray)!
+            sec_protocol_options_set_local_identity(tls.securityProtocolOptions, local)
             parameters = NWParameters(tls: tls)
         } else { parameters = .tcp }
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
@@ -72,7 +73,9 @@ final class FixtureHTTPServer: @unchecked Sendable {
         connection.cancel()
         return reachable
     }
-    static func identity(_ name: String) throws -> SecIdentity {
+    static func identity(_ name: String) throws -> SecIdentity { try chain(name).identity }
+    /// The identity and the CA certificates its PKCS#12 carries after the leaf.
+    static func chain(_ name: String) throws -> (identity: SecIdentity, issuers: [SecCertificate]) {
         let bundle = Bundle(for: IPadAppUITests.self)
         guard let url = bundle.url(forResource: "loopback-\(name)", withExtension: "p12", subdirectory: "Fixtures")
             ?? bundle.url(forResource: "loopback-\(name)", withExtension: "p12") else { throw NSError(domain: "Missing TLS fixture", code: 1) }
@@ -81,7 +84,8 @@ final class FixtureHTTPServer: @unchecked Sendable {
         let result = SecPKCS12Import(data as CFData, [kSecImportExportPassphrase as String: "fixture-only"] as CFDictionary, &items)
         guard result == errSecSuccess, let first = (items as? [[String: Any]])?.first,
               let identity = first[kSecImportItemIdentity as String] else { throw NSError(domain: "TLS fixture identity", code: Int(result)) }
-        return identity as! SecIdentity
+        let certificates = (first[kSecImportItemCertChain as String] as? [SecCertificate]) ?? []
+        return (identity as! SecIdentity, Array(certificates.dropFirst()))
     }
     static let page = """
     <!doctype html><html><meta name="viewport" content="width=device-width, initial-scale=1"><body style="font:20px sans-serif;padding:100px 20px">
@@ -245,6 +249,72 @@ final class IPadAppUITests: XCTestCase {
         app.terminate(); app.launch()
         XCTAssertTrue(app.alerts["Server Certificate"].waitForExistence(timeout: 15), "Forget persists across relaunch")
         app.alerts.buttons["Cancel"].tap()
+        app.terminate()
+    }
+
+    func testTrustedCertificateAuthorityCoversRenewalsButNotAnotherAuthority() throws {
+        let issued = try FixtureHTTPServer.chain("ca-a1")
+        let first = try FixtureHTTPServer(identity: issued.identity, issuers: issued.issuers)
+        let port = first.port
+        let app = XCUIApplication()
+        app.launchArguments = ["--tessera-ui-tests", "--tessera-ui-tests-id=\(UUID().uuidString)"]
+        app.launch()
+        enterServer(app, address: "https://127.0.0.1:\(port)/?profile=A", name: "CA Server")
+        XCTAssertTrue(app.alerts["Server Certificate Authority"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.alerts.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Tessera Fixture Root CA a")).firstMatch.exists)
+        app.alerts.buttons["Trust Certificate Authority"].tap()
+        XCTAssertTrue(app.webViews.staticTexts["previous-cookie:empty"].waitForExistence(timeout: 15))
+        app.terminate(); first.stop()
+        let renewal = try FixtureHTTPServer.chain("ca-a2")
+        let renewed = try FixtureHTTPServer(port: port, identity: renewal.identity, issuers: renewal.issuers)
+        app.launch()
+        XCTAssertTrue(app.webViews.staticTexts["previous-cookie:token=A"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.alerts.firstMatch.exists, "A renewed leaf from the trusted authority must not ask again")
+        app.terminate(); renewed.stop()
+        let other = try FixtureHTTPServer.chain("ca-b1")
+        let replaced = try FixtureHTTPServer(port: port, identity: other.identity, issuers: other.issuers)
+        defer { replaced.stop() }
+        app.launch()
+        XCTAssertTrue(app.alerts["Certificate Authority Changed"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.alerts.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Tessera Fixture Root CA b")).firstMatch.exists)
+        app.alerts.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["Try Again"].waitForExistence(timeout: 10))
+        app.terminate()
+    }
+
+    func testSystemTrustScreenHandsTheTrustedAuthorityToSafari() throws {
+        let issued = try FixtureHTTPServer.chain("ca-a1")
+        let server = try FixtureHTTPServer(identity: issued.identity, issuers: issued.issuers)
+        defer { server.stop() }
+        let app = XCUIApplication()
+        app.launchArguments = ["--tessera-ui-tests", "--tessera-ui-tests-id=\(UUID().uuidString)"]
+        app.launch()
+        enterServer(app, address: "https://127.0.0.1:\(server.port)/?profile=A", name: "CA Server")
+        XCTAssertTrue(app.alerts["Server Certificate Authority"].waitForExistence(timeout: 10))
+        app.alerts.buttons["Trust Certificate Authority"].tap()
+        XCTAssertTrue(app.webViews.staticTexts["previous-cookie:empty"].waitForExistence(timeout: 15))
+        menu(app, "Saved Servers…")
+        app.buttons["Edit CA Server"].tap()
+        let link = app.buttons["server-system-trust"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        if !link.isHittable { app.swipeUp() }
+        link.tap()
+        XCTAssertTrue(app.staticTexts["Tessera Fixture Root CA a"].waitForExistence(timeout: 5))
+        // The fixture CA is trusted only inside Tessera, not by iPadOS.
+        XCTAssertTrue(app.buttons["system-trust-download"].waitForExistence(timeout: 5))
+        app.swipeUp()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Not trusted yet")).firstMatch.waitForExistence(timeout: 15))
+        let download = app.buttons["system-trust-download"]
+        if !download.isHittable { app.swipeDown() }
+        download.tap()
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 20))
+        // Safari's "trying to download a configuration profile" prompt, not an alert.
+        XCTAssertTrue(safari.staticTexts["SFDialogViewMessageText"].waitForExistence(timeout: 20), "Safari must receive the profile from the loopback handoff")
+        XCTAssertTrue(safari.buttons["Allow"].exists)
+        safari.buttons["Ignore"].tap()
+        app.activate()
+        XCTAssertTrue(app.buttons["system-trust-download"].waitForExistence(timeout: 10))
         app.terminate()
     }
 

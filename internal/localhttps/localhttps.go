@@ -9,8 +9,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"html/template"
@@ -23,6 +25,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	textTemplate "text/template"
 	"time"
 )
 
@@ -298,6 +301,9 @@ func Ensure(files Files, config Config) (*Material, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load server certificate: %w", err)
 	}
+	// Sending the root lets a client that hasn't installed it, like the iPad
+	// app, offer to trust this CA rather than a leaf that renews every month.
+	certificate.Certificate = append(certificate.Certificate, root.Raw)
 	fingerprint := sha256.Sum256(root.Raw)
 	return &Material{
 		Certificate: certificate,
@@ -329,6 +335,100 @@ func Status(files Files) (fingerprint, rootName string, hasCA bool, err error) {
 
 func ReadRootPEM(files Files) ([]byte, error) {
 	return files.ReadFile(rootCertName)
+}
+
+// ProfileDescription is shown when the profile is installed; the iPad app's
+// RootCertificateProfile uses the same text.
+const ProfileDescription = "Lets Safari and other apps trust this Tessera server's Local HTTPS. After installing, turn on full trust in Settings → General → About → Certificate Trust Settings."
+
+var rootProfileTemplate = textTemplate.Must(textTemplate.New("profile").Parse(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadCertificateFileName</key>
+			<string>tessera-local-ca.cer</string>
+			<key>PayloadContent</key>
+			<data>{{.Certificate}}</data>
+			<key>PayloadDisplayName</key>
+			<string>{{.Name}}</string>
+			<key>PayloadIdentifier</key>
+			<string>{{.Identifier}}.root</string>
+			<key>PayloadType</key>
+			<string>com.apple.security.root</string>
+			<key>PayloadUUID</key>
+			<string>{{.CertificateUUID}}</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>PayloadDescription</key>
+	<string>{{.Description}}</string>
+	<key>PayloadDisplayName</key>
+	<string>{{.Name}}</string>
+	<key>PayloadIdentifier</key>
+	<string>{{.Identifier}}</string>
+	<key>PayloadOrganization</key>
+	<string>Tessera</string>
+	<key>PayloadRemovalDisallowed</key>
+	<false/>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>{{.ProfileUUID}}</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>
+`))
+
+// RootProfile wraps the root certificate in an unsigned configuration
+// profile, which iPadOS installs more directly than a bare certificate. Its
+// identifiers come from the root's fingerprint, as the iPad app's do, so
+// installing it again from either replaces the earlier profile.
+func RootProfile(rootPEM []byte) ([]byte, error) {
+	block, _ := pem.Decode(rootPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("Tessera root certificate is invalid")
+	}
+	root, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	identifier, profileUUID, certificateUUID := ProfileIdentifiers(root.Raw)
+	var out bytes.Buffer
+	err = rootProfileTemplate.Execute(&out, map[string]string{
+		"Certificate":     base64.StdEncoding.EncodeToString(root.Raw),
+		"Name":            xmlText(root.Subject.CommonName),
+		"Description":     xmlText(ProfileDescription),
+		"Identifier":      identifier,
+		"ProfileUUID":     profileUUID,
+		"CertificateUUID": certificateUUID,
+	})
+	return out.Bytes(), err
+}
+
+// ProfileIdentifiers derives a root profile's identifier and payload UUIDs
+// from the certificate's SHA-256.
+func ProfileIdentifiers(der []byte) (identifier, profileUUID, certificateUUID string) {
+	digest := sha256.Sum256(der)
+	return "org.tessera.local-https." + hex.EncodeToString(digest[:8]), digestUUID(digest[:16]), digestUUID(digest[16:])
+}
+
+func digestUUID(raw []byte) string {
+	value := append([]byte(nil), raw...)
+	value[6] = value[6]&0x0f | 0x80 // version 8: custom
+	value[8] = value[8]&0x3f | 0x80
+	text := strings.ToUpper(hex.EncodeToString(value))
+	return text[0:8] + "-" + text[8:12] + "-" + text[12:16] + "-" + text[16:20] + "-" + text[20:32]
+}
+
+func xmlText(value string) string {
+	var out strings.Builder
+	_ = xml.EscapeText(&out, []byte(value))
+	return out.String()
 }
 
 func loadServerPair(files Files) (tls.Certificate, error) {
@@ -552,10 +652,23 @@ func PublicURL(config Config, actualAddress string) string {
 var enrollmentPage = template.Must(template.New("enrollment").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tessera Local HTTPS</title><style>body{max-width:760px;margin:40px auto;padding:0 20px;font:16px system-ui;line-height:1.5;color:#17202a}code{overflow-wrap:anywhere}a.button{display:inline-block;padding:10px 14px;background:#275dad;color:white;text-decoration:none;border-radius:6px}.platform{margin:18px 0;padding:4px 16px 12px;border:1px solid #ccd3da;border-radius:8px;background:#f8fafb}.platform h2{font-size:18px}.trust{padding:12px;border:2px solid #b86b00;border-radius:6px;background:#fff5df}.fingerprint{font:12px ui-monospace,monospace;overflow-wrap:anywhere;background:#f2f3f4;padding:10px}</style></head>
-<body><h1>Set up Tessera Local HTTPS</h1><p>This server's certificate authority is <strong>{{.RootName}}</strong>.</p><p><a class="button" href="tessera-local-ca.crt">Download Tessera CA</a></p><p>Verify this SHA-256 fingerprint before trusting the certificate:</p><p class="fingerprint">{{.Fingerprint}}</p>
-<section class="platform"><h2>iPadOS</h2><ol><li>Open the <strong>Settings app</strong>, go to <strong>General → VPN &amp; Device Management</strong>, and install the downloaded profile.</li><li class="trust"><strong>Installing the profile is not enough.</strong> Go to <strong>General → About → Certificate Trust Settings</strong>, turn on full trust for <strong>{{.RootName}}</strong>, and confirm the warning.</li><li>Close the Safari tab, then <a href="{{.HTTPSURL}}">open Tessera over HTTPS</a>.</li></ol></section>
+<body><h1>Set up Tessera Local HTTPS</h1><p>This server's certificate authority is <strong>{{.RootName}}</strong>.</p><p><a class="button" href="tessera-local-ca.mobileconfig">Download iPad/Mac profile</a> <a class="button" href="tessera-local-ca.crt">Download Tessera CA</a></p><p>Verify this SHA-256 fingerprint before trusting the certificate:</p><p class="fingerprint">{{.Fingerprint}}</p>
+<section class="platform"><h2>iPadOS</h2><ol><li>In Safari, tap <strong>Download iPad/Mac profile</strong> and allow the download. In the Tessera iPad app, use <strong>Saved Servers → Edit → Trust in Safari &amp; Other Apps</strong> instead.</li><li>Open the <strong>Settings app</strong>, go to <strong>General → VPN &amp; Device Management</strong>, and install the downloaded profile.</li><li class="trust"><strong>Installing the profile is not enough.</strong> Go to <strong>General → About → Certificate Trust Settings</strong>, turn on full trust for <strong>{{.RootName}}</strong>, and confirm the warning.</li><li>Close the Safari tab, then <a href="{{.HTTPSURL}}">open Tessera over HTTPS</a>.</li></ol></section>
 <section class="platform"><h2>macOS</h2><ol><li>Open <strong>Keychain Access</strong> and import the downloaded certificate into the <strong>System</strong> keychain.</li><li>Double-click <strong>{{.RootName}}</strong>, expand <strong>Trust</strong>, and set <strong>When using this certificate</strong> to <strong>Always Trust</strong>.</li><li>Close the certificate window, authenticate when asked, then reopen <a href="{{.HTTPSURL}}">Tessera over HTTPS</a>.</li></ol></section>
 <section class="platform"><h2>Windows</h2><ol><li>Open the downloaded certificate and choose <strong>Install Certificate</strong>.</li><li>Select <strong>Current User</strong>, choose <strong>Place all certificates in the following store</strong>, and select <strong>Trusted Root Certification Authorities</strong>.</li><li>Finish the wizard, accept the security warning, then reopen <a href="{{.HTTPSURL}}">Tessera over HTTPS</a>. Firefox installations using their own certificate store may require importing the certificate in Firefox settings too.</li></ol></section></body></html>`))
+
+// WriteRootProfile serves RootProfile as a download Safari offers to install.
+func WriteRootProfile(w http.ResponseWriter, rootPEM []byte) {
+	profile, err := RootProfile(rootPEM)
+	if err != nil {
+		http.Error(w, "Tessera root certificate is invalid", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
+	w.Header().Set("Content-Disposition", `attachment; filename="tessera-local-ca.mobileconfig"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(profile)
+}
 
 func EnrollmentHandler(material *Material, httpsURL string) http.Handler {
 	mux := http.NewServeMux()
@@ -569,6 +682,14 @@ func EnrollmentHandler(material *Material, httpsURL string) http.Handler {
 		w.Header().Set("Content-Disposition", `attachment; filename="tessera-local-ca.crt"`)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, _ = w.Write(material.RootPEM)
+	})
+	mux.HandleFunc("/tessera-local-ca.mobileconfig", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		WriteRootProfile(w, material.RootPEM)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

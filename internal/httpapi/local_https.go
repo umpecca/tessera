@@ -136,21 +136,35 @@ func localHTTPURL(address string, config localhttps.Config) string {
 }
 
 func (a *API) localHTTPSRootCertificate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
-	root, err := localhttps.ReadRootPEM(a.Store.PKIFiles())
-	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "Local HTTPS has not created a root certificate")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "read Local HTTPS root certificate")
+	root, ok := a.localHTTPSRoot(w, r)
+	if !ok {
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
 	w.Header().Set("Content-Disposition", `attachment; filename="tessera-local-ca.crt"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(root)
+}
+
+func (a *API) localHTTPSRootProfile(w http.ResponseWriter, r *http.Request) {
+	if root, ok := a.localHTTPSRoot(w, r); ok {
+		localhttps.WriteRootProfile(w, root)
+	}
+}
+
+func (a *API) localHTTPSRoot(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return nil, false
+	}
+	root, err := localhttps.ReadRootPEM(a.Store.PKIFiles())
+	if errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusNotFound, "Local HTTPS has not created a root certificate")
+		return nil, false
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read Local HTTPS root certificate")
+		return nil, false
+	}
+	return root, true
 }

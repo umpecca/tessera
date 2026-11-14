@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- The iPad app now asks once per server for Tessera Local HTTPS. Instead of the
+  server certificate, which renews monthly and showed "Certificate Changed"
+  each time, it offers to **Trust Certificate Authority** with the same
+  fingerprint shown in Tessera's Local HTTPS settings. Renewed certificates
+  from that CA then connect without asking; a different CA still asks. The
+  HTTPS listener now sends its root CA alongside its certificate to make this
+  possible. Needs the updated app and server; servers without the update keep
+  the old per-certificate approval.
+
+- **Trust in Safari & Other Apps** (iPad app, Saved Servers → Edit) hands the
+  trusted Tessera CA to Safari as a configuration profile, lists the Settings
+  steps to install and fully trust it, and shows whether iPadOS trusts the
+  server when you come back. The Local HTTPS enrollment page and dialog also
+  offer the CA as an iPad/Mac profile (`tessera-local-ca.mobileconfig`)
+  alongside the bare certificate.
+
 - In the iPad app, a terminal program's copy (OSC 52, as Vim, Helix, tmux and
   Claude Code send) reaches the iPad clipboard over plain HTTP too, instead of
   "Clipboard blocked". Only the terminal you are looking at can do it; copies

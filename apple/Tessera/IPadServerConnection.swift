@@ -1,7 +1,6 @@
 #if os(iOS)
 import SwiftUI
 import WebKit
-import CryptoKit
 import Security
 import TesseraCore
 
@@ -28,7 +27,7 @@ final class IPadCertificateConsent {
         reply?.resume(returning: accepted)
     }
 
-    private func ask(url: URL, fingerprint: String, previous: String?, reason: String, owner: UUID,
+    private func ask(url: URL, fingerprint: String, previous: String?, authority: String?, reason: String, owner: UUID,
                      current: @escaping @MainActor () -> Bool) async -> Bool {
         guard !Task.isCancelled, current(), reply == nil,
               let window, window.windowScene?.activationState == .foregroundActive,
@@ -36,20 +35,23 @@ final class IPadCertificateConsent {
         while let presented = presenter.presentedViewController { presenter = presented }
         guard !presenter.isBeingDismissed else { return false }
         let changed = previous != nil && previous != fingerprint
-        let formatted = stride(from: 0, to: fingerprint.count, by: 2).map {
-            let start = fingerprint.index(fingerprint.startIndex, offsetBy: $0)
-            return String(fingerprint[start..<fingerprint.index(start, offsetBy: 2)])
-        }.joined(separator: ":")
+        let formatted = ServerCertificatePin.formatted(fingerprint)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 guard !Task.isCancelled, current() else { continuation.resume(returning: false); return }
                 self.owner = owner; reply = continuation
                 onPresent?(); presenting = true
-                let alert = UIAlertController(title: changed ? "Certificate Changed" : "Server Certificate",
-                    message: "\(url.host ?? "Server"):\(url.port ?? 443)\n\n\(reason)\n\nSHA-256\n\(formatted)\n\n\(changed ? "The certificate differs from the one you accepted. " : "")Verify this fingerprint with the server owner before accepting. Acceptance is saved only for this server profile, not for other sites or apps.", preferredStyle: .alert)
+                let place = "\(url.host ?? "Server"):\(url.port ?? 443)\n\n\(reason)"
+                let differs = changed ? "This differs from the certificate you accepted. " : ""
+                let alert = authority.map { name in
+                    UIAlertController(title: changed ? "Certificate Authority Changed" : "Server Certificate Authority",
+                        message: "\(place)\n\nThe server offers its certificate authority:\n\(name)\n\nSHA-256\n\(formatted)\n\n\(differs)Verify this fingerprint against the server's Local HTTPS settings before trusting it. Tessera then accepts certificates this authority issues for this server profile only, not for other sites or apps.", preferredStyle: .alert)
+                } ?? UIAlertController(title: changed ? "Certificate Changed" : "Server Certificate",
+                    message: "\(place)\n\nSHA-256\n\(formatted)\n\n\(differs)Verify this fingerprint with the server owner before accepting. Acceptance is saved only for this server profile, not for other sites or apps.", preferredStyle: .alert)
                 alert.view.accessibilityIdentifier = "certificate-review"
                 alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.finish(false) })
-                alert.addAction(UIAlertAction(title: "Accept Certificate", style: .default) { [weak self] _ in self?.finish(current()) })
+                alert.addAction(UIAlertAction(title: authority == nil ? "Accept Certificate" : "Trust Certificate Authority",
+                    style: .default) { [weak self] _ in self?.finish(current()) })
                 self.alert = alert
                 presenter.present(alert, animated: true)
             }
@@ -71,23 +73,40 @@ final class IPadCertificateConsent {
         }
         let certificates = await Self.certificateData(challenge)
         guard let leaf = certificates.first, current(), !Task.isCancelled else { return (.cancelAuthenticationChallenge, nil, nil) }
-        let fingerprint = SHA256.hash(data: leaf).map { String(format: "%02x", $0) }.joined()
+        let fingerprint = ServerCertificatePin.fingerprint(leaf)
         let scopedPin = pin?.applies(to: url) == true ? pin : nil
-        if scopedPin?.accepts(url: url, sha256: fingerprint) == true {
+        if let authority = scopedPin?.authority {
+            // Only the saved authority counts, not system roots, and the
+            // usual hostname and validity checks still apply.
+            if await Self.evaluate(certificates, host: space.host, anchor: authority).0 {
+                guard current(), !Task.isCancelled else { return (.cancelAuthenticationChallenge, nil, nil) }
+                return (.useCredential, URLCredential(trust: trust), scopedPin)
+            }
+        } else if scopedPin?.accepts(url: url, sha256: fingerprint) == true {
             return (.useCredential, URLCredential(trust: trust), scopedPin)
         }
         // Use a fresh trust object: a framework's cached exception must not
         // accidentally approve the same certificate for another profile/port.
-        let (trusted, validationProblem) = await Self.systemTrust(certificates, host: space.host)
+        let (trusted, validationProblem) = await Self.evaluate(certificates, host: space.host)
         guard current(), !Task.isCancelled else { return (.cancelAuthenticationChallenge, nil, nil) }
         if trusted && scopedPin == nil { return (.performDefaultHandling, nil, nil) }
         guard allowPrompt else { return (.cancelAuthenticationChallenge, nil, nil) }
+        // Tessera's Local HTTPS sends its root after the leaf. Trusting that
+        // authority survives the leaf's monthly renewal; servers that send no
+        // issuer keep the leaf approval.
+        var authority: Data?
+        for candidate in certificates.dropFirst().reversed() where authority == nil {
+            if await Self.evaluate(certificates, host: space.host, anchor: candidate).0 { authority = candidate }
+        }
+        guard current(), !Task.isCancelled else { return (.cancelAuthenticationChallenge, nil, nil) }
+        let approvedFingerprint = authority.map(ServerCertificatePin.fingerprint) ?? fingerprint
         let reason = scopedPin != nil
-            ? "This server is presenting a different certificate. " + (trusted ? "It passes system validation but does not match your saved fingerprint." : validationProblem)
+            ? "This server is presenting a different certificate. " + (trusted ? "It passes system validation but does not match what you accepted." : validationProblem)
             : validationProblem
-        let accepted = await ask(url: url, fingerprint: fingerprint, previous: scopedPin?.sha256,
-            reason: reason, owner: owner, current: current)
-        guard accepted, current(), !Task.isCancelled, let approved = ServerCertificatePin(url: url, sha256: fingerprint) else {
+        let accepted = await ask(url: url, fingerprint: approvedFingerprint, previous: scopedPin?.sha256,
+            authority: authority.flatMap(Self.subject), reason: reason, owner: owner, current: current)
+        guard accepted, current(), !Task.isCancelled,
+              let approved = ServerCertificatePin(url: url, sha256: approvedFingerprint, authority: authority) else {
             return (.cancelAuthenticationChallenge, nil, nil)
         }
         return (.useCredential, URLCredential(trust: trust), approved)
@@ -105,7 +124,12 @@ final class IPadCertificateConsent {
         }
     }
 
-    nonisolated private static func systemTrust(_ certificates: [Data], host: String) async -> (Bool, String) {
+    nonisolated static func subject(_ der: Data) -> String? {
+        SecCertificateCreateWithData(nil, der as CFData).flatMap { SecCertificateCopySubjectSummary($0) as String? }
+    }
+
+    /// Evaluates against system trust, or against `anchor` alone when given.
+    nonisolated private static func evaluate(_ certificates: [Data], host: String, anchor: Data? = nil) async -> (Bool, String) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let chain = certificates.compactMap { SecCertificateCreateWithData(nil, $0 as CFData) }
@@ -113,6 +137,13 @@ final class IPadCertificateConsent {
                 let policy = SecPolicyCreateSSL(true, host as CFString)
                 guard SecTrustCreateWithCertificates(chain as CFArray, policy, &trust) == errSecSuccess, let trust else {
                     continuation.resume(returning: (false, "iPadOS could not verify this certificate.")); return
+                }
+                if let anchor {
+                    guard let root = SecCertificateCreateWithData(nil, anchor as CFData),
+                          SecTrustSetAnchorCertificates(trust, [root] as CFArray) == errSecSuccess,
+                          SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess else {
+                        continuation.resume(returning: (false, "iPadOS could not verify this certificate.")); return
+                    }
                 }
                 var error: CFError?
                 let valid = SecTrustEvaluateWithError(trust, &error)

@@ -1,6 +1,6 @@
 # Task 272: Align CI and local Go versions
 
-Status: implemented, CI confirmation pending (2026-11-14).
+Status: complete (2026-11-14).
 
 ## Request
 
@@ -28,7 +28,7 @@ the same toolchain.
 - [x] Rebuilding the clipboard package with Go 1.27.4 reproduces the committed
       `tessera-clipboard-dev.zip` byte-for-byte.
 - [x] `go build ./...`, `go vet ./...` and `go test ./...` pass on Go 1.27.4.
-- [ ] CI on the next tag passes the generated-files check (pending push/tag).
+- [x] CI on the next tag passes the generated-files check.
 
 ## Verification
 
@@ -38,7 +38,8 @@ the same toolchain.
 - `go test ./...`: all packages pass.
 - `GOOS=linux GOARCH=amd64|arm64` and `GOOS=windows GOARCH=amd64` with
   `CGO_ENABLED=0 go vet ./cmd/tessera`: pass.
-- Not yet run: the GitHub Actions workflow (needs a push and a new tag).
+- GitHub Actions run 43647305604 on retagged v1.16.1 (`562923f`): all jobs
+  passed; release published with 4 assets.
 
 ## Implementation notes
 

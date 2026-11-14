@@ -139,6 +139,12 @@ func TestSignedOutRequests(t *testing.T) {
 	if code := f.do(http.MethodGet, "/api/health", "", "", "").Code; code != http.StatusOK {
 		t.Fatalf("health status = %d", code)
 	}
+	// A device installs the root before it can sign in over trusted HTTPS.
+	for _, path := range []string{"/api/host/https/ca", "/api/host/https/ca.mobileconfig"} {
+		if code := f.do(http.MethodGet, path, "", "", "").Code; code == http.StatusUnauthorized || code == http.StatusSeeOther {
+			t.Fatalf("%s needs sign-in: %d", path, code)
+		}
+	}
 	login := f.do(http.MethodGet, "/login", "", "", "")
 	body := login.Body.String()
 	if login.Code != http.StatusOK || !strings.Contains(body, `autocomplete="current-password"`) || !strings.Contains(body, `autocomplete="username"`) {

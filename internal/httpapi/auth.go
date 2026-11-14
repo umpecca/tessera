@@ -263,7 +263,7 @@ func (g *authGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // its site data (browser_site_data.go).
 func publicPath(path string) bool {
 	switch path {
-	case "/api/health", "/api/host/https/ca", "/manifest.webmanifest":
+	case "/api/health", "/api/host/https/ca", "/api/host/https/ca.mobileconfig", "/manifest.webmanifest":
 		return true
 	}
 	return strings.HasPrefix(path, "/local-https/") || strings.HasPrefix(path, "/assets/") ||

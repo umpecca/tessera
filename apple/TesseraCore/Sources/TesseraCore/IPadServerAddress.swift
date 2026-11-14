@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// New iPad input only: stored URLs and the shared Mac parser stay unchanged.
@@ -36,21 +37,42 @@ public struct ServerCertificatePin: Codable, Equatable, Sendable {
     public let host: String
     public let port: Int
     public let sha256: String
+    /// DER of an accepted certificate authority, such as Tessera's Local HTTPS
+    /// root; `sha256` is then its fingerprint. Certificates it issues for this
+    /// host and port are accepted, so leaf renewals need no new approval.
+    public let authority: Data?
 
-    public init?(url: URL, sha256: String) {
+    public init?(url: URL, sha256: String, authority: Data? = nil) {
         guard url.scheme?.lowercased() == "https", let host = url.host,
-              sha256.count == 64, sha256.allSatisfy({ $0.isHexDigit && $0.isASCII }) else { return nil }
+              sha256.count == 64, sha256.allSatisfy({ $0.isHexDigit && $0.isASCII }),
+              authority.map({ Self.fingerprint($0) == sha256.lowercased() }) ?? true else { return nil }
         self.host = Self.normalizedHost(host)
         self.port = url.port ?? 443
         self.sha256 = sha256.lowercased()
+        self.authority = authority
     }
 
+    public static func fingerprint(_ der: Data) -> String {
+        SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Colon-separated uppercase pairs, as Tessera's Local HTTPS settings show it.
+    public static func formatted(_ sha256: String) -> String {
+        let characters = Array(sha256.uppercased())
+        return stride(from: 0, to: characters.count, by: 2)
+            .map { String(characters[$0..<min($0 + 2, characters.count)]) }.joined(separator: ":")
+    }
+
+    /// Decoded pins skip the initializer, so a stored authority must still
+    /// match the fingerprint shown when it was accepted.
     public func applies(to url: URL) -> Bool {
         url.scheme?.lowercased() == "https" && url.host.map(Self.normalizedHost) == host && (url.port ?? 443) == port
+            && authority.map { Self.fingerprint($0) == sha256 } ?? true
     }
 
+    /// Leaf pins only; an authority pin is checked by chain evaluation.
     public func accepts(url: URL, sha256: String) -> Bool {
-        applies(to: url) && self.sha256 == sha256.lowercased()
+        authority == nil && applies(to: url) && self.sha256 == sha256.lowercased()
     }
 
     private static func normalizedHost(_ host: String) -> String {

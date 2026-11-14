@@ -43,6 +43,24 @@ builds for iPadOS 18+ and macOS 15+.
   An approval is saved on the iPad for that server profile's exact hostname,
   port and certificate, so matching certificates do not warn after relaunch.
   A different certificate requires approval again, even for the same server.
+  A Tessera Local HTTPS server also sends its root CA, so the decision becomes
+  **Trust Certificate Authority**: the fingerprint shown is the CA's, the same
+  one Tessera's Local HTTPS settings display. Tessera's server certificate
+  renews monthly; once its CA is trusted for a profile, renewed certificates
+  for that hostname and port connect without asking. Only that CA counts for
+  the profile, and the usual hostname and expiry checks still apply. A
+  different CA asks again (**Certificate Authority Changed**). Older servers
+  that send no CA keep the per-certificate approval.
+- With a trusted CA, **Saved Servers → Edit → Trust in Safari & Other Apps…**
+  helps install it system-wide. **Download Profile in Safari** builds a
+  configuration profile from that CA and serves it to Safari for up to two
+  minutes from a listener on `127.0.0.1` inside the app. Safari is the app that
+  offers to install profiles, and the `x-safari-` link opens it even when
+  another browser is the default. The screen lists the Settings steps (install
+  under General → VPN & Device Management, then turn on full trust under
+  General → About → Certificate Trust Settings) and checks, when you return,
+  whether iPadOS itself trusts the server. The app never changes system trust
+  settings; those steps stay yours.
   **Saved Servers → Edit → Forget Accepted Certificate** clears an approval;
   changing a profile to another origin never carries its approval across.
   Cancelling never falls back to HTTP or replaces the old pin. This is not a

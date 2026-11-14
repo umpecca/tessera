@@ -172,10 +172,23 @@ Tessera with `GODEBUG=http2server=0` to turn HTTP/2 off.
 
 Open `http://<host-address>:7331/local-https/` to reach the enrollment page if
 the device does not trust HTTPS yet. It downloads only the public root
-certificate. On iPadOS, install the downloaded profile, then open **Settings >
-General > About > Certificate Trust Settings** and enable full trust for
-**Tessera &lt;hostname&gt; Root CA**. Verify the SHA-256 fingerprint against the value
+certificate, either as an iPad/Mac configuration profile
+(`tessera-local-ca.mobileconfig`) or as a bare certificate. On iPadOS, download
+the profile in Safari and install it under **Settings > General > VPN & Device
+Management**, then open **Settings > General > About > Certificate Trust
+Settings** and enable full trust for **Tessera &lt;hostname&gt; Root CA**. Verify the SHA-256 fingerprint against the value
 shown in Tessera before enabling trust.
+
+The HTTPS listener sends the root CA after its server certificate. In the
+native iPad app you can skip the profile: an untrusted Tessera server offers
+**Trust Certificate Authority** with the same root fingerprint, and trusting it
+there covers the monthly server certificate renewals for that saved server. It
+applies to the app only, not to Safari or other apps. For those, use **Saved
+Servers > Edit > Trust in Safari & Other Apps** in the app. It hands the same
+CA's profile to Safari without another download from the server, lists the
+Settings steps, and shows whether iPadOS trusts the server once you return. An
+app can't install or trust a CA itself, so the install and full-trust steps in
+Settings stay manual.
 
 Local HTTPS settings and certificate material, including the root CA's
 private key, are host-wide and persist in Tessera's SQLite database, which

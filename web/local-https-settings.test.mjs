@@ -63,4 +63,5 @@ test("the command palette opens the Local HTTPS modal and saves host settings", 
   assert.match(source, /enrollment\.target = "_blank"/);
   assert.match(source, /window\.open\("about:blank", "tessera-enrollment"\)/);
   assert.match(source, /identityTitle\.textContent = state\.rootName/);
+  assert.match(source, /profile\.href = "\/api\/host\/https\/ca\.mobileconfig"/);
 });

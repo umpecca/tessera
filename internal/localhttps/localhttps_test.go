@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
+	"encoding/xml"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -177,6 +180,87 @@ func TestEnrollmentHandlerServesOnlyPublicRootAndInstructions(t *testing.T) {
 	handler.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/root-ca.key", nil))
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("private-key path status = %d", missing.Code)
+	}
+}
+
+func TestEnsureServesRootAfterLeafInTLSChain(t *testing.T) {
+	material, err := Ensure(Dir(t.TempDir()), testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{material.Certificate}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		if conn, err := listener.Accept(); err == nil {
+			_ = conn.(*tls.Conn).Handshake()
+			_ = conn.Close()
+		}
+	}()
+	conn, err := tls.Dial("tcp", listener.Addr().String(), &tls.Config{InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	peers := conn.ConnectionState().PeerCertificates
+	block, _ := pem.Decode(material.RootPEM)
+	if len(peers) != 2 || block == nil || !bytes.Equal(peers[1].Raw, block.Bytes) {
+		t.Fatalf("presented %d certificates, want leaf then root", len(peers))
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(peers[1])
+	if _, err := peers[0].Verify(x509.VerifyOptions{DNSName: "tessera.local", Roots: roots}); err != nil {
+		t.Fatalf("leaf does not verify against presented root: %v", err)
+	}
+}
+
+func TestRootProfileCarriesTheRootWithFingerprintIdentifiers(t *testing.T) {
+	// The iPad app derives the same values (RootCertificateProfileTests).
+	identifier, profileUUID, certificateUUID := ProfileIdentifiers([]byte("tessera root"))
+	if identifier != "org.tessera.local-https.f6085ea44df860f8" ||
+		profileUUID != "F6085EA4-4DF8-80F8-8382-1BC66279299C" || certificateUUID != "B09F7A32-7104-8DBC-8557-9C7737335650" {
+		t.Fatalf("identifiers = %s %s %s", identifier, profileUUID, certificateUUID)
+	}
+	material, err := Ensure(Dir(t.TempDir()), testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := RootProfile(material.RootPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := xml.NewDecoder(bytes.NewReader(profile))
+	for {
+		if _, err := decoder.Token(); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatalf("profile is not well-formed XML: %v", err)
+		}
+	}
+	block, _ := pem.Decode(material.RootPEM)
+	identifier, profileUUID, certificateUUID = ProfileIdentifiers(block.Bytes)
+	for _, want := range []string{base64.StdEncoding.EncodeToString(block.Bytes), "com.apple.security.root",
+		"<string>" + identifier + "</string>", profileUUID, certificateUUID, material.RootName} {
+		if !bytes.Contains(profile, []byte(want)) {
+			t.Fatalf("profile missing %q:\n%s", want, profile)
+		}
+	}
+	if bytes.Contains(profile, []byte("PRIVATE KEY")) {
+		t.Fatal("profile must carry only the public root")
+	}
+	handler := EnrollmentHandler(material, "https://tessera.local:7332")
+	download := httptest.NewRecorder()
+	handler.ServeHTTP(download, httptest.NewRequest(http.MethodGet, "/tessera-local-ca.mobileconfig", nil))
+	if download.Code != http.StatusOK || download.Header().Get("Content-Type") != "application/x-apple-aspen-config" ||
+		!bytes.Equal(download.Body.Bytes(), profile) {
+		t.Fatalf("profile download = %d %v", download.Code, download.Header())
+	}
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(page.Body.String(), `href="tessera-local-ca.mobileconfig"`) {
+		t.Fatal("enrollment page does not link the profile")
 	}
 }
 

@@ -192,7 +192,10 @@ export function createHttps(dependencies, platform = globalThis) {
       const download = platform.document.createElement("a");
       download.href = "/api/host/https/ca";
       download.textContent = "Download public root certificate";
-      identity.append(identityTitle, fingerprint, download);
+      const profile = platform.document.createElement("a");
+      profile.href = "/api/host/https/ca.mobileconfig";
+      profile.textContent = "Download iPad/Mac profile";
+      identity.append(identityTitle, fingerprint, download, profile);
       if (state.enrollmentURL) {
         const enrollment = platform.document.createElement("a");
         enrollment.href = state.enrollmentURL;
@@ -206,7 +209,7 @@ export function createHttps(dependencies, platform = globalThis) {
 
     const guidance = platform.document.createElement("p");
     guidance.className = "local-https-guidance";
-    guidance.textContent = "On iPadOS, install the downloaded profile, then enable it under General → About → Certificate Trust Settings. Private keys never leave this Tessera host.";
+    guidance.textContent = "On iPadOS, download the profile in Safari (or use Trust in Safari & Other Apps in the Tessera iPad app), install it in Settings, then enable it under General → About → Certificate Trust Settings. Private keys never leave this Tessera host.";
     const status = platform.document.createElement("div");
     status.className = "local-https-status";
     status.setAttribute("role", "status");
