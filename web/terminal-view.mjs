@@ -1,4 +1,4 @@
-import { TerminalAudioPlayer, terminalAudioMuteKey } from "./terminal-audio.mjs";
+import { TerminalAudioPlayer, terminalAudioDisabledKey, terminalAudioMuteKey } from "./terminal-audio.mjs";
 import { TerminalFiles } from "./terminal-files.mjs";
 import { terminalBacklogCloseCode, terminalStatusLabel } from "./terminal-reconnect.mjs";
 import { isTerminalCopyShortcut, terminalCommandArrowSequence, terminalControlSequence, terminalNavigationSequence, terminalPromptJumpDirection, terminalPasteSource, terminalShouldSwallowCommandKey } from "./terminal-keyboard.mjs";
@@ -534,7 +534,7 @@ export function createTerminal(dependencies, platform = globalThis) {
       badge.className = "terminal-audio-badge";
       badge.addEventListener("click", (event) => {
         event.stopPropagation();
-        if (badge.dataset.kind === "enable") void feature.terminalAudioPlayer.enable().catch(() => {
+        if (badge.dataset.kind === "enable") void feature.enableTerminalAudio().catch(() => {
           badge.textContent = "Tap to enable terminal audio";
           badge.title = "Playback could not start. Tap to try again.";
         });
@@ -917,12 +917,31 @@ export function createTerminal(dependencies, platform = globalThis) {
     feature.terminalTextEncoder = new TextEncoder();
   }
 
+  // Terminal audio is on unless this browser chose Disable terminal audio.
+  function enableTerminalAudio() {
+    try { platform.window.localStorage.removeItem(terminalAudioDisabledKey); } catch {}
+    return feature.terminalAudioPlayer.enable();
+  }
+
+  function disableTerminalAudio() {
+    try { platform.window.localStorage.setItem(terminalAudioDisabledKey, "true"); } catch {}
+    feature.terminalAudioPlayer.disable();
+  }
+
+  function enableTerminalAudioByDefault() {
+    let disabled = false;
+    try { disabled = platform.window.localStorage.getItem(terminalAudioDisabledKey) === "true"; } catch {}
+    if (!disabled) feature.terminalAudioPlayer.enableByDefault(platform.window);
+  }
+
   function initializeTerminalAudioPlayer() {
     feature.terminalAudioPlayer = new TerminalAudioPlayer();
     platform.window.addEventListener("pagehide", (event) => {
       if (event.persisted) feature.terminalAudioPlayer.disable();
       else feature.terminalAudioPlayer.dispose();
     });
+    platform.window.addEventListener("pageshow", (event) => { if (event.persisted) feature.enableTerminalAudioByDefault(); });
+    feature.enableTerminalAudioByDefault();
   }
 
   function initializeTerminalConnections() {
@@ -978,6 +997,9 @@ export function createTerminal(dependencies, platform = globalThis) {
     applyTerminalProgress,
     openPaneFromNotice,
     renderTerminalAudioStatus,
+    enableTerminalAudio,
+    disableTerminalAudio,
+    enableTerminalAudioByDefault,
     retryTerminalNow,
     resumeTerminalConnections,
     setTerminalStatus,

@@ -416,8 +416,8 @@ export function createMenus(dependencies, platform = globalThis) {
     audioToggle.textContent = dependencies.terminal().terminalAudioPlayer.enabled ? "Disable terminal audio" : "Enable terminal audio";
     audioToggle.addEventListener("click", () => {
       feature.hideTerminalMenu();
-      if (dependencies.terminal().terminalAudioPlayer.enabled) dependencies.terminal().terminalAudioPlayer.disable();
-      else void dependencies.terminal().terminalAudioPlayer.enable().catch(() => dependencies.terminal().renderTerminalAudioStatus(rect, { kind: "enable", text: "Audio could not start. Enable again." }));
+      if (dependencies.terminal().terminalAudioPlayer.enabled) dependencies.terminal().disableTerminalAudio();
+      else void dependencies.terminal().enableTerminalAudio().catch(() => dependencies.terminal().renderTerminalAudioStatus(rect, { kind: "enable", text: "Audio could not start. Enable again." }));
     });
     feature.terminalMenu.appendChild(audioToggle);
     const muteLabel = platform.document.createElement("label");

@@ -306,5 +306,8 @@ Tailscale MagicDNS or proxy name you connect with to `-allowed-host`.
 - `TesseraCore/`: a Swift package of platform-independent logic (address
   parsing, download names, profiles, shortcuts and recovery), tested with `swift test`.
 - `Tessera-Info.plist`: App Transport Security and Files app settings; the
-  rest of the Info.plist comes from build settings.
+  rest of the Info.plist comes from build settings. ATS allows arbitrary loads
+  because ATS accepts only system-trusted roots: an approved Tessera CA, or plain
+  HTTP to a Tailscale name, would otherwise fail the iPad's native connection
+  check. The app's certificate review and saved pins decide trust.
 - `build-ipa.sh`: the unsigned `.ipa` for SideStore or AltStore.

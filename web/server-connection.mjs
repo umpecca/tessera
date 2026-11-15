@@ -2,6 +2,10 @@ export const serverHealthFailureThreshold = 2;
 
 export const browserWakeClockGap = 10_000;
 
+// After wake or returning to the foreground the network is often still coming
+// up, so failed probes only show the compact status for this long.
+export const serverConnectionWakeGrace = 15_000;
+
 // Date.now() advances while macOS sleeps, while Firefox's monotonic clock does
 // not. Comparing the two distinguishes a lid-close gap from an ordinary slow
 // or backgrounded callback, where both clocks advance together.
@@ -14,15 +18,12 @@ export function browserWakeDetected(previous, current, threshold = browserWakeCl
 }
 
 // Reduces health-probe results into the small set of states the recovery modal
-// renders. Keeping this independent from the DOM makes transient-failure and
+// renders. A healthy probe always clears the state: recovery needs no reload. Keeping this independent from the DOM makes transient-failure and
 // recovery behavior deterministic and directly testable.
 export function nextServerConnectionState(current, { healthy, online = true, force = false } = {}) {
   const previous = current || { failures: 0, state: "" };
   if (healthy) {
-    return {
-      failures: 0,
-      state: previous.state ? "restored" : "",
-    };
+    return { failures: 0, state: "" };
   }
 
   const failures = (previous.failures || 0) + 1;

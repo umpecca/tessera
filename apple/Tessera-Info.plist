@@ -7,12 +7,14 @@
 	<!-- Public ProMotion opt-in; actual WebKit cadence remains measurable and OS-controlled. -->
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
-	<!-- Tessera serves plain HTTP by default, often over Tailscale. -->
+	<!-- Tessera connects to servers the user enters: plain HTTP, often over
+	     Tailscale, or Local HTTPS from a CA the user approves in the app.
+	     ATS accepts only system-trusted roots, so the iPad's native connection
+	     check needs arbitrary loads; the app's certificate review and saved
+	     pins decide trust. Any narrower ATS key here makes iOS ignore this one. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoadsInWebContent</key>
-		<true/>
-		<key>NSAllowsLocalNetworking</key>
+		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
 	<!-- Downloads land in Documents; these show it in the Files app. -->

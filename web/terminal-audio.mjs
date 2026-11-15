@@ -11,6 +11,11 @@ export function terminalAudioMuteKey(workspace, pane) {
   return `tessera.terminal-audio.mute.v1:${JSON.stringify([workspace, pane])}`;
 }
 
+// Set when this browser chose Disable terminal audio; audio is on otherwise.
+export const terminalAudioDisabledKey = "tessera.terminal-audio.disabled.v1";
+// Events that let a page start audio when its browser requires a gesture.
+const activationEvents = ["pointerdown", "pointerup", "touchend", "click", "keydown"];
+
 export function clipBytes(format, encoded) {
   if (typeof encoded !== "string" || encoded.length === 0 || encoded.length > Math.ceil(terminalAudioLimits.clipBytes / 3) * 4
     || encoded.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(encoded)) {
@@ -61,6 +66,7 @@ export class TerminalAudioPlayer {
     this.playing = [];
     this.decodedBytes = 0;
     this.disposed = false;
+    this.disarmDefault = null;
     this.streams = new TerminalAudioStreams(this, { createDecoder: createStreamDecoder });
   }
 
@@ -69,7 +75,22 @@ export class TerminalAudioPlayer {
     this.terminals.set(key, { key, muted, onStatus, epoch: null, gain: null, clips: new Map(), streamHeads: new Map() });
   }
 
-  async enable() {
+  // Enables audio now if the page may start it, otherwise on the first
+  // gesture on target. Failed attempts stay quiet: a clip that arrives first
+  // still shows the enable badge.
+  enableByDefault(target) {
+    if (this.disposed || this.enabled) return;
+    this.disarmDefault?.();
+    const attempt = () => { void this.enable({ quiet: true }).catch(() => {}); };
+    for (const type of activationEvents) target.addEventListener(type, attempt, true);
+    this.disarmDefault = () => {
+      for (const type of activationEvents) target.removeEventListener(type, attempt, true);
+      this.disarmDefault = null;
+    };
+    attempt();
+  }
+
+  async enable({ quiet = false } = {}) {
     const activation = ++this.activation;
     if (this.disposed) return;
     try {
@@ -78,16 +99,18 @@ export class TerminalAudioPlayer {
       if (activation !== this.activation || this.disposed) return;
       if (this.context.state !== "running") throw new Error("Audio activation blocked");
       this.enabled = true;
+      this.disarmDefault?.();
       for (const terminal of this.terminals.values()) terminal.onStatus(null);
     } catch {
       if (activation !== this.activation || this.disposed) return;
       this.enabled = false;
-      for (const terminal of this.terminals.values()) terminal.onStatus({ kind: "enable", text: "Audio could not start. Enable again." });
+      if (!quiet) for (const terminal of this.terminals.values()) terminal.onStatus({ kind: "enable", text: "Audio could not start. Enable again." });
       throw new Error("Terminal audio could not start. Try enabling it again.");
     }
   }
 
   disable() {
+    this.disarmDefault?.();
     this.activation++;
     this.enabled = false;
     for (const terminal of this.terminals.values()) { this.stop(terminal, "*", true); terminal.onStatus(null); }

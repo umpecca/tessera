@@ -165,7 +165,12 @@ test("list keys move the highlight, open from the panel, and leave native button
   assert.equal(nativeButton.prevented, undefined);
   handle(keyboard("Enter", { target: panel }));
   handle(keyboard("Escape"));
-  assert.deepEqual(events, [2, 0, "open", "close"]);
+  handle(keyboard("Backspace", { altKey: true }));
+  handle(keyboard("Backspace", { shiftKey: true }));
+  const backspace = keyboard("Backspace");
+  handle(backspace);
+  assert.equal(backspace.prevented, true);
+  assert.deepEqual(events, [2, 0, "open", "close", "close"]);
 });
 
 test("Browser panes and the browser proxy relay Ctrl/Cmd+; out of the page", () => {

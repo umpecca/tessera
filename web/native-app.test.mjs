@@ -25,7 +25,7 @@ function fixture({ native = true } = {}) {
     desktop: () => ({ rectangles: [rect], getActivePane: () => rect }), navigation: () => ({ currentUser: "alice", workspaceID: "workspace" }),
     terminal: () => ({ terminalFits: { cancelGridSize: () => effects.push("cancel resize") } }),
     phone: () => ({ sendPhoneKey: (...args) => effects.push(["key", ...args]) }), preferences: () => preferences,
-    connectivity: () => ({ handleBrowserOnline: () => effects.push("reconnect") }),
+    connectivity: () => ({ startServerConnectionGrace: () => effects.push("grace"), handleBrowserOnline: () => effects.push("reconnect") }),
     clipboard: () => ({ saveClipboardDialog: dialog }), menus: () => ({ hideAllMenus: () => effects.push("hide menus") }),
     palette: () => ({ openCommandPalette: () => effects.push("palette") }), windows: () => ({ openWindowList: () => effects.push("windows") }),
     sessionList: () => ({ openSessionList: () => effects.push("sessions") }), settings: () => ({ openSettingsModal: () => effects.push("settings") }),
@@ -67,7 +67,7 @@ test("background/native layout changes preserve view state and ordinary reconnec
   f.effects.length = 0;
   await f.feature.perform("resume");
   assert.equal(f.window.tesseraNativeSuspended, false);
-  assert.deepEqual(f.effects, ["reconnect", ["scroll", 4]]);
+  assert.deepEqual(f.effects, ["grace", "reconnect", ["scroll", 4]], "resume starts the wake grace before reconnecting");
   assert.equal(f.storage.size, 0);
   f.feature.dispose();
 });

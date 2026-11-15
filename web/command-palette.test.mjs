@@ -112,3 +112,21 @@ test("rendered icons preserve labels, hints, codes and keyboard/pointer activati
   assert.equal(p.paletteEntries.length, 0);
   assert.equal(p.commandPaletteList.children[0].textContent, "No matching commands");
 });
+
+test("Backspace closes the palette only from an empty search", () => {
+  const f = fixture(), p = f.palette;
+  p.openCommandPalette();
+  const key = (extra = {}) => ({ key: "Backspace", preventDefault() { this.prevented = true; }, ...extra });
+  p.commandPaletteInput.value = "S";
+  const editing = key();
+  p.handlePaletteKeyboard(editing);
+  assert.equal(editing.prevented, undefined); assert.equal(p.commandPalette.hidden, false);
+  p.commandPaletteInput.value = "";
+  for (const extra of [{ repeat: true }, { altKey: true }, { metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { isComposing: true }]) {
+    p.handlePaletteKeyboard(key(extra));
+    assert.equal(p.commandPalette.hidden, false, JSON.stringify(extra));
+  }
+  const close = key();
+  p.handlePaletteKeyboard(close);
+  assert.equal(close.prevented, true); assert.equal(p.commandPalette.hidden, true);
+});

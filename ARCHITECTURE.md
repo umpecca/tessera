@@ -328,8 +328,10 @@ state, minimize/maximize/dock/restore behavior, the Deskbar, command palette,
 settings, themes, background images, user selection, named-session management,
 route/history synchronization, and client/server connection recovery. A
 low-frequency health monitor opens one recovery dialog after consecutive
-failures; restored connections reload only after user confirmation, except an
-explicit Reconnect action which verifies health and then reloads.
+failures. For 15 seconds after wake or returning to the foreground, failures
+show only a compact "Reconnecting…" status. When health returns, the dialog
+closes without a reload: terminal sockets resume and the workspace revision is
+revalidated. Only the server-update fallback asks for a reload.
 Per-user settings also carry a wheel sensitivity multiplier for
 Terminal panes, the selected
 terminal font and color mode, and the validated `TERM` capability name used

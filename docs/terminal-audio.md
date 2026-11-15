@@ -2,12 +2,15 @@
 
 Terminal programs can send embedded WAV or MP3 clips directly to attached
 Tessera browsers, or send progressively encoded Opus streams.
-Right-click a terminal and choose **Enable terminal audio**,
-or click the compact enable action when a program first sends a clip. Activation
-applies to this browser page; earlier clips are dropped. **Disable terminal
-audio** stops every terminal sound. **Mute terminal audio** applies to one pane
-and is saved in this browser by workspace and pane ID. Unmuting plays future
-requests only.
+Terminal audio is on by default. The iPad and Mac apps play sounds as soon as
+the page loads. A browser that only lets a page play audio after a gesture turns
+it on at the first click, tap or key press on the page; a clip that arrives
+before then shows a compact enable action, and earlier clips are dropped.
+Right-click a terminal and choose **Disable terminal audio** to stop every
+terminal sound; this browser remembers the choice until you choose **Enable
+terminal audio** (or click the enable action). **Mute terminal audio** applies
+to one pane and is saved in this browser by workspace and pane ID. Unmuting
+plays future requests only.
 
 Every enabled attached client listens independently. Minimized and covered
 terminals can produce sound even while their text delivery is paused. A hidden

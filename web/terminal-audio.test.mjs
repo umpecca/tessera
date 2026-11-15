@@ -154,3 +154,50 @@ test("a failed source start releases its buffer and clip budget", async () => {
   assert.equal(f.nodes[0].buffer, null);
   assert.equal(f.statuses.at(-1).kind, "error");
 });
+
+function gestureTarget() {
+  const listeners = new Map();
+  return {
+    listeners,
+    addEventListener(type, listener, capture) { assert.equal(capture, true); listeners.set(type, listener); },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type); },
+  };
+}
+
+test("default enabling starts audio at once when the page may play", async () => {
+  const f = fixture(), target = gestureTarget();
+  f.player.enableByDefault(target); await flush();
+  assert.equal(f.player.enabled, true);
+  assert.equal(target.listeners.size, 0);
+  assert.equal(f.statuses.at(-1), null);
+  f.player.receive("a", play("one")); await flush();
+  assert.equal(f.nodes.length, 1);
+});
+
+test("blocked default enabling waits quietly for the first gesture", async () => {
+  const f = fixture(), target = gestureTarget();
+  let gesture = false;
+  f.context.resume = async function () { if (gesture) this.state = "running"; };
+  f.player.enableByDefault(target); await flush();
+  assert.equal(f.player.enabled, false);
+  assert.equal(f.statuses.length, 0);
+  assert.ok(target.listeners.has("pointerdown") && target.listeners.has("keydown"));
+  f.player.receive("a", play("early")); await flush();
+  assert.equal(f.statuses.at(-1).text, "Enable terminal audio");
+  target.listeners.get("pointerdown")(); await flush();
+  assert.equal(f.statuses.at(-1).text, "Enable terminal audio");
+  gesture = true;
+  target.listeners.get("keydown")(); await flush();
+  assert.equal(f.player.enabled, true);
+  assert.equal(target.listeners.size, 0);
+  assert.equal(f.statuses.at(-1), null);
+});
+
+test("disabling stops waiting for a default-enabling gesture", async () => {
+  const f = fixture(), target = gestureTarget();
+  f.context.resume = async () => {};
+  f.player.enableByDefault(target); await flush();
+  f.player.disable();
+  assert.equal(target.listeners.size, 0);
+  assert.equal(f.player.enabled, false);
+});

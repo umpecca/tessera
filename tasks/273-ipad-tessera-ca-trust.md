@@ -193,6 +193,10 @@ Part 2:
 
 ## Implementation notes
 
+- 2026-11-14: physical-iPad acceptance was blocked by task 274. ATS rejected
+  the approved CA in the native connection check for any non-local address
+  (`-1200 [3:-9802]`); loopback UI tests could not see it. Retry after 274.
+
 - Profile identifiers: `org.tessera.local-https.<first 8 bytes of SHA-256 hex>`;
   payload UUIDs from the first and second 16 digest bytes (version-8 UUIDs).
   Implemented in Go (`ProfileIdentifiers`) and Swift

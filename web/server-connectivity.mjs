@@ -1,4 +1,4 @@
-import { browserWakeDetected, nextServerConnectionState } from "./server-connection.mjs";
+import { browserWakeDetected, nextServerConnectionState, serverConnectionWakeGrace } from "./server-connection.mjs";
 import { isExpectedServerVersion, isSystemdUpdateCheck } from "./server-update.mjs";
 
 // Health probes, wake recovery, offline/update dialogs and polling.
@@ -20,6 +20,8 @@ export function createConnectivity(dependencies, platform = globalThis) {
     serverHealthPollInterval: undefined,
     serverConnectionState: undefined,
     serverConnectionLastHealthy: undefined,
+    serverConnectionGraceUntil: undefined,
+    serverConnectionNoticeShown: undefined,
     serverHealthMonitorTimer: undefined,
     serverHealthProbe: undefined,
     serverUpdateRestarting: undefined,
@@ -63,6 +65,7 @@ export function createConnectivity(dependencies, platform = globalThis) {
     for (const rect of dependencies.desktop().rectangles) {
       if (rect.kind === "terminal" && !rect.minimized) dependencies.terminal().requestTerminalFit(rect);
     }
+    feature.startServerConnectionGrace();
     dependencies.terminal().resumeTerminalConnections();
     void feature.checkServerConnection({ force: true });
     if (dependencies.phone().phoneView.active) void dependencies.phone().refreshPhoneWorkspace();
@@ -79,6 +82,7 @@ export function createConnectivity(dependencies, platform = globalThis) {
 
   async function recoverAfterBrowserWake() {
     const recoveryID = ++feature.wakeRecoveryID;
+    feature.startServerConnectionGrace();
     feature.wakeRecoveryActive = true;
     feature.wakeRecoveryHealthReady = false;
     feature.wakeRecoveryTerminals.clear();
@@ -140,6 +144,54 @@ export function createConnectivity(dependencies, platform = globalThis) {
     }, 2000);
   }
 
+  function startServerConnectionGrace() {
+    feature.serverConnectionGraceUntil = platform.performance.now() + serverConnectionWakeGrace;
+  }
+
+  function inServerConnectionGrace() {
+    return platform.performance.now() < feature.serverConnectionGraceUntil;
+  }
+
+  // The compact status stands in for the dialog while the network comes back.
+  // Wake recovery shows its own text in the same place.
+  function showServerConnectionNotice(text, { hideAfter = 0 } = {}) {
+    platform.window.clearTimeout(feature.wakeRecoveryStatusHideTimer);
+    feature.wakeRecoveryStatusHideTimer = null;
+    feature.serverConnectionNoticeShown = !hideAfter;
+    feature.wakeRecoveryStatus.textContent = text;
+    feature.wakeRecoveryStatus.hidden = false;
+    if (!hideAfter) return;
+    feature.wakeRecoveryStatusHideTimer = platform.window.setTimeout(() => {
+      feature.wakeRecoveryStatus.hidden = true;
+      feature.wakeRecoveryStatusHideTimer = null;
+    }, hideAfter);
+  }
+
+  function hideServerConnectionNotice() {
+    if (!feature.serverConnectionNoticeShown) return;
+    feature.serverConnectionNoticeShown = false;
+    if (!feature.wakeRecoveryActive) feature.wakeRecoveryStatus.hidden = true;
+  }
+
+  // Shows the dialog for an outage, or only the compact status during the
+  // grace after wake or returning to the foreground.
+  function reportServerConnectionLoss(state, { manual = false } = {}) {
+    if (!manual && feature.serverConnectionModal.hidden && feature.inServerConnectionGrace()) {
+      if (!feature.wakeRecoveryActive) feature.showServerConnectionNotice("Reconnecting…");
+      return;
+    }
+    feature.showServerConnectionModal(state);
+  }
+
+  // The server answered after trouble. Terminals resume by themselves and the
+  // workspace revision is revalidated, so this needs no reload.
+  function finishServerReconnect() {
+    const shown = !feature.serverConnectionModal.hidden || feature.serverConnectionNoticeShown;
+    feature.hideServerConnectionModal();
+    feature.serverConnectionNoticeShown = false;
+    if (shown && !feature.wakeRecoveryActive) feature.showServerConnectionNotice("Reconnected", { hideAfter: 2000 });
+  }
+
   function startServerConnectionMonitor() {
     if (feature.serverHealthMonitorTimer !== null) {
       return;
@@ -168,7 +220,7 @@ export function createConnectivity(dependencies, platform = globalThis) {
       online: false,
       force: true,
     });
-    feature.showServerConnectionModal(feature.serverConnectionState.state);
+    feature.reportServerConnectionLoss(feature.serverConnectionState.state);
   }
 
   function handleBrowserOnline() {
@@ -241,6 +293,7 @@ export function createConnectivity(dependencies, platform = globalThis) {
     if (!healthy && feature.serverConnectionState.state) {
       dependencies.workspace().markWorkspaceDisconnected();
     }
+    if (healthy && (previousState || manual)) feature.finishServerReconnect();
     if (healthy && dependencies.workspace().workspacePersistence.needsRevalidation) {
       const current = await dependencies.workspace().revalidateWorkspaceRevision();
       if (!current) {
@@ -250,21 +303,17 @@ export function createConnectivity(dependencies, platform = globalThis) {
     if (dependencies.workspace().workspacePersistence.suspended) {
       return healthy;
     }
-    if (healthy && manual) {
-      feature.showServerConnectionModal("restored", { reloading: true });
-      platform.window.setTimeout(() => platform.window.location.reload(), 250);
-      return true;
-    }
     if (feature.serverConnectionState.state && (manual || force || feature.serverConnectionModal.hidden || feature.serverConnectionState.state !== previousState)) {
-      feature.showServerConnectionModal(feature.serverConnectionState.state);
+      feature.reportServerConnectionLoss(feature.serverConnectionState.state, { manual });
     }
     return healthy;
   }
 
-  function showServerConnectionModal(state, { reloading = false } = {}) {
+  function showServerConnectionModal(state) {
     if (feature.serverUpdateRestarting || dependencies.workspace().workspacePersistence.suspended) {
       return;
     }
+    feature.hideServerConnectionNotice();
     feature.serverConnectionModal.replaceChildren();
 
     const panel = platform.document.createElement("section");
@@ -299,7 +348,7 @@ export function createConnectivity(dependencies, platform = globalThis) {
     titleBar.className = "settings-title";
     const title = platform.document.createElement("h2");
     title.id = "server-connection-title";
-    title.textContent = state === "restored" ? "Connection Restored" : "Connection Lost";
+    title.textContent = state === "updated" ? "Server Updated" : "Connection Lost";
     titleBar.appendChild(title);
 
     const content = platform.document.createElement("div");
@@ -314,10 +363,8 @@ export function createConnectivity(dependencies, platform = globalThis) {
     } else if (state === "checking") {
       status.classList.add("is-busy");
       status.textContent = "Checking the Tessera server...";
-    } else if (state === "restored") {
-      status.textContent = reloading
-        ? "The Tessera server is available again. Reloading this workspace..."
-        : "The Tessera server is available again. Reload to reconnect terminals, streams, and workspace state.";
+    } else if (state === "updated") {
+      status.textContent = "Tessera was updated. Reload to use the new version.";
     } else {
       status.textContent = "The Tessera server is not responding. It may be stopped, restarting, or unreachable from this device.";
     }
@@ -333,12 +380,9 @@ export function createConnectivity(dependencies, platform = globalThis) {
     const primaryButton = platform.document.createElement("button");
     primaryButton.type = "button";
     primaryButton.className = "settings-background-button server-connection-primary";
-    if (state === "restored") {
-      primaryButton.textContent = reloading ? "Reloading..." : "Reload Tessera";
-      primaryButton.disabled = reloading;
-      if (!reloading) {
-        primaryButton.addEventListener("click", () => platform.window.location.reload());
-      }
+    if (state === "updated") {
+      primaryButton.textContent = "Reload Tessera";
+      primaryButton.addEventListener("click", () => platform.window.location.reload());
     } else if (state === "checking") {
       primaryButton.textContent = "Checking...";
       primaryButton.disabled = true;
@@ -499,7 +543,7 @@ export function createConnectivity(dependencies, platform = globalThis) {
         // instead of leaving the locked update dialog on screen indefinitely.
         platform.window.setTimeout(() => {
           feature.hideServerUpdateModal();
-          feature.showServerConnectionModal("restored");
+          feature.showServerConnectionModal("updated");
         }, 5000);
         return;
       } catch {
@@ -581,6 +625,8 @@ export function createConnectivity(dependencies, platform = globalThis) {
   function initializeServerConnectionState() {
     feature.serverConnectionState = { failures: 0, state: "" };
     feature.serverConnectionLastHealthy = null;
+    feature.serverConnectionGraceUntil = 0;
+    feature.serverConnectionNoticeShown = false;
   }
 
   function initializeServerHealthMonitorTimer() {
@@ -627,6 +673,12 @@ export function createConnectivity(dependencies, platform = globalThis) {
     recoverAfterBrowserWake,
     completeTerminalWakeRecovery,
     updateWakeRecoveryStatus,
+    startServerConnectionGrace,
+    inServerConnectionGrace,
+    showServerConnectionNotice,
+    hideServerConnectionNotice,
+    reportServerConnectionLoss,
+    finishServerReconnect,
     startServerConnectionMonitor,
     scheduleServerHealthPolling,
     handleBrowserOffline,

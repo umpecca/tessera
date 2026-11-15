@@ -90,7 +90,12 @@ test("list shortcuts reorder the highlighted row and leave native button activat
   assert.equal(nativeButton.prevented, undefined);
   handle(keyboard("Enter", { target: panel }));
   handle(keyboard("Escape"));
-  assert.deepEqual(selected, [0, "open", "close"]);
+  handle(keyboard("Backspace", { ctrlKey: true }));
+  handle(keyboard("Backspace", { metaKey: true }));
+  const backspace = keyboard("Backspace");
+  handle(backspace);
+  assert.equal(backspace.prevented, true);
+  assert.deepEqual(selected, [0, "open", "close", "close"]);
 });
 
 test("window-list Tab containment wraps the enabled controls", () => {

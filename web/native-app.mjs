@@ -110,6 +110,7 @@ export function createNativeApp(dependencies, platform = globalThis) {
     }
     if (command === "resume") {
       active = true; win.tesseraNativeSuspended = false;
+      dependencies.connectivity().startServerConnectionGrace();
       dependencies.connectivity().handleBrowserOnline();
       restore();
       if (payload.restoreFocus === true) dependencies.events().restoreForegroundFocus({ native: true });

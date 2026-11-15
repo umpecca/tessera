@@ -160,7 +160,9 @@ export function createSessionList(dependencies, platform = globalThis) {
       feature.selectSessionListEntry();
       return;
     }
-    if (event.key === "Escape") {
+    // The list has no text field, so Backspace closes it as Escape does.
+    const backspace = event.key === "Backspace" && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey;
+    if (event.key === "Escape" || backspace) {
       event.preventDefault();
       event.stopPropagation();
       feature.hideSessionList();

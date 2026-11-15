@@ -348,6 +348,12 @@ export function createPalette(dependencies, platform = globalThis) {
     } else if (event.key === "Enter") {
       event.preventDefault();
       feature.runPaletteSelection();
+    } else if (event.key === "Backspace" && !event.repeat && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey
+      && feature.commandPaletteInput.value === "") {
+      // Backspace on an empty search closes the palette; a held key that has
+      // just emptied the field doesn't.
+      event.preventDefault();
+      feature.hideCommandPalette();
     }
   }
 

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Tessera reconnects quietly after the iPad, phone or computer sleeps. For 15
+  seconds after waking or returning to Tessera, a lost connection shows only a
+  small "Reconnecting…" note instead of the **Connection Lost** dialog. When the
+  server answers, the dialog closes by itself and terminals carry on, with no
+  **Reload Tessera** step; **Reconnect** no longer reloads the page either.
+
+- Backspace closes the Window List and Session List, as Escape does, and closes
+  the command palette when its search field is empty.
+
+- Terminal audio is now on by default. The iPad and Mac apps play terminal
+  sounds without tapping **Enable terminal audio** first; browsers that need a
+  gesture before playing audio turn it on at the first click, tap or key press.
+  **Disable terminal audio** is remembered in that browser until you enable it
+  again.
+
+- Fixed: the iPad app reported "A TLS error caused the secure connection to
+  fail" after you approved a server's certificate or Tessera CA when the
+  server was reached by a Tailscale address or DNS name. These now connect. Plain `http://` to a DNS name, such as a Tailscale
+  MagicDNS name, failed the same way and now works too.
+
 - The iPad app now asks once per server for Tessera Local HTTPS. Instead of the
   server certificate, which renews monthly and showed "Certificate Changed"
   each time, it offers to **Trust Certificate Authority** with the same

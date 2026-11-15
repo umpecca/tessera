@@ -47,7 +47,7 @@ export function detectCompatibility({
   );
   let connection = "Checking";
   if (!online || serverState === "offline") connection = "Browser offline";
-  else if (serverHealthy === true || serverState === "restored") connection = "Connected";
+  else if (serverHealthy === true) connection = "Connected";
   else if (serverHealthy === false || serverState === "unreachable") connection = "Tessera unreachable";
 
   return {

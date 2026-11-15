@@ -27,15 +27,17 @@ test("offline forces the modal immediately", () => {
   assert.deepEqual(state, { failures: 1, state: "offline" });
 });
 
-test("success stays silent normally and marks an open modal restored", () => {
+test("success always clears the state, so recovery needs no reload", () => {
   assert.deepEqual(nextServerConnectionState(null, { healthy: true }), { failures: 0, state: "" });
   assert.deepEqual(
     nextServerConnectionState({ failures: 2, state: "unreachable" }, { healthy: true }),
-    { failures: 0, state: "restored" },
+    { failures: 0, state: "" },
   );
 });
 
-test("a failure after recovery reopens the unreachable state", () => {
-  const state = nextServerConnectionState({ failures: 0, state: "restored" }, { healthy: false });
-  assert.deepEqual(state, { failures: 1, state: "unreachable" });
+test("a failure after recovery needs the threshold again", () => {
+  let state = nextServerConnectionState({ failures: 2, state: "unreachable" }, { healthy: true });
+  state = nextServerConnectionState(state, { healthy: false });
+  assert.deepEqual(state, { failures: 1, state: "" });
+  assert.deepEqual(nextServerConnectionState(state, { healthy: false }), { failures: 2, state: "unreachable" });
 });

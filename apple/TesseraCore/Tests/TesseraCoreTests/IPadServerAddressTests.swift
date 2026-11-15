@@ -33,6 +33,19 @@ import Testing
         #expect(!IPadServerAddress.permitsHTTPFallback(CancellationError()))
     }
 
+    /// The native connection check uses URLSession, which ATS covers. ATS only
+    /// accepts system-trusted roots, so an approved Tessera CA or plain HTTP to
+    /// a Tailscale name fails unless arbitrary loads are allowed, and any
+    /// narrower ATS key makes iOS ignore that allowance.
+    @Test func appTransportSecurityLeavesServerTrustToTheApp() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../Tessera-Info.plist").standardizedFileURL
+        let plist = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])
+        let ats = try #require(plist["NSAppTransportSecurity"] as? [String: Any])
+        #expect(ats["NSAllowsArbitraryLoads"] as? Bool == true)
+        #expect(Set(ats.keys) == ["NSAllowsArbitraryLoads"])
+    }
+
     @Test func certificatePinsRequireExactHTTPSOriginAndFingerprint() throws {
         let url = URL(string: "https://Studio:7332/")!
         let sha = String(repeating: "ab", count: 32)

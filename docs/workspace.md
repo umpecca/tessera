@@ -47,6 +47,7 @@ Current pane types:
 - Use `Ctrl+K`/`Cmd+K` to search commands, pane types, sessions, themes, and
   open windows. Exact shortcut codes appear first. Use ↑/↓ to select a result
   and Enter to run it; typing never runs a palette command automatically.
+  Escape, or Backspace with the search field empty, closes it.
   Small outline icons identify actions and window types without replacing their
   labels, hints or shortcut codes.
   Search aliases include `preferences` for Settings, `rename` for Set Window
@@ -54,7 +55,7 @@ Current pane types:
 - Use `Ctrl+;`/`Cmd+;` for the **Session List**: your sessions, most
   recently opened first, with the current one marked. The previous session
   starts highlighted, so `Ctrl+;` then Enter flips between the last two. Use
-  ↑/↓ and Enter, or click a row; Escape or `Ctrl+;` again closes it.
+  ↑/↓ and Enter, or click a row; Escape, Backspace or `Ctrl+;` again closes it.
   **Manage...** opens the Sessions dialog to create, rename and destroy
   sessions.
 - Run **Screensaver** from the command palette to fill the screen with a
@@ -73,14 +74,17 @@ Current pane types:
   and drag a row by its grip or name to a new position, or use its ↑/↓ buttons.
   You can also select a row with arrow keys and use
   `Ctrl+Up/Down`/`Cmd+Up/Down` to reorder it. Shift also works inside the list.
-  Enter opens the highlighted window; Escape closes the list.
+  Enter opens the highlighted window; Escape or Backspace closes the list.
 - Choose a theme, default pane font size, per-session background image, and
   Terminal wheel-scroll speed.
 - Persist the active pane and complete workspace document to SQLite.
 - Reject stale whole-workspace saves from older tabs or reconnecting computers;
   autosave pauses and offers to reload when a newer revision already exists.
 - Detect loss of the server connection and present Reconnect and Refresh Page
-  actions. Recovery is confirmed before the current session route is reloaded.
+  actions. Waking the device or returning to Tessera shows only a small
+  "Reconnecting…" note for the first 15 seconds while the network comes back.
+  When the server answers, the dialog closes by itself and terminals pick up
+  where they were; nothing reloads. **Refresh Page** still reloads on request.
 - Reconnect an unexpectedly closed Terminal WebSocket automatically without
   treating that pane transport failure as a server outage.
 
