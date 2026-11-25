@@ -74,6 +74,21 @@ export function terminalThemeWithProgramColors(base, values = []) {
   return theme;
 }
 
+// DECSCNM (mode 5): the screen in reverse video, as visual bells flash it.
+// The core already swaps the default colours of every cell; the pane's own
+// colours swap to match wherever they appear, so the cursor and selection,
+// which follow the foreground and background, follow the swap too. A colour
+// a program set to something else stays.
+export function terminalThemeInReverseVideo(theme) {
+  const { foreground, background } = theme;
+  const swap = (color) => color === foreground ? background : color === background ? foreground : color;
+  const reversed = { ...theme, foreground: background, background: foreground };
+  for (const key of ["cursor", "cursorAccent", "selectionBackground", "selectionForeground"]) {
+    if (key in theme) reversed[key] = swap(theme[key]);
+  }
+  return reversed;
+}
+
 export async function recreateOpenTerminalViews(rectangles, disposeTerminal, startTerminal) {
   const openTerminals = rectangles.filter((rect) => rect.kind === "terminal" && rect.terminal);
   for (const rect of openTerminals) {

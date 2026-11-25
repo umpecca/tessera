@@ -1,6 +1,6 @@
 import { TerminalTouchScroll } from "./terminal-touch-scroll.mjs";
 import { shouldIsolateMacTerminalPasteKeydown } from "./terminal-keyboard.mjs";
-import { TerminalContextMenuFallback, TerminalMouseHover, TerminalMousePress, clearTerminalSelectionStartedDuringGesture, isTerminalContextMenuGesture, terminalHoverButtonCode, terminalMouseMessage, terminalPasteText } from "./terminal-input.mjs";
+import { TerminalContextMenuFallback, TerminalMouseHover, TerminalMousePress, clearTerminalSelectionStartedDuringGesture, isTerminalContextMenuGesture, terminalHoverButtonCode, terminalMouseCoordinates, terminalMouseMessage, terminalMouseSequence, terminalPasteText } from "./terminal-input.mjs";
 import { pastedImage, terminalPasteKeys, writeHostClipboardImage } from "./clipboard-image.mjs";
 import { wheelDeltaUnits } from "./wheel-sensitivity.mjs";
 
@@ -196,6 +196,10 @@ export function createTerminalInput(dependencies, platform = globalThis) {
       if (!reporting && !term.wasmTerm?.isAlternateScreen?.()) {
         touchRemainder = 0;
         term.scrollWheelLines(deltaY / lineHeight);
+        return;
+      }
+      if (!reporting && !feature.terminalAlternateScroll(term)) {
+        touchRemainder = 0;
         return;
       }
       touchRemainder += deltaY / lineHeight;
@@ -566,7 +570,7 @@ export function createTerminalInput(dependencies, platform = globalThis) {
       }
 
       if (term.wasmTerm?.isAlternateScreen?.()) {
-        if (phoneSelecting()) return true;
+        if (phoneSelecting() || !feature.terminalAlternateScroll(term)) return true;
         const baseSteps = Math.min(5, Math.abs(wheelDeltaUnits(event.deltaY, event.deltaMode, 33, term.rows)));
         const steps = scaledDiscreteWheelSteps(baseSteps, direction);
         const sequence = direction < 0 ? "\x1B[A" : "\x1B[B";
@@ -686,8 +690,11 @@ export function createTerminalInput(dependencies, platform = globalThis) {
     };
   }
 
+  // Shift, Command and Ctrl with the mouse select on Tessera's own layer,
+  // except that a program that asked for Shift (CSI > 1 s) gets Shift-clicks;
+  // Command-drag and Ctrl-drag still select then.
   function terminalShouldReportMouse(term, event, { allowControl = false } = {}) {
-    if (event.shiftKey || (event.ctrlKey && !allowControl) || event.metaKey) {
+    if ((event.shiftKey && !term?.mouseShiftCapture?.()) || (event.ctrlKey && !allowControl) || event.metaKey) {
       return false;
     }
     try {
@@ -703,6 +710,17 @@ export function createTerminalInput(dependencies, platform = globalThis) {
       return Boolean(term?.getMode?.(1003, false));
     } catch {
       return false;
+    }
+  }
+
+  // Alternate scroll (mode 1007, on by default): on the alternate screen,
+  // which has no scrollback, the wheel sends Up and Down to a program that
+  // is not tracking the mouse. A program that turns it off gets nothing.
+  function terminalAlternateScroll(term) {
+    try {
+      return term?.getMode?.(1007, false) ?? true;
+    } catch {
+      return true;
     }
   }
 
@@ -739,16 +757,14 @@ export function createTerminalInput(dependencies, platform = globalThis) {
     if (!box || box.width <= 0 || box.height <= 0) {
       return null;
     }
-    const col = Math.min(term.cols, Math.max(1, Math.floor((event.clientX - box.left) / (box.width / term.cols)) + 1));
-    const row = Math.min(term.rows, Math.max(1, Math.floor((event.clientY - box.top) / (box.height / term.rows)) + 1));
-    return { col, row };
+    return terminalMouseCoordinates(term, (event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height);
   }
 
   function sendTerminalMouseSequence(socket, code, position, finalByte) {
     if (!socket || socket.readyState !== platform.WebSocket.OPEN) {
       return;
     }
-    socket.send(terminalMouseMessage(`\x1b[<${code};${position.col};${position.row}${finalByte}`));
+    socket.send(terminalMouseMessage(terminalMouseSequence(code, position, finalByte)));
   }
 
   function stopTerminalMouseEvent(event) {
@@ -764,6 +780,7 @@ export function createTerminalInput(dependencies, platform = globalThis) {
     attachTerminalMouseBridge,
     terminalShouldReportMouse,
     terminalReportsMotion,
+    terminalAlternateScroll,
     terminalMouseButtonCode,
     terminalMouseEventCode,
     terminalMousePosition,

@@ -160,7 +160,7 @@ func TestNativeCoreRepliesAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.HasPrefix(snapshot, []byte("TSS3")) {
+	if !bytes.HasPrefix(snapshot, []byte("TSS4")) {
 		t.Fatalf("invalid snapshot header")
 	}
 	if again, err := c.Replies(); err != nil || len(again) != 0 {

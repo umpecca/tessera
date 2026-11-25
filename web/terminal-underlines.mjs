@@ -8,6 +8,8 @@ const patch = Symbol.for("tessera.terminalUnderlines");
 const UNDERLINE = 4, INVISIBLE = 32;
 
 export const terminalUnderlineStyles = Object.freeze({ single: 1, double: 2, curly: 3, dotted: 4, dashed: 5 });
+// SGR 53, in bit 4 of cell.underline (internal/terminalcore/source/underline_api.zig).
+export const terminalOverlineBit = 16;
 
 function css(rgb) {
   return `rgb(${rgb >> 16 & 255}, ${rgb >> 8 & 255}, ${rgb & 255})`;
@@ -64,16 +66,29 @@ export function installTerminalUnderlines(Renderer) {
   const renderCellText = prototype.renderCellText;
   prototype.renderCellText = function renderTesseraUnderline(cell, column, row) {
     const style = cell.underline & 7, coloured = cell.underline & 8;
+    const overline = cell.underline & terminalOverlineBit && !(cell.flags & INVISIBLE);
     // A plain underline in the text colour is ghostty-web's own.
-    if (!(cell.flags & UNDERLINE) || cell.flags & INVISIBLE || (style <= terminalUnderlineStyles.single && !coloured)) {
+    const ownUnderline = cell.flags & UNDERLINE && !(cell.flags & INVISIBLE)
+      && (style > terminalUnderlineStyles.single || coloured);
+    if (!ownUnderline && !overline) {
       return renderCellText.call(this, cell, column, row);
     }
-    const result = renderCellText.call(this, { ...cell, flags: cell.flags & ~UNDERLINE }, column, row);
+    const result = renderCellText.call(this, ownUnderline ? { ...cell, flags: cell.flags & ~UNDERLINE } : cell, column, row);
     // ghostty-web leaves the text colour (or the selection's) as the fill.
-    const colour = coloured ? css(cell.underline_color) : this.ctx.fillStyle;
+    const textColour = this.ctx.fillStyle;
+    const left = column * this.metrics.width, top = row * this.metrics.height;
     const width = this.metrics.width * (cell.width || 1);
-    drawTerminalUnderline(this.ctx, style || terminalUnderlineStyles.single, colour,
-      column * this.metrics.width, row * this.metrics.height, width, this.metrics);
+    if (ownUnderline) {
+      drawTerminalUnderline(this.ctx, style || terminalUnderlineStyles.single, coloured ? css(cell.underline_color) : textColour,
+        left, top, width, this.metrics);
+    }
+    if (overline) {
+      // Along the top of the cell in the text colour, as Ghostty draws it.
+      const fill = this.ctx.fillStyle;
+      this.ctx.fillStyle = textColour;
+      this.ctx.fillRect(left, top, width, 1);
+      this.ctx.fillStyle = fill;
+    }
     return result;
   };
   Object.defineProperty(prototype, patch, { value: true });

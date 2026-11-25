@@ -3,7 +3,7 @@ import path from "node:path";
 
 // Applied only to the pinned source checkout, after ghostty-web's WASM patch.
 const root = path.resolve(process.argv[2] || ".cache/sixel/ghostty-web/ghostty");
-const awaitExtension = await fs.readFile("internal/terminalcore/source/sixel_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/snapshot_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/audio_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/file_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/hyperlink_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pwd_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pointer_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/semantic_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/color_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/attention_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/report_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/query_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/underline_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/search_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/command_api.zig", "utf8");
+const awaitExtension = await fs.readFile("internal/terminalcore/source/sixel_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/snapshot_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/audio_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/file_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/hyperlink_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pwd_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pointer_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/semantic_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/color_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/attention_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/report_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/query_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/underline_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/search_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/command_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/cursor_api.zig", "utf8");
 async function edit(file, transform) {
   const target = path.join(root, file);
   const source = await fs.readFile(target, "utf8");
@@ -12,6 +12,11 @@ async function edit(file, transform) {
 function replace(source, before, after) {
   if (!source.includes(before)) throw new Error(`Pinned Ghostty source changed: ${before.slice(0, 100)}`);
   return source.replace(before, after);
+}
+// replace without String.replace's $ patterns, for text that has a $.
+function spliceOnce(source, before, after) {
+  if (source.split(before).length !== 2) throw new Error(`Pinned Ghostty source changed: ${before.slice(0, 100)}`);
+  return source.split(before).join(after);
 }
 for (const name of ["sixel.zig", "sixel_store.zig", "snapshot.zig", "audio.zig", "file.zig"]) {
   await fs.copyFile(`internal/terminalcore/source/${name}`, path.join(root, "src/terminal/c", name));
@@ -207,7 +212,7 @@ await edit("src/lib_vt.zig", (source) => {
   source = source.replace(/^\s*@export\(&c\.terminal\.sixel_[^\n]+\n/gm, "");
   const exports = ["version", "configure", "geometry", "image_count", "image_info", "image_pixels", "image_settings", "image_settings_read", "clear_images", "tiles", "viewport_row", "snapshot_export", "snapshot_release", "snapshot_data", "snapshot_import", "clipboard_read", "title_revision", "title_length", "title_data"];
   source = source.replace(/^\s*@export\(&c\.terminal\.(audio_read|file_read|hyperlink_uri|pwd_[a-z]+|mouse_shape|semantic_rows|color_revision|dynamic_colors|focus|bell_count|notification_read|set_version|progress_revision|progress|kitty_keyboard_flags|set_term_name|synchronized_output_starts|end_synchronized_output|underline_colors|search_[a-z]+|command_read)[^\n]+\n/gm, "");
-  return replace(source, marker, marker + "\n" + exports.map((name) => `        @export(&c.terminal.sixel_${name}, .{ .name = "tessera_sixel_${name}" });`).join("\n") + '\n        @export(&c.terminal.audio_read, .{ .name = "tessera_audio_read" });\n        @export(&c.terminal.file_read, .{ .name = "tessera_file_read" });\n        @export(&c.terminal.hyperlink_uri, .{ .name = "tessera_hyperlink_uri" });' + ["revision", "length", "data"].map((name) => `\n        @export(&c.terminal.pwd_${name}, .{ .name = "tessera_pwd_${name}" });`).join("") + '\n        @export(&c.terminal.mouse_shape, .{ .name = "tessera_mouse_shape" });\n        @export(&c.terminal.semantic_rows, .{ .name = "tessera_semantic_rows" });\n        @export(&c.terminal.color_revision, .{ .name = "tessera_color_revision" });\n        @export(&c.terminal.dynamic_colors, .{ .name = "tessera_dynamic_colors" });\n        @export(&c.terminal.focus, .{ .name = "tessera_focus" });\n        @export(&c.terminal.bell_count, .{ .name = "tessera_bell_count" });\n        @export(&c.terminal.notification_read, .{ .name = "tessera_notification_read" });\n        @export(&c.terminal.set_version, .{ .name = "tessera_set_version" });\n        @export(&c.terminal.progress_revision, .{ .name = "tessera_progress_revision" });\n        @export(&c.terminal.progress, .{ .name = "tessera_progress" });\n        @export(&c.terminal.kitty_keyboard_flags, .{ .name = "tessera_kitty_keyboard_flags" });\n        @export(&c.terminal.set_term_name, .{ .name = "tessera_set_term_name" });\n        @export(&c.terminal.synchronized_output_starts, .{ .name = "tessera_synchronized_output_starts" });\n        @export(&c.terminal.end_synchronized_output, .{ .name = "tessera_end_synchronized_output" });\n        @export(&c.terminal.underline_colors, .{ .name = "tessera_underline_colors" });' + ["start", "update", "select", "selected", "matches", "end"].map((name) => `\n        @export(&c.terminal.search_${name}, .{ .name = "tessera_search_${name}" });`).join("") + '\n        @export(&c.terminal.command_read, .{ .name = "tessera_command_read" });');
+  return replace(source, marker, marker + "\n" + exports.map((name) => `        @export(&c.terminal.sixel_${name}, .{ .name = "tessera_sixel_${name}" });`).join("\n") + '\n        @export(&c.terminal.audio_read, .{ .name = "tessera_audio_read" });\n        @export(&c.terminal.file_read, .{ .name = "tessera_file_read" });\n        @export(&c.terminal.hyperlink_uri, .{ .name = "tessera_hyperlink_uri" });' + ["revision", "length", "data"].map((name) => `\n        @export(&c.terminal.pwd_${name}, .{ .name = "tessera_pwd_${name}" });`).join("") + '\n        @export(&c.terminal.mouse_shape, .{ .name = "tessera_mouse_shape" });\n        @export(&c.terminal.semantic_rows, .{ .name = "tessera_semantic_rows" });\n        @export(&c.terminal.color_revision, .{ .name = "tessera_color_revision" });\n        @export(&c.terminal.dynamic_colors, .{ .name = "tessera_dynamic_colors" });\n        @export(&c.terminal.focus, .{ .name = "tessera_focus" });\n        @export(&c.terminal.bell_count, .{ .name = "tessera_bell_count" });\n        @export(&c.terminal.notification_read, .{ .name = "tessera_notification_read" });\n        @export(&c.terminal.set_version, .{ .name = "tessera_set_version" });\n        @export(&c.terminal.progress_revision, .{ .name = "tessera_progress_revision" });\n        @export(&c.terminal.progress, .{ .name = "tessera_progress" });\n        @export(&c.terminal.kitty_keyboard_flags, .{ .name = "tessera_kitty_keyboard_flags" });\n        @export(&c.terminal.set_term_name, .{ .name = "tessera_set_term_name" });\n        @export(&c.terminal.synchronized_output_starts, .{ .name = "tessera_synchronized_output_starts" });\n        @export(&c.terminal.end_synchronized_output, .{ .name = "tessera_end_synchronized_output" });\n        @export(&c.terminal.underline_colors, .{ .name = "tessera_underline_colors" });' + ["start", "update", "select", "selected", "matches", "end"].map((name) => `\n        @export(&c.terminal.search_${name}, .{ .name = "tessera_search_${name}" });`).join("") + '\n        @export(&c.terminal.command_read, .{ .name = "tessera_command_read" });\n        @export(&c.terminal.cursor_style, .{ .name = "tessera_cursor_style" });');
 });
 for (const file of ["props_uucode.zig", "symbols_uucode.zig"]) {
   await edit(`src/unicode/${file}`, (source) => source.replace("try stdout.end();", "try stdout.interface.flush();"));
@@ -515,17 +520,12 @@ await edit("src/terminal/c/terminal.zig", (source) => {
             // Actions that require no response`);
   // A full reset empties the title stack with the title.
   source = replace(source, "self.title.clearRetainingCapacity(); self.title_revision +%= 1;", "self.title.clearRetainingCapacity(); self.title_revision +%= 1; self.clearTitleStack();");
-  source = replace(source, "    fn kittyColorOperation", `    // DECRPM, as Ghostty answers it, except that modes the core tracks but
-    // Tessera does not act on are reported as unrecognised: mouse report
-    // formats other than SGR (Tessera always sends SGR). A program told one
-    // is supported would rely on it.
+  source = replace(source, "    fn kittyColorOperation", `    // DECRPM, as Ghostty answers it. Tessera acts on every mouse report
+    // format the core tracks: the browser sends SGR, in pixels for 1016, and
+    // the host re-encodes it for 1005, 1015 and X10.
     fn reportMode(self: *ResponseHandler, mode: modespkg.Mode) !void {
         const tag: modespkg.ModeTag = @bitCast(@intFromEnum(mode));
-        const state: u8 = switch (mode) {
-            .mouse_format_utf8, .mouse_format_urxvt, .mouse_format_sgr_pixels => 0,
-            else => if (self.terminal.modes.get(mode)) 1 else 2,
-        };
-        try self.reportModeState(tag.value, tag.ansi, state);
+        try self.reportModeState(tag.value, tag.ansi, if (self.terminal.modes.get(mode)) 1 else 2);
     }
 
     fn reportModeState(self: *ResponseHandler, mode: u16, ansi: bool, state: u8) !void {
@@ -820,4 +820,102 @@ await edit("src/terminal/c/terminal.zig", (source) => {
   source = replace(source, "    pub fn cancelDcs(self: *ImageResponseHandler) void { self.base.cancelDcs(); }",
     "    pub fn cancelDcs(self: *ImageResponseHandler) void { self.base.cancelDcs(); }\n    pub fn commandLine(self: *ImageResponseHandler, line: ?[:0]const u8) void { self.base.commandLine(line); }");
   return source;
+});
+
+// Cursor shape and blink a program set (cursor_api.zig): whether the last
+// DECSCUSR asked for the terminal's default, cleared by every other value and
+// set again by a full reset.
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("cursor_default: bool")) return source;
+  source = replace(source, "    clipboard: std.ArrayList(u8) = .{},", "    clipboard: std.ArrayList(u8) = .{},\n    cursor_default: bool = true,");
+  source = replace(source, "            .cursor_style => {\n", "            .cursor_style => {\n                self.cursor_default = value == .default;\n");
+  source = replace(source, "self.clearTitleStack();", "self.clearTitleStack(); self.cursor_default = true;");
+  return source;
+});
+
+// Identification and size queries. The pinned core answered
+// only the primary device attributes, and its parser dropped CSI ? 6 n and
+// CSI 19 t. Secondary attributes are answered as Ghostty's app answers them
+// (a VT220, version 10); tertiary attributes, the extended cursor position
+// report and the screen size in characters as xterm does.
+await edit("src/terminal/device_status.zig", (source) => source.includes('"extended_cursor_position"') ? source : replace(source,
+  '    .{ .name = "cursor_position", .value = 6 },',
+  '    .{ .name = "cursor_position", .value = 6 },\n    .{ .name = "extended_cursor_position", .value = 6, .question = true },'));
+await edit("src/terminal/csi.zig", (source) => source.includes('"csi_19_t"') ? source : replace(source,
+  '        "csi_21_t",\n', '        "csi_21_t",\n        "csi_19_t",\n'));
+await edit("src/terminal/stream.zig", (source) => source.includes(".csi_19_t") ? source : replace(source,
+  "                                21 => if (input.params.len == 1) {\n                                    // report window title",
+  String.raw`                                19 => if (input.params.len == 1) {
+                                    // report the screen size in characters
+                                    try self.handler.vt(.size_report, .csi_19_t);
+                                } else log.warn(
+                                    "ignoring CSI 19 t with extra parameters: {f}",
+                                    .{input},
+                                ),
+                                21 => if (input.params.len == 1) {
+                                    // report window title`));
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes(".extended_cursor_position =>")) return source;
+  source = replace(source,
+    String.raw`.device_attributes => if (value == .primary) { try self.response_buffer.appendSlice(self.alloc, "\x1b[?62;4c"); },`,
+    String.raw`.device_attributes => try self.response_buffer.appendSlice(self.alloc, switch (value) {
+                .primary => "\x1b[?62;4c",
+                .secondary => "\x1b[>1;10;0c",
+                .tertiary => "\x1bP!|00000000\x1b\\",
+            }),`);
+  source = replace(source,
+    String.raw`.csi_18_t => try std.fmt.bufPrint(&buffer, "\x1b[8;{d};{d}t", .{ self.terminal.rows, self.terminal.cols }),`,
+    String.raw`.csi_18_t => try std.fmt.bufPrint(&buffer, "\x1b[8;{d};{d}t", .{ self.terminal.rows, self.terminal.cols }),
+                    .csi_19_t => try std.fmt.bufPrint(&buffer, "\x1b[9;{d};{d}t", .{ self.terminal.rows, self.terminal.cols }),`);
+  source = replace(source, "            .color_scheme => try self.reportColorScheme(),",
+    String.raw`            .extended_cursor_position => {
+                // DECXCPR: the cursor position report with xterm's page, 1.
+                const cursor = self.terminal.screens.active.cursor;
+                const origin = self.terminal.modes.get(.origin);
+                const x = if (origin) cursor.x -| self.terminal.scrolling_region.left else cursor.x;
+                const y = if (origin) cursor.y -| self.terminal.scrolling_region.top else cursor.y;
+                var buf: [32]u8 = undefined;
+                try self.response_buffer.appendSlice(self.alloc, try std.fmt.bufPrint(&buf, "\x1B[?{};{};1R", .{ y + 1, x + 1 }));
+            },
+            .color_scheme => try self.reportColorScheme(),`);
+  return source;
+});
+
+// Key and mouse flags the browser reads (report_api.zig): modifyOtherKeys
+// level 2 and Shift capture. Soft reset (DECSTR, CSI ! p), which the pinned
+// parser ignored, done as xterm does it in a handler hook.
+await edit("src/lib_vt.zig", (source) => source.includes('"tessera_modify_other_keys"') ? source : replace(source,
+  '        @export(&c.terminal.cursor_style, .{ .name = "tessera_cursor_style" });',
+  '        @export(&c.terminal.cursor_style, .{ .name = "tessera_cursor_style" });\n        @export(&c.terminal.modify_other_keys, .{ .name = "tessera_modify_other_keys" });\n        @export(&c.terminal.mouse_shift_capture, .{ .name = "tessera_mouse_shift_capture" });'));
+// Spliced literally: the new text has a '$' character literal, which
+// String.replace would read as a replacement pattern.
+await edit("src/terminal/stream.zig", (source) => source.includes('"softReset"') ? source : spliceOnce(source,
+  "                                1 => if (input.intermediates[0] == '$') break :ansi true,",
+  String.raw`                                1 => if (input.intermediates[0] == '$') break :ansi true else if (input.intermediates[0] == '!' and input.params.len == 0) {
+                                    // DECSTR, for handlers that do it (Tessera's).
+                                    if (@hasDecl(Handler, "softReset")) try self.handler.softReset();
+                                    break :decrqm;
+                                },`));
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("pub fn softReset(")) return source;
+  source = replace(source, "    pub fn commandLine(self: *ImageResponseHandler, line: ?[:0]const u8) void { self.base.commandLine(line); }",
+    "    pub fn commandLine(self: *ImageResponseHandler, line: ?[:0]const u8) void { self.base.commandLine(line); }\n    pub fn softReset(self: *ImageResponseHandler) !void { try self.base.softReset(); }");
+  return replace(source, "    fn kittyColorOperation", String.raw`    // DECSTR (CSI ! p), as xterm does it: the cursor shows, insert and
+    // origin modes are off, autowrap, cursor keys, the keypad and the
+    // keyboard lock are back to their defaults, the margins are the whole
+    // screen, the character sets are ASCII, attributes and protection are off
+    // and the saved cursor is forgotten. The screen, the cursor's position,
+    // other modes and the keyboard protocol stay.
+    pub fn softReset(self: *ResponseHandler) !void {
+        const t = self.terminal;
+        for ([_]modespkg.Mode{ .cursor_visible, .wraparound }) |mode| t.modes.set(mode, true);
+        for ([_]modespkg.Mode{ .insert, .origin, .cursor_keys, .keypad_keys, .disable_keyboard }) |mode| t.modes.set(mode, false);
+        t.scrolling_region = .{ .top = 0, .bottom = t.rows - 1, .left = 0, .right = t.cols - 1 };
+        t.screens.active.charset = .{};
+        t.setProtectedMode(.off);
+        try t.setAttribute(.unset);
+        t.screens.active.saved_cursor = null;
+    }
+
+    fn kittyColorOperation`);
 });

@@ -155,13 +155,18 @@ export function terminalShouldSwallowCommandKey(event) {
 // application, so this takes no binding away from it. They send exactly what
 // the Home and End keys send here (Globe+Left/Right on the iPad), so either
 // works wherever the other does. That is not ^A and ^E, which mean other
-// things in vim and tmux.
+// things in vim and tmux. In a full-screen program (options.alternateScreen)
+// Command+Up and Command+Down are Page Up and Page Down; at the shell they
+// jump between prompts (terminalPromptJumpDirection).
 export function terminalCommandArrowSequence(event, options = {}) {
   if (!event || !options.appleKeyboard) {
     return null;
   }
   if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
     return null;
+  }
+  if (options.alternateScreen && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    return event.key === "ArrowUp" ? navigationKeys.PageUp.sequence : navigationKeys.PageDown.sequence;
   }
   return event.key === "ArrowLeft" ? navigationKeys.Home.sequence
     : event.key === "ArrowRight" ? navigationKeys.End.sequence
@@ -171,12 +176,15 @@ export function terminalCommandArrowSequence(event, options = {}) {
 // Jump to the previous or next shell prompt (OSC 133): Command+Up and
 // Command+Down on an Apple keyboard, as in Terminal.app and Ghostty, and
 // Ctrl+Shift+Page Up/Page Down elsewhere (Ctrl+Shift+arrows move windows).
+// A full-screen program has no prompts to jump to; there Command+Up and
+// Command+Down are its Page Up and Page Down (terminalCommandArrowSequence).
 // Returns -1, 1, or 0 for any other key.
 export function terminalPromptJumpDirection(event, options = {}) {
   if (!event || event.altKey) {
     return 0;
   }
   if (options.appleKeyboard && event.metaKey && !event.ctrlKey && !event.shiftKey) {
+    if (options.alternateScreen) return 0;
     return event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
   }
   if (event.ctrlKey && event.shiftKey && !event.metaKey) {
@@ -207,6 +215,34 @@ export function isTerminalCopyShortcut(event) {
 //
 // On an Apple keyboard Command is left out of the modifier. It never reaches
 // the application, and the Home key itself sends the plain `ESC [ H`.
+// xterm's numbers for F5-F12; F1-F4 are SS3 P-S unmodified. Modified F3 is
+// CSI 13 ; m ~ as in Ghostty and kitty, not xterm's CSI 1 ; m R, which is
+// the same bytes as a cursor position report.
+const functionKeyNumbers = { F3: 13, F5: 15, F6: 17, F7: 18, F8: 19, F9: 20, F10: 21, F11: 23, F12: 24 };
+const functionKeyFinals = { F1: "P", F2: "Q", F4: "S" };
+
+// Shift alone on keys ghostty-web answers from a table that ignores Shift:
+// Shift+Tab came through as a plain Tab, Shift+Home as Home, and so on.
+// The sequences Ghostty sends: backtab (CSI Z), xterm's modifier 2 on Home,
+// End, Insert, Delete, Page Up/Down and F1-F12, and CSI 27 ; 2 ; 13 ~ and
+// CSI 27 ; 2 ; 27 ~ for Shift+Enter and Shift+Escape, so programs can tell
+// those from Enter and Escape. Shift+Backspace stays DEL, as in Ghostty.
+// Numpad keys are terminalNavigationSequence's. Only for ordinary key
+// encoding; with the Kitty keyboard protocol Ghostty's encoder has every key.
+export function terminalShiftedKeySequence(event) {
+  if (!event?.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.code?.startsWith("Numpad")) {
+    return null;
+  }
+  if (event.key === "Tab") return "\x1B[Z";
+  if (event.key === "Enter") return "\x1B[27;2;13~";
+  if (event.key === "Escape") return "\x1B[27;2;27~";
+  const navigation = event.key === "Clear" ? null : navigationKeys[event.key];
+  if (navigation) return navigation.number ? `\x1B[${navigation.number};2~` : `\x1B[1;2${navigation.final}`;
+  if (functionKeyFinals[event.key]) return `\x1B[1;2${functionKeyFinals[event.key]}`;
+  if (functionKeyNumbers[event.key]) return `\x1B[${functionKeyNumbers[event.key]};2~`;
+  return null;
+}
+
 export function terminalNavigationSequence(event, modes = {}) {
   if (!event) {
     return null;

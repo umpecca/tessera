@@ -579,3 +579,127 @@ func TestMouseModeTrackerAllowsReportsTheModesAskFor(t *testing.T) {
 		}
 	}
 }
+
+func TestMouseModeTrackerEncodesTheFormatTheProgramAskedFor(t *testing.T) {
+	press := []byte("\x1b[<0;5;7M")
+	ctrlRelease := []byte("\x1b[<16;5;7m")
+	drag := []byte("\x1b[<32;5;7M")
+	wheel := []byte("\x1b[<65;5;7M")
+	far := []byte("\x1b[<0;300;7M")
+	pixels := []byte("\x1b[<0;95;100M")
+
+	cases := []struct {
+		name   string
+		modes  string
+		report []byte
+		want   []byte
+	}{
+		{"X10 press", "\x1b[?1002h", press, []byte("\x1b[M %'")},
+		{"X10 release is button 3 with modifiers", "\x1b[?1002h", ctrlRelease, []byte("\x1b[M3%'")},
+		{"X10 drag", "\x1b[?1002h", drag, []byte("\x1b[M@%'")},
+		{"X10 wheel", "\x1b[?1002h", wheel, []byte("\x1b[Ma%'")},
+		{"X10 past column 223 is dropped", "\x1b[?1002h", far, nil},
+		{"X10 column 223 is the last", "\x1b[?1002h", []byte("\x1b[<0;223;223M"), []byte{0x1b, '[', 'M', 32, 255, 255}},
+		{"urxvt press", "\x1b[?1002;1015h", press, []byte("\x1b[32;5;7M")},
+		{"urxvt release", "\x1b[?1002;1015h", ctrlRelease, []byte("\x1b[51;5;7M")},
+		{"urxvt far", "\x1b[?1002;1015h", far, []byte("\x1b[32;300;7M")},
+		{"UTF-8 far", "\x1b[?1002;1005h", far, []byte("\x1b[M Ō'")},
+		{"UTF-8 past 2015 is dropped", "\x1b[?1002;1005h", []byte("\x1b[<0;2016;7M"), nil},
+		{"SGR unchanged", "\x1b[?1002;1006h", ctrlRelease, ctrlRelease},
+		{"SGR wins over urxvt", "\x1b[?1002;1015;1006h", press, press},
+		{"urxvt wins over UTF-8", "\x1b[?1002;1005;1015h", press, []byte("\x1b[32;5;7M")},
+		{"SGR-Pixels unchanged", "\x1b[?1002;1016h", pixels, pixels},
+		{"resetting SGR returns to X10", "\x1b[?1002;1006h\x1b[?1006l", press, []byte("\x1b[M %'")},
+		{"non-SGR passes through", "\x1b[?1002h", []byte("\x1b[M #%"), []byte("\x1b[M #%")},
+	}
+	for _, c := range cases {
+		var tracker mouseModeTracker
+		tracker.consume([]byte(c.modes))
+		if !tracker.allows(c.report) {
+			t.Errorf("%s: modes %q blocked %q", c.name, c.modes, c.report)
+			continue
+		}
+		if got := tracker.encode(c.report); !bytes.Equal(got, c.want) {
+			t.Errorf("%s: encode(%q) = %q, want %q", c.name, c.report, got, c.want)
+		}
+	}
+}
+
+func TestMouseModeTrackerFullResetClearsModes(t *testing.T) {
+	var tracker mouseModeTracker
+	tracker.consume([]byte("\x1b[?1003;1006h\x1bc"))
+	if tracker.enabled() {
+		t.Fatal("mouse tracking survived a full reset")
+	}
+	tracker.consume([]byte("\x1b[?1000h"))
+	if got, want := tracker.encode([]byte("\x1b[<0;1;1M")), []byte("\x1b[M !!"); !bytes.Equal(got, want) {
+		t.Fatalf("after reset encode = %q, want X10 %q", got, want)
+	}
+}
+
+func TestManagedSessionWritesX10MouseReportsForPrograms(t *testing.T) {
+	pty := &writeTestPTY{}
+	managed := &ManagedSession{
+		session:     &Session{pty: pty},
+		subscribers: map[*subscriber]struct{}{},
+	}
+	managed.publish([]byte("\x1b[?1000h"))
+	press := []byte("\x1b[<2;10;3M")
+	if n, err := managed.WriteMouse(press); err != nil || n != len(press) {
+		t.Fatalf("WriteMouse = (%d, %v), want (%d, nil)", n, err, len(press))
+	}
+	if n, err := managed.WriteMouse([]byte("\x1b[<0;500;3M")); err != nil || n != 11 {
+		t.Fatalf("unencodable WriteMouse = (%d, %v), want (11, nil)", n, err)
+	}
+	if got, want := pty.String(), "\x1b[M\"*#"; got != want {
+		t.Fatalf("PTY input = %q, want %q", got, want)
+	}
+}
+
+func TestMouseModeTrackerX10CompatibilityReportsPressesOnly(t *testing.T) {
+	press := []byte("\x1b[<0;5;7M")
+	ctrlMiddle := []byte("\x1b[<17;5;7M")
+	release := []byte("\x1b[<0;5;7m")
+	drag := []byte("\x1b[<32;5;7M")
+	motion := []byte("\x1b[<35;5;7M")
+	wheel := []byte("\x1b[<64;5;7M")
+
+	var tracker mouseModeTracker
+	tracker.consume([]byte("\x1b[?9h"))
+	if !tracker.enabled() {
+		t.Fatal("mode 9 did not enable mouse tracking")
+	}
+	for _, report := range [][]byte{release, drag, motion, wheel} {
+		if tracker.allows(report) {
+			t.Errorf("mode 9 allowed %q", report)
+		}
+	}
+	for report, want := range map[string]string{
+		string(press):      "\x1b[M %'",
+		string(ctrlMiddle): "\x1b[M!%'", // middle button, without Ctrl
+	} {
+		if !tracker.allows([]byte(report)) {
+			t.Errorf("mode 9 blocked %q", report)
+		} else if got := tracker.encode([]byte(report)); string(got) != want {
+			t.Errorf("mode 9 encode(%q) = %q, want %q", report, got, want)
+		}
+	}
+
+	tracker.consume([]byte("\x1b[?1006h"))
+	if got, want := tracker.encode(ctrlMiddle), "\x1b[<1;5;7M"; string(got) != want {
+		t.Errorf("mode 9 with SGR encode = %q, want %q", got, want)
+	}
+
+	tracker.consume([]byte("\x1b[?1000h"))
+	if !tracker.allows(release) || !tracker.allows(wheel) || tracker.allows(drag) {
+		t.Error("mode 1000 with mode 9 did not report as normal tracking")
+	}
+	if got := tracker.encode(ctrlMiddle); string(got) != string(ctrlMiddle) {
+		t.Errorf("mode 1000 with mode 9 encode = %q, want modifiers kept", got)
+	}
+
+	tracker.consume([]byte("\x1b[?1000;9l"))
+	if tracker.enabled() {
+		t.Error("tracking stayed on after modes 9 and 1000 were reset")
+	}
+}

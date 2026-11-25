@@ -1,7 +1,7 @@
 import { TerminalAudioPlayer, terminalAudioDisabledKey, terminalAudioMuteKey } from "./terminal-audio.mjs";
 import { TerminalFiles } from "./terminal-files.mjs";
 import { terminalBacklogCloseCode, terminalStatusLabel } from "./terminal-reconnect.mjs";
-import { isTerminalCopyShortcut, terminalCommandArrowSequence, terminalControlSequence, terminalNavigationSequence, terminalPromptJumpDirection, terminalPasteSource, terminalShouldSwallowCommandKey } from "./terminal-keyboard.mjs";
+import { isTerminalCopyShortcut, terminalCommandArrowSequence, terminalControlSequence, terminalNavigationSequence, terminalPromptJumpDirection, terminalPasteSource, terminalShiftedKeySequence, terminalShouldSwallowCommandKey } from "./terminal-keyboard.mjs";
 import { TerminalFindBar } from "./terminal-find.mjs";
 import { loadTerminalFont, terminalFontFamily, terminalPrimaryFontFamily } from "./terminal-font.mjs";
 import { terminalColorTheme } from "./terminal-colors.mjs";
@@ -15,6 +15,7 @@ import { TerminalReplica } from "./terminal-replica.mjs";
 import { TerminalOutputTiming } from "./terminal-output-timing.mjs";
 import { terminalWorkingDirectory } from "./terminal-working-directory.mjs";
 import { terminalKittyKeyEvent } from "./terminal-kitty-keyboard.mjs";
+import { adjustTerminalSelection, clearTerminalSelectionForTyping, terminalSelectionAdjustment } from "./terminal-selection-keys.mjs";
 import { acceptTerminalAlert, mergeTerminalAttention, showSystemNotification, terminalCommandFailed, terminalNoticeText, TerminalNotices } from "./terminal-attention.mjs";
 import { terminalProgressDescription, terminalProgressFromMessage, terminalProgressLifetimeMs, terminalProgressWidth } from "./terminal-progress.mjs";
 
@@ -228,7 +229,17 @@ export function createTerminal(dependencies, platform = globalThis) {
           void dependencies.menus().applyTerminalMenuAction("copy", rect);
           return true;
         }
-        const promptJump = terminalPromptJumpDirection(event, { appleKeyboard: dependencies.interactions().appleKeyboardLayout });
+        const alternateScreen = Boolean(term.wasmTerm?.isAlternateScreen?.());
+        // Shift with an arrow, Page Up/Down, Home or End moves the end of a
+        // selection there is one, as in Ghostty, ahead of any key encoding.
+        const adjustment = event.type === "keydown" ? terminalSelectionAdjustment(event) : null;
+        if (adjustment && adjustTerminalSelection(term, adjustment)) {
+          return true;
+        }
+        // Ghostty's selection-clear-on-typing, for each key that goes on to
+        // the program.
+        const typed = () => clearTerminalSelectionForTyping(term, event, dependencies.preferences().clearSelectionOnTyping);
+        const promptJump = terminalPromptJumpDirection(event, { appleKeyboard: dependencies.interactions().appleKeyboardLayout, alternateScreen });
         if (promptJump) {
           term.scrollToPrompt?.(promptJump);
           return true;
@@ -244,13 +255,15 @@ export function createTerminal(dependencies, platform = globalThis) {
           void dependencies.menus().applyTerminalMenuAction("paste", rect);
           return true;
         }
-        // A program that turned on the Kitty keyboard protocol gets every key
-        // from Ghostty's encoder, which takes care of what follows for
-        // ordinary encoding (Command, Home and End, numpad keys).
+        // A program that turned on the Kitty keyboard protocol, or xterm's
+        // modifyOtherKeys, gets every key from Ghostty's encoder, which takes
+        // care of what follows for ordinary encoding (Command, Home and End,
+        // numpad keys). Releases are the Kitty protocol's only.
         const kittyFlags = term.kittyKeyboardFlags?.() || 0;
-        if (kittyFlags) {
-          const fields = terminalKittyKeyEvent(event, { appleKeyboard: dependencies.interactions().appleKeyboardLayout, action: event.repeat ? "repeat" : "press" });
+        if (kittyFlags || term.modifyOtherKeys?.()) {
+          const fields = terminalKittyKeyEvent(event, { appleKeyboard: dependencies.interactions().appleKeyboardLayout, action: event.repeat ? "repeat" : "press", alternateScreen });
           if (!fields) return true;
+          typed();
           kittyKeysDown.set(event.code, fields.key);
           const data = term.encodeKeyEvent(fields, kittyFlags);
           if (data) {
@@ -262,11 +275,13 @@ export function createTerminal(dependencies, platform = globalThis) {
         }
         const controlSequence = terminalControlSequence(event, { appleKeyboard: dependencies.interactions().appleKeyboardLayout });
         if (controlSequence) {
+          typed();
           feature.sendTerminalKeys(rect, controlSequence);
           return true;
         }
-        const commandArrowSequence = terminalCommandArrowSequence(event, { appleKeyboard: dependencies.interactions().appleKeyboardLayout });
+        const commandArrowSequence = terminalCommandArrowSequence(event, { appleKeyboard: dependencies.interactions().appleKeyboardLayout, alternateScreen });
         if (commandArrowSequence) {
+          typed();
           feature.sendTerminalKeys(rect, commandArrowSequence);
           return true;
         }
@@ -279,7 +294,9 @@ export function createTerminal(dependencies, platform = globalThis) {
           applicationCursorKeys: term.getMode?.(1, false),
           applicationKeypad: term.getMode?.(66, false),
           appleKeyboard: dependencies.interactions().appleKeyboardLayout,
-        });
+        }) || terminalShiftedKeySequence(event);
+        // Everything else is ghostty-web's to type.
+        typed();
         if (!sequence) {
           return false;
         }

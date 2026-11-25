@@ -85,6 +85,7 @@ function fixture({ authMode = "off" } = {}) {
     compatibilityUpdateTimer: null, settingsReturnFocus: null,
     defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,
     terminalShellIntegration: true, commandNoticesEnabled: true, setTerminalShellIntegration() {}, setCommandNoticesEnabled() {},
+    clearSelectionOnTyping: true, setClearSelectionOnTyping() {},
     setWindowWobbleEnabled() {},
     terminalWheelSensitivity: 1, editorWheelSensitivity: 1, rdpWheelSpeed: 1, rdpWheelSpeedOptions: [1], setRDPWheelSpeed() {},
     terminalPaintCoalescing: true, terminalOutputCoalescing: false,
@@ -340,7 +341,7 @@ test("every existing control remains reachable in its category", () => {
   const pages = {
     appearance: ["Default theme", "Current theme", "OLED border", "Wobbly windows", "Set background", "Background display"],
     fonts: ["Application font", "Interface font size", "Terminal default font size", "Current font size"],
-    terminal: ["Terminal row spacing", "Terminal colors", "Typing prediction", "Shell integration", "Command finished notices"],
+    terminal: ["Terminal row spacing", "Terminal colors", "Typing prediction", "Shell integration", "Command finished notices", "Clear selection when typing"],
     input: ["Terminal wheel speed", "Remote desktop wheel speed"],
     clipboard: ["Check clipboard"], performance: ["Performance profile"],
     security: ["Sign-in settings", "Signed-in devices"],

@@ -9,9 +9,11 @@ readonly XCODE_DEVELOPER_DIRECTORY="/Applications/Xcode.app/Contents/Developer"
 
 usage() {
   cat <<USAGE
-Usage: bash $0 [--output PATH] [--help]
+Usage: bash $0 [--output PATH] [--version X.Y.Z] [--build N] [--help]
 
   --output PATH  where to write the .ipa (default: apple/build/Tessera.ipa)
+  --version VER  app version (CFBundleShortVersionString); default: the project's
+  --build N      build number (CFBundleVersion); default: the project's
   --help         show this help
 USAGE
 }
@@ -19,6 +21,8 @@ USAGE
 show_help=false
 work_directory=""
 output_path="${APPLE_DIRECTORY}/build/Tessera.ipa"
+app_version=""
+build_number=""
 
 parse_arguments() {
   show_help=false
@@ -30,6 +34,22 @@ parse_arguments() {
           return 2
         fi
         output_path="$2"
+        shift
+        ;;
+      --version)
+        if (($# < 2)) || ! [[ $2 =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+          echo "error: $1 needs a version like 1.16.3" >&2
+          return 2
+        fi
+        app_version="$2"
+        shift
+        ;;
+      --build)
+        if (($# < 2)) || ! [[ $2 =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+          echo "error: $1 needs a build number like 42" >&2
+          return 2
+        fi
+        build_number="$2"
         shift
         ;;
       --help | -h)
@@ -57,8 +77,12 @@ use_xcode_if_needed() {
 
 build_ipa() {
   local app_path
+  local -a version_settings=()
   work_directory="$(mktemp -d)"
   trap 'rm -rf "${work_directory}"' EXIT
+  # Releases stamp the server's tag; local builds keep the project's version.
+  [[ -n ${app_version} ]] && version_settings+=("MARKETING_VERSION=${app_version}")
+  [[ -n ${build_number} ]] && version_settings+=("CURRENT_PROJECT_VERSION=${build_number}")
 
   xcodebuild \
     -project "${APPLE_DIRECTORY}/Tessera.xcodeproj" \
@@ -68,7 +92,8 @@ build_ipa() {
     -derivedDataPath "${work_directory}/DerivedData" \
     -quiet \
     build \
-    CODE_SIGNING_ALLOWED=NO
+    CODE_SIGNING_ALLOWED=NO \
+    ${version_settings[@]+"${version_settings[@]}"}
 
   app_path="${work_directory}/DerivedData/Build/Products/Release-iphoneos/Tessera.app"
   if [[ ! -d ${app_path} ]]; then

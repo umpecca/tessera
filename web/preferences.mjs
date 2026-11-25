@@ -35,6 +35,8 @@ export function createPreferences(dependencies, platform = globalThis) {
     systemNotificationsEnabled: undefined,
     commandNoticesStorageKey: undefined,
     commandNoticesEnabled: undefined,
+    clearSelectionOnTypingStorageKey: undefined,
+    clearSelectionOnTyping: undefined,
     fallbackPaneFontSize: undefined,
     minimumPaneFontSize: undefined,
     maximumPaneFontSize: undefined,
@@ -131,6 +133,11 @@ export function createPreferences(dependencies, platform = globalThis) {
   function setCommandNoticesEnabled(enabled) {
     feature.commandNoticesEnabled = enabled === true;
     feature.saveBrowserSetting(feature.commandNoticesStorageKey, feature.commandNoticesEnabled);
+  }
+
+  function setClearSelectionOnTyping(enabled) {
+    feature.clearSelectionOnTyping = enabled === true;
+    feature.saveBrowserSetting(feature.clearSelectionOnTypingStorageKey, feature.clearSelectionOnTyping);
   }
 
   function setTerminalTERM(value) {
@@ -359,6 +366,15 @@ export function createPreferences(dependencies, platform = globalThis) {
     } catch {
       // Browser storage is unavailable; notices stay on.
     }
+    // Typing into a terminal clears its selection, as Ghostty's
+    // selection-clear-on-typing does by default.
+    feature.clearSelectionOnTypingStorageKey = "tessera.clear-selection-on-typing.v1";
+    feature.clearSelectionOnTyping = true;
+    try {
+      feature.clearSelectionOnTyping = platform.window.localStorage.getItem(feature.clearSelectionOnTypingStorageKey) !== "false";
+    } catch {
+      // Browser storage is unavailable; typing still clears selections.
+    }
     try {
       feature.systemNotificationsEnabled = platform.window.localStorage.getItem(feature.systemNotificationsStorageKey) === "true";
     } catch {
@@ -481,6 +497,7 @@ export function createPreferences(dependencies, platform = globalThis) {
     setOLEDWindowBorderSize,
     setTerminalShellIntegration,
     setCommandNoticesEnabled,
+    setClearSelectionOnTyping,
     setTerminalTERM,
     applyApplicationFont,
     setTerminalFont,

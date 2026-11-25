@@ -877,7 +877,7 @@ export function createSettings(dependencies, platform = globalThis) {
       modal: feature.settingsModal,
       state: () => ({
         defaultPaneFontSize: dependencies.preferences().defaultPaneFontSize, defaultTheme: dependencies.preferences().defaultTheme, themeID: dependencies.preferences().themeID, windowWobbleEnabled: dependencies.preferences().windowWobbleEnabled,
-        terminalShellIntegration: dependencies.preferences().terminalShellIntegration, commandNoticesEnabled: dependencies.preferences().commandNoticesEnabled, terminalWheelSensitivity: dependencies.preferences().terminalWheelSensitivity,
+        terminalShellIntegration: dependencies.preferences().terminalShellIntegration, commandNoticesEnabled: dependencies.preferences().commandNoticesEnabled, clearSelectionOnTyping: dependencies.preferences().clearSelectionOnTyping, terminalWheelSensitivity: dependencies.preferences().terminalWheelSensitivity,
         rdpWheelSpeed: dependencies.preferences().rdpWheelSpeed, rdpWheelSpeedOptions, terminalPaintCoalescing: dependencies.preferences().terminalPaintCoalescing, terminalOutputCoalescing: dependencies.preferences().terminalOutputCoalescing,
         authMode: dependencies.navigation().authMode, scope: dependencies.preferences().displaySettingsScope(),
       }),
@@ -897,7 +897,7 @@ export function createSettings(dependencies, platform = globalThis) {
       actions: {
         defaultPaneFontSize: dependencies.preferences().setDefaultPaneFontSize, defaultTheme: dependencies.preferences().setDefaultTheme,
         theme: dependencies.preferences().applyTheme, windowWobble: dependencies.preferences().setWindowWobbleEnabled,
-        shellIntegration: dependencies.preferences().setTerminalShellIntegration, commandNotices: dependencies.preferences().setCommandNoticesEnabled,
+        shellIntegration: dependencies.preferences().setTerminalShellIntegration, commandNotices: dependencies.preferences().setCommandNoticesEnabled, clearSelectionOnTyping: dependencies.preferences().setClearSelectionOnTyping,
         terminalWheel: dependencies.preferences().setTerminalWheelSensitivity, rdpWheel: dependencies.preferences().setRDPWheelSpeed,
         shortcuts: dependencies.navigation().openShortcuts, paintCoalescing: dependencies.preferences().setTerminalPaintCoalescing,
         outputCoalescing: dependencies.preferences().setTerminalOutputCoalescing,

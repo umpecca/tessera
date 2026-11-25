@@ -1,3 +1,5 @@
+import { terminalThemeBackgroundKey } from "./terminal-cell-backgrounds.mjs";
+
 const patch = Symbol.for("tessera.terminalPlainRenderer");
 const experimentalRenderLine = Symbol.for("tessera.terminalPlainRenderer.renderLine");
 const rendererStats = Symbol.for("tessera.terminalPlainRenderer.statistics");
@@ -7,8 +9,10 @@ function recordRow(renderer, path) {
   if (stats) stats[path]++;
 }
 
+// Overline (bit 16 of cell.underline) has no cell flag; the fast path
+// leaves it to the underline painter too.
 function isSimpleCell(cell) {
-  return cell.width === 1 && !cell.flags && !cell.grapheme_len && !cell.hyperlink_id
+  return cell.width === 1 && !cell.flags && !cell.grapheme_len && !cell.hyperlink_id && !(cell.underline & 16)
     && (cell.codepoint === 0 || (cell.codepoint >= 32 && cell.codepoint <= 126));
 }
 
@@ -42,14 +46,15 @@ export function installPlainRenderer(Renderer) {
 
     // Match Ghostty's background-first ordering so later cell backgrounds
     // cannot cover glyphs. Adjacent cells of one color share a single fill.
+    // A cell already on the row's colour needs no fill of its own.
+    const rowKey = terminalThemeBackgroundKey(this);
     let backgroundStart = -1;
     let backgroundKey = -1;
     for (let col = 0; col <= cells.length; col++) {
       const cell = cells[col];
       const simple = cell && isSimpleCell(cell);
-      const key = simple && (cell.bg_r || cell.bg_g || cell.bg_b)
-        ? (cell.bg_r << 16) | (cell.bg_g << 8) | cell.bg_b
-        : -1;
+      const cellKey = simple ? (cell.bg_r << 16) | (cell.bg_g << 8) | cell.bg_b : -1;
+      const key = cellKey === rowKey ? -1 : cellKey;
       if (key !== backgroundKey && backgroundStart >= 0) {
         ctx.fillStyle = this.rgbToCSS(
           (backgroundKey >> 16) & 255,

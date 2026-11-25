@@ -106,10 +106,17 @@ shown for the next to connect (`alert-seen` clears it).
 
 Queries, title stack and progress: the upstream API drops DECRQM, XTVERSION,
 CSI 22/23 t and OSC 9;4. Tessera answers DECRQM from the mode table as
-Ghostty does (1 set, 2 reset, 0 unknown), but answers 0 for modes the core
-tracks and Tessera does not act on: mouse formats 1005, 1015 and 1016 (the
-browser always sends SGR reports). Upstream's parser read only DEC mode
-queries; its ANSI branch (one `$` intermediate) was unreachable and is patched in. XTVERSION
+Ghostty does (1 set, 2 reset, 0 unknown), for every mode it tracks. The
+mouse formats 1005, 1015 and 1016 are included: the browser sends SGR (in
+pixels for 1016) and the host re-encodes it for 1005, 1015 and X10.
+Upstream's parser read only DEC mode
+queries; its ANSI branch (one `$` intermediate) was unreachable and is patched in. Device
+attributes: the pinned handler answered only the primary request
+(`CSI ? 62 ; 4 c`); secondary is answered `CSI > 1 ; 10 ; 0 c` as Ghostty's
+app does, and tertiary `DCS ! | 00000000 ST` as xterm does (Ghostty's app
+leaves it unanswered). The parser dropped `CSI ? 6 n` and `CSI 19 t`; they are
+added to its tables and answered as xterm does, `CSI ? row ; col ; 1 R`
+(relative to the margins in origin mode, like CPR) and `CSI 9 ; rows ; cols t`. XTVERSION
 answers `DCS > | Tessera <version> ST`, the version set by the host with
 `tessera_set_version` (at most 64 printable characters, no spaces; the Go
 core passes `internal/version` without a leading `v`). CSI 22 and 23 with
@@ -170,7 +177,8 @@ Underline styles and colours: the core keeps each cell's underline style
 pass only an underline flag. Tessera's cell reads (the viewport, one row,
 and a history line) put the style, Ghostty's SGR enum (1 single, 2 double,
 3 curly, 4 dotted, 5 dashed), in bits 0-2 of the cell's spare last byte, and
-set bit 3 when the underline has its own colour. That colour, palette
+set bit 3 when the underline has its own colour, and bit 4 for overline
+(SGR 53), which the cell flags have no room for. That colour, palette
 entries resolved, is written as `0xRRGGBB` at the cell's index in the read
 to a buffer `tessera_underline_colors(handle)` points to, valid until the
 next read. `scripts/ghostty-web-underlines.mjs` makes ghostty-web's two
@@ -229,6 +237,30 @@ URL as sent, not decoded), read with `tessera_pwd_revision`,
 of snapshots. `tessera_mouse_shape(handle)` returns the pointer shape as
 Ghostty's `MouseShape` value, which snapshots carry; a full reset sets it
 back to `text`.
+
+DECSCUSR (`CSI Ps SP q`): Ghostty keeps the cursor's shape on the screen and
+its blink in mode 12, but treats `CSI 0 SP q` (the terminal's default) as a
+steady block. Tessera's handler also records whether the last DECSCUSR was 0
+(or none since a full reset), which snapshots carry.
+`tessera_cursor_style(handle)` returns 0 while the pane's own cursor applies;
+otherwise 8, plus the shape (0 block, 1 bar, 2 underline), plus 4 when mode 12
+says it blinks. Mode 12 alone does not count, because xterm's terminfo
+`cnorm` sends `CSI ? 12 l` and every ncurses program that exits would stop
+the pane's blink.
+
+Key and mouse flags: `tessera_modify_other_keys(handle)` is 1 while the
+program has xterm's modifyOtherKeys at level 2 (`CSI > 4 ; 2 m`); the browser
+then encodes every key with Ghostty's encoder and its modifyOtherKeys option.
+`tessera_mouse_shift_capture(handle)` is 1 when the program asked for Shift
+with the mouse (XTSHIFTESCAPE, `CSI > 1 s`). Both are in the terminal's
+flags, which snapshots carry and a full reset clears.
+
+Soft reset: the pinned parser ignored DECSTR (`CSI ! p`). It now calls the
+handler's `softReset` when the handler has one (the same `@hasDecl` hook as
+the OSC 133 command line), which does what xterm does: cursor visible, insert
+and origin off, autowrap, cursor keys, keypad and keyboard lock back to their
+defaults, margins the whole screen, ASCII character sets, attributes and
+protection off, saved cursor forgotten. The screen and cursor position stay.
 
 Upstream licenses are beside the WASM. Windows additionally embeds Microsoft's
 MIT-licensed ConPTY 1.24.260710001 for amd64, arm64, and 386. Older inbox ConPTY
@@ -377,7 +409,7 @@ replica or close its pane. Network retries and wake recovery skip hidden panes;
 visibility resumes recoverable connections while permanent exit and core
 compatibility failures remain settled.
 
-Snapshots use the `TSS3` schema and require the exact matching core hash. They
+Snapshots use the `TSS4` schema and require the exact matching core hash. They
 include both screens, retained history, cells and image attachments, styles,
 palettes, cursor/saved cursor, modes, tab stops, UTF-8/escape/Sixel continuation,
 and incomplete OSC input, image settings, discarded-image markers, and the last

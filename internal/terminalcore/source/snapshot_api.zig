@@ -72,7 +72,7 @@ fn loadScreen(input: *snapshot.Reader, screen: *Screen) !void {
 }
 
 fn saveState(w: *TerminalWrapper, out: *snapshot.Writer) !void {
-    try out.value(@as(u32, 0x33535354)); // TSS3
+    try out.value(@as(u32, 0x34535354)); // TSS4
     try out.value(@as(u32, w.terminal.cols));
     try out.value(@as(u32, w.terminal.rows));
     try out.value(@as(u32, @intCast(w.history_limit)));
@@ -93,6 +93,8 @@ fn saveState(w: *TerminalWrapper, out: *snapshot.Writer) !void {
     // gives back the right one when the program pops it.
     try out.value(w.stream.handler.title_stack_len);
     for (w.stream.handler.title_stack[0..w.stream.handler.title_stack_len]) |entry| try out.value(@as([]const u8, entry.items));
+    // Whether the pane's own cursor applies (cursor_api.zig).
+    try out.value(w.stream.handler.cursor_default);
     try out.fields(w.sixel, store_fields);
     try out.value(w.sixel.decoder);
     try out.value(@as(u32, @intCast(w.sixel.images.count())));
@@ -129,7 +131,7 @@ pub fn sixel_snapshot_import(data: [*]const u8, len: u32) callconv(.c) ?*anyopaq
     return loadState(&input) catch null;
 }
 fn loadState(input: *snapshot.Reader) !*anyopaque {
-    if (try input.value(u32) != 0x33535354) return error.InvalidSnapshot;
+    if (try input.value(u32) != 0x34535354) return error.InvalidSnapshot;
     const cols = try input.value(u32);
     const rows = try input.value(u32);
     if (cols < 2 or rows < 1 or cols > 4096 or rows > 4096) return error.InvalidSnapshot;
@@ -176,6 +178,7 @@ fn loadState(input: *snapshot.Reader) !*anyopaque {
         w.stream.handler.title_stack_len = @intCast(i + 1);
         if (saved.len > 4096 or !std.unicode.utf8ValidateSlice(saved)) return error.InvalidSnapshot;
     }
+    w.stream.handler.cursor_default = try input.value(bool);
     try input.fields(&w.sixel, store_fields);
     if (w.sixel.memory_limit != 16 * 1024 * 1024 and w.sixel.memory_limit != 32 * 1024 * 1024 and w.sixel.memory_limit != 64 * 1024 * 1024) return error.InvalidSnapshot;
     w.sixel.decoder = try input.value(@TypeOf(w.sixel.decoder));

@@ -350,10 +350,11 @@ func (s *ManagedSession) Write(p []byte) (int, error) {
 
 // WriteMouse forwards a browser-generated mouse report only while the PTY's
 // latest output says a DEC mouse tracking mode asking for it is enabled: any
-// mode for presses, releases and the wheel, 1002 or 1003 for drags, and 1003
-// for movement with no button. Browser mouse input
+// mode for presses, 1000, 1002 or 1003 for releases and the wheel, 1002 or
+// 1003 for drags, and 1003 for movement with no button. Browser mouse input
 // is tagged separately so ordinary keyboard input and pasted escape sequences
-// are never filtered by this race guard.
+// are never filtered by this race guard. The browser sends SGR; a program
+// that asked for another report format gets that format.
 func (s *ManagedSession) WriteMouse(p []byte) (int, error) {
 	if s == nil {
 		return 0, io.ErrClosedPipe
@@ -366,7 +367,14 @@ func (s *ManagedSession) WriteMouse(p []byte) (int, error) {
 	if !s.mouseModes.allows(p) {
 		return len(p), nil
 	}
-	return s.session.Write(p)
+	report := s.mouseModes.encode(p)
+	if report == nil {
+		return len(p), nil
+	}
+	if _, err := s.session.Write(report); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // join subscribes another browser to a running session. The shell has one

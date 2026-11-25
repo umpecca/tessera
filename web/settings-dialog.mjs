@@ -145,6 +145,7 @@ export class SettingsDialog {
         rows.rowSpacing(), rows.terminalColor(), rows.prediction(),
         rows.toggle("Shell integration", "Starts zsh and bash set up to mark their prompts and commands and report their directory, for prompt jumps, Copy Command Output, the window's directory and command finished notices. Applies to new terminals.", state.terminalShellIntegration, actions.shellIntegration),
         rows.toggle("Command finished notices", "A notice when a command that ran for 5 seconds or more finishes in a window you aren't looking at. Needs the shell's prompt marks (Shell integration). Saved in this browser.", state.commandNoticesEnabled, actions.commandNotices),
+        rows.toggle("Clear selection when typing", "Typing into a terminal clears its text selection, so Shift with an arrow, Page Up/Down, Home or End goes back to the program. While text is selected those keys extend the selection. Saved in this browser.", state.clearSelectionOnTyping, actions.clearSelectionOnTyping),
         ...("Notification" in this.window ? [rows.notifications()] : []),
       ]));
       break;

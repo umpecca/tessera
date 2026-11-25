@@ -79,8 +79,10 @@ function eventText(key) {
 // when the key must not reach the program. On an Apple keyboard Command
 // never does (Terminal.app sends nothing for it), except that Command+Left
 // and Command+Right stand in for Home and End, as they do without the
-// protocol. Option is Alt, as it is without the protocol.
-export function terminalKittyKeyEvent(event, { appleKeyboard = false, action = "press" } = {}) {
+// protocol, and in a full-screen program (alternateScreen) Command+Up and
+// Command+Down stand in for Page Up and Page Down. Option is Alt, as it is
+// without the protocol.
+export function terminalKittyKeyEvent(event, { appleKeyboard = false, action = "press", alternateScreen = false } = {}) {
   if (!event) return null;
   let name = null;
   let meta = Boolean(event.metaKey);
@@ -89,6 +91,9 @@ export function terminalKittyKeyEvent(event, { appleKeyboard = false, action = "
     meta = false;
   } else if (appleKeyboard && meta && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
     name = event.key === "ArrowLeft" ? "HOME" : "END";
+    meta = false;
+  } else if (appleKeyboard && meta && alternateScreen && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    name = event.key === "ArrowUp" ? "PAGE_UP" : "PAGE_DOWN";
     meta = false;
   } else if (event.code?.startsWith("Numpad") && numpadNavigationKeys[event.key]) {
     name = numpadNavigationKeys[event.key];

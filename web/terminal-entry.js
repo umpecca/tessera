@@ -22,7 +22,9 @@ import { TerminalPredictionOverlay } from "./terminal-prediction-overlay.mjs";
 import { TerminalLinkHover } from "./terminal-link-hover.mjs";
 import { defaultTerminalPointerShape, terminalPointerShape } from "./terminal-pointer-shape.mjs";
 import { adjacentPrompt, commandOutput, lastCommandOutput, promptStarts } from "./terminal-prompts.mjs";
-import { terminalThemeWithProgramColors } from "./terminal-colors.mjs";
+import { terminalThemeInReverseVideo, terminalThemeWithProgramColors } from "./terminal-colors.mjs";
+import { installTerminalCellBackgrounds } from "./terminal-cell-backgrounds.mjs";
+import { TerminalTextBlink, installTerminalTextBlink } from "./terminal-text-blink.mjs";
 import { installTerminalUnderlines } from "./terminal-underlines.mjs";
 import { installTerminalSearchHighlights } from "./terminal-search-highlight.mjs";
 import { HyperlinkProvider, RoutedLinkProvider, replaceLinkProvider } from "./terminal-links.mjs";
@@ -43,7 +45,11 @@ export const searchUpdateDelayMs = 150;
 export const searchMatchLimit = 10000;
 installTerminalFontMetrics(CanvasRenderer);
 installTerminalUnderlines(CanvasRenderer);
+// Before search highlights, which fall back to it.
+installTerminalCellBackgrounds(CanvasRenderer);
 installTerminalSearchHighlights(CanvasRenderer);
+// Outermost text painter, so a blinking cell's hidden phase hides all of it.
+installTerminalTextBlink(CanvasRenderer);
 installSixelRenderer(CanvasRenderer);
 installTerminalScrollRenderer(CanvasRenderer);
 installTerminalPixelGrid(CanvasRenderer);
@@ -100,7 +106,14 @@ class Terminal extends GhosttyTerminal {
     this.rowSpacing = normalizeTerminalRowSpacing(rowSpacing);
     this.renderPixelRatioCap = Number.isFinite(renderPixelRatioCap) && renderPixelRatioCap >= 1
       ? renderPixelRatioCap : 0;
-    this.cursorBlink.setEnabled(cursorBlinkEnabled !== false);
+    // The pane's own blink; a program's cursor can only turn it off.
+    this.paneCursorBlink = cursorBlinkEnabled !== false;
+    this.programCursor = null;
+    this.cursorBlink.setEnabled(this.paneCursorBlink);
+    this.textBlink = new TerminalTextBlink(() => {
+      this.fullRedrawPending = true;
+      this.requestRender();
+    }, { enabled: () => this.paneCursorBlink && !globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches });
     // CanvasRenderer.resize() clears the bitmap. Keep this state separate from
     // Ghostty's dirty rows because a same-grid geometry update is a no-op in
     // the terminal core and therefore does not dirty any rows itself.
@@ -371,6 +384,8 @@ class Terminal extends GhosttyTerminal {
     const fadingScrollbar = this.advanceScrollbar();
     const forceFullRedraw = resolutionChanged || this.fullRedrawPending;
     this.renderer.tesseraSearchRows = this.searchRowsInView();
+    this.renderer.tesseraBlinkSeen = false;
+    this.renderer.tesseraBlinkHidden = this.textBlink.hidden;
     try {
       this.renderer.render(
         this.wasmTerm,
@@ -389,6 +404,7 @@ class Terminal extends GhosttyTerminal {
       return;
     }
     this.fullRedrawPending = false;
+    this.textBlink.noteFrame(this.renderer.tesseraBlinkSeen === true, forceFullRedraw);
     if (this.predictionOverlayDirty || (forceFullRedraw && this.predictionOverlay?.drawn)) {
       this.predictionOverlayDirty = false;
       this.drawPredictions();
@@ -414,6 +430,7 @@ class Terminal extends GhosttyTerminal {
     this.syncWorkingDirectory();
     this.syncPointerShape();
     this.syncColors();
+    this.syncCursorStyle();
     if (readingHistory) {
       if (this.wasmTerm.isAlternateScreen?.()) this.scrollToBottom();
       else {
@@ -448,6 +465,8 @@ class Terminal extends GhosttyTerminal {
     this.syncPointerShape();
     this.colorRevision = null;
     this.syncColors();
+    this.programCursor = null;
+    this.syncCursorStyle();
     this.restartSearch();
     this.requestRender();
   }
@@ -510,8 +529,12 @@ class Terminal extends GhosttyTerminal {
     const theme = this.renderer?.theme;
     if (!e?.tessera_color_revision || !theme) return;
     const revision = e.tessera_color_revision(b.handle);
-    if (revision === this.colorRevision) return;
+    // Reverse video (mode 5) is not a colour change to the core's revision.
+    let reverse = false;
+    try { reverse = Boolean(b.getMode?.(5, false)); } catch {}
+    if (revision === this.colorRevision && reverse === this.colorReverse) return;
     this.colorRevision = revision;
+    this.colorReverse = reverse;
     this.baseTheme ??= { ...theme };
     const ptr = e.ghostty_wasm_alloc_u8_array(20);
     let values;
@@ -521,10 +544,36 @@ class Terminal extends GhosttyTerminal {
       const view = new DataView(e.memory.buffer, ptr, 20);
       values = [0, 1, 2, 3, 4].map((index) => view.getUint32(index * 4, true));
     } finally { e.ghostty_wasm_free_u8_array(ptr, 20); }
-    Object.assign(theme, terminalThemeWithProgramColors(this.baseTheme, values));
+    const programTheme = terminalThemeWithProgramColors(this.baseTheme, values);
+    Object.assign(theme, reverse ? terminalThemeInReverseVideo(programTheme) : programTheme);
     if (this.element?.style) this.element.style.background = theme.background;
     this.fullRedrawPending = true;
     this.requestRender();
+  }
+
+  // DECSCUSR (CSI Ps SP q): the cursor shape and blink a program asked for,
+  // as the core reports them (0 for the pane's own cursor; otherwise 8, plus
+  // 0 block, 1 bar or 2 underline, plus 4 to blink). The pane's own cursor is
+  // a block that blinks unless the pane's setting turned blinking off, which
+  // a program cannot turn back on.
+  syncCursorStyle() {
+    const b = this.wasmTerm, e = b?.exports;
+    if (!e?.tessera_cursor_style || !this.renderer) return;
+    const value = e.tessera_cursor_style(b.handle);
+    if (value === this.programCursor) return;
+    this.programCursor = value;
+    const set = (value & 8) !== 0;
+    this.renderer.cursorStyle = set ? (["block", "bar", "underline"][value & 3] ?? "block") : "block";
+    this.cursorBlink.setEnabled(this.paneCursorBlink && (!set || (value & 4) !== 0));
+    this.fullRedrawPending = true;
+    this.requestRender();
+  }
+
+  // Mode 9 (X10 compatibility) asks for clicks too, but Ghostty's check reads
+  // only 1000, 1002 and 1003. The host passes it presses only.
+  hasMouseTracking() {
+    if (super.hasMouseTracking?.()) return true;
+    try { return Boolean(this.wasmTerm?.getMode?.(9, false)); } catch { return false; }
   }
 
   // OSC 22: the pointer shape a program asked for over the terminal.
@@ -741,6 +790,20 @@ class Terminal extends GhosttyTerminal {
     return e?.tessera_kitty_keyboard_flags ? e.tessera_kitty_keyboard_flags(core.handle) : 0;
   }
 
+  // Whether the program turned on xterm's modifyOtherKeys level 2
+  // (CSI > 4 ; 2 m), which Ghostty's encoder then follows.
+  modifyOtherKeys() {
+    const core = this.wasmTerm, e = core?.exports;
+    return Boolean(e?.tessera_modify_other_keys?.(core.handle));
+  }
+
+  // Whether the program asked for Shift with the mouse (CSI > 1 s), so a
+  // Shift-click is its, not a selection.
+  mouseShiftCapture() {
+    const core = this.wasmTerm, e = core?.exports;
+    return Boolean(e?.tessera_mouse_shift_capture?.(core.handle));
+  }
+
   // Encodes one key event (fields from terminalKittyKeyEvent) with Ghostty's
   // key encoder under the given Kitty flags and the terminal's key modes.
   encodeKeyEvent(fields, kittyFlags) {
@@ -765,6 +828,7 @@ class Terminal extends GhosttyTerminal {
       setOption(0, this.getMode?.(1, false) ? 1 : 0);
       setOption(1, this.getMode?.(66, false) ? 1 : 0);
       setOption(3, this.getMode?.(1036, false) ? 1 : 0);
+      setOption(4, this.modifyOtherKeys() ? 1 : 0);
     } finally { e.ghostty_wasm_free_u8(option); }
 
     const out = e.ghostty_wasm_alloc_opaque();
@@ -831,6 +895,8 @@ class Terminal extends GhosttyTerminal {
     this.smoothScroll.cancel();
     // Avoid emitting another resize request while applying the host's event.
     this.cols = cols; this.rows = rows;
+    // Mode 1016 mouse reports are in the host's pixel space.
+    this.hostCellWidth = cellWidth; this.hostCellHeight = cellHeight;
     this.wasmTerm.resize(cols, rows);
     this.wasmTerm.exports.tessera_sixel_geometry(this.wasmTerm.handle, cellWidth, cellHeight);
     this.renderer.resize(cols, rows);
@@ -881,9 +947,14 @@ class Terminal extends GhosttyTerminal {
     this.syncPointerShape();
     this.colorRevision = null;
     this.syncColors();
+    this.programCursor = null;
+    this.syncCursorStyle();
     b._cols = geometry.cols; b._rows = geometry.rows;
     b.initCellPool();
     this.cols = geometry.cols; this.rows = geometry.rows;
+    if (geometry.cellWidth > 0 && geometry.cellHeight > 0) {
+      this.hostCellWidth = geometry.cellWidth; this.hostCellHeight = geometry.cellHeight;
+    }
     this.viewportY = 0;
     this.targetViewportY = 0;
     this.sixelRenderer.clear();
@@ -1043,7 +1114,10 @@ class Terminal extends GhosttyTerminal {
   }
 
   setCursorBlinkEnabled(enabled) {
-    this.cursorBlink.setEnabled(enabled);
+    this.paneCursorBlink = enabled !== false;
+    this.programCursor = null;
+    this.syncCursorStyle();
+    if (this.programCursor === null) this.cursorBlink.setEnabled(this.paneCursorBlink);
   }
 
   setCursorActive(active) {
@@ -1085,6 +1159,7 @@ class Terminal extends GhosttyTerminal {
     this.linkHover.dispose();
     this.workingDirectoryEmitter.clear();
     this.cursorBlink.dispose();
+    this.textBlink.dispose();
     this.sixelRenderer.clear();
     renderScheduler.unregister(this);
     this.inputBuffer.dispose();

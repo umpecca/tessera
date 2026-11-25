@@ -319,7 +319,75 @@ test("bells are counted and OSC 9 and 777 notifications queued, bounded", async 
   } finally { t.dispose(); }
 });
 
-test("DECRQM answers from the mode table, except modes Tessera does not act on", async () => {
+test("device attributes, the extended cursor position and the screen size in characters are answered", async () => {
+  const t = await terminal(30, 8);
+  try {
+    t.write("\x1b[c\x1b[>c\x1b[>0c\x1b[=c");
+    assert.equal(replies(t), "\x1b[?62;4c\x1b[>1;10;0c\x1b[>1;10;0c\x1bP!|00000000\x1b\\",
+      "primary, secondary (as Ghostty's app) and tertiary (as xterm)");
+    t.write("\x1b[3;5H\x1b[6n\x1b[?6n");
+    assert.equal(replies(t), "\x1b[3;5R\x1b[?3;5;1R", "DECXCPR adds xterm's page");
+    t.write("\x1b[2;6r\x1b[?6h\x1b[2;3H\x1b[?6n\x1b[?6l\x1b[r");
+    assert.equal(replies(t), "\x1b[?2;3;1R", "relative to the margins in origin mode, like CPR");
+    t.write("\x1b[18t\x1b[19t\x1b[19;1t");
+    assert.equal(replies(t), "\x1b[8;8;30t\x1b[9;8;30t", "an extra parameter is ignored");
+  } finally { t.dispose(); }
+});
+
+test("modifyOtherKeys level 2 and Shift capture are reported, and carried by snapshots", async () => {
+  const t = await terminal(20, 4);
+  try {
+    assert.equal(t.e.tessera_modify_other_keys(t.handle), 0);
+    t.write("\x1b[>4;2m");
+    assert.equal(t.e.tessera_modify_other_keys(t.handle), 1);
+    t.write("\x1b[>4;1m");
+    assert.equal(t.e.tessera_modify_other_keys(t.handle), 0, "level 1 is not level 2");
+    t.write("\x1b[>4;2m\x1b[>1s");
+    assert.equal(t.e.tessera_mouse_shift_capture(t.handle), 1);
+    t.restore(t.snapshot());
+    assert.equal(t.e.tessera_modify_other_keys(t.handle), 1, "snapshots carry both");
+    assert.equal(t.e.tessera_mouse_shift_capture(t.handle), 1);
+    t.write("\x1b[>4m\x1b[>0s");
+    assert.equal(t.e.tessera_modify_other_keys(t.handle), 0);
+    assert.equal(t.e.tessera_mouse_shift_capture(t.handle), 0);
+    t.write("\x1b[>4;2m\x1b[>1s\x1bc");
+    assert.equal(t.e.tessera_modify_other_keys(t.handle) + t.e.tessera_mouse_shift_capture(t.handle), 0, "a full reset clears both");
+  } finally { t.dispose(); }
+});
+
+test("soft reset (DECSTR) resets modes, margins and attributes but keeps the screen and cursor", async () => {
+  const t = await terminal(20, 6);
+  const mode = (n, ansi = false) => t.e.ghostty_terminal_get_mode(t.handle, n, ansi);
+  const codepoint = (row, col) => new DataView(t.cells().buffer).getUint32((row * 20 + col) * 16, true);
+  try {
+    t.write("kept\x1b[4h\x1b[?6h\x1b[?25l\x1b[?1h\x1b[?66h\x1b[?7l\x1b[2;5r\x1b[1;31m\x1b(0\x1b7\x1b[3;4H");
+    replies(t);
+    t.write("\x1b[!p\x1b[6n\x1bP$qm\x1b\\\x1bP$qr\x1b\\");
+    assert.equal(replies(t), "\x1b[4;4R\x1bP1$r0m\x1b\\\x1bP1$r1;6r\x1b\\",
+      "cursor where it was (origin off), attributes off, margins the whole screen");
+    assert.deepEqual([mode(4, true), mode(6), mode(25), mode(1), mode(66), mode(7)], [0, 0, 1, 0, 0, 1]);
+    t.write("q");
+    assert.equal(codepoint(3, 3), "q".codePointAt(0), "ASCII again, not line drawing");
+    t.write("\x1b8\x1b[6n");
+    assert.equal(replies(t), "\x1b[1;1R", "the saved cursor was forgotten");
+    assert.equal(codepoint(0, 0), "k".codePointAt(0), "the screen stays");
+    t.write("\x1b[?2004h\x1b[!p");
+    assert.equal(mode(2004), 1, "other modes stay");
+    t.write("\x1b[?2004$p");
+    assert.equal(replies(t), "\x1b[?2004;1$y", "DECRQM still answers");
+  } finally { t.dispose(); }
+});
+
+test("overline (SGR 53) is bit 16 of a cell's spare byte, beside the underline", async () => {
+  const t = await terminal(10, 2);
+  try {
+    t.write("\x1b[53mO\x1b[55mN\x1b[4:3;53mB\x1b[0mP");
+    const spare = t.cells().filter((_, i) => i % 16 === 15).slice(0, 4);
+    assert.deepEqual([...spare], [16, 0, 16 | 3, 0], "overline, reset, curly underline with overline, plain");
+  } finally { t.dispose(); }
+});
+
+test("DECRQM answers from the mode table", async () => {
   const t = await terminal(20, 4);
   try {
     t.write("\x1b[?2004$p\x1b[?2004h\x1b[?2004$p\x1b[?7$p\x1b[4$p\x1b[?1004$p");
@@ -327,9 +395,37 @@ test("DECRQM answers from the mode table, except modes Tessera does not act on",
     t.write("\x1b[?1006h\x1b[?1006$p\x1b[?2031$p\x1b[?2027$p");
     assert.equal(replies(t), "\x1b[?1006;1$y\x1b[?2031;2$y\x1b[?2027;1$y", "grapheme clustering is on");
     t.write("\x1b[?1015$p\x1b[?1016$p\x1b[?1005$p");
-    assert.equal(replies(t), "\x1b[?1015;0$y\x1b[?1016;0$y\x1b[?1005;0$y", "not acted on");
+    assert.equal(replies(t), "\x1b[?1015;2$y\x1b[?1016;2$y\x1b[?1005;2$y", "mouse formats Tessera re-encodes are reported");
+    t.write("\x1b[?1015;1016;1005h\x1b[?1015$p\x1b[?1016$p\x1b[?1005$p");
+    assert.equal(replies(t), "\x1b[?1015;1$y\x1b[?1016;1$y\x1b[?1005;1$y");
     t.write("\x1b[?9999$p\x1b[77$p");
     assert.equal(replies(t), "\x1b[?9999;0$y\x1b[77;0$y", "unknown");
+  } finally { t.dispose(); }
+});
+
+test("a program's cursor shape and blink are reported until it asks for the default", async () => {
+  const t = await terminal(20, 4);
+  const style = () => t.e.tessera_cursor_style(t.handle);
+  try {
+    assert.equal(style(), 0, "the pane's own cursor applies at first");
+    t.write("\x1b[?12h\x1b[?12l");
+    assert.equal(style(), 0, "mode 12 alone (terminfo cnorm and cvvis) does not take over");
+    for (const [ps, want] of [[1, 8 | 4], [2, 8], [3, 8 | 4 | 2], [4, 8 | 2], [5, 8 | 4 | 1], [6, 8 | 1]]) {
+      t.write(`\x1b[${ps} q`);
+      assert.equal(style(), want, `CSI ${ps} SP q`);
+    }
+    t.write("\x1b[?12h");
+    assert.equal(style(), 8 | 4 | 1, "mode 12 then changes the blink of a program's cursor");
+    t.write("\x1bP$q q\x1b\\");
+    assert.equal(replies(t), "\x1bP1$r5 q\x1b\\", "DECRQSS agrees");
+    t.restore(t.snapshot());
+    assert.equal(style(), 8 | 4 | 1, "snapshots carry the program's cursor");
+    t.write("\x1b[0 q");
+    assert.equal(style(), 0, "CSI 0 SP q gives the cursor back to the pane");
+    t.restore(t.snapshot());
+    assert.equal(style(), 0, "snapshots carry the default too");
+    t.write("\x1b[6 q\x1bc");
+    assert.equal(style(), 0, "a full reset gives it back");
   } finally { t.dispose(); }
 });
 

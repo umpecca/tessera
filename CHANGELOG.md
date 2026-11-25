@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+- Programs that turn on xterm's modifyOtherKeys (`CSI > 4 ; 2 m`), as vim 9,
+  Emacs and tmux can, can now tell key combinations like Alt+Enter apart.
+- Soft reset (`CSI ! p`), sent by `tput init` and `tset`, now resets modes,
+  margins and text attributes.
+- Programs that ask for Shift with the mouse (`CSI > 1 s`) now get
+  Shift-clicks; Command-drag and Ctrl-drag still select text there.
+- Overlined text (`ESC [ 53 m`) now shows its line, and blinking text
+  (`ESC [ 5 m`) blinks, except in Older Mac mode or with reduced motion.
+- Open Tessera tabs need to reload once after updating, because the terminal
+  core changed.
+
+- Programs that ask which terminal they are in with the secondary or
+  tertiary device attributes queries (`CSI > c`, `CSI = c`), as vim and Emacs
+  do at startup, now get an answer, as do `CSI ? 6 n` (cursor position) and
+  `CSI 19 t` (screen size). Open Tessera tabs need to reload once after
+  updating, because the terminal core changed.
+
+- While text is selected in a terminal, Shift with an arrow, Page Up, Page
+  Down, Home or End extends the selection, as in Ghostty. Typing clears the
+  selection; turn that off with **Settings → Terminal → Clear selection when
+  typing**.
+- On Apple keyboards, Command+Up and Command+Down are Page Up and Page Down
+  in full-screen programs such as vim and less. At the shell they still jump
+  between prompts.
+
+- Fixed: Shift+Tab sent a plain Tab, so it couldn't step back through shell
+  completions, vim's insert-mode completion or fish's suggestions. It now
+  sends backtab. Shift with Home, End, Insert, Delete, Page Up, Page Down and
+  F1–F12 also reaches programs, so editors such as nano and micro can select
+  with Shift+Home and Shift+End. Shift+Enter and Shift+Escape send the same
+  codes as in Ghostty, so programs can tell them from Enter and Escape.
+
+- Full-screen programs that turn off alternate scroll (`CSI ? 1007 l`) no
+  longer get arrow keys when you scroll the wheel or two fingers over them.
+- Programs using the oldest mouse mode (`CSI ? 9 h`) now get clicks: button
+  presses only, as that mode defines.
+
+- Programs can set the cursor's shape and blink (`CSI Ps SP q`), so Neovim's
+  insert-mode bar cursor and underline cursors now show. `CSI 0 SP q` and
+  `reset` bring back the pane's own cursor. Open Tessera tabs need to reload
+  once after updating, because the terminal core changed.
+- Programs that ask whether mouse formats 1005, 1015 and 1016 are supported
+  (`CSI ? mode $ p`) are now told yes.
+
+- Reverse video (`CSI ? 5 h`) now shows: the screen's text and background
+  colours swap, with the cursor and selection, so visual bells flash.
+- Fixed: in a light terminal, inverse text, such as vim's and less's status
+  lines, and text on a black background showed white on white. Black
+  backgrounds now paint.
+
+- Fixed: clicks and scrolling in mouse-aware programs that don't ask for SGR
+  mouse reports, such as htop and other ncurses programs, did nothing or typed
+  stray characters. Tessera now sends mouse reports in the format each
+  program turns on: the original X10 format, UTF-8 (mode 1005), urxvt (mode
+  1015), SGR (mode 1006) or SGR-Pixels (mode 1016).
+
+- Fixed: clicking, hovering and scrolling in Textual apps hit the wrong place,
+  usually the top-left corner. Tessera now supports SGR-Pixels mouse reports
+  (mode 1016), which Textual turns on, and reports the pointer in the pixel
+  size it gives the program.
+
+- Each GitHub release now includes the unsigned iPad app,
+  `tessera-ipados.ipa`, for SideStore or AltStore. It carries the release's
+  version. `apple/build-ipa.sh` takes `--version` and `--build` to stamp one.
+
 - Tessera reconnects quietly after the iPad, phone or computer sleeps. For 15
   seconds after waking or returning to Tessera, a lost connection shows only a
   small "Reconnecting…" note instead of the **Connection Lost** dialog. When the

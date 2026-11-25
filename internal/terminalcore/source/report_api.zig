@@ -36,6 +36,22 @@ pub fn kitty_keyboard_flags(ptr: ?*anyopaque) callconv(.c) u32 {
     return w.terminal.screens.active.kitty_keyboard.current().int();
 }
 
+/// 1 while the program has xterm's modifyOtherKeys at level 2
+/// (CSI > 4 ; 2 m), which the browser encodes keys with; 0 otherwise.
+/// Snapshots carry it with the terminal's flags.
+pub fn modify_other_keys(ptr: ?*anyopaque) callconv(.c) u32 {
+    const w: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
+    return @intFromBool(w.terminal.flags.modify_other_keys_2);
+}
+
+/// 1 when the program asked for Shift with the mouse (XTSHIFTESCAPE,
+/// CSI > 1 s), so the browser reports Shift-clicks instead of selecting.
+/// 0 when it asked not to, or never said.
+pub fn mouse_shift_capture(ptr: ?*anyopaque) callconv(.c) u32 {
+    const w: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
+    return @intFromBool(w.terminal.flags.mouse_shift_capture == .true);
+}
+
 /// Counts the program turning synchronized output (mode 2026) on, wrapping,
 /// so the host can time each redraw from its start.
 pub fn synchronized_output_starts(ptr: ?*anyopaque) callconv(.c) u32 {

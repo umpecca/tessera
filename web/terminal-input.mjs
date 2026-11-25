@@ -96,6 +96,36 @@ export class TerminalMouseHover {
 // SGR motion with no button: 32 (motion) + 3 (no button).
 export const terminalHoverButtonCode = 35;
 
+// A pointer at a fraction (0 to 1) across and down the terminal grid, as the
+// cell it is over and, while the program has SGR-Pixels (mode 1016) set, as
+// the pixel too. Those pixels are in the space the host told the program
+// about through in-band size reports (mode 2048): columns × cell width by
+// rows × cell height, with the cell size the host accepted, not CSS pixels.
+// Both are 1-based; Textual subtracts one and drops negative positions.
+// Textual turns on 1016 whenever the terminal supports 2048.
+export function terminalMouseCoordinates(term, fractionX, fractionY) {
+  const cols = term.cols, rows = term.rows;
+  const col = Math.min(cols, Math.max(1, Math.floor(fractionX * cols) + 1));
+  const row = Math.min(rows, Math.max(1, Math.floor(fractionY * rows) + 1));
+  let pixels = false;
+  try { pixels = Boolean(term.getMode?.(1016, false)); } catch {}
+  if (!pixels) return { col, row };
+  const metrics = term.renderer?.getMetrics?.();
+  const cellWidth = term.hostCellWidth || Math.max(1, Math.round(metrics?.width || 8));
+  const cellHeight = term.hostCellHeight || Math.max(1, Math.round(metrics?.height || 16));
+  const width = cols * cellWidth, height = rows * cellHeight;
+  return {
+    col, row,
+    x: Math.min(width, Math.max(1, Math.floor(fractionX * width) + 1)),
+    y: Math.min(height, Math.max(1, Math.floor(fractionY * height) + 1)),
+  };
+}
+
+// An SGR mouse report (mode 1006), in pixels when the position carries them.
+export function terminalMouseSequence(code, position, finalByte) {
+  return `\x1b[<${code};${position.x ?? position.col};${position.y ?? position.row}${finalByte}`;
+}
+
 export class TerminalMousePress {
   constructor() {
     this.pointerID = null;

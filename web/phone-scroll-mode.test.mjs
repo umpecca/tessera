@@ -427,6 +427,12 @@ test("Select TUI scrolling sends wheel reports only, never arrow-key fallbacks o
   assert.equal(phone.scrollPhoneSelection("a", -1), true);
   assert.ok(messages.every(message => message.data === "\x1b[<64;40;20M"));
   messages.length = 0;
+  // SGR-Pixels (mode 1016): the middle of cell (40, 20) in the host's pixels.
+  Object.assign(term, { hostCellWidth: 8, hostCellHeight: 16, getMode: mode => mode === 1016 });
+  assert.equal(phone.scrollPhoneSelection("a", 1), true);
+  assert.ok(messages.every(message => message.data === "\x1b[<65;317;313M"));
+  delete term.getMode;
+  messages.length = 0;
   tracking = false;
   assert.equal(phone.scrollPhoneSelection("a", 1), false);
   tracking = true; term.buffer.active.type = "normal";

@@ -89,9 +89,10 @@ Output that arrives while the bar is open is searched too, and the selected
 match stays put. A full-screen program's screen (Vim, less) is searched while
 it shows. `Escape` closes the bar and puts the keyboard back in the terminal.
 
-Shells that mark their prompts with OSC 133 get two more things. `Cmd+Up` and
-`Cmd+Down` (`Ctrl+Shift+Page Up`/`Page Down` off an Apple keyboard) scroll the
-previous or next prompt to the top of the pane. **Copy Command Output** in the
+Shells that mark their prompts with OSC 133 get two more things. At the shell,
+`Cmd+Up` and `Cmd+Down` (`Ctrl+Shift+Page Up`/`Page Down` off an Apple
+keyboard) scroll the previous or next prompt to the top of the pane; in a
+full-screen program they are its Page Up and Page Down. **Copy Command Output** in the
 terminal's context menu selects and copies what the command under the pointer
 printed, and **Copy Last Command Output** in the command palette does the same
 for the latest command.
@@ -116,7 +117,10 @@ Underlines can be double (`ESC [ 21 m` or `ESC [ 4:2 m`), curly (`4:3`),
 dotted (`4:4`) or dashed (`4:5`), and have their own colour (`ESC [ 58 m`,
 as `58:2::r:g:b` or `58:5:n`; `59` goes back to the text colour). Neovim uses
 red curly underlines for errors and spelling, and some prompts and editors
-use the others.
+use the others. Overlined text (`ESC [ 53 m`, `55` to stop) has a line along
+the top of each cell, as in Ghostty. Blinking text (`ESC [ 5 m`) blinks, as in
+xterm (Ghostty's app keeps it steady); it stays steady with Older Mac mode or
+when the system asks for reduced motion.
 
 Programs can recolour a terminal while it runs, as base16-shell, vim and fzf
 themes do: OSC 4 sets entries of the 256-colour palette and OSC 104 resets
@@ -127,6 +131,32 @@ xterm's `rgb:rrrr/gggg/bbbb` form. Colours a program sets stay through
 reconnects and switching the pane between light and dark; a reset, OSC 110
 and the like, or `reset` give back the pane's own.
 
+Reverse video (`CSI ? 5 h`) swaps the screen's text and background colours,
+with the cursor and selection following, until `CSI ? 5 l`. Visual bells use
+it to flash the screen, such as vim's `visualbell` and readline's
+`bell-style visible`.
+
+With ordinary key encoding, Shift keys send what Ghostty sends: Shift+Tab is
+backtab (`CSI Z`), and Shift with Home, End, Insert, Delete, Page Up, Page
+Down or F1–F12 sends xterm's Shift sequences (such as `CSI 1 ; 2 H` and
+`CSI 5 ; 2 ~`), so shell completion can step back and editors can select with
+Shift+Home and Shift+End. Shift+F3 is `CSI 13 ; 2 ~`, as in Ghostty and kitty,
+because xterm's form reads as a cursor position report. Shift+Enter and
+Shift+Escape are `CSI 27 ; 2 ; 13 ~` and `CSI 27 ; 2 ; 27 ~`, so programs can
+tell them from Enter and Escape; Shift+Backspace stays Backspace.
+
+Programs that turn on xterm's modifyOtherKeys (`CSI > 4 ; 2 m`), as vim 9,
+Emacs and tmux can, get keys encoded the way Ghostty encodes them in that mode,
+so combinations such as Alt+Enter or Ctrl+Shift with a letter arrive as
+`CSI 27 ; modifiers ; key ~` instead of their plain forms, until the program
+turns it off (`CSI > 4 m`).
+
+Soft reset (`CSI ! p`, sent by `tput init` and `tset`) turns insert and origin
+mode off, shows the cursor, puts autowrap, cursor keys and the keypad back to
+their defaults, makes the margins the whole screen, and resets the character
+sets, text attributes and saved cursor, leaving the screen and the cursor
+where they are.
+
 Programs that turn on the Kitty keyboard protocol (`CSI > flags u`), such as
 Neovim, Helix and fish, get keys that ordinary encoding can't
 tell apart: Escape from Alt+key, Tab from Ctrl+I, Enter and Backspace with
@@ -134,21 +164,38 @@ Shift or Ctrl, and, if they ask, key releases and repeats. Tessera answers
 the protocol's query (`CSI ? u`) and encodes keys with Ghostty's encoder while
 it is on, and as before once the program turns it off. On an Apple keyboard,
 Command still never reaches the program, except that Command+Left and
-Command+Right are Home and End, and Option is Alt, as without the protocol.
+Command+Right are Home and End (and, in a full-screen program, Command+Up and
+Command+Down are Page Up and Page Down), and Option is Alt, as without the
+protocol.
 Tessera's own shortcuts (window switching, the palette, copy and paste, prompt
 jumps) keep their keys.
 
 Programs can ask which modes are on (DECRQM, `CSI ? mode $ p`) and which
 terminal this is (XTVERSION, `CSI > q`, answered `Tessera` and the version).
-Modes Tessera tracks but doesn't act on, such as the mouse report formats
-other than SGR, are answered as unrecognised so programs don't rely on them.
+Device attributes are answered too: primary (`CSI c`), secondary (`CSI > c`,
+answered `CSI > 1 ; 10 ; 0 c` as Ghostty does) and tertiary (`CSI = c`), as
+are the cursor position (`CSI 6 n`, and `CSI ? 6 n` with xterm's page) and the
+size reports `CSI 14 t`, `16 t`, `18 t` and `19 t`. The window title report
+(`CSI 21 t`) is not answered, as a program could otherwise type a title back
+into the shell.
+Mouse reports come in the format the program turned on: SGR (mode 1006),
+SGR-Pixels (1016), urxvt (1015), UTF-8 (1005), or the original X10 bytes when
+it turned on none, as ncurses programs with `TERM=xterm-256color` often do.
+X10 cannot describe cells past column or row 223, so clicks there are not
+sent. A program that turns on only the oldest tracking mode (9) gets button
+presses alone, without releases, drags, the wheel or modifier keys. In a
+full-screen program that isn't tracking the mouse, the wheel and two-finger
+scrolling send Up and Down arrows, unless the program turns that off
+(`CSI ? 1007 l`).
 Programs can also ask for terminfo capabilities directly (XTGETTCAP,
 `DCS + q`), as Neovim does to find true colour and OSC 52 copying; the
 answers are Ghostty's, with the name (`TN`) being the configured `TERM`. Settings queries (DECRQSS,
 `DCS $ q`) report the current colours and attributes, cursor style and
 margins. Programs that enable in-band size reports (mode 2048) are told the
 pane's size in cells and pixels (`CSI 48 ; rows ; cols ; height ; width t`)
-when they turn it on and after each resize.
+when they turn it on and after each resize. A program that also sets SGR-Pixels
+(mode 1016), as Textual does, gets mouse reports in those pixels instead of
+cells, still one report per cell while dragging or hovering.
 
 Programs that bracket a redraw with synchronized output (mode 2026), as
 Neovim and tmux can, have it shown whole: the browser doesn't paint
@@ -187,6 +234,14 @@ CSS cursor name (`pointer`, `crosshair`, `grab`, ...) or X cursor name
 (`hand`, `xterm`, ...). A link under the pointer still shows the hand; a full
 reset (`reset`) puts back the text pointer.
 
+Programs can set the text cursor's shape and blink with `CSI Ps SP q`, as
+Neovim does for its bar cursor in insert mode: 1 and 2 are a block, 3 and 4 an
+underline, 5 and 6 a bar, odd numbers blinking. `CSI 0 SP q` and `reset` give
+back the pane's own blinking block. A program can stop the cursor blinking but
+not start it when blinking is off for the pane. Turning blink off with
+`CSI ? 12 l` alone, as ncurses programs do when they exit, leaves the pane's
+cursor as it is.
+
 Terminal apps can also send short WAV/MP3 clips directly to enabled browsers,
 or stream files/stdin incrementally as Opus using FFmpeg, with selectable
 bitrate and buffering. Both mix with local per-terminal mute. See [terminal audio](terminal-audio.md)
@@ -210,7 +265,9 @@ typing an `s`.
 
 On macOS and iPadOS, `Cmd+Left` and `Cmd+Right` send Home and End, for
 keyboards without those keys such as the iPad Magic Keyboard, where
-`Globe+Left` and `Globe+Right` do the same. bash handles
+`Globe+Left` and `Globe+Right` do the same. In a full-screen program (vim,
+less, htop), `Cmd+Up` and `Cmd+Down` send Page Up and Page Down; at the shell
+they jump between prompts. bash handles
 them as it is. zsh only does if they are bound; add this to `~/.zshrc` if
 Home and End do nothing at the prompt:
 
@@ -221,9 +278,21 @@ bindkey '^[[H' beginning-of-line '^[[F' end-of-line
 A mouse-aware program owns unmodified dragging, so dragging inside one moves
 that program's cursor rather than selecting terminal text. Hold `Shift` while
 dragging to select on the terminal's own layer, then copy as usual. `Cmd`-drag
-also works on macOS; `Ctrl`-drag works on other platforms. A copy that finds
+also works on macOS; `Ctrl`-drag works on other platforms. A program that asks
+for Shift with the mouse (`CSI > 1 s`) gets Shift-clicks instead; `Cmd`-drag
+and `Ctrl`-drag still select there. A copy that finds
 nothing selected reports "Nothing to copy" in the workspace status rather than
 doing nothing silently.
+
+While text is selected, `Shift` with an arrow, Page Up, Page Down, Home or End
+extends the selection from the end you dragged to, as in Ghostty: Left and
+Right go to the previous or next character, skipping blanks; Up and Down a
+line (Down skips blank lines); Page Up and Page Down a screen; Home to the
+start of the scrollback; End to the end of the last line of text. The view
+follows. Without a selection these keys go to the program as usual. Typing
+into the terminal clears the selection, so a forgotten one doesn't keep those
+keys from the program; turn that off with **Settings → Terminal → Clear
+selection when typing**.
 
 Open terminal hyperlinks with `Cmd`-click on macOS or `Ctrl`-click elsewhere.
 This covers both addresses in the text and OSC 8 hyperlinks (`ls --hyperlink`,

@@ -9,7 +9,9 @@ import {
   emptyTerminalCopyGuidance,
   isTerminalContextMenuGesture,
   terminalHoverButtonCode,
+  terminalMouseCoordinates,
   terminalMouseMessage,
+  terminalMouseSequence,
   terminalPasteText,
 } from "./terminal-input.mjs";
 
@@ -160,4 +162,34 @@ test("context menu ignores stale or non-secondary reported presses", () => {
 
   fallback.notePress(0, 8000);
   assert.equal(fallback.needsFallback(2, 8050), true);
+});
+
+test("mouse reports use cells, or host pixels while the program has mode 1016 set", () => {
+  let pixels = false;
+  const term = { cols: 80, rows: 24, hostCellWidth: 9, hostCellHeight: 18,
+    getMode: (mode, ansi) => mode === 1016 && ansi === false && pixels,
+    renderer: { getMetrics: () => ({ width: 7.6, height: 15.2 }) } };
+  // The middle of cell (11, 6): 10.5 cells across, 5.5 cells down.
+  const fx = 10.5 / 80, fy = 5.5 / 24;
+  assert.deepEqual(terminalMouseCoordinates(term, fx, fy), { col: 11, row: 6 });
+  assert.equal(terminalMouseSequence(0, terminalMouseCoordinates(term, fx, fy), "M"), "\x1b[<0;11;6M");
+
+  pixels = true;
+  const position = terminalMouseCoordinates(term, fx, fy);
+  assert.deepEqual(position, { col: 11, row: 6, x: 95, y: 100 });
+  assert.equal(terminalMouseSequence(32, position, "M"), "\x1b[<32;95;100M");
+  // Textual maps a pixel back to a cell as (pixel - 1) / cell size.
+  assert.equal(Math.floor((position.x - 1) / 9) + 1, 11);
+  assert.equal(Math.floor((position.y - 1) / 18) + 1, 6);
+
+  // 1-based and clamped: Textual drops negative positions.
+  assert.deepEqual(terminalMouseCoordinates(term, 0, 0), { col: 1, row: 1, x: 1, y: 1 });
+  assert.deepEqual(terminalMouseCoordinates(term, -0.1, 1.2), { col: 1, row: 24, x: 1, y: 432 });
+
+  // Before the host has sent geometry, the local cell size, as sent in resizes.
+  delete term.hostCellWidth; delete term.hostCellHeight;
+  assert.deepEqual(terminalMouseCoordinates(term, 1, 1), { col: 80, row: 24, x: 640, y: 360 });
+
+  term.getMode = () => { throw new Error("disposed"); };
+  assert.deepEqual(terminalMouseCoordinates(term, fx, fy), { col: 11, row: 6 });
 });

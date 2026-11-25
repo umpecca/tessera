@@ -9,6 +9,7 @@ import {
   terminalControlSequence,
   terminalNavigationSequence,
   terminalPasteSource,
+  terminalShiftedKeySequence,
   terminalShouldSwallowCommandKey,
 } from "./terminal-keyboard.mjs";
 
@@ -260,4 +261,45 @@ test("prompt jumps use Cmd+Up/Down on Apple keyboards and Ctrl+Shift+Page Up/Dow
   }
   assert.equal(terminalPromptJumpDirection({ key: "PageUp", ctrlKey: true }, {}), 0);
   assert.equal(terminalPromptJumpDirection({ key: "PageUp", ctrlKey: true, shiftKey: true, altKey: true }, {}), 0);
+});
+
+test("Shift alone gives Ghostty's sequences for keys ghostty-web would send plain", () => {
+  const shift = (key, code = key, extra = {}) => terminalShiftedKeySequence({ key, code, shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, ...extra });
+  assert.equal(shift("Tab"), "\x1B[Z", "backtab");
+  assert.equal(shift("Home"), "\x1B[1;2H");
+  assert.equal(shift("End"), "\x1B[1;2F");
+  assert.equal(shift("Insert"), "\x1B[2;2~");
+  assert.equal(shift("Delete"), "\x1B[3;2~");
+  assert.equal(shift("PageUp"), "\x1B[5;2~");
+  assert.equal(shift("PageDown"), "\x1B[6;2~");
+  assert.equal(shift("F1"), "\x1B[1;2P");
+  assert.equal(shift("F3"), "\x1B[13;2~", "not CSI 1;2R, which reads as a cursor position report");
+  assert.equal(shift("F4"), "\x1B[1;2S");
+  assert.equal(shift("F5"), "\x1B[15;2~");
+  assert.equal(shift("F12"), "\x1B[24;2~");
+  assert.equal(shift("Enter"), "\x1B[27;2;13~", "Shift+Enter, told apart from Enter as in Ghostty");
+  assert.equal(shift("Escape"), "\x1B[27;2;27~");
+  for (const key of ["Backspace", "ArrowUp", "A", "Clear"]) {
+    assert.equal(shift(key), null, `${key} is left to ghostty-web`);
+  }
+  assert.equal(shift("Home", "Numpad7"), null, "numpad keys are terminalNavigationSequence's");
+  assert.equal(shift("Tab", "Tab", { shiftKey: false }), null, "Tab alone stays a tab");
+  for (const modifier of ["ctrlKey", "altKey", "metaKey"]) {
+    assert.equal(shift("Tab", "Tab", { [modifier]: true }), null, `Shift with ${modifier} goes elsewhere`);
+  }
+  assert.equal(terminalShiftedKeySequence(null), null);
+});
+
+test("Command+Up/Down are Page Up/Down in full-screen programs and prompt jumps at the shell", () => {
+  const command = (key, extra = {}) => ({ key, code: key, metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
+  const apple = { appleKeyboard: true };
+  assert.equal(terminalCommandArrowSequence(command("ArrowUp"), { ...apple, alternateScreen: true }), "\x1B[5~");
+  assert.equal(terminalCommandArrowSequence(command("ArrowDown"), { ...apple, alternateScreen: true }), "\x1B[6~");
+  assert.equal(terminalPromptJumpDirection(command("ArrowUp"), { ...apple, alternateScreen: true }), 0);
+  assert.equal(terminalCommandArrowSequence(command("ArrowUp"), apple), null, "at the shell");
+  assert.equal(terminalPromptJumpDirection(command("ArrowUp"), apple), -1);
+  assert.equal(terminalPromptJumpDirection(command("ArrowDown"), apple), 1);
+  assert.equal(terminalCommandArrowSequence(command("ArrowLeft"), { ...apple, alternateScreen: true }), "\x1B[H", "Command+Left stays Home");
+  assert.equal(terminalCommandArrowSequence(command("ArrowUp", { shiftKey: true }), { ...apple, alternateScreen: true }), null);
+  assert.equal(terminalCommandArrowSequence(command("ArrowUp"), { alternateScreen: true }), null, "not on other keyboards");
 });

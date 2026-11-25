@@ -71,3 +71,13 @@ test("releases, repeats, dead keys and keys without a code", () => {
   assert.equal(terminalKittyKeyEvent(key({ key: "Unidentified", code: "" })), null);
   assert.equal(terminalKittyKeyEvent(null), null);
 });
+
+test("Command+Up/Down are Page Up/Down under the Kitty protocol in full-screen programs", () => {
+  const command = (key) => ({ key, code: key, metaKey: true, ctrlKey: false, altKey: false, shiftKey: false });
+  const plain = (key) => terminalKittyKeyEvent({ key, code: key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false });
+  const up = terminalKittyKeyEvent(command("ArrowUp"), { appleKeyboard: true, alternateScreen: true });
+  assert.equal(up.key, plain("PageUp").key);
+  assert.equal(up.mods, 0, "Command is spent on the key");
+  assert.equal(terminalKittyKeyEvent(command("ArrowDown"), { appleKeyboard: true, alternateScreen: true }).key, plain("PageDown").key);
+  assert.equal(terminalKittyKeyEvent(command("ArrowUp"), { appleKeyboard: true }), null, "at the shell Command never reaches the program");
+});

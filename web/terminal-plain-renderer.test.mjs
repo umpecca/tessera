@@ -195,3 +195,10 @@ test("rows with search matches retain normal rendering, other rows stay fast", (
   renderer.renderLine([cell], 2, 1);
   assert.ok(!calls.some(call => call[0] === "fallback"));
 });
+
+test("overlined cells leave the fast path for the cell painters", () => {
+  const {renderer, cell, calls} = fixture();
+  renderer.renderLine([cell, {...cell, codepoint: 66, underline: 16}], 0, 2);
+  assert.ok(calls.some(call => call[0] === "original-text" && call[1].codepoint === 66));
+  assert.ok(!calls.some(call => call[0] === "original-text" && call[1].codepoint === 65), "plain cells stay fast");
+});

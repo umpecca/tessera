@@ -30,7 +30,7 @@ import "embed"
 //go:embed rdp-pane.mjs rdp-avc444.mjs rdp-h264.mjs rdp-h264-sps.mjs rdp-kept.mjs rdp-stats.mjs rdp-viewer.mjs rdp-viewer-wire.mjs
 //go:embed window-wobble.mjs screensaver.mjs screensaver-polygons.mjs terminal-touch-scroll.mjs
 //go:embed terminal-audio.mjs terminal-files.mjs clipboard-image.mjs save-clipboard.mjs
-//go:embed terminal-audio-stream.mjs terminal-working-directory.mjs terminal-attention.mjs terminal-progress.mjs terminal-kitty-keyboard.mjs terminal-find.mjs
+//go:embed terminal-audio-stream.mjs terminal-working-directory.mjs terminal-attention.mjs terminal-progress.mjs terminal-kitty-keyboard.mjs terminal-find.mjs terminal-selection-keys.mjs
 //go:embed startup.js
 //go:embed sign-in.mjs sign-in-settings.mjs password-manager.mjs terminal-prediction.mjs key-readout.mjs phone-view.mjs phone-input.mjs
 var Files embed.FS

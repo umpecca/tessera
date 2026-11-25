@@ -337,9 +337,10 @@ test("link hit testing tracks physical scroll pixels and preserves native event 
 });
 
 function wheelBridge(speed = 1.5) {
-  let wheel, reporting = false, alternate = false;
+  let wheel, reporting = false, alternate = false, alternateScroll = true;
   const movements = [], inputs = [], reports = [];
   const term = { rows: 24, wasmTerm: { isAlternateScreen: () => alternate },
+    getMode: (mode, ansi) => mode === 1007 && ansi === false ? alternateScroll : false,
     renderer: { getMetrics: () => ({ height: 20 }) }, scrollWheelLines(value) { movements.push(value); },
     input(value) { inputs.push(value); }, attachCustomWheelEventHandler(handler) { wheel = handler; } };
   const bridge = featureFixture(["attachTerminalMouseBridge"], {
@@ -349,7 +350,8 @@ function wheelBridge(speed = 1.5) {
     terminalMouseEventCode: code => code, sendTerminalMouseSequence(_socket, code) { reports.push(code); },
   }).attachTerminalMouseBridge({ terminalContainer: { addEventListener() {}, removeEventListener() {} } }, term, {});
   return { movements, inputs, reports, wheel(deltaY, deltaMode = 0) { return wheel({ deltaY, deltaMode }); },
-    reporting() { reporting = true; }, alternate() { alternate = true; }, bridge };
+    reporting() { reporting = true; }, alternate() { alternate = true; },
+    noAlternateScroll() { alternateScroll = false; }, bridge };
 }
 
 test("every wheel speed uses smooth scrollback for pixels, lines, and pages", () => {
@@ -372,10 +374,21 @@ test("TUI wheel input accumulates tiny deltas instead of flooding or dropping ge
   assert.deepEqual(a.movements, []);
 });
 
+test("the wheel sends a full-screen program no arrows once it turns alternate scroll (1007) off", () => {
+  const f = wheelBridge(1); f.alternate(); f.noAlternateScroll();
+  assert.equal(f.wheel(-100), true, "the wheel is still handled, so nothing else scrolls");
+  assert.deepEqual(f.inputs, []);
+  assert.deepEqual(f.movements, []);
+  f.reporting();
+  f.wheel(3, 1);
+  assert.deepEqual(f.reports, [65, 65, 65], "a mouse-tracking program still gets wheel reports");
+});
+
 function touchBridge() {
-  let reporting = false, alternate = false, selection = false, pressed = null;
+  let reporting = false, alternate = false, alternateScroll = true, selection = false, pressed = null;
   const movements = [], inputs = [], reports = [], listeners = {};
   const term = { rows: 24, wasmTerm: { isAlternateScreen: () => alternate },
+    getMode: (mode, ansi) => mode === 1007 && ansi === false ? alternateScroll : false,
     renderer: { getMetrics: () => ({ height: 20 }) }, scrollWheelLines(value) { movements.push(value); },
     input(value) { inputs.push(value); }, attachCustomWheelEventHandler() {}, focus() {},
     hasSelection: () => selection, clearSelection() { selection = false; } };
@@ -406,6 +419,7 @@ function touchBridge() {
     move(id, y) { listeners.pointermove(event(id, y)); },
     up(id, y) { listeners.pointerup(event(id, y)); },
     reporting() { reporting = true; }, alternate() { alternate = true; },
+    noAlternateScroll() { alternateScroll = false; },
     select() { selection = true; }, get selection() { return selection; },
   };
 }
@@ -436,6 +450,11 @@ test("two fingers send a full-screen program a wheel step or arrow per line", ()
   pager.down(1, 0); pager.down(2, 0); pager.move(1, -40); pager.move(2, -40);
   assert.deepEqual(pager.inputs, ["\x1B[B", "\x1B[B"]);
   assert.deepEqual(pager.movements, []);
+
+  const quiet = touchBridge(); quiet.alternate(); quiet.noAlternateScroll();
+  quiet.down(1, 0); quiet.down(2, 0); quiet.move(1, -40); quiet.move(2, -40);
+  assert.deepEqual(quiet.inputs, [], "alternate scroll (1007) off: no arrows");
+  assert.deepEqual(quiet.movements, []);
 });
 
 test("a selection the first finger began goes when the second lands", () => {

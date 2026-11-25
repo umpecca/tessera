@@ -1,5 +1,5 @@
 import { PhoneView, normalizePhoneViewOverride, phoneFontShrink, phoneFontSize, readingLines, phoneViewPathOverride, phoneViewStorageKey, isPhoneDevice, shouldUsePhoneView } from "./phone-view.mjs";
-import { terminalMouseMessage, terminalPasteText } from "./terminal-input.mjs";
+import { terminalMouseCoordinates, terminalMouseMessage, terminalMouseSequence, terminalPasteText } from "./terminal-input.mjs";
 import { workspaceRevisionMatches } from "./workspace-concurrency.mjs";
 import { focusPane } from "./pane-activation.mjs";
 import { terminalPasteKeys, writeHostClipboardImage } from "./clipboard-image.mjs";
@@ -395,9 +395,10 @@ export function createPhone(dependencies, platform = globalThis) {
     if (!term || term.buffer?.active?.type !== "alternate" || !term.hasMouseTracking?.()
         || state.socket?.readyState !== platform.WebSocket.OPEN) return false;
     const col = Math.max(1, Math.floor(term.cols / 2)), row = Math.max(1, Math.floor(term.rows / 2));
+    const position = terminalMouseCoordinates(term, (col - 0.5) / term.cols, (row - 0.5) / term.rows);
     const code = direction < 0 ? 64 : 65;
     term.clearSelection?.();
-    for (let step = 0; step < 5; step++) state.socket.send(terminalMouseMessage(`\x1b[<${code};${col};${row}M`));
+    for (let step = 0; step < 5; step++) state.socket.send(terminalMouseMessage(terminalMouseSequence(code, position, "M")));
     return true;
   }
 

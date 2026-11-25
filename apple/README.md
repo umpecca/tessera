@@ -271,13 +271,16 @@ Split View/Stage Manager, paste permissions and 120 Hz/latency on an actual iPad
 ### Installing without Xcode
 
 Xcode can't reach an iPad over Tailscale, only over a cable or the same
-Wi‑Fi. To install from the iPad instead, build an unsigned app file and let
+Wi‑Fi. To install from the iPad instead, use an unsigned app file and let
 [SideStore](https://github.com/SideStore/SideStore) or AltStore sign it with
-your Apple ID:
+your Apple ID. Each GitHub release attaches one as `tessera-ipados.ipa`, next
+to the server binaries, with the release's version (`v1.16.3` → 1.16.3). Or
+build it yourself:
 
 ```sh
 bash apple/build-ipa.sh            # writes apple/build/Tessera.ipa
 bash apple/build-ipa.sh --output ~/Desktop/Tessera.ipa
+bash apple/build-ipa.sh --version 1.16.3 --build 42   # stamp a version
 ```
 
 Copy the `.ipa` to the iPad (a Tessera terminal file transfer into Files
@@ -310,4 +313,5 @@ Tailscale MagicDNS or proxy name you connect with to `-allowed-host`.
   because ATS accepts only system-trusted roots: an approved Tessera CA, or plain
   HTTP to a Tailscale name, would otherwise fail the iPad's native connection
   check. The app's certificate review and saved pins decide trust.
-- `build-ipa.sh`: the unsigned `.ipa` for SideStore or AltStore.
+- `build-ipa.sh`: the unsigned `.ipa` for SideStore or AltStore. The release
+  workflow runs it on GitHub's `xcode-27` runner.

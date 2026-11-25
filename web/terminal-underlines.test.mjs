@@ -80,3 +80,20 @@ test("each style's shape stays inside its cell", () => {
   const curve = tight.calls.filter(call => call[0] === "quadraticCurveTo").flatMap(call => [(call[2] + call[4]) / 2, call[4]]);
   assert.ok(Math.max(...curve) <= 17, `a short row keeps the wave inside: ${curve}`);
 });
+
+test("overline (bit 16) is a line along the top of the cell in the text colour, with or without an underline", () => {
+  const { r, drawn } = renderer();
+  r.renderCellText({ codepoint: 79, flags: 0, underline: 16, width: 1 }, 2, 1);
+  assert.deepEqual(r.calls, [["fillRect", 20, 20, 10, 1, "rgb(200, 200, 200)"]]);
+  assert.equal(drawn[0].cell.flags, 0, "the text itself is ghostty-web's");
+  r.calls.length = 0;
+  r.renderCellText({ codepoint: 66, flags: 4, underline: 16 | 1, width: 2 }, 0, 0);
+  assert.equal(drawn[1].cell.flags, 4, "a plain underline stays ghostty-web's");
+  assert.deepEqual(r.calls, [["fillRect", 0, 0, 20, 1, "rgb(200, 200, 200)"]], "wide cells overline both columns");
+  r.calls.length = 0;
+  r.renderCellText({ codepoint: 67, flags: 4, underline: 16 | 3, width: 1 }, 0, 0);
+  assert.equal(r.calls.filter((call) => call[0] === "fillRect" && call[2] === 0 && call[4] === 1).length, 1, "with a curly underline too");
+  r.calls.length = 0;
+  r.renderCellText({ codepoint: 68, flags: 32, underline: 16, width: 1 }, 0, 0);
+  assert.deepEqual(r.calls, [], "not for invisible text");
+});

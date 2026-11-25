@@ -11,6 +11,7 @@ import {
   recreateOpenTerminalViews,
   terminalColorTheme,
   terminalColorModes,
+  terminalThemeInReverseVideo,
   terminalThemeWithProgramColors,
   xtermPalette,
 } from "./terminal-colors.mjs";
@@ -211,4 +212,21 @@ test("a program's colours replace the pane's, and the rest follow them", () => {
   assert.equal(explicit.selectionBackground, "#aabbcc");
   assert.equal(explicit.selectionForeground, "#ddeeff");
   assert.equal(explicit.background, base.background);
+});
+
+test("reverse video swaps the pane's colours wherever they appear and keeps other program colours", () => {
+  const dark = terminalColorTheme("dark");
+  const reversed = terminalThemeInReverseVideo(dark);
+  assert.equal(reversed.background, dark.foreground);
+  assert.equal(reversed.foreground, dark.background);
+  assert.equal(reversed.cursor, dark.cursorAccent);
+  assert.equal(reversed.cursorAccent, dark.cursor);
+  assert.equal(reversed.selectionBackground, dark.selectionForeground);
+  assert.equal(reversed.selectionForeground, dark.selectionBackground);
+  assert.equal(reversed.red, dark.red, "the palette is the core's to resolve");
+  assert.deepEqual(terminalThemeInReverseVideo(reversed), dark);
+
+  const programCursor = terminalThemeInReverseVideo({ ...dark, cursor: "#ff0000" });
+  assert.equal(programCursor.cursor, "#ff0000", "a cursor colour a program set stays");
+  assert.equal(programCursor.cursorAccent, dark.foreground);
 });

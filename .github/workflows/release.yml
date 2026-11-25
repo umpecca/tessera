@@ -130,6 +130,30 @@ jobs:
           path: tessera-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           if-no-files-found: error
 
+  # The unsigned iPad app; SideStore or AltStore sign it when installing. It
+  # loads its page from the server, so it doesn't need the generated assets.
+  # The app uses iPadOS 26 APIs and the project is saved by Xcode 27.
+  ipa:
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test TesseraCore
+        run: swift test --package-path apple/TesseraCore
+
+      # The app takes the server's version: v1.16.3 builds 1.16.3. A suffix
+      # such as -rc1 is dropped, since iPadOS versions are numbers only.
+      - name: Build tessera-ipados.ipa
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bash apple/build-ipa.sh --version "${version%%-*}" --build "${{ github.run_number }}" --output tessera-ipados.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tessera-ipados
+          path: tessera-ipados.ipa
+          if-no-files-found: error
+
   installer-test:
     needs: assets
     runs-on: ubuntu-latest
@@ -143,7 +167,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, installer-test]
+    needs: [build, ipa, installer-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
