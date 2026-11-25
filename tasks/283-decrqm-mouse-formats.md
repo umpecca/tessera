@@ -28,6 +28,7 @@ as task 282.
 - `node --test internal/terminalcore/core.test.mjs`: 56/56; the DECRQM test
   now expects `;2$y` for 1005, 1015 and 1016 when reset and `;1$y` when set.
 - Built with task 282; `node scripts/build-terminal-core.mjs --check` passes.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: DECRQM answered for 1016, 1007 (1), 9, 5, 1005, 1015, 12.
 
 ## Implementation notes
 

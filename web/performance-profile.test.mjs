@@ -88,3 +88,42 @@ test("Older Mac mode updates open terminals and persists only in this browser", 
   assert.equal(stored.get("tessera.older-mac-mode.v1"), "true", "loading must not overwrite browser storage");
   assert.equal(saves, 0);
 });
+
+test("the Blinking cursor setting defaults on, persists, and Older Mac mode still wins", () => {
+  const stored = new Map();
+  const load = () => createPreferences({}, { window: { localStorage: {
+    getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); },
+  } } });
+  let preferences = load();
+  preferences.initializeSystemNotificationsStorageKey();
+  assert.equal(preferences.cursorBlink, true);
+  assert.equal(preferences.terminalCursorBlinks(), true);
+
+  const blinks = [];
+  const term = { options: {}, setRenderPixelRatioCap() {}, setPaintFPSLimit() {}, setCursorBlinkEnabled(value) { blinks.push(value); } };
+  const ctx = loadFunction("setCursorBlink", {
+    cursorBlink: true, olderMacMode: false, cursorBlinkStorageKey: "tessera.cursor-blink.v1",
+    window: { localStorage: { setItem(key, value) { stored.set(key, value); } } },
+    document: { documentElement: { dataset: {} } },
+    rectangles: [{ kind: "terminal", terminal: { term } }, { kind: "worksheet" }],
+    updateTerminalRenderState() {}, scheduleUserSettingsSave() { assert.fail("a browser setting"); },
+  });
+  ctx.setCursorBlink(false);
+  assert.deepEqual(blinks, [false], "open terminals stop blinking at once");
+  assert.equal(stored.get("tessera.cursor-blink.v1"), "false");
+  ctx.setOlderMacMode(true);
+  ctx.setOlderMacMode(false, { save: false });
+  assert.deepEqual(blinks, [false, false, false], "leaving Older Mac mode keeps the setting's steady cursor");
+  ctx.setCursorBlink(true);
+  assert.deepEqual(blinks.at(-1), true);
+  ctx.setOlderMacMode(true, { save: false });
+  assert.equal(blinks.at(-1), false, "Older Mac mode keeps the cursor steady whatever the setting");
+  ctx.setOlderMacMode(false, { save: false });
+  assert.equal(blinks.at(-1), true);
+
+  stored.set("tessera.cursor-blink.v1", "false");
+  preferences = load();
+  preferences.initializeSystemNotificationsStorageKey();
+  assert.equal(preferences.cursorBlink, false);
+  assert.equal(preferences.terminalCursorBlinks(), false);
+});

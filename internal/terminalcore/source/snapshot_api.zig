@@ -26,6 +26,7 @@ fn saveScreen(out: *snapshot.Writer, screen: *Screen) !void {
         }
         try out.value(@as([]const u8, n.data.memory));
     }
+    try saveKittyImages(out, screen);
 }
 
 fn loadScreen(input: *snapshot.Reader, screen: *Screen) !void {
@@ -69,10 +70,13 @@ fn loadScreen(input: *snapshot.Reader, screen: *Screen) !void {
     screen.cursor.page_pin.* = pin;
     screen.cursor.page_row = pin.rowAndCell().row;
     screen.cursor.page_cell = pin.rowAndCell().cell;
+    // At the largest image setting; the restored setting applies once the
+    // image store's fields are read (tesseraKittyLimits).
+    try loadKittyImages(input, screen, 64 * 1024 * 1024);
 }
 
 fn saveState(w: *TerminalWrapper, out: *snapshot.Writer) !void {
-    try out.value(@as(u32, 0x34535354)); // TSS4
+    try out.value(@as(u32, 0x36535354)); // TSS6
     try out.value(@as(u32, w.terminal.cols));
     try out.value(@as(u32, w.terminal.rows));
     try out.value(@as(u32, @intCast(w.history_limit)));
@@ -86,6 +90,9 @@ fn saveState(w: *TerminalWrapper, out: *snapshot.Writer) !void {
     try out.fields(w.stream.parser, parser_fields);
     try out.value(w.stream.utf8decoder);
     try out.value(@as([]const u8, w.stream.handler.osc_raw.items));
+    // The APC string being received, as kitty_api.zig keeps it.
+    try out.value(@as([]const u8, w.stream.handler.apc_raw.items));
+    try out.value(w.stream.handler.apc_raw_overflow);
     try out.value(@as([]const u8, w.stream.handler.title.items));
     try out.value(w.stream.handler.highlight_background);
     try out.value(w.stream.handler.highlight_foreground);
@@ -131,7 +138,7 @@ pub fn sixel_snapshot_import(data: [*]const u8, len: u32) callconv(.c) ?*anyopaq
     return loadState(&input) catch null;
 }
 fn loadState(input: *snapshot.Reader) !*anyopaque {
-    if (try input.value(u32) != 0x34535354) return error.InvalidSnapshot;
+    if (try input.value(u32) != 0x36535354) return error.InvalidSnapshot;
     const cols = try input.value(u32);
     const rows = try input.value(u32);
     if (cols < 2 or rows < 1 or cols > 4096 or rows > 4096) return error.InvalidSnapshot;
@@ -164,6 +171,10 @@ fn loadState(input: *snapshot.Reader) !*anyopaque {
         // Preserve a split ST terminator; audio effect queues remain transient.
         try w.stream.handler.osc_raw.appendSlice(w.alloc, osc_raw);
     }
+    const apc_raw = try input.value([]u8);
+    defer w.alloc.free(apc_raw);
+    const apc_overflow = try input.value(bool);
+    if (w.stream.parser.state == .sos_pm_apc_string) tesseraKittyResumeApc(w, apc_raw, apc_overflow) catch return error.InvalidSnapshot;
     const title = try input.value([]u8);
     w.stream.handler.title = .fromOwnedSlice(title);
     if (title.len > 4096 or !std.unicode.utf8ValidateSlice(title)) return error.InvalidSnapshot;
@@ -180,6 +191,7 @@ fn loadState(input: *snapshot.Reader) !*anyopaque {
     }
     w.stream.handler.cursor_default = try input.value(bool);
     try input.fields(&w.sixel, store_fields);
+    tesseraKittyLimits(w);
     if (w.sixel.memory_limit != 16 * 1024 * 1024 and w.sixel.memory_limit != 32 * 1024 * 1024 and w.sixel.memory_limit != 64 * 1024 * 1024) return error.InvalidSnapshot;
     w.sixel.decoder = try input.value(@TypeOf(w.sixel.decoder));
     const image_count = try input.value(u32);

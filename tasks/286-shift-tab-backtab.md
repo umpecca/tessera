@@ -67,6 +67,7 @@ Shift+Tab for every program, including vim, fish and shell completion".
 - `node --test web/*.test.mjs`: 1090/1090. `npm run build:web`: succeeded.
 - Not checked with a real keyboard in a browser (pending, user): Shift+Tab in
   bash or zsh completion, fish, vim; Shift+Home in nano.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: Shift+Tab `CSI Z`, Shift+Enter `CSI 27;2;13~`, Shift+Escape `CSI 27;2;27~`, Shift+Home/End `CSI 1;2H/F`, PgUp/PgDn/Delete `CSI n;2~`, Shift+F1 `CSI 1;2P`, F3 `CSI 13;2~`, F5 `CSI 15;2~`, F12 `CSI 24;2~`. Shift+Insert sends nothing: it is the paste shortcut. zsh at its prompt prints the tail of the unbound `CSI 27;2;13~`, as expected. Synthetic key events; not tried on a physical keyboard.
 
 ## Implementation notes
 

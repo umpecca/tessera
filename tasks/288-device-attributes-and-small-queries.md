@@ -54,6 +54,7 @@ startup. The user chose "#1 + two small queries".
   `web/embed.go`, then all pass. `go vet ./web/`: clean.
 - `npm run build:web`: succeeded.
 - Not checked with vim or Emacs (pending, user).
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: DA2 `CSI >1;10;0c`, DA3 `DCS !|00000000 ST`, DECXCPR `CSI ?15;1;1R`, `CSI 19 t` `CSI 9;33;131t`.
 
 ## Implementation notes
 

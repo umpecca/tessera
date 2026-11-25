@@ -37,6 +37,8 @@ export function createPreferences(dependencies, platform = globalThis) {
     commandNoticesEnabled: undefined,
     clearSelectionOnTypingStorageKey: undefined,
     clearSelectionOnTyping: undefined,
+    cursorBlinkStorageKey: undefined,
+    cursorBlink: undefined,
     fallbackPaneFontSize: undefined,
     minimumPaneFontSize: undefined,
     maximumPaneFontSize: undefined,
@@ -140,6 +142,20 @@ export function createPreferences(dependencies, platform = globalThis) {
     feature.saveBrowserSetting(feature.clearSelectionOnTypingStorageKey, feature.clearSelectionOnTyping);
   }
 
+  // Whether terminal cursors (and blinking text) blink: the Blinking cursor
+  // setting, and never in Older Mac mode.
+  function terminalCursorBlinks() {
+    return feature.cursorBlink !== false && !feature.olderMacMode;
+  }
+
+  function setCursorBlink(enabled) {
+    feature.cursorBlink = enabled === true;
+    feature.saveBrowserSetting(feature.cursorBlinkStorageKey, feature.cursorBlink);
+    for (const rect of dependencies.desktop().rectangles) {
+      if (rect.kind === "terminal") rect.terminal?.term?.setCursorBlinkEnabled?.(feature.terminalCursorBlinks());
+    }
+  }
+
   function setTerminalTERM(value) {
     feature.terminalTerm = normalizeTerminalTERM(value);
     dependencies.workspace().scheduleUserSettingsSave();
@@ -217,7 +233,7 @@ export function createPreferences(dependencies, platform = globalThis) {
       if (!term) continue;
       term.setRenderPixelRatioCap?.(feature.olderMacMode ? 1 : 0);
       term.setPaintFPSLimit?.(feature.olderMacMode ? 30 : feature.nativeFrameLimit || 0);
-      term.setCursorBlinkEnabled?.(!feature.olderMacMode);
+      term.setCursorBlinkEnabled?.(feature.terminalCursorBlinks());
       term.options.smoothScrollDuration = feature.olderMacMode ? 0 : 100;
       dependencies.terminal().updateTerminalRenderState(rect);
     }
@@ -375,6 +391,15 @@ export function createPreferences(dependencies, platform = globalThis) {
     } catch {
       // Browser storage is unavailable; typing still clears selections.
     }
+    // The cursor blinks unless turned off here, as Ghostty's
+    // cursor-style-blink defaults to blinking.
+    feature.cursorBlinkStorageKey = "tessera.cursor-blink.v1";
+    feature.cursorBlink = true;
+    try {
+      feature.cursorBlink = platform.window.localStorage.getItem(feature.cursorBlinkStorageKey) !== "false";
+    } catch {
+      // Browser storage is unavailable; the cursor blinks.
+    }
     try {
       feature.systemNotificationsEnabled = platform.window.localStorage.getItem(feature.systemNotificationsStorageKey) === "true";
     } catch {
@@ -498,6 +523,8 @@ export function createPreferences(dependencies, platform = globalThis) {
     setTerminalShellIntegration,
     setCommandNoticesEnabled,
     setClearSelectionOnTyping,
+    setCursorBlink,
+    terminalCursorBlinks,
     setTerminalTERM,
     applyApplicationFont,
     setTerminalFont,

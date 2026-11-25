@@ -409,7 +409,7 @@ replica or close its pane. Network retries and wake recovery skip hidden panes;
 visibility resumes recoverable connections while permanent exit and core
 compatibility failures remain settled.
 
-Snapshots use the `TSS4` schema and require the exact matching core hash. They
+Snapshots use the `TSS6` schema and require the exact matching core hash. They
 include both screens, retained history, cells and image attachments, styles,
 palettes, cursor/saved cursor, modes, tab stops, UTF-8/escape/Sixel continuation,
 and incomplete OSC input, image settings, discarded-image markers, and the last
@@ -428,6 +428,44 @@ released after transfer/copy. Closing the managed shell releases its module.
 A fresh browser can restore images even after their original bytes leave the
 replay window. The guarantee covers the running shell's retained screen and
 history. It does not cover server restarts, evicted images, or unlimited history.
+
+## Kitty graphics
+
+Ghostty's Kitty graphics implementation (`src/terminal/kitty`) is in the
+pinned source but compiled only when `terminal_options.kitty_graphics` is set,
+which Ghostty's build ties to Oniguruma, off for lib-vt; the graphics code
+doesn't use it. `scripts/patch-terminal-core.mjs` turns it on and:
+
+- gives the module wuffs for PNG, built from the pinned upstream
+  `wuffs-v0.4.c` and Ghostty's `pkg/wuffs` wrapper without libc
+  (`internal/terminalcore/source/wuffs_libc`: declarations for the mem*
+  functions compiler-rt provides, and `strcmp` and an always-failing `calloc`,
+  which Ghostty's wrapper never needs). The core still imports only
+  `env.log`;
+- passes APC strings to it as Ghostty's app does, writing its responses to
+  the program, and keeps each screen's storage at the image memory setting;
+- refuses the file, temporary-file and shared-memory media (`EINVAL`);
+- orders images by a transmission counter where Ghostty reads the clock.
+
+`tessera_kitty_placements(handle, viewport, out, capacity)` lists what the
+browser draws for a viewport `viewport` rows back: every placement and each
+Unicode placeholder placement (at z -1, as Ghostty's renderer does), 13
+`i32` each (image id, generation, column, viewport row, z, width and height
+in host-cell pixels, x and y offset, source rectangle). The browser draws
+them in Ghostty's three layers: z < -1073741824 under cell backgrounds and
+other z < 0 between backgrounds and text, both while each row is painted
+(`renderLine` in `web/terminal-sixel-renderer.mjs` and the plain renderer),
+and z >= 0 over text. `tessera_kitty_image(handle, id, out)` writes width,
+height, bytes per pixel (1-4) and generation and returns the pixels.
+**Clear terminal images** clears Kitty images too.
+
+Snapshots (`TSS6`) carry each screen's images, placements (pins as screen
+points) and an image still arriving in chunks (`storage.loading`). The
+handler also keeps the raw bytes of the APC string being received, up to
+4 MiB; a snapshot taken inside one restores the parser inside it, so the
+bytes are replayed and the image finishes when the rest arrives. Upstream's
+APC handler treats bytes arriving with no string started as `unreachable`.
+A longer string is ignored to its end instead of printed.
 
 ## Compatibility and resource limits
 
@@ -515,6 +553,10 @@ selection and link reads outside painting always see fresh cells.
 `scripts/benchmark-terminal-core.mjs` compares ordinary text decoding against
 the original npm artifact and measures tiny writes with one retained image at
 different history sizes. Use `--retained-images-only` for just those cases and
-`--compare=<wasm path>` to compare a saved core in the same process.
+`--compare=<wasm path>` to compare a saved core in the same process; each
+Tessera core also reports Unicode text with colour changes, which follows the
+size-optimised build's inlining of style lookups and SGR parsing. The patch
+script forces those inline (`@call(.always_inline, ...)`) because Kitty
+graphics' code otherwise moved them out of line, costing about 5% there.
 `BenchmarkCoreTextOutput` and `BenchmarkCoreSmallWritesWithRetainedImage`
 measure the Go runtime.

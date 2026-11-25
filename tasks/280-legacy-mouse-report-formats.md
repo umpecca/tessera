@@ -55,6 +55,7 @@ The user said "lets do #1 first".
   so it expects X10.
 - All checks are automated. Not checked live: clicking in an ncurses program in
   Tessera in a browser (pending, user).
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: X10 (`CSI M` bytes, release button 3 with modifiers), 1005 (column 120 as UTF-8 `\xc2\x98`), 1015 (`CSI 32;10;5 M`), 1006, 1002 drag (32) and 1003 motion (35) all as expected.
 
 ## Implementation notes
 

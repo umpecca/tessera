@@ -48,6 +48,7 @@ rebuild the core rather than track the sequence in the browser.
   `go vet ./internal/terminalcore/ ./internal/terminal/`: clean.
 - `npm run build:web`: succeeded; `tessera_cursor_style` is in `web/vendor/terminal.js`.
 - Not checked in a browser (pending, user): Neovim insert mode, `printf '\e[5 q'`.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: bar, underline and block draw; steady styles (2, 4, 6) kept one frame over 1.2 s, blinking ones (1, 5) and `0 q` (pane default, blink on) alternated.
 
 ## Implementation notes
 

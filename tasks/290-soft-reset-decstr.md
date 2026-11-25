@@ -34,6 +34,7 @@ Sweep item: the pinned parser ignores `CSI ! p`, so `tput init`/`tset` (terminfo
 - `node --test web/*.test.mjs internal/terminalcore/core.test.mjs`: 1165/1165;
   `go test ./...`: pass; `go vet ./internal/terminalcore/ ./internal/terminal/ ./web/`:
   clean; `npm run build:web`: succeeded.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: after `CSI ?1h CSI 4h CSI ?6h`, margins 5;10, SGR 1;31 and 1000 on, `CSI ! p` left ?1, 4, ?6 reset, 1000 and 25 set, DECRQSS m `0m`, r `1;33r`. `tput init` not tried.
 
 ## Implementation notes
 

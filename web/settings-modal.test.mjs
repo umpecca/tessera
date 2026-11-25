@@ -86,6 +86,7 @@ function fixture({ authMode = "off" } = {}) {
     defaultPaneFontSize: 14, defaultTheme: "beos", themeID: "beos", windowWobbleEnabled: true,
     terminalShellIntegration: true, commandNoticesEnabled: true, setTerminalShellIntegration() {}, setCommandNoticesEnabled() {},
     clearSelectionOnTyping: true, setClearSelectionOnTyping() {},
+    cursorBlink: true, setCursorBlink(value) { context.cursorBlinkChanges.push(value); }, cursorBlinkChanges: [],
     setWindowWobbleEnabled() {},
     terminalWheelSensitivity: 1, editorWheelSensitivity: 1, rdpWheelSpeed: 1, rdpWheelSpeedOptions: [1], setRDPWheelSpeed() {},
     terminalPaintCoalescing: true, terminalOutputCoalescing: false,
@@ -132,7 +133,7 @@ function fixture({ authMode = "off" } = {}) {
     renderSettingsPerformanceRow: () => row("Performance profile"),
     renderSettingsTerminalTERMRow: () => row("Terminal TERM value", "input"),
     renderSettingsExperimentalRendererRow: () => row("Terminal renderer"),
-    renderSettingsToggleRow: label => row(label),
+    renderSettingsToggleRow: (label, _detail, enabled, onChange) => Object.assign(row(label), { value: enabled ? "on" : "off", onToggle: onChange }),
     renderSettingsTerminalBacklogRow: () => row("Terminal output backlog"),
   };
   Object.assign(context, renderers);
@@ -152,7 +153,7 @@ function fixture({ authMode = "off" } = {}) {
       backlog: context.renderSettingsTerminalBacklogRow, compatibility: context.renderSettingsCompatibilityRow,
       keyReadout: context.renderSettingsKeyReadoutRow,
     },
-    actions: { shortcuts() {} }, hideDeskbar() {},
+    actions: { shortcuts() {}, cursorBlink: value => context.setCursorBlink(value) }, hideDeskbar() {},
     otherOverlay: () => !context.commandPalette.hidden || !context.windowList.hidden || !context.sessionList.hidden,
     focusWorkspace: () => context.focusPane(), metrics: enabled => metrics.push(enabled),
     renderSignIn(section) { signInCreated++; section.append(row("Sign-in settings")); },
@@ -341,7 +342,7 @@ test("every existing control remains reachable in its category", () => {
   const pages = {
     appearance: ["Default theme", "Current theme", "OLED border", "Wobbly windows", "Set background", "Background display"],
     fonts: ["Application font", "Interface font size", "Terminal default font size", "Current font size"],
-    terminal: ["Terminal row spacing", "Terminal colors", "Typing prediction", "Shell integration", "Command finished notices", "Clear selection when typing"],
+    terminal: ["Terminal row spacing", "Terminal colors", "Typing prediction", "Shell integration", "Command finished notices", "Clear selection when typing", "Blinking cursor"],
     input: ["Terminal wheel speed", "Remote desktop wheel speed"],
     clipboard: ["Check clipboard"], performance: ["Performance profile"],
     security: ["Sign-in settings", "Signed-in devices"],
@@ -355,6 +356,16 @@ test("every existing control remains reachable in its category", () => {
   }
   assert.equal(f.signInCreated, 1);
   assert.equal(f.devicesCreated, 1);
+});
+
+test("the Blinking cursor setting shows its state and turns blinking off", () => {
+  const f = fixture();
+  f.context.openSettingsModal(); f.flush();
+  f.selectCategory("terminal");
+  const select = f.context.settingsFocusControls().find(control => control.getAttribute("aria-label") === "Blinking cursor");
+  assert.equal(select.value, "on");
+  select.onToggle(false);
+  assert.deepEqual(f.context.cursorBlinkChanges, [false]);
 });
 
 test("sidebar arrow/Home/End keys navigate categories without capturing input arrows", () => {

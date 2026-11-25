@@ -40,6 +40,7 @@ for those modes. The user said "lets do #4 and #5".
 - `node --test web/*.test.mjs internal/terminalcore/core.test.mjs`: 1144/1144;
   `npm run build:web`: succeeded, override in `web/vendor/terminal.js`.
 - Not checked live with a mode-9 program (pending, user).
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: mode 9 reported presses only, Ctrl stripped (`CSI M "-&` for Ctrl+right), no releases.
 
 ## Implementation notes
 

@@ -43,6 +43,10 @@ export function installPlainRenderer(Renderer) {
     const y = row * metrics.height;
     ctx.fillStyle = this.theme.background;
     ctx.fillRect(0, y, cols * metrics.width, metrics.height);
+    // Kitty images under cell backgrounds, then under text, as in the
+    // ordinary row painter (terminal-sixel-renderer.mjs).
+    const below = this.tesseraKittyBelow;
+    below?.(row, false);
 
     // Match Ghostty's background-first ordering so later cell backgrounds
     // cannot cover glyphs. Adjacent cells of one color share a single fill.
@@ -76,6 +80,7 @@ export function installPlainRenderer(Renderer) {
         this.renderCellBackground(cell, col, row);
       }
     }
+    below?.(row, true);
 
     const normalFont = `${this.fontSize}px ${this.fontFamily}`;
     let normalFontSelected = false;

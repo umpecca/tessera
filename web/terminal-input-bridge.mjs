@@ -216,7 +216,7 @@ export function createTerminalInput(dependencies, platform = globalThis) {
         if (reporting) {
           feature.sendTerminalMouseSequence(socket, feature.terminalMouseEventCode(steps < 0 ? 64 : 65, event), position, "M");
         } else {
-          term.input(steps < 0 ? "\x1B[A" : "\x1B[B", true);
+          term.input(feature.terminalAlternateScrollKey(term, steps < 0), true);
         }
       }
     };
@@ -573,7 +573,7 @@ export function createTerminalInput(dependencies, platform = globalThis) {
         if (phoneSelecting() || !feature.terminalAlternateScroll(term)) return true;
         const baseSteps = Math.min(5, Math.abs(wheelDeltaUnits(event.deltaY, event.deltaMode, 33, term.rows)));
         const steps = scaledDiscreteWheelSteps(baseSteps, direction);
-        const sequence = direction < 0 ? "\x1B[A" : "\x1B[B";
+        const sequence = feature.terminalAlternateScrollKey(term, direction < 0);
         for (let index = 0; index < steps; index += 1) {
           term.input(sequence, true);
         }
@@ -724,6 +724,16 @@ export function createTerminalInput(dependencies, platform = globalThis) {
     }
   }
 
+  // The Up or Down arrow a scroll stands for, in the form a real arrow key
+  // sends: SS3 under application cursor keys (DECCKM), as in Ghostty.
+  function terminalAlternateScrollKey(term, up) {
+    let application = false;
+    try {
+      application = Boolean(term?.getMode?.(1, false));
+    } catch {}
+    return `\x1B${application ? "O" : "["}${up ? "A" : "B"}`;
+  }
+
   function terminalMouseButtonCode(button) {
     if (button === 0) {
       return 0;
@@ -781,6 +791,7 @@ export function createTerminalInput(dependencies, platform = globalThis) {
     terminalShouldReportMouse,
     terminalReportsMotion,
     terminalAlternateScroll,
+    terminalAlternateScrollKey,
     terminalMouseButtonCode,
     terminalMouseEventCode,
     terminalMousePosition,

@@ -387,6 +387,132 @@ test("overline (SGR 53) is bit 16 of a cell's spare byte, beside the underline",
   } finally { t.dispose(); }
 });
 
+function kittyPlacements(t, viewport = 0) {
+  const e = t.e, n = e.tessera_kitty_placements(t.handle, viewport, 0, 0);
+  const p = e.ghostty_wasm_alloc_u8_array(n * 52 + 4);
+  try {
+    e.tessera_kitty_placements(t.handle, viewport, p, n);
+    const values = [...new Int32Array(e.memory.buffer, p, n * 13)];
+    const keys = ["id", "generation", "col", "row", "z", "width", "height", "offsetX", "offsetY", "sourceX", "sourceY", "sourceWidth", "sourceHeight"];
+    return Array.from({ length: n }, (_, i) => Object.fromEntries(keys.map((key, k) => [key, values[i * 13 + k]])));
+  } finally { e.ghostty_wasm_free_u8_array(p, n * 52 + 4); }
+}
+
+function kittyImage(t, id) {
+  const e = t.e, info = e.ghostty_wasm_alloc_u8_array(16);
+  try {
+    const pixels = e.tessera_kitty_image(t.handle, id, info);
+    if (!pixels) return null;
+    const [width, height, bytes, generation] = new Uint32Array(e.memory.buffer, info, 4);
+    return { width, height, bytes, generation, pixels: [...new Uint8Array(e.memory.buffer, pixels, width * height * bytes)] };
+  } finally { e.ghostty_wasm_free_u8_array(info, 16); }
+}
+
+const kitty = (keys, data = "") => `\x1b_G${keys};${data}\x1b\\`;
+const twoByTwo = Buffer.from([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128]).toString("base64");
+
+test("Kitty graphics: query, transmit, place and the visible placements in front of text", async () => {
+  const t = await terminal(20, 6);
+  try {
+    t.e.tessera_sixel_geometry(t.handle, 10, 20);
+    replies(t);
+    t.write(kitty("i=31,s=1,v=1,a=q,t=d,f=24", "AAAA"));
+    assert.equal(replies(t), "\x1b_Gi=31;OK\x1b\\", "programs can detect support");
+    assert.deepEqual(kittyPlacements(t), []);
+    t.write("ab" + kitty("a=T,i=5,f=32,s=2,v=2,q=2", twoByTwo));
+    assert.deepEqual(kittyPlacements(t), [{ id: 5, generation: kittyImage(t, 5).generation, col: 2, row: 0, z: 0, width: 2, height: 2,
+      offsetX: 0, offsetY: 0, sourceX: 0, sourceY: 0, sourceWidth: 2, sourceHeight: 2 }]);
+    assert.deepEqual(kittyImage(t, 5).pixels.slice(0, 4), [255, 0, 0, 255]);
+    assert.deepEqual([kittyImage(t, 5).width, kittyImage(t, 5).bytes], [2, 4]);
+    t.write(kitty("a=p,i=5,c=4,r=2,X=3,Y=4,z=2,q=2") + kitty("a=p,i=5,z=-5,q=2"));
+    const placed = kittyPlacements(t);
+    assert.deepEqual(placed.map((p) => p.z).sort((a, b) => a - b), [-5, 0, 2], "behind text too, for the browser's under-text layer");
+    assert.deepEqual(placed.find((p) => p.z === 2), { ...placed.find((p) => p.z === 2), col: 3, width: 40, height: 40, offsetX: 3, offsetY: 4 },
+      "four columns by two rows at the host's 10x20 cells");
+    t.write("\r\n".repeat(8));
+    assert.deepEqual(kittyPlacements(t), [], "scrolled out of view");
+    assert.equal(kittyPlacements(t, 10).length, 3, "and back into view with the history");
+    t.write(kitty("a=t,i=6,f=100", "aW52YWxpZA==") + kitty("a=t,i=7,t=f,f=24,s=1,v=1", Buffer.from("/etc/passwd").toString("base64")));
+    assert.equal(replies(t), "\x1b_Gi=6;EINVAL: invalid data\x1b\\\x1b_Gi=7;EINVAL: invalid data\x1b\\", "bad PNG; files are not read");
+  } finally { t.dispose(); }
+});
+
+test("Kitty graphics: PNG and zlib data, Unicode placeholders, clearing and the memory limit", async () => {
+  const t = await terminal(20, 6);
+  try {
+    t.e.tessera_sixel_geometry(t.handle, 10, 20);
+    const { deflateSync } = await import("node:zlib");
+    t.write(kitty("a=t,i=2,f=24,s=2,v=1,o=z,q=2", deflateSync(Buffer.from([1, 2, 3, 4, 5, 6])).toString("base64")));
+    assert.deepEqual(kittyImage(t, 2).pixels, [1, 2, 3, 4, 5, 6]);
+    const png = (await fs.readFile(new URL("./testdata/kitty-2x3.png", import.meta.url))).toString("base64");
+    t.write(kitty("a=t,i=3,f=100,q=2", png));
+    assert.deepEqual([kittyImage(t, 3).width, kittyImage(t, 3).height, kittyImage(t, 3).bytes], [2, 3, 4], "PNG decoded to RGBA");
+    t.write(kitty("a=T,U=1,i=9,f=32,s=2,v=2,c=2,r=1,q=2", twoByTwo) + "\x1b[38;5;9m\u{10EEEE}\u{0305}\u{0305}\u{10EEEE}\u{0305}\u{030D}\x1b[0m");
+    assert.deepEqual(kittyPlacements(t).map((p) => [p.id, p.col, p.row, p.width, p.height]), [[9, 0, 0, 20, 20]], "placeholder cells become a placement");
+    t.e.tessera_sixel_clear_images(t.handle);
+    assert.deepEqual(kittyPlacements(t), []);
+    assert.equal(kittyImage(t, 3), null);
+    assert.ok(t.e.tessera_sixel_image_settings(t.handle, 16, 1));
+    const big = Buffer.alloc(1024 * 1024 * 3, 7).toString("base64");
+    for (let id = 1; id <= 6; id++) t.write(kitty(`a=t,i=${id},f=24,s=1024,v=1024,q=2`, big));
+    const kept = [1, 2, 3, 4, 5, 6].filter((id) => kittyImage(t, id));
+    assert.ok(kept.length <= 5 && kept.includes(6), `16 MiB keeps the newest images (${kept})`);
+  } finally { t.dispose(); }
+});
+
+test("Kitty graphics images and placements survive a snapshot", async () => {
+  const t = await terminal(20, 6);
+  try {
+    t.e.tessera_sixel_geometry(t.handle, 10, 20);
+    t.write("x" + kitty("a=T,i=5,p=7,f=32,s=2,v=2,c=3,r=2,q=2", twoByTwo) + "\r\n\r\n");
+    const before = kittyPlacements(t), generation = kittyImage(t, 5).generation;
+    const snapshot = t.snapshot();
+    assert.equal(Buffer.from(snapshot.slice(0, 4)).toString(), "TSS6");
+    t.restore(snapshot);
+    assert.deepEqual(kittyPlacements(t), before);
+    assert.deepEqual(kittyImage(t, 5).pixels.slice(0, 4), [255, 0, 0, 255]);
+    // A full-screen program's images, restored while it runs, and the shell's
+    // when it exits.
+    t.write("\x1b[?1049h" + kitty("a=T,i=8,f=32,s=2,v=2,q=2", twoByTwo));
+    t.restore(t.snapshot());
+    assert.deepEqual(kittyPlacements(t).map((p) => p.id), [8], "the alternate screen's own image");
+    t.write("\x1b[?1049l");
+    assert.deepEqual(kittyPlacements(t), before, "and the primary screen's");
+    t.write(kitty("a=t,i=6,f=32,s=2,v=2,q=2", twoByTwo));
+    assert.ok(kittyImage(t, 6).generation > generation, "later images are newer than restored ones");
+    t.write(kitty("a=d,d=i,i=5,q=2"));
+    assert.deepEqual(kittyPlacements(t), [], "deleted");
+  } finally { t.dispose(); }
+});
+
+test("Kitty graphics: a snapshot inside an APC string or between chunks finishes the image after restoring", async () => {
+  const t = await terminal(20, 6);
+  const text = () => Buffer.from(t.cells().filter((_, i) => i % 16 === 0)).toString("latin1").replace(/\0/g, "");
+  try {
+    t.e.tessera_sixel_geometry(t.handle, 10, 20);
+    const pixels = Buffer.alloc(8 * 8 * 4, 200).toString("base64");
+    // Inside one APC string: the parser restores inside it, and so does the handler.
+    t.write(`\x1b_Ga=T,i=1,f=32,s=8,v=8,q=2;${pixels.slice(0, 100)}`);
+    t.restore(t.snapshot());
+    t.write(`${pixels.slice(100)}\x1b\\`);
+    assert.deepEqual(kittyPlacements(t).map((p) => [p.id, p.width]), [[1, 8]], "the image arrives after a restore mid-string");
+    assert.equal(kittyImage(t, 1).pixels.length, 8 * 8 * 4);
+    // Between chunks: the image so far, and the placement it asked for.
+    t.write(`\x1b_Ga=T,i=2,f=32,s=8,v=8,m=1,q=2;${pixels.slice(0, 200)}\x1b\\`);
+    t.restore(t.snapshot());
+    t.write(`\x1b_Gm=0;${pixels.slice(200)}\x1b\\`);
+    assert.deepEqual(kittyPlacements(t).map((p) => p.id).sort(), [1, 2], "the chunked image finishes after a restore between chunks");
+    assert.deepEqual(kittyImage(t, 2).pixels.slice(0, 4), [200, 200, 200, 200]);
+    // Larger than the bytes kept: the rest of the string is ignored, not printed.
+    const before = text();
+    t.write(`\x1b_Ga=t,i=3,f=32,s=1024,v=1024;${"A".repeat(4 * 1024 * 1024 + 10)}`);
+    t.restore(t.snapshot());
+    t.write("AAAA\x1b\\after");
+    assert.equal(kittyImage(t, 3), null);
+    assert.equal(text(), before + "after", "only the text after the string is printed");
+  } finally { t.dispose(); }
+});
+
 test("DECRQM answers from the mode table", async () => {
   const t = await terminal(20, 4);
   try {

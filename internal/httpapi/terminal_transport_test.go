@@ -107,7 +107,7 @@ func readTerminalAttachment(t *testing.T, events <-chan terminalSocketEvent) ter
 		}
 		snapshot = append(snapshot, event.data[terminal.StateFrameHeader:]...)
 	}
-	if message.SnapshotBytes > 0 && (len(snapshot) != message.SnapshotBytes || !bytes.HasPrefix(snapshot, []byte("TSS4"))) {
+	if message.SnapshotBytes > 0 && (len(snapshot) != message.SnapshotBytes || !bytes.HasPrefix(snapshot, []byte("TSS6"))) {
 		t.Fatal("snapshot transfer is incomplete")
 	}
 	return message

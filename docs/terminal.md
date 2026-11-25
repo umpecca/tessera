@@ -23,8 +23,16 @@ choice. Desktop and Interaction-mode touch behavior are unchanged.
 
 ## Features
 
-Terminal panes support Sixel images and restore retained text and images from
-the running host when a browser reconnects. Right-click a terminal to choose an
+Terminal panes support Sixel images and the Kitty graphics protocol, and
+restore retained text and images from the running host when a browser
+reconnects. Kitty images work with tools such as `kitten icat`, yazi and
+Neovim image plugins: raw, zlib-compressed and PNG data, sent in chunks or
+whole, placed and deleted by id, scaled to cells, and in Unicode placeholder
+cells. Images go in front of the text or behind it, as the program asks
+(a negative z-index puts one behind the text, and below -1073741824 behind
+the cells' background colours too), and a selection shows over them.
+Animations aren't shown yet. Programs can't send images by file name or
+shared memory. Right-click a terminal to choose an
 image-memory budget, toggle discarded-image markers, or clear images while
 keeping text. See [terminal core documentation](terminal-core.md)
 for the pinned source build, protocol, resource limits, and restoration guarantees.
@@ -119,8 +127,9 @@ as `58:2::r:g:b` or `58:5:n`; `59` goes back to the text colour). Neovim uses
 red curly underlines for errors and spelling, and some prompts and editors
 use the others. Overlined text (`ESC [ 53 m`, `55` to stop) has a line along
 the top of each cell, as in Ghostty. Blinking text (`ESC [ 5 m`) blinks, as in
-xterm (Ghostty's app keeps it steady); it stays steady with Older Mac mode or
-when the system asks for reduced motion.
+xterm (Ghostty's app keeps it steady); it stays steady with **Settings →
+Terminal → Blinking cursor** off, in Older Mac mode, or when the system asks
+for reduced motion.
 
 Programs can recolour a terminal while it runs, as base16-shell, vim and fzf
 themes do: OSC 4 sets entries of the 256-colour palette and OSC 104 resets
@@ -186,7 +195,9 @@ sent. A program that turns on only the oldest tracking mode (9) gets button
 presses alone, without releases, drags, the wheel or modifier keys. In a
 full-screen program that isn't tracking the mouse, the wheel and two-finger
 scrolling send Up and Down arrows, unless the program turns that off
-(`CSI ? 1007 l`).
+(`CSI ? 1007 l`). The arrows take the form the real arrow keys send, so a
+program in application cursor-key mode (`CSI ? 1 h`) gets `ESC O A` and
+`ESC O B`.
 Programs can also ask for terminfo capabilities directly (XTGETTCAP,
 `DCS + q`), as Neovim does to find true colour and OSC 52 copying; the
 answers are Ghostty's, with the name (`TN`) being the configured `TERM`. Settings queries (DECRQSS,
@@ -237,8 +248,10 @@ reset (`reset`) puts back the text pointer.
 Programs can set the text cursor's shape and blink with `CSI Ps SP q`, as
 Neovim does for its bar cursor in insert mode: 1 and 2 are a block, 3 and 4 an
 underline, 5 and 6 a bar, odd numbers blinking. `CSI 0 SP q` and `reset` give
-back the pane's own blinking block. A program can stop the cursor blinking but
-not start it when blinking is off for the pane. Turning blink off with
+back the pane's own block, blinking unless **Settings → Terminal → Blinking
+cursor** is off (saved in this browser, on by default, as Ghostty's
+`cursor-style-blink`) or Older Mac mode is on. A program can stop the cursor
+blinking but not start it when blinking is off for the pane. Turning blink off with
 `CSI ? 12 l` alone, as ncurses programs do when they exit, leaves the pane's
 cursor as it is.
 
@@ -479,8 +492,9 @@ Each browser terminal also reuses a lazy WASM input buffer across output events,
 reset, and snapshot restore. It grows up to 64 KiB; larger events use temporary
 space. Closing the terminal releases the retained allocation.
 
-Sixel images allow ordinary text updates and cursor blinking to repaint only
-changed rows, including while images remain visible. Image fragments are
+Sixel and Kitty images allow ordinary text updates and cursor blinking to
+repaint only changed rows, including while images remain visible; a Kitty
+image that appears, moves or goes repaints the pane once. Image fragments are
 composited only where text was repainted, preserving transparency, selection,
 and cursor layering. When the last visible image disappears, one full redraw
 clears its old pixels. Scrolling, resizing, image changes, visible scrollbar

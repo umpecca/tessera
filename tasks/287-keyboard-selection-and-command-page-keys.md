@@ -78,6 +78,7 @@ command-up be page up. and command-down be page down?"
   Checked by reading ghostty-web that the renderer redraws the current
   selection's rows plus rows marked dirty, so marking the old rows before
   moving the end is enough, as pointer drags do.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: a drag selection extended by Shift+Right x4 and Shift+Down, Shift+End to the end of the screen; typing `x` cleared it and typed `x`. Cmd+Left/Right `CSI H`/`CSI F`; Cmd+Up/Down `CSI 5~`/`CSI 6~` on the alternate screen, nothing sent on the primary screen.
 
 ## Implementation notes
 

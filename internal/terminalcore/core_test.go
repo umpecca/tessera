@@ -2,6 +2,7 @@ package terminalcore
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -160,7 +161,7 @@ func TestNativeCoreRepliesAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.HasPrefix(snapshot, []byte("TSS4")) {
+	if !bytes.HasPrefix(snapshot, []byte("TSS6")) {
 		t.Fatalf("invalid snapshot header")
 	}
 	if again, err := c.Replies(); err != nil || len(again) != 0 {
@@ -213,5 +214,40 @@ func BenchmarkCoreSmallWritesWithRetainedImage(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// The host's core answers Kitty graphics commands for the program, decodes
+// PNG, refuses to read files, and keeps images in its snapshots.
+func TestNativeCoreKittyGraphics(t *testing.T) {
+	c, err := New(20, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	png, err := os.ReadFile("testdata/kitty-2x3.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\" +
+		"\x1b_Ga=T,i=2,f=100;" + base64.StdEncoding.EncodeToString(png) + "\x1b\\" +
+		"\x1b_Ga=t,i=3,t=f,f=24,s=1,v=1;" + base64.StdEncoding.EncodeToString([]byte("/etc/passwd")) + "\x1b\\"
+	if err := c.Write([]byte(commands)); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := c.Replies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "\x1b_Gi=31;OK\x1b\\\x1b_Gi=2;OK\x1b\\\x1b_Gi=3;EINVAL: invalid data\x1b\\"; string(reply) != want {
+		t.Fatalf("reply %q, want %q", reply, want)
+	}
+	snapshot, err := c.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The decoded 2x3 RGBA image travels with the screen.
+	if len(snapshot) < 24 || !bytes.Contains(snapshot, bytes.Repeat([]byte{0xff, 0x00, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff}, 1)) {
+		t.Fatal("snapshot lacks the decoded image")
 	}
 }

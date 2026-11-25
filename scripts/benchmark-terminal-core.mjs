@@ -38,6 +38,21 @@ for (const [name, bytes] of cores) {
     e.ghostty_terminal_write(handle, ptr, data.length);
     e.ghostty_wasm_free_u8_array(ptr, data.length);
   }
+  // Colour changes around wide and combining text: the style set and SGR
+  // parsing, whose inlining shifts as other core code changes (task 295).
+  const unicode = [];
+  for (let sample = 0; sample < 5; sample++) {
+    const handle = e.ghostty_terminal_new(160, 60);
+    const data = new TextEncoder().encode("\x1b[32mÅÉgyp 界 é देवनागरी\x1b[0m output\r\n".repeat(128));
+    const p = e.ghostty_wasm_alloc_u8_array(data.length);
+    new Uint8Array(e.memory.buffer).set(data, p);
+    for (let i = 0; i < 100; i++) e.ghostty_terminal_write(handle, p, data.length);
+    const start = performance.now();
+    for (let i = 0; i < 1000; i++) e.ghostty_terminal_write(handle, p, data.length);
+    unicode.push(data.length * 1000 / (performance.now() - start) / 1000);
+    e.ghostty_wasm_free_u8_array(p, data.length); e.ghostty_terminal_free(handle);
+  }
+  console.log(`${name} unicode: ${unicode.sort((a,b)=>a-b)[2].toFixed(1)} MB/s`);
   for (const lines of [0, 1000, 10000]) for (const image of [false, true]) {
     const handle = e.ghostty_terminal_new(80, 24);
     e.tessera_sixel_geometry(handle, 8, 16);

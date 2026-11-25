@@ -1,6 +1,6 @@
 # Task 284: Honour mode 1007 (alternate scroll)
 
-Status: implemented, awaiting a live check (2026-11-24).
+Status: complete (2026-11-25); the follow-up was checked live, physical-device touch not tried.
 
 ## Request
 
@@ -18,6 +18,11 @@ off. The user said "lets do #4 and #5".
   no scrollback).
 - No change with mouse reporting, on the normal screen, or in Scroll mode.
 - Approval: the user asked for #4 directly.
+- Follow-up (2026-11-25), found in the live check: the scroll-made arrows
+  ignore application cursor keys (DECCKM, `CSI ? 1 h`) and always send
+  `CSI A`/`CSI B`; real arrow keys and Ghostty (`Surface.zig`) send
+  `ESC O A`/`ESC O B` then. Send the format the mode asks for, wheel and
+  touch. Approval: the user said "yes" to this fix.
 
 ## Acceptance criteria
 
@@ -25,6 +30,8 @@ off. The user said "lets do #4 and #5".
 - [x] `CSI ? 1007 l`: wheel and two-finger scroll send nothing on the
       alternate screen.
 - [x] Docs and CHANGELOG updated.
+- [x] With application cursor keys on, wheel and two-finger scroll send
+      `ESC O A`/`ESC O B`; off, `CSI A`/`CSI B` as before.
 
 ## Verification
 
@@ -34,8 +41,21 @@ off. The user said "lets do #4 and #5".
 - `npm run build:web`: succeeded.
 - Not checked in a browser (pending, user): e.g. `printf '\e[?1049h\e[?1007l'; cat`,
   then scroll; nothing should be typed.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: on the alternate screen the wheel sent `CSI A`/`CSI B`, nothing with `?1007l`. Found: with DECCKM on it still sends `CSI B`; Ghostty (Surface.zig) sends `ESC O B`. This predates task 284 (web/terminal-input-bridge.mjs hard-codes `\x1B[A`/`\x1B[B` for wheel and touch); not fixed, pending the user's decision.
+- Follow-up (2026-11-25): `node --test web/terminal-scroll.test.mjs`: 24/24;
+  the two new cases (wheel and two fingers under DECCKM) fail on the previous
+  `web/terminal-input-bridge.mjs` and pass with the fix.
+  `node --test web/*.test.mjs internal/terminalcore/core.test.mjs`: 1178/1178.
+  `npm run build:web`: succeeded. `go test ./web/`: pass. Live, same test
+  instance after a reload: with `CSI ? 1049 h CSI ? 1 h` the wheel sent
+  `ESC O B`/`ESC O A`; without `CSI ? 1 h`, `CSI B`/`CSI A`. Two-finger touch
+  covered by the unit test only.
 
 ## Implementation notes
+
+- Follow-up: `terminalAlternateScrollKey(term, up)` in
+  `web/terminal-input-bridge.mjs` reads mode 1 and returns SS3 or CSI arrows;
+  `onWheel` and `scrollByTouch` use it. No core change.
 
 - `terminalAlternateScroll` in `web/terminal-input-bridge.mjs` (missing
   `getMode` counts as on), used by `onWheel` and `scrollByTouch`. With 1007

@@ -65,6 +65,7 @@ video (`CSI ? 5 h`), as visual bells do (vim `set visualbell`, readline
 - All checks are automated, with mocked canvases. Not checked visually in a
   browser (pending, user): `printf '\e[?5h'; sleep 1; printf '\e[?5l'` in
   both themes, and vim's status line in light mode.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: `printf '\e[?5h'` swapped the theme (light background, dark text), inverse cells swapped back; `\e[?5l` restored.
 
 ## Implementation notes
 

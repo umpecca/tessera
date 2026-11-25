@@ -36,6 +36,7 @@ Sweep item: vim 9, Emacs and tmux ask for xterm's modifyOtherKeys to tell keys l
 - `node --test web/*.test.mjs internal/terminalcore/core.test.mjs`: 1165/1165;
   `go test ./...`: pass; `go vet ./internal/terminalcore/ ./internal/terminal/ ./web/`:
   clean; `npm run build:web`: succeeded.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: with `CSI >4;2m`: Ctrl+Enter `CSI 27;5;13~`, Alt+Enter `CSI 27;3;13~`, Shift+Enter `CSI 27;2;13~`, Ctrl+Tab `CSI 27;5;9~`, Ctrl+, and Ctrl+. `CSI 27;5;44~`/`46~`; Ctrl+1 `1` (Ghostty's ctrlSeq table, same as Ghostty); after `CSI >4m` Alt+Enter is `ESC CR`. Ctrl+; is Tessera's Session List shortcut. Ctrl+Shift+a gave `^A`; not compared with Ghostty (Playwright's key text may differ from a real keyboard).
 
 ## Implementation notes
 

@@ -337,10 +337,10 @@ test("link hit testing tracks physical scroll pixels and preserves native event 
 });
 
 function wheelBridge(speed = 1.5) {
-  let wheel, reporting = false, alternate = false, alternateScroll = true;
+  let wheel, reporting = false, alternate = false, alternateScroll = true, cursorKeys = false;
   const movements = [], inputs = [], reports = [];
   const term = { rows: 24, wasmTerm: { isAlternateScreen: () => alternate },
-    getMode: (mode, ansi) => mode === 1007 && ansi === false ? alternateScroll : false,
+    getMode: (mode, ansi) => ansi === false && mode === 1007 ? alternateScroll : ansi === false && mode === 1 ? cursorKeys : false,
     renderer: { getMetrics: () => ({ height: 20 }) }, scrollWheelLines(value) { movements.push(value); },
     input(value) { inputs.push(value); }, attachCustomWheelEventHandler(handler) { wheel = handler; } };
   const bridge = featureFixture(["attachTerminalMouseBridge"], {
@@ -351,7 +351,7 @@ function wheelBridge(speed = 1.5) {
   }).attachTerminalMouseBridge({ terminalContainer: { addEventListener() {}, removeEventListener() {} } }, term, {});
   return { movements, inputs, reports, wheel(deltaY, deltaMode = 0) { return wheel({ deltaY, deltaMode }); },
     reporting() { reporting = true; }, alternate() { alternate = true; },
-    noAlternateScroll() { alternateScroll = false; }, bridge };
+    noAlternateScroll() { alternateScroll = false; }, applicationCursorKeys() { cursorKeys = true; }, bridge };
 }
 
 test("every wheel speed uses smooth scrollback for pixels, lines, and pages", () => {
@@ -384,11 +384,20 @@ test("the wheel sends a full-screen program no arrows once it turns alternate sc
   assert.deepEqual(f.reports, [65, 65, 65], "a mouse-tracking program still gets wheel reports");
 });
 
+test("the wheel's arrows follow application cursor keys (DECCKM), as real arrow keys and Ghostty do", () => {
+  const f = wheelBridge(1); f.alternate(); f.applicationCursorKeys();
+  f.wheel(-1, 1); f.wheel(1, 1);
+  assert.deepEqual(f.inputs, ["\x1BOA", "\x1BOB"]);
+  const plain = wheelBridge(1); plain.alternate();
+  plain.wheel(-1, 1); plain.wheel(1, 1);
+  assert.deepEqual(plain.inputs, ["\x1B[A", "\x1B[B"]);
+});
+
 function touchBridge() {
-  let reporting = false, alternate = false, alternateScroll = true, selection = false, pressed = null;
+  let reporting = false, alternate = false, alternateScroll = true, cursorKeys = false, selection = false, pressed = null;
   const movements = [], inputs = [], reports = [], listeners = {};
   const term = { rows: 24, wasmTerm: { isAlternateScreen: () => alternate },
-    getMode: (mode, ansi) => mode === 1007 && ansi === false ? alternateScroll : false,
+    getMode: (mode, ansi) => ansi === false && mode === 1007 ? alternateScroll : ansi === false && mode === 1 ? cursorKeys : false,
     renderer: { getMetrics: () => ({ height: 20 }) }, scrollWheelLines(value) { movements.push(value); },
     input(value) { inputs.push(value); }, attachCustomWheelEventHandler() {}, focus() {},
     hasSelection: () => selection, clearSelection() { selection = false; } };
@@ -420,6 +429,7 @@ function touchBridge() {
     up(id, y) { listeners.pointerup(event(id, y)); },
     reporting() { reporting = true; }, alternate() { alternate = true; },
     noAlternateScroll() { alternateScroll = false; },
+    applicationCursorKeys() { cursorKeys = true; },
     select() { selection = true; }, get selection() { return selection; },
   };
 }
@@ -455,6 +465,15 @@ test("two fingers send a full-screen program a wheel step or arrow per line", ()
   quiet.down(1, 0); quiet.down(2, 0); quiet.move(1, -40); quiet.move(2, -40);
   assert.deepEqual(quiet.inputs, [], "alternate scroll (1007) off: no arrows");
   assert.deepEqual(quiet.movements, []);
+});
+
+test("two-finger arrows follow application cursor keys (DECCKM)", () => {
+  const f = touchBridge(); f.alternate(); f.applicationCursorKeys();
+  f.down(1, 0); f.down(2, 0); f.move(1, -40); f.move(2, -40);
+  assert.ok(f.inputs.length > 0);
+  assert.ok(f.inputs.every((input) => input === "\x1BOB"), JSON.stringify(f.inputs));
+  f.move(1, 40); f.move(2, 40);
+  assert.ok(f.inputs.includes("\x1BOA"), JSON.stringify(f.inputs));
 });
 
 test("a selection the first finger began goes when the second lands", () => {

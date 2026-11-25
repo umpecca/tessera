@@ -35,6 +35,7 @@ Sweep item: Shift with the mouse is always Tessera's text selection, even when a
 - `node --test web/*.test.mjs internal/terminalcore/core.test.mjs`: 1165/1165;
   `go test ./...`: pass; `go vet ./internal/terminalcore/ ./internal/terminal/ ./web/`:
   clean; `npm run build:web`: succeeded.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: with 1000+1006 and `CSI >1s`, Shift+click reported `CSI < 4;13;6 M`; without it Shift+click was not reported.
 
 ## Implementation notes
 

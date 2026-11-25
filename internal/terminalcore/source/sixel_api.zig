@@ -19,6 +19,7 @@ pub fn sixel_image_settings(ptr: ?*anyopaque, memory_mib: u32, placeholders: u32
     const w: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
     if ((memory_mib != 16 and memory_mib != 32 and memory_mib != 64) or placeholders > 1) return false;
     w.sixel.configureImages(w.alloc, &w.terminal, memory_mib * 1024 * 1024, placeholders == 1);
+    tesseraKittyLimits(w);
     return true;
 }
 
@@ -30,6 +31,7 @@ pub fn sixel_image_settings_read(ptr: ?*anyopaque) callconv(.c) u32 {
 pub fn sixel_clear_images(ptr: ?*anyopaque) callconv(.c) void {
     const w: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return));
     w.sixel.clearImages(w.alloc, &w.terminal);
+    tesseraKittyClear(w);
 }
 
 pub fn sixel_configure(ptr: ?*anyopaque, light: u32) callconv(.c) void {

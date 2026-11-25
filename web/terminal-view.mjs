@@ -207,7 +207,7 @@ export function createTerminal(dependencies, platform = globalThis) {
         symbolFontFamily: terminalFontFamily(dependencies.preferences().terminalFont),
         rowSpacing: dependencies.preferences().terminalRowSpacing,
         cursorBlink: dependencies.desktop().activeRect === rect,
-        cursorBlinkEnabled: !dependencies.preferences().olderMacMode,
+        cursorBlinkEnabled: dependencies.preferences().terminalCursorBlinks(),
         renderPixelRatioCap: dependencies.preferences().olderMacMode ? 1 : 0,
         paintFPSLimit: dependencies.preferences().olderMacMode ? 30 : dependencies.preferences().nativeFrameLimit || 0,
         paintCoalescing: dependencies.preferences().terminalPaintCoalescing,

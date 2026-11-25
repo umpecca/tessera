@@ -202,3 +202,13 @@ test("overlined cells leave the fast path for the cell painters", () => {
   assert.ok(calls.some(call => call[0] === "original-text" && call[1].codepoint === 66));
   assert.ok(!calls.some(call => call[0] === "original-text" && call[1].codepoint === 65), "plain cells stay fast");
 });
+
+test("plain rows give Kitty images behind text their two layers", () => {
+  const {renderer, cell, calls} = fixture();
+  renderer.tesseraKittyBelow = (row, underText) => calls.push(["kitty", row, underText]);
+  renderer.renderLine([cell, {...cell, codepoint: 66, flags: 1}], 3, 2);
+  const order = calls.map(call => call[0] === "kitty" ? `kitty ${call[2]}` : call[0]);
+  assert.deepEqual(order.slice(0, 4), ["background", "kitty false", "original-background", "kitty true"],
+    "row fill, under backgrounds, cell backgrounds, under text");
+  assert.ok(order.indexOf("kitty true") < order.indexOf("text"), "before the text");
+});

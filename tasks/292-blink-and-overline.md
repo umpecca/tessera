@@ -38,6 +38,7 @@ Sweep item: the core tracks both, but the browser draws neither. Ghostty's app d
 - `node --test web/*.test.mjs internal/terminalcore/core.test.mjs`: 1165/1165;
   `go test ./...`: pass; `go vet ./internal/terminalcore/ ./internal/terminal/ ./web/`:
   clean; `npm run build:web`: succeeded.
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: blinking text visible then hidden 520 ms later; overline drawn over its cells, with underline on the same cells.
 
 ## Implementation notes
 

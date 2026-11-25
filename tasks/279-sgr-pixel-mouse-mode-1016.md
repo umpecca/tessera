@@ -50,6 +50,7 @@ cell coordinates, so clicks and hovers landed near the top-left cell.
   is 0, then 1 after `CSI ? 1016 h`, then 0 after `CSI ? 1016 l`.
 - All checks are automated or mocked. Not yet checked with a live Textual app in
   a browser (pending, user).
+- Live check (2026-11-24), headless Chromium 158 driven by Playwright over CDP against a test instance (127.0.0.1:7400, `-web web/`, zsh), bytes logged by a raw-mode probe: clicks with 1000+1006+1016 report host pixels (`CSI < 0;90;92 M` for page (100,100), Ctrl+right `CSI < 18;117;111 M`). Not yet tried with a Textual app (not installed).
 
 ## Implementation notes
 

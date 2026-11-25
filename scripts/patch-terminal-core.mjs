@@ -3,7 +3,7 @@ import path from "node:path";
 
 // Applied only to the pinned source checkout, after ghostty-web's WASM patch.
 const root = path.resolve(process.argv[2] || ".cache/sixel/ghostty-web/ghostty");
-const awaitExtension = await fs.readFile("internal/terminalcore/source/sixel_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/snapshot_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/audio_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/file_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/hyperlink_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pwd_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pointer_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/semantic_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/color_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/attention_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/report_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/query_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/underline_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/search_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/command_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/cursor_api.zig", "utf8");
+const awaitExtension = await fs.readFile("internal/terminalcore/source/sixel_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/snapshot_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/audio_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/file_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/hyperlink_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pwd_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/pointer_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/semantic_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/color_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/attention_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/report_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/query_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/underline_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/search_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/command_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/cursor_api.zig", "utf8") + await fs.readFile("internal/terminalcore/source/kitty_api.zig", "utf8");
 async function edit(file, transform) {
   const target = path.join(root, file);
   const source = await fs.readFile(target, "utf8");
@@ -919,3 +919,149 @@ await edit("src/terminal/c/terminal.zig", (source) => {
 
     fn kittyColorOperation`);
 });
+
+// Kitty graphics (kitty_api.zig). Ghostty's implementation is compiled only
+// when terminal_options.kitty_graphics is set, which its build ties to
+// Oniguruma (off for lib-vt) although the graphics code does not use it.
+// Turn it on, give the module wuffs (PNG) built without libc, pass APC
+// strings to it as Ghostty's app does (termio/stream_handler.zig), refuse the
+// file and shared-memory media a browser cannot read, and order images by a
+// counter where Ghostty reads the clock.
+await fs.mkdir(path.join(root, "src/build/tessera_wuffs_libc"), { recursive: true });
+for (const name of ["string.h", "stdlib.h", "shim.c"]) {
+  await fs.copyFile(`internal/terminalcore/source/wuffs_libc/${name}`, path.join(root, "src/build/tessera_wuffs_libc", name));
+}
+await edit("src/terminal/build_options.zig", (source) => source.includes('"kitty_graphics", true') ? source : replace(source,
+  'opts.addOption(bool, "kitty_graphics", self.oniguruma);', 'opts.addOption(bool, "kitty_graphics", true);'));
+await edit("src/build/GhosttyZig.zig", (source) => source.includes("tessera_wuffs_libc") ? source : replace(source,
+  "    // We always need unicode tables\n    deps.unicode_tables.addModuleImport(vt);",
+  `    // We always need unicode tables
+    deps.unicode_tables.addModuleImport(vt);
+
+    // Tessera: wuffs for Kitty graphics PNG decoding, without libc.
+    if (b.lazyDependency("wuffs", .{ .target = cfg.target, .optimize = cfg.optimize })) |pkg| {
+        if (pkg.builder.lazyDependency("wuffs", .{})) |upstream| {
+            const wuffs = b.createModule(.{
+                .root_source_file = pkg.path("src/main.zig"),
+                .target = cfg.target,
+                .optimize = cfg.optimize,
+            });
+            wuffs.addIncludePath(b.path("src/build/tessera_wuffs_libc"));
+            wuffs.addIncludePath(upstream.path("release/c"));
+            wuffs.addCSourceFile(.{ .file = b.path("src/build/tessera_wuffs_libc/shim.c"), .flags = &.{} });
+            wuffs.addCSourceFile(.{ .file = upstream.path("release/c/wuffs-v0.4.c"), .flags = &.{
+                "-DWUFFS_IMPLEMENTATION",
+                "-DWUFFS_CONFIG__MODULES",
+                "-DWUFFS_CONFIG__MODULE__AUX__BASE",
+                "-DWUFFS_CONFIG__MODULE__AUX__IMAGE",
+                "-DWUFFS_CONFIG__MODULE__BASE",
+                "-DWUFFS_CONFIG__MODULE__ADLER32",
+                "-DWUFFS_CONFIG__MODULE__CRC32",
+                "-DWUFFS_CONFIG__MODULE__DEFLATE",
+                "-DWUFFS_CONFIG__MODULE__JPEG",
+                "-DWUFFS_CONFIG__MODULE__PNG",
+                "-DWUFFS_CONFIG__MODULE__ZLIB",
+            } });
+            vt.addImport("wuffs", wuffs);
+        }
+    }`));
+await edit("src/terminal/kitty/graphics_image.zig", (source) => {
+  if (source.includes("transmit_counter")) return source;
+  source = replace(source, "        // Otherwise, the payload data is guaranteed to be a path.\n",
+    "        // Otherwise, the payload data is guaranteed to be a path. A browser\n        // has no file system or shared memory to read it from.\n        if (comptime builtin.os.tag == .freestanding) return error.InvalidData;\n");
+  source = replace(source, `        self.image.transmit_time = std.time.Instant.now() catch |err| {
+            log.warn("failed to get time: {}", .{err});
+            return error.InternalError;
+        };`, "        transmit_counter +%= 1;\n        self.image.transmit_time = transmit_counter;");
+  source = replace(source, "    transmit_time: std.time.Instant = undefined,", "    transmit_time: u64 = 0,");
+  return replace(source, "pub const LoadingImage = struct {",
+    "/// Transmission order, in place of a clock (a browser core has none).\npub var transmit_counter: u64 = 0;\n\npub const LoadingImage = struct {");
+});
+await edit("src/terminal/kitty/graphics_storage.zig", (source) => {
+  if (source.includes("time: u64,")) return source;
+  source = replace(source, "kv.value_ptr.transmit_time.order(newest.?.transmit_time) == .gt", "kv.value_ptr.transmit_time > newest.?.transmit_time");
+  source = replace(source, "            time: std.time.Instant,", "            time: u64,");
+  return replace(source, "return switch (lhs.time.order(rhs.time)) {", "return switch (std.math.order(lhs.time, rhs.time)) {");
+});
+await edit("src/terminal/c/terminal.zig", (source) => {
+  if (source.includes("apc: @import(\"../apc.zig\").Handler")) return source;
+  source = replace(source, "    clipboard: std.ArrayList(u8) = .{},", "    clipboard: std.ArrayList(u8) = .{},\n    apc: @import(\"../apc.zig\").Handler = .{},\n    apc_raw: std.ArrayList(u8) = .{},\n    apc_raw_overflow: bool = false,");
+  source = replace(source, "        self.clipboard.deinit(self.alloc);", "        self.clipboard.deinit(self.alloc);\n        self.apc.deinit();\n        self.apc_raw.deinit(self.alloc);");
+  // The raw string is kept for a snapshot taken inside it (kitty_api.zig).
+  return replace(source, `            .apc_start,
+            .apc_end,
+            .apc_put,
+            .enquiry,
+            => {},`, `            .apc_start => {
+                self.apc.start();
+                self.apc_raw.clearRetainingCapacity();
+                self.apc_raw_overflow = false;
+                try self.apc_raw.appendSlice(self.alloc, "\\x1b_");
+            },
+            .apc_put => {
+                self.apc.feed(self.alloc, value);
+                if (!self.apc_raw_overflow) {
+                    if (self.apc_raw.items.len < tessera_apc_raw_limit) {
+                        try self.apc_raw.append(self.alloc, value);
+                    } else {
+                        self.apc_raw_overflow = true;
+                        self.apc_raw.clearAndFree(self.alloc);
+                    }
+                }
+            },
+            .apc_end => {
+                self.apc_raw.clearRetainingCapacity();
+                self.apc_raw_overflow = false;
+                var cmd = self.apc.end() orelse return;
+                defer cmd.deinit(self.alloc);
+                switch (cmd) {
+                    .kitty => |*kitty_cmd| {
+                        // The screen's storage follows Tessera's image memory
+                        // setting (a new alternate screen starts at Ghostty's).
+                        const screen = self.terminal.screens.active;
+                        if (screen.kitty_images.total_limit != self.sixel.memory_limit) {
+                            screen.kitty_images.setLimit(self.alloc, screen, self.sixel.memory_limit) catch {};
+                        }
+                        if (self.terminal.kittyGraphics(self.alloc, kitty_cmd)) |resp| {
+                            var buf: [1024]u8 = undefined;
+                            var writer: std.Io.Writer = .fixed(&buf);
+                            try resp.encode(&writer);
+                            const final = writer.buffered();
+                            if (final.len > 2) try self.response_buffer.appendSlice(self.alloc, final);
+                        }
+                    },
+                }
+            },
+            .enquiry => {},`);
+});
+await edit("src/lib_vt.zig", (source) => source.includes('"tessera_kitty_placements"') ? source : replace(source,
+  '        @export(&c.terminal.mouse_shift_capture, .{ .name = "tessera_mouse_shift_capture" });',
+  '        @export(&c.terminal.mouse_shift_capture, .{ .name = "tessera_mouse_shift_capture" });\n        @export(&c.terminal.kitty_placements, .{ .name = "tessera_kitty_placements" });\n        @export(&c.terminal.kitty_image, .{ .name = "tessera_kitty_image" });'));
+
+// ReleaseSmall inlines a helper only while that keeps the module small, so
+// Kitty graphics' code (live since tasks 293-294) left the style set's colour
+// comparison and hashing, and the SGR parser's step, as calls on the path
+// every colour change takes: Unicode-heavy output parsed ~5% slower. Inline
+// them where they are used (task 295; scripts/benchmark-terminal-core.mjs).
+await edit("src/terminal/style.zig", (source) => source.includes("@call(.always_inline, Color.eql") ? source : replace(replace(replace(source,
+  `            self.fg_color.eql(other.fg_color) and
+            self.bg_color.eql(other.bg_color) and
+            self.underline_color.eql(other.underline_color);`,
+  `            @call(.always_inline, Color.eql, .{ self.fg_color, other.fg_color }) and
+            @call(.always_inline, Color.eql, .{ self.bg_color, other.bg_color }) and
+            @call(.always_inline, Color.eql, .{ self.underline_color, other.underline_color });`),
+  "            _ = self;\n            return style.hash();",
+  "            _ = self;\n            return @call(.always_inline, Style.hash, .{&style});"),
+  "            _ = self;\n            return a.eql(b);",
+  "            _ = self;\n            return @call(.always_inline, Style.eql, .{ a, b });"));
+await edit("src/terminal/ref_counted_set.zig", (source) => {
+  if (source.includes("@call(.always_inline, @TypeOf(ctx).eql")) return source;
+  source = replace(source, "ctx.eql(value, items[id].value)", "@call(.always_inline, @TypeOf(ctx).eql, .{ &ctx, value, items[id].value })");
+  source = replace(source, "ctx.eql(value, item.value)", "@call(.always_inline, @TypeOf(ctx).eql, .{ &ctx, value, item.value })");
+  const hash = "const hash: u64 = ctx.hash(value);";
+  if (source.split(hash).length !== 3) throw new Error("Pinned Ghostty source changed: ref_counted_set ctx.hash calls");
+  return source.replaceAll(hash, "const hash: u64 = @call(.always_inline, @TypeOf(ctx).hash, .{ &ctx, value });");
+});
+await edit("src/terminal/stream.zig", (source) => source.includes("@call(.always_inline, sgr.Parser.next") ? source : replace(source,
+  "                            while (p.next()) |attr| {",
+  "                            while (@call(.always_inline, sgr.Parser.next, .{&p})) |attr| {"));

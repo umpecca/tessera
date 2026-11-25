@@ -461,3 +461,230 @@ test("real core image visibility follows scrollback, resizing, alternate screens
     assert.equal(paint(0, true), true, "an explicit resize/exposure redraw is preserved");
   } finally { owner.clear(); e.ghostty_terminal_free(handle); }
 });
+
+async function kittyCore() {
+  const bytes = await fs.readFile(new URL("../internal/terminalcore/ghostty-vt.wasm", import.meta.url));
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log() {} } });
+  const e = instance.exports, handle = e.ghostty_terminal_new(20, 6);
+  e.tessera_sixel_geometry(handle, 10, 20);
+  const write = (text) => {
+    const data = new TextEncoder().encode(text), ptr = e.ghostty_wasm_alloc_u8_array(data.length);
+    new Uint8Array(e.memory.buffer).set(data, ptr); e.ghostty_terminal_write(handle, ptr, data.length);
+    e.ghostty_wasm_free_u8_array(ptr, data.length);
+  };
+  return { e, handle, buffer: { exports: e, handle }, write };
+}
+const kittyCommand = (keys, data = "") => `\x1b_G${keys};${data}\x1b\\`;
+const kittyPixels = Buffer.from([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128]).toString("base64");
+
+test("Kitty placements repaint the pane when they appear, move or go, and not on idle frames", async () => {
+  const { e, handle, buffer, write } = await kittyCore();
+  const forces = [], drawn = [];
+  const owner = new SixelRenderer();
+  owner.renderKitty = (_renderer, _buffer, kitty, _provider, rows) => drawn.push([kitty.count, rows && [...rows]]);
+  Object.assign(buffer, { getDimensions: () => ({ cols: 20, rows: 6 }), getLine: (row) => [`row ${row}`], dirty: [] });
+  const ctx = { save() {}, restore() {}, beginPath() {}, rect() {}, clip() {} };
+  // Paints every row when forced and only dirty rows otherwise, as
+  // ghostty-web's renderer does.
+  class Renderer {
+    constructor() { this.ctx = ctx; }
+    getMetrics() { return { width: 8, height: 18 }; }
+    render(buffer, force) {
+      forces.push(force);
+      for (const row of force ? [0, 1, 2, 3, 4, 5] : buffer.dirty) this.renderLine(buffer.getLine(row), row, 20);
+      buffer.dirty = [];
+    }
+    renderLine() {}
+  }
+  installSixelRenderer(Renderer);
+  const renderer = new Renderer(), provider = { sixelRenderer: owner };
+  const paint = (viewport = 0) => { renderer.render(buffer, false, viewport, provider); return forces.at(-1); };
+  try {
+    assert.equal(paint(), false, "no images: ordinary dirty-row painting");
+    write(kittyCommand("a=T,i=1,f=32,s=2,v=2,q=2", kittyPixels));
+    assert.equal(paint(), true, "a new image repaints");
+    assert.deepEqual(drawn, [[1, undefined]], "and draws it over the whole pane");
+    buffer.dirty = [0];
+    assert.equal(paint(), false, "a text change keeps dirty-row painting");
+    assert.deepEqual(drawn.at(-1), [1, [0]], "and redraws the image inside the repainted row's clip");
+    write(kittyCommand("a=p,i=1,c=2,r=1,q=2"));
+    assert.equal(paint(), true, "another placement repaints");
+    write(kittyCommand("a=d,d=i,i=1,q=2"));
+    assert.equal(paint(), true, "deleting repaints where it was");
+    assert.equal(paint(), false);
+    write(kittyCommand("a=T,i=2,f=32,s=2,v=2,q=2", kittyPixels) + "\r\n".repeat(10));
+    paint();
+    assert.equal(paint(), false, "scrolled out of view");
+    assert.equal(paint(e.ghostty_terminal_get_scrollback_length(handle)), true, "and back");
+  } finally { owner.clear(); e.ghostty_terminal_free(handle); }
+});
+
+test("Kitty images draw whole in front of text, scaled to this pane's cells, in z order, cached by generation", async () => {
+  const { e, handle, buffer, write } = await kittyCore();
+  const canvases = [];
+  const saved = { document: globalThis.document, ImageData: globalThis.ImageData };
+  globalThis.ImageData = class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } };
+  globalThis.document = { createElement: () => {
+    const canvas = { width: 0, height: 0, images: [], getContext: () => ({ putImageData: (image) => canvas.images.push(image) }) };
+    canvases.push(canvas);
+    return canvas;
+  } };
+  const draws = [];
+  const renderer = { getMetrics: () => ({ width: 5, height: 10 }), ctx: { save() {}, restore() {}, drawImage: (...args) => draws.push(args) } };
+  const provider = { hostCellWidth: 10, hostCellHeight: 20 };
+  const owner = new SixelRenderer();
+  try {
+    write("ab" + kittyCommand("a=T,i=4,f=32,s=2,v=2,z=3,q=2", kittyPixels));
+    write(kittyCommand("a=T,i=3,f=24,s=1,v=1,c=2,r=1,X=4,Y=2,q=2", Buffer.from([9, 8, 7]).toString("base64")));
+    let kitty = owner.readKitty(buffer, 0);
+    owner.renderKitty(renderer, buffer, kitty, provider);
+    assert.equal(draws.length, 2);
+    assert.equal(draws[0][0], owner.kittyImages.get(3).canvas, "lower z first: image 3 (z 0) under image 4 (z 3)");
+    assert.equal(draws[1][0], owner.kittyImages.get(4).canvas);
+    assert.deepEqual(draws[0].slice(1), [0, 0, 1, 1, 3 * 5 + 2, 0 + 1, 10, 10], "two cells by one row at half the host's cell size, offsets halved");
+    assert.deepEqual(draws[1].slice(1), [0, 0, 2, 2, 2 * 5, 0, 1, 1], "a 2x2 image at column 2");
+    assert.deepEqual([...owner.kittyImages.get(3).canvas.images[0].data], [9, 8, 7, 255], "RGB becomes opaque RGBA");
+    owner.renderKitty(renderer, buffer, kitty, provider);
+    assert.equal(canvases.length, 2, "bitmaps are cached");
+    write(kittyCommand("a=t,i=4,f=32,s=2,v=2,q=2", Buffer.from(Array(16).fill(1)).toString("base64")));
+    kitty = owner.readKitty(buffer, 0);
+    owner.renderKitty(renderer, buffer, kitty, provider);
+    assert.deepEqual([...owner.kittyImages.get(4).canvas.images.at(-1).data.slice(0, 4)], [1, 1, 1, 1], "a replaced image is decoded again");
+    const imageThree = owner.kittyImages.get(3).canvas;
+    write(kittyCommand("a=d,d=I,i=3,q=2"));
+    owner.readKitty(buffer, 0);
+    assert.deepEqual([...owner.kittyImages.keys()], [4], "a deleted image's bitmap is released");
+    assert.equal(imageThree.width, 0);
+    owner.renderKitty(renderer, buffer, kitty, provider, new Set());
+    assert.equal(draws.length, 6, "nothing on a frame with no repainted rows");
+  } finally {
+    owner.clear();
+    e.ghostty_terminal_free(handle);
+    Object.assign(globalThis, saved);
+  }
+});
+
+test("Unicode placeholder characters are never drawn as text", () => {
+  const drawn = [];
+  class Renderer { render() {} renderCellText(cell) { drawn.push(cell.codepoint); } }
+  installSixelRenderer(Renderer);
+  const renderer = new Renderer();
+  renderer.renderCellText({ codepoint: 0x10EEEE });
+  renderer.renderCellText({ codepoint: 65 });
+  assert.deepEqual(drawn, [65]);
+});
+
+test("rows paint Kitty images behind text between their fill, cell backgrounds and text", () => {
+  const calls = [];
+  class Renderer {
+    constructor() {
+      this.metrics = { width: 8, height: 16 };
+      this.theme = { background: "#000000" };
+      this.ctx = { fillRect: (...args) => calls.push(["fill", ...args]) };
+    }
+    render() {}
+    renderLine() { calls.push(["ghostty-web line"]); }
+    renderCellBackground(cell, col) { calls.push(["background", col]); }
+    renderCellText(cell, col) { calls.push(["text", col]); }
+  }
+  installSixelRenderer(Renderer);
+  const renderer = new Renderer();
+  const cells = [{ codepoint: 65, width: 1 }, { codepoint: 0, width: 0 }, { codepoint: 66, width: 1 }];
+  renderer.renderLine(cells, 2, 3);
+  assert.deepEqual(calls, [["fill", 0, 32, 24, 16], ["background", 0], ["background", 2], ["text", 0], ["text", 2]],
+    "without Kitty images, ghostty-web's three steps");
+  calls.length = 0;
+  renderer.tesseraKittyBelow = (row, underText) => calls.push([underText ? "images under text" : "images under backgrounds", row]);
+  renderer.renderLine(cells, 2, 3);
+  assert.deepEqual(calls.map((call) => call[0]), ["fill", "images under backgrounds", "background", "background", "images under text", "text", "text"]);
+});
+
+test("Kitty images behind text go to Ghostty's layers, row by row, with the selection over them", async () => {
+  const { e, handle, buffer, write } = await kittyCore();
+  const saved = { document: globalThis.document, ImageData: globalThis.ImageData };
+  globalThis.ImageData = class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } };
+  globalThis.document = { createElement: () => ({ width: 0, height: 0, getContext: () => ({ putImageData() {} }) }) };
+  const ops = [];
+  let selected = () => false;
+  const ctx = {
+    save: () => ops.push(["save"]), restore: () => ops.push(["restore"]), beginPath() {},
+    rect: (...args) => ops.push(["clip", ...args]), clip() {},
+    drawImage: (canvas, ...args) => ops.push(["image", owner.kittyIdOf(canvas), ...args.slice(4)]),
+    fillRect: (...args) => ops.push(["selection", ...args]),
+  };
+  const renderer = { getMetrics: () => ({ width: 10, height: 20 }), ctx, theme: { selectionBackground: "#336699" },
+    isInSelection: (col, row) => selected(col, row) };
+  const provider = { hostCellWidth: 10, hostCellHeight: 20 };
+  const owner = new SixelRenderer();
+  owner.kittyIdOf = (canvas) => [...owner.kittyImages].find(([, image]) => image.canvas === canvas)?.[0];
+  try {
+    write(kittyCommand("a=t,i=1,f=32,s=2,v=2,q=2", kittyPixels));
+    write(kittyCommand("a=p,i=1,c=2,r=2,z=-2000000000,C=1,q=2") + kittyCommand("a=p,i=1,c=1,r=1,z=-1,C=1,q=2")
+      + kittyCommand("a=p,i=1,c=1,r=1,z=4,C=1,q=2"));
+    const kitty = owner.readKitty(buffer, 0);
+    assert.equal(kitty.count, 3);
+    owner.renderKittyRow(renderer, buffer, kitty, provider, 0, false);
+    assert.deepEqual(ops.filter((op) => op[0] === "image"), [["image", 1, 0, 0, 20, 40]], "under backgrounds: the z < -1073741824 image");
+    assert.ok(ops.some((op) => op[0] === "clip" && op[2] === 0 && op[4] === 20), "clipped to its row");
+    ops.length = 0;
+    owner.renderKittyRow(renderer, buffer, kitty, provider, 0, true);
+    assert.deepEqual(ops.filter((op) => op[0] === "image"), [["image", 1, 0, 0, 10, 20]], "under text: the z -1 image");
+    ops.length = 0;
+    owner.renderKittyRow(renderer, buffer, kitty, provider, 1, true);
+    assert.deepEqual(ops, [], "row 1 has no under-text image");
+    owner.renderKittyRow(renderer, buffer, kitty, provider, 1, false);
+    assert.deepEqual(ops.filter((op) => op[0] === "image").length, 1, "but the background-layer image spans it");
+    ops.length = 0;
+    owner.renderKitty(renderer, buffer, kitty, provider);
+    assert.deepEqual(ops.filter((op) => op[0] === "image"), [["image", 1, 0, 0, 10, 20]], "in front: the z 4 image");
+    ops.length = 0;
+    selected = (col, row) => col === 0 && row === 0;
+    owner.renderKitty(renderer, buffer, kitty, provider);
+    assert.deepEqual(ops.filter((op) => op[0] === "selection"), [["selection", 0, 0, 10, 20]], "the selection shows over an image in front");
+    ops.length = 0;
+    owner.renderKittyRow(renderer, buffer, kitty, provider, 0, true);
+    assert.deepEqual(ops.filter((op) => op[0] === "selection"), [["selection", 0, 0, 10, 20]], "and over one behind text");
+    // Unicode placeholder images sit under text, as in Ghostty.
+    write("\x1bc"); e.tessera_sixel_geometry(handle, 10, 20);
+    write(kittyCommand("a=T,U=1,i=9,f=32,s=2,v=2,c=1,r=1,q=2", kittyPixels) + "\x1b[38;5;9m\u{10EEEE}\u{0305}\u{0305}\x1b[0m");
+    const placeholder = owner.readKitty(buffer, 0);
+    ops.length = 0;
+    owner.renderKitty(renderer, buffer, placeholder, provider);
+    assert.deepEqual(ops.filter((op) => op[0] === "image"), [], "not in front");
+    owner.renderKittyRow(renderer, buffer, placeholder, provider, 0, true);
+    assert.equal(ops.filter((op) => op[0] === "image").length, 1, "under the text layer");
+  } finally {
+    owner.clear();
+    e.ghostty_terminal_free(handle);
+    Object.assign(globalThis, saved);
+  }
+});
+
+test("the overlay path gives rows the Kitty hook while they paint, and removes it after", async () => {
+  const { e, handle, buffer, write } = await kittyCore();
+  const seen = [];
+  const owner = new SixelRenderer();
+  owner.renderKittyRow = (_renderer, _buffer, kitty, _provider, row, underText) => seen.push([kitty.count, row, underText]);
+  owner.renderKitty = () => {};
+  Object.assign(buffer, { getDimensions: () => ({ cols: 20, rows: 6 }), getLine: (row) => [{ codepoint: 65 + row, width: 1 }], dirty: [] });
+  class Renderer {
+    constructor() {
+      this.metrics = { width: 8, height: 18 };
+      this.theme = { background: "#000000" };
+      this.ctx = { save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, fillRect() {} };
+    }
+    getMetrics() { return this.metrics; }
+    render(buffer, force) { for (const row of force ? [0, 1] : buffer.dirty) this.renderLine(buffer.getLine(row), row, 1); }
+    renderLine() {}
+    renderCellBackground() {}
+    renderCellText() {}
+  }
+  installSixelRenderer(Renderer);
+  const renderer = new Renderer();
+  try {
+    write(kittyCommand("a=T,i=1,f=32,s=2,v=2,z=-1,q=2", kittyPixels));
+    renderer.render(buffer, false, 0, { sixelRenderer: owner });
+    assert.deepEqual(seen, [[1, 0, false], [1, 0, true], [1, 1, false], [1, 1, true]]);
+    assert.equal(renderer.tesseraKittyBelow, undefined);
+  } finally { owner.clear(); e.ghostty_terminal_free(handle); }
+});

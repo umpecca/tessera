@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Settings → Terminal → Blinking cursor** turns off the blinking cursor (and
+  blinking text) without the rest of Older Mac mode. It is on by default and
+  saved in this browser; programs still choose the cursor's shape.
+
+- Terminals support the Kitty graphics protocol, so `kitten icat`, yazi
+  previews, Neovim image plugins and other tools that prefer it show images,
+  including PNGs and Unicode placeholder images, in front of or behind the
+  text as the program places them, with a text selection showing over them.
+  Animations are not shown yet. Images share the terminal's image memory
+  setting and survive reconnects. Open Tessera tabs need to reload once after
+  updating, because the terminal core changed.
+
 - Programs that turn on xterm's modifyOtherKeys (`CSI > 4 ; 2 m`), as vim 9,
   Emacs and tmux can, can now tell key combinations like Alt+Enter apart.
 - Soft reset (`CSI ! p`), sent by `tput init` and `tset`, now resets modes,
@@ -36,6 +48,8 @@
 
 - Full-screen programs that turn off alternate scroll (`CSI ? 1007 l`) no
   longer get arrow keys when you scroll the wheel or two fingers over them.
+  Programs that use application cursor keys now get those arrows in that
+  form (`ESC O A`/`ESC O B`), as from the real arrow keys and in Ghostty.
 - Programs using the oldest mouse mode (`CSI ? 9 h`) now get clicks: button
   presses only, as that mode defines.
 
